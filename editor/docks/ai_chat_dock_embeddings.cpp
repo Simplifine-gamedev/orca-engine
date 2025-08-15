@@ -9,27 +9,32 @@
 #include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
 
-// Helper: derive backend base URL from chat endpoint
-static String _get_backend_base_url(const String &p_chat_endpoint) {
-    // Expect .../chat; strip trailing "/chat" if present
-    if (p_chat_endpoint.ends_with("/chat")) {
-        return p_chat_endpoint.substr(0, p_chat_endpoint.length() - 5);
-    }
-    return p_chat_endpoint;
-}
+
 
 String AIChatDock::_get_embed_base_url() {
-    // Resolve base URL with priority: EditorSettings -> env AI_CHAT_CLOUD_URL -> localhost
+    // Resolve base URL using same IS_DEV logic as main chat system
     String base_url;
-    if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-        base_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+    String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+    if (is_dev.is_empty()) {
+        // Backward-compat with DEV_MODE
+        is_dev = OS::get_singleton()->get_environment("DEV_MODE");
     }
-    if (base_url.is_empty()) {
+    if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+        base_url = "http://127.0.0.1:8000";
+    } else {
+        base_url = "https://gamechat.simplifine.com";
+    }
+    
+    // Allow override via editor settings or environment variable
+    if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+        String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+        if (!override_url.is_empty()) {
+            base_url = override_url;
+        }
+    } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
         base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
     }
-    if (base_url.is_empty()) {
-        base_url = "http://127.0.0.1:8000";
-    }
+    
     // Normalize: strip trailing slash
     if (base_url.ends_with("/")) {
         base_url = base_url.substr(0, base_url.length() - 1);

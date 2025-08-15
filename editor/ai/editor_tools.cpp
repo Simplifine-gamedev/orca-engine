@@ -1485,15 +1485,27 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         request_file->close();
         
         // Use curl via OS system call, mirroring headers used by chat/image gen
+        // Determine backend URL using same logic as main chat system
         String base_url;
-        if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-            base_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+        String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+        if (is_dev.is_empty()) {
+            // Backward-compat with DEV_MODE
+            is_dev = OS::get_singleton()->get_environment("DEV_MODE");
         }
-        if (base_url.is_empty()) {
-            base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
-        }
-        if (base_url.is_empty()) {
+        if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
             base_url = "http://127.0.0.1:8000";
+        } else {
+            base_url = "https://gamechat.simplifine.com";
+        }
+        
+        // Allow override via editor settings or environment variable
+        if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+            String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+            if (!override_url.is_empty()) {
+                base_url = override_url;
+            }
+        } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+            base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
         }
         String curl_command = String("curl -X POST ") + base_url + String("/predict_code_edit ") +
             "-H \"Content-Type: application/json\" " +

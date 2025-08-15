@@ -4018,7 +4018,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         VBoxContainer *edit_vbox = memnew(VBoxContainer);
         p_content_vbox->add_child(edit_vbox);
         Label *status = memnew(Label);
-        String status_text = "Inline preview ready in Script Editor (Accept/Reject). File: " + file_path;
+        String status_text = "Edited: " + file_path;
         if (has_errors) {
             status_text += " — Errors detected (" + String::num_int64(comp_errors.size()) + ")";
         }
@@ -5433,17 +5433,29 @@ void AIChatDock::_load_layout_from_config(Ref<ConfigFile> p_layout, const String
 
 
 
-    // Resolve endpoint from settings/env with fallback to localhost
+    // Resolve endpoint using same IS_DEV logic as main initialization
     String base_url;
-    if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-        base_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+    String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+    if (is_dev.is_empty()) {
+        // Backward-compat with DEV_MODE
+        is_dev = OS::get_singleton()->get_environment("DEV_MODE");
     }
-    if (base_url.is_empty()) {
+    if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+        base_url = "http://127.0.0.1:8000";
+    } else {
+        base_url = "https://gamechat.simplifine.com";
+    }
+    
+    // Allow override via editor settings or environment variable
+    if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+        String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+        if (!override_url.is_empty()) {
+            base_url = override_url;
+        }
+    } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
         base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
     }
-    if (base_url.is_empty()) {
-        base_url = "http://127.0.0.1:8000";
-    }
+    
     if (base_url.ends_with("/")) {
         base_url = base_url.substr(0, base_url.length() - 1);
     }
