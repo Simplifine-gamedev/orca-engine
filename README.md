@@ -2,8 +2,6 @@
 
 Based on Godot Engine, with enhancements by Simplifine.
 
-### Overview
-Describe what Orca adds and who it is for.
 
 ### Whats the catch?
 We are integrating a chat bot, with complete access to Godot. 
