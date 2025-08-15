@@ -4,6 +4,8 @@
 flask
 python-dotenv
 openai>=1.50.0  # Required for responses API and image generation
+litellm>=1.44.13  # Multi-provider LLM support (OpenAI, Anthropic, Google)
+python-dateutil  # Date/time utilities for tools
 requests  # For HTTP requests
 gunicorn  # Production WSGI server
 
