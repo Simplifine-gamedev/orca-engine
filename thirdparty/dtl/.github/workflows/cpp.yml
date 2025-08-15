@@ -1,0 +1,30 @@
+name: C++
+
+on: [push]
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install scons and gtest
+      run: |
+        sudo apt-get install -y scons
+        sudo apt-get install -y cmake scons
+        wget https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
+        tar zxvf v1.14.0.tar.gz
+        cd googletest-1.14.0
+        cmake .
+        make
+        sudo make install
+
+    - name: Build examples
+      run: |
+        cd examples
+        scons
+
+    - name: Test
+      run: |
+        cd test
+        scons check

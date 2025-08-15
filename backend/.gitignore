@@ -1,0 +1,12 @@
+.env
+.env.*
+.auth_sessions.pkl
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+
+

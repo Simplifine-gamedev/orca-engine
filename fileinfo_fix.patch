@@ -1,0 +1,3254 @@
+From 4d14bcde6889bf8c23497b1b61c0d1296f0977f7 Mon Sep 17 00:00:00 2001
+From: cto <ali77sina@yahoo.com>
+Date: Tue, 29 Jul 2025 01:01:29 -0700
+Subject: [PATCH] Fix: Resolve FileInfo name collision on macOS
+
+---
+ MoltenVK.zip                              |    1 +
+ editor/SCsub                              |    2 +
+ editor/ai/SCsub                           |    4 +
+ editor/ai/editor_tools.cpp                |  953 +++++++++++++++++++
+ editor/ai/editor_tools.h                  |   43 +
+ editor/docks/ai_chat_dock.cpp             | 1041 +++++++++++++++++++++
+ editor/docks/ai_chat_dock.h               |  154 +++
+ editor/docks/common.h                     |    3 +
+ editor/docks/diff_viewer.cpp              |  344 +++++++
+ editor/docks/diff_viewer.h                |   57 ++
+ editor/docks/filesystem_dock.cpp          |   20 +-
+ editor/docks/filesystem_dock.h            |    2 +-
+ editor/editor_node.cpp                    |    8 +-
+ editor/editor_node.h                      |    2 +
+ editor/file_system/editor_file_system.cpp |   36 +-
+ editor/file_system/editor_file_system.h   |   14 +-
+ editor/file_system/file_info.cpp          |   28 +-
+ editor/file_system/file_info.h            |   14 +-
+ editor/gui/editor_file_dialog.cpp         |    6 +-
+ editor/script/script_editor_plugin.h      |    2 +
+ run.sh                                    |    5 +
+ thirdparty/dtl                            |    1 +
+ 22 files changed, 2679 insertions(+), 61 deletions(-)
+ create mode 100644 MoltenVK.zip
+ create mode 100644 editor/ai/SCsub
+ create mode 100644 editor/ai/editor_tools.cpp
+ create mode 100644 editor/ai/editor_tools.h
+ create mode 100644 editor/docks/ai_chat_dock.cpp
+ create mode 100644 editor/docks/ai_chat_dock.h
+ create mode 100644 editor/docks/common.h
+ create mode 100644 editor/docks/diff_viewer.cpp
+ create mode 100644 editor/docks/diff_viewer.h
+ create mode 100755 run.sh
+ create mode 160000 thirdparty/dtl
+
+diff --git a/MoltenVK.zip b/MoltenVK.zip
+new file mode 100644
+index 0000000000..8537307691
+--- /dev/null
++++ b/MoltenVK.zip
+@@ -0,0 +1 @@
++Not Found
+\ No newline at end of file
+diff --git a/editor/SCsub b/editor/SCsub
+index 6e2f1f2a96..794d08aa74 100644
+--- a/editor/SCsub
++++ b/editor/SCsub
+@@ -90,6 +90,8 @@ if env.editor_build:
+     SConscript("animation/SCsub")
+     SConscript("asset_library/SCsub")
+     SConscript("audio/SCsub")
++    SConscript("ai/SCsub")
++    SConscript("../thirdparty/dtl/SCsub")
+     SConscript("debugger/SCsub")
+     SConscript("doc/SCsub")
+     SConscript("docks/SCsub")
+diff --git a/editor/ai/SCsub b/editor/ai/SCsub
+new file mode 100644
+index 0000000000..600dd7de23
+--- /dev/null
++++ b/editor/ai/SCsub
+@@ -0,0 +1,4 @@
++#!/usr/bin/env python
++Import("env")
++
++env.add_source_files(env.editor_sources, "*.cpp") 
+\ No newline at end of file
+diff --git a/editor/ai/editor_tools.cpp b/editor/ai/editor_tools.cpp
+new file mode 100644
+index 0000000000..40e7ab38da
+--- /dev/null
++++ b/editor/ai/editor_tools.cpp
+@@ -0,0 +1,953 @@
++#include "editor_tools.h"
++
++#include "core/crypto/crypto.h"
++#include "core/io/dir_access.h"
++#include "core/io/file_access.h"
++#include "core/io/http_client.h"
++#include "core/io/json.h"
++#include "core/io/resource_loader.h"
++#include "editor/editor_data.h"
++#include "editor/editor_interface.h"
++#include "editor/editor_node.h"
++#include "editor/editor_string_names.h"
++#include "scene/main/node.h"
++#include "scene/main/window.h"
++
++#include <functional>
++
++void EditorTools::set_api_endpoint(const String &p_endpoint) {
++    // This is now handled in AIChatDock
++}
++
++Dictionary EditorTools::_get_node_info(Node *p_node) {
++	Dictionary node_info;
++	if (!p_node) {
++		return node_info;
++	}
++	node_info["name"] = p_node->get_name();
++	node_info["type"] = p_node->get_class();
++	node_info["path"] = p_node->get_path();
++	node_info["owner"] = p_node->get_owner() ? p_node->get_owner()->get_path() : String();
++	node_info["child_count"] = p_node->get_child_count();
++	return node_info;
++}
++
++Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error_result) {
++	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
++	if (!root) {
++		r_error_result["success"] = false;
++		r_error_result["message"] = "No scene is currently being edited.";
++		return nullptr;
++	}
++	Node *node = root->get_node_or_null(p_path);
++	if (!node) {
++		r_error_result["success"] = false;
++		r_error_result["message"] = "Node not found at path: " + p_path;
++	}
++	return node;
++}
++
++Dictionary EditorTools::get_scene_info(const Dictionary &p_args) {
++	Dictionary result;
++	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
++	if (!root) {
++		result["success"] = false;
++		result["message"] = "No scene is currently being edited.";
++		return result;
++	}
++	result["success"] = true;
++	result["scene_name"] = root->get_scene_file_path();
++	result["root_node"] = _get_node_info(root);
++	return result;
++}
++
++Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
++	Dictionary result;
++	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
++	if (!root) {
++		result["success"] = false;
++		result["message"] = "No scene is currently being edited.";
++		return result;
++	}
++	
++	Array nodes;
++	
++	// Helper lambda to recursively collect all nodes
++	std::function<void(Node*)> collect_nodes = [&](Node* node) {
++		if (node) {
++			nodes.push_back(_get_node_info(node));
++			// Recursively collect all children
++			for (int i = 0; i < node->get_child_count(); i++) {
++				collect_nodes(node->get_child(i));
++			}
++		}
++	};
++	
++	// Start collecting from the root
++	collect_nodes(root);
++	
++	result["success"] = true;
++	result["nodes"] = nodes;
++	return result;
++}
++
++Dictionary EditorTools::search_nodes_by_type(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("type")) {
++		result["success"] = false;
++		result["message"] = "Missing 'type' argument.";
++		return result;
++	}
++	String type = p_args["type"];
++	Array nodes;
++	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
++	if (root) {
++		List<Node *> node_list;
++		root->get_tree()->get_nodes_in_group("_scenetree", &node_list);
++		for (Node *node : node_list) {
++			if (node->is_class(type)) {
++				nodes.push_back(_get_node_info(node));
++			}
++		}
++	}
++	result["success"] = true;
++	result["nodes"] = nodes;
++	return result;
++}
++
++Dictionary EditorTools::get_editor_selection(const Dictionary &p_args) {
++	Dictionary result;
++	Array selection = EditorNode::get_singleton()->get_editor_selection()->get_selected_nodes();
++	Array nodes;
++	for (int i = 0; i < selection.size(); i++) {
++		Node *node = Object::cast_to<Node>(selection[i]);
++		if (node) {
++			nodes.push_back(_get_node_info(node));
++		}
++	}
++	result["success"] = true;
++	result["selected_nodes"] = nodes;
++	return result;
++}
++
++Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' argument.";
++		return result;
++	}
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++
++	List<PropertyInfo> properties;
++	node->get_property_list(&properties);
++
++	Dictionary props_dict;
++	for (const PropertyInfo &prop_info : properties) {
++		if (prop_info.usage & PROPERTY_USAGE_EDITOR) {
++			props_dict[prop_info.name] = node->get(prop_info.name);
++		}
++	}
++
++	result["success"] = true;
++	result["properties"] = props_dict;
++	return result;
++}
++
++Dictionary EditorTools::save_scene(const Dictionary &p_args) {
++	Dictionary result;
++	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
++	if (!root) {
++		result["success"] = false;
++		result["message"] = "No scene is currently being edited.";
++		return result;
++	}
++
++	String path = root->get_scene_file_path();
++	if (path.is_empty()) {
++		result["success"] = false;
++		result["message"] = "Scene has no file path. Please save it manually first.";
++		return result;
++	}
++
++	Error err = EditorInterface::get_singleton()->save_scene();
++	if (err != OK) {
++		result["success"] = false;
++		result["message"] = "Failed to save scene. It might not have a path yet.";
++	} else {
++		result["success"] = true;
++		result["message"] = "Scene saved successfully.";
++	}
++
++	return result;
++}
++
++Dictionary EditorTools::create_node(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("type") || !p_args.has("name")) {
++		result["success"] = false;
++		result["message"] = "Missing 'type' or 'name' argument.";
++		return result;
++	}
++	String type = p_args["type"];
++	String name = p_args["name"];
++	Node *parent = nullptr;
++
++	if (p_args.has("parent")) {
++		parent = _get_node_from_path(p_args["parent"], result);
++		if (!parent) {
++			return result;
++		}
++	} else {
++		parent = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
++		if (!parent) {
++			result["success"] = false;
++			result["message"] = "No scene is currently being edited to add a root node.";
++			return result;
++		}
++	}
++
++	Node *new_node = memnew(Node);
++	if (ClassDB::can_instantiate(type)) {
++		new_node = (Node *)ClassDB::instantiate(type);
++	} else {
++		result["success"] = false;
++		result["message"] = "Cannot instantiate node of type: " + type;
++		return result;
++	}
++
++	new_node->set_name(name);
++	parent->add_child(new_node);
++	new_node->set_owner(parent->get_owner() ? parent->get_owner() : parent);
++
++	result["success"] = true;
++	result["node_path"] = new_node->get_path();
++	result["message"] = "Node created successfully.";
++	
++	// Check for configuration warnings
++	PackedStringArray warnings = new_node->get_configuration_warnings();
++	if (!warnings.is_empty()) {
++		String warning_text = "";
++		for (int i = 0; i < warnings.size(); i++) {
++			warning_text += warnings[i];
++			if (i < warnings.size() - 1) warning_text += "; ";
++		}
++		result["warnings"] = warning_text;
++		result["message"] = "Node created successfully, but has warnings: " + warning_text;
++	}
++	
++	return result;
++}
++
++Dictionary EditorTools::delete_node(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' argument.";
++		return result;
++	}
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++	node->queue_free();
++	result["success"] = true;
++	result["message"] = "Node deleted successfully.";
++	return result;
++}
++
++Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path") || !p_args.has("property") || !p_args.has("value")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path', 'property', or 'value' argument.";
++		return result;
++	}
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++	StringName prop = p_args["property"];
++	bool valid = false;
++	node->set(prop, p_args["value"], &valid);
++	if (!valid) {
++		result["success"] = false;
++		result["message"] = "Failed to set property '" + String(prop) + "'. It might be invalid or read-only.";
++		return result;
++	}
++	result["success"] = true;
++	result["message"] = "Property set successfully.";
++	return result;
++}
++
++Dictionary EditorTools::move_node(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path") || !p_args.has("new_parent")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' or 'new_parent' argument.";
++		return result;
++	}
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++	Node *new_parent = _get_node_from_path(p_args["new_parent"], result);
++	if (!new_parent) {
++		return result;
++	}
++	node->get_parent()->remove_child(node);
++	new_parent->add_child(node);
++	result["success"] = true;
++	result["message"] = "Node moved successfully.";
++	return result;
++}
++
++Dictionary EditorTools::call_node_method(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path") || !p_args.has("method")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' or 'method' argument.";
++		return result;
++	}
++
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++
++	StringName method = p_args["method"];
++	Array args = p_args.has("args") ? (Array)p_args["args"] : Array();
++
++	Variant ret = node->callv(method, args);
++
++	result["success"] = true;
++	result["return_value"] = ret;
++
++	return result;
++}
++
++Dictionary EditorTools::get_available_classes(const Dictionary &p_args) {
++	Dictionary result;
++	List<StringName> class_list;
++	ClassDB::get_class_list(&class_list);
++
++	Array classes;
++	for (const StringName &E : class_list) {
++		if (ClassDB::can_instantiate(E) && ClassDB::is_parent_class(E, "Node")) {
++			classes.push_back(String(E));
++		}
++	}
++
++	result["success"] = true;
++	result["classes"] = classes;
++	return result;
++}
++
++Dictionary EditorTools::get_node_script(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' argument.";
++		return result;
++	}
++
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++
++	Ref<Script> script = node->get_script();
++	if (script.is_null()) {
++		result["success"] = false;
++		result["message"] = "Node has no script attached.";
++	} else {
++		result["success"] = true;
++		result["script_path"] = script->get_path();
++	}
++
++	return result;
++}
++
++Dictionary EditorTools::attach_script(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path") || !p_args.has("script_path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' or 'script_path' argument.";
++		return result;
++	}
++
++	Node *node = _get_node_from_path(p_args["path"], result);
++	if (!node) {
++		return result;
++	}
++
++	Ref<Script> script = ResourceLoader::load(p_args["script_path"]);
++	if (script.is_null()) {
++		result["success"] = false;
++		result["message"] = "Failed to load script at path: " + String(p_args["script_path"]);
++		return result;
++	}
++
++	node->set_script(script);
++	result["success"] = true;
++	result["message"] = "Script attached successfully.";
++	return result;
++}
++
++Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("operation")) {
++		result["success"] = false;
++		result["message"] = "Missing 'operation' argument.";
++		return result;
++	}
++
++	String operation = p_args["operation"];
++
++	if (operation == "create_new") {
++		EditorNode::get_singleton()->new_scene();
++		
++		// Create a default Node2D root for the new scene
++		Node *root_node = nullptr;
++		if (ClassDB::can_instantiate("Node2D")) {
++			root_node = (Node *)ClassDB::instantiate("Node2D");
++			root_node->set_name("Main");
++			
++			// Properly set the scene root using EditorNode's method
++			EditorNode::get_singleton()->set_edited_scene(root_node);
++			root_node->set_owner(root_node);
++		}
++		
++		if (root_node) {
++			result["success"] = true;
++			result["message"] = "New scene created with Node2D root.";
++		} else {
++			result["success"] = false;
++			result["message"] = "Failed to create scene root node.";
++		}
++
++	} else if (operation == "save_as") {
++		if (!p_args.has("path")) {
++			result["success"] = false;
++			result["message"] = "Missing 'path' argument for save_as operation.";
++			return result;
++		}
++		String path = p_args["path"];
++		EditorInterface::get_singleton()->save_scene_as(path);
++		result["success"] = true;
++		result["message"] = "Scene saved as " + path;
++
++	} else if (operation == "open") {
++		if (!p_args.has("path")) {
++			result["success"] = false;
++			result["message"] = "Missing 'path' argument for open operation.";
++			return result;
++		}
++		String path = p_args["path"];
++		EditorInterface::get_singleton()->open_scene_from_path(path);
++		result["success"] = true;
++		result["message"] = "Scene opened: " + path;
++
++	} else {
++		result["success"] = false;
++		result["message"] = "Unknown operation: " + operation + ". Supported: create_new, save_as, open";
++	}
++
++	return result;
++}
++
++Dictionary EditorTools::add_collision_shape(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("node_path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'node_path' argument.";
++		return result;
++	}
++
++	String node_path = p_args["node_path"];
++	String shape_type = p_args.get("shape_type", "rectangle");
++
++	Node *node = _get_node_from_path(node_path, result);
++	if (!node) {
++		return result;
++	}
++
++	// Check if it's a physics body that needs collision
++	if (!node->is_class("CharacterBody2D") && !node->is_class("RigidBody2D") && !node->is_class("StaticBody2D") && !node->is_class("Area2D")) {
++		result["success"] = false;
++		result["message"] = "Node is not a physics body that can have collision shapes.";
++		return result;
++	}
++
++	// Create CollisionShape2D
++	Node *collision_shape = nullptr;
++	if (ClassDB::can_instantiate("CollisionShape2D")) {
++		collision_shape = (Node *)ClassDB::instantiate("CollisionShape2D");
++	} else {
++		result["success"] = false;
++		result["message"] = "Cannot instantiate CollisionShape2D.";
++		return result;
++	}
++
++	// Create the actual shape resource based on type
++	Variant shape_resource;
++	if (shape_type == "rectangle") {
++		if (ClassDB::can_instantiate("RectangleShape2D")) {
++			shape_resource = ClassDB::instantiate("RectangleShape2D");
++		}
++	} else if (shape_type == "circle") {
++		if (ClassDB::can_instantiate("CircleShape2D")) {
++			shape_resource = ClassDB::instantiate("CircleShape2D");
++		}
++	} else if (shape_type == "capsule") {
++		if (ClassDB::can_instantiate("CapsuleShape2D")) {
++			shape_resource = ClassDB::instantiate("CapsuleShape2D");
++		}
++	}
++
++	if (shape_resource.get_type() == Variant::NIL) {
++		collision_shape->queue_free();
++		result["success"] = false;
++		result["message"] = "Failed to create shape resource of type: " + shape_type;
++		return result;
++	}
++
++	// Set the shape on the collision node
++	collision_shape->set("shape", shape_resource);
++	
++	// Add as child safely
++	if (node && collision_shape) {
++		node->add_child(collision_shape);
++		collision_shape->set_owner(node->get_owner() ? node->get_owner() : node);
++	} else {
++		if (collision_shape) collision_shape->queue_free();
++		result["success"] = false;
++		result["message"] = "Failed to add collision shape - invalid nodes.";
++		return result;
++	}
++
++	result["success"] = true;
++	result["message"] = "CollisionShape2D with " + shape_type + " shape added to " + node_path;
++	return result;
++}
++
++Dictionary EditorTools::generalnodeeditor(const Dictionary &p_args) {
++	Dictionary result;
++	
++	// Validate required arguments
++	if (!p_args.has("node_path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'node_path' argument.";
++		return result;
++	}
++	
++	String node_path = p_args["node_path"];
++	Array node_paths;
++	
++	// Support both single node and array of nodes
++	if (node_path.begins_with("[") && node_path.ends_with("]")) {
++		// Parse array of node paths
++		String paths_str = node_path.substr(1, node_path.length() - 2);
++		PackedStringArray paths = paths_str.split(",");
++		for (int i = 0; i < paths.size(); i++) {
++			node_paths.push_back(paths[i].strip_edges());
++		}
++	} else {
++		node_paths.push_back(node_path);
++	}
++	
++	Dictionary properties = p_args.get("properties", Dictionary());
++	String texture_path = p_args.get("texture_path", "");
++	bool batch_operation = node_paths.size() > 1;
++	
++	Array operation_results;
++	int success_count = 0;
++	int failure_count = 0;
++	
++	// Process each node
++	for (int i = 0; i < node_paths.size(); i++) {
++		String current_node_path = node_paths[i];
++		Dictionary node_result;
++		node_result["node_path"] = current_node_path;
++		
++		Dictionary temp_result;
++		Node *node = _get_node_from_path(current_node_path, temp_result);
++		if (!node) {
++			node_result["success"] = false;
++			node_result["message"] = temp_result["message"];
++			operation_results.push_back(node_result);
++			failure_count++;
++			continue;
++		}
++		
++		Array property_results;
++		bool node_success = true;
++		String node_message = "";
++		
++		// Handle texture assignment
++		if (!texture_path.is_empty()) {
++			bool texture_applied = false;
++			String texture_error = "";
++			
++			// Check if node supports texture
++			bool has_texture_property = false;
++			bool valid = false;
++			node->get("texture", &valid);
++			has_texture_property = valid;
++			
++			if (node->has_method("set_texture") || has_texture_property) {
++				Ref<Texture2D> texture = ResourceLoader::load(texture_path);
++				if (texture.is_valid()) {
++					if (node->has_method("set_texture")) {
++						Array args;
++						args.push_back(texture);
++						node->callv("set_texture", args);
++						texture_applied = true;
++					} else {
++						bool valid = false;
++						node->set("texture", texture, &valid);
++						texture_applied = valid;
++					}
++					
++					if (!texture_applied) {
++						texture_error = "Failed to apply texture to node";
++					}
++				} else {
++					texture_error = "Failed to load texture from: " + texture_path;
++				}
++			} else {
++				texture_error = "Node type '" + node->get_class() + "' does not support texture assignment";
++			}
++			
++			Dictionary texture_result;
++			texture_result["operation"] = "texture_assignment";
++			texture_result["success"] = texture_applied;
++			texture_result["message"] = texture_applied ? "Texture applied successfully" : texture_error;
++			property_results.push_back(texture_result);
++			
++			if (!texture_applied) {
++				node_success = false;
++			}
++		}
++		
++		// Handle property modifications
++		Array property_keys = properties.keys();
++		for (int j = 0; j < property_keys.size(); j++) {
++			String property_name = property_keys[j];
++			Variant property_value = properties[property_name];
++			
++			Dictionary prop_result;
++			prop_result["operation"] = "property_modification";
++			prop_result["property"] = property_name;
++			prop_result["value"] = property_value;
++			
++			// Special handling for common properties
++			if (property_name == "position" && property_value.get_type() == Variant::ARRAY) {
++				Array pos_array = property_value;
++				if (pos_array.size() >= 2) {
++					Vector2 position(pos_array[0], pos_array[1]);
++					bool valid = false;
++					node->set("position", position, &valid);
++					prop_result["success"] = valid;
++					prop_result["message"] = valid ? "Position set successfully" : "Failed to set position";
++				} else {
++					prop_result["success"] = false;
++					prop_result["message"] = "Position array must have at least 2 elements [x, y]";
++				}
++			} else if (property_name == "scale" && property_value.get_type() == Variant::ARRAY) {
++				Array scale_array = property_value;
++				if (scale_array.size() >= 2) {
++					Vector2 scale(scale_array[0], scale_array[1]);
++					bool valid = false;
++					node->set("scale", scale, &valid);
++					prop_result["success"] = valid;
++					prop_result["message"] = valid ? "Scale set successfully" : "Failed to set scale";
++				} else {
++					prop_result["success"] = false;
++					prop_result["message"] = "Scale array must have at least 2 elements [x, y]";
++				}
++			} else {
++				// Standard property setting
++				bool valid = false;
++				node->set(StringName(property_name), property_value, &valid);
++				prop_result["success"] = valid;
++				prop_result["message"] = valid ? 
++					"Property '" + property_name + "' set successfully" : 
++					"Failed to set property '" + property_name + "'. It might be invalid or read-only";
++			}
++			
++			property_results.push_back(prop_result);
++			
++			if (!prop_result["success"]) {
++				node_success = false;
++			}
++		}
++		
++		// Compile node result
++		node_result["success"] = node_success;
++		node_result["property_results"] = property_results;
++		
++		if (node_success) {
++			success_count++;
++			node_result["message"] = "All operations completed successfully on " + current_node_path;
++		} else {
++			failure_count++;
++			node_result["message"] = "Some operations failed on " + current_node_path;
++		}
++		
++		operation_results.push_back(node_result);
++	}
++	
++	// Compile final result
++	result["operation_results"] = operation_results;
++	result["batch_operation"] = batch_operation;
++	result["total_nodes"] = node_paths.size();
++	result["success_count"] = success_count;
++	result["failure_count"] = failure_count;
++	
++	if (failure_count == 0) {
++		result["success"] = true;
++		result["message"] = String("Successfully processed all ") + String::num_int64(success_count) + " node(s)";
++	} else if (success_count == 0) {
++		result["success"] = false;
++		result["message"] = String("Failed to process all ") + String::num_int64(failure_count) + " node(s)";
++	} else {
++		result["success"] = true; // Partial success
++		result["message"] = String("Processed ") + String::num_int64(success_count) + " successfully, " + 
++							String::num_int64(failure_count) + " failed";
++	}
++	
++	return result;
++}
++
++Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
++	Dictionary result;
++	String path = p_args.has("dir") ? p_args["dir"] : "res://";
++	String filter = p_args.has("filter") ? p_args["filter"] : "";
++
++	Array files;
++	Array dirs;
++	Ref<DirAccess> dir = DirAccess::open(path);
++	if (dir.is_valid()) {
++		dir->list_dir_begin();
++		String file_name = dir->get_next();
++		while (file_name != "") {
++			if (dir->current_is_dir()) {
++				if (file_name != "." && file_name != "..") {
++					dirs.push_back(file_name);
++				}
++			} else {
++				if (filter.is_empty() || file_name.match(filter)) {
++					files.push_back(file_name);
++				}
++			}
++			file_name = dir->get_next();
++		}
++	} else {
++		result["success"] = false;
++		result["message"] = "Could not open directory: " + path;
++		return result;
++	}
++	result["success"] = true;
++	result["files"] = files;
++	result["directories"] = dirs;
++	return result;
++}
++
++Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' argument.";
++		return result;
++	}
++	String path = p_args["path"];
++	Error err;
++	String content = FileAccess::get_file_as_string(path, &err);
++	if (err != OK) {
++		result["success"] = false;
++		result["message"] = "Failed to read file: " + path;
++		return result;
++	}
++	result["success"] = true;
++	result["content"] = content;
++	return result;
++}
++
++Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
++	Dictionary result;
++	if (!p_args.has("path")) {
++		result["success"] = false;
++		result["message"] = "Missing 'path' argument.";
++		return result;
++	}
++	String path = p_args["path"];
++	Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
++	if (file.is_null()) {
++		result["success"] = false;
++		result["message"] = "Failed to open file: " + path;
++		return result;
++	}
++
++	int start_line = p_args.has("start_line") ? (int)p_args["start_line"] : 1;
++	int end_line = p_args.has("end_line") ? (int)p_args["end_line"] : -1;
++	String content;
++	int current_line = 1;
++
++	while (!file->eof_reached() && (end_line == -1 || current_line <= end_line)) {
++		String line = file->get_line();
++		if (current_line >= start_line) {
++			content += line + "\n";
++		}
++		current_line++;
++	}
++
++	result["success"] = true;
++	result["content"] = content;
++	return result;
++}
++
++Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const String &p_prompt, const String &p_api_endpoint) {
++	Dictionary result;
++	HTTPClient *http_client = HTTPClient::create();
++
++	// Prepare request
++	String host = p_api_endpoint;
++	int port = 80;
++	bool use_ssl = false;
++
++	if (host.begins_with("https://")) {
++		host = host.trim_prefix("https://");
++		use_ssl = true;
++		port = 443;
++	} else if (host.begins_with("http://")) {
++		host = host.trim_prefix("http://");
++	}
++
++	String base_path = "/";
++	if (host.find("/") != -1) {
++		base_path = host.substr(host.find("/"), -1);
++		host = host.substr(0, host.find("/"));
++	}
++
++	if (host.find(":") != -1) {
++		port = host.substr(host.find(":") + 1, -1).to_int();
++		host = host.substr(0, host.find(":"));
++	}
++	
++	// Construct the full path by replacing /chat with /predict_code_edit
++	String predict_path = base_path.replace("/chat", "/predict_code_edit");
++
++	Error err = http_client->connect_to_host(host, port, use_ssl ? Ref<TLSOptions>() : Ref<TLSOptions>());
++	if (err != OK) {
++		result["success"] = false;
++		result["message"] = "Failed to connect to host: " + host;
++		memdelete(http_client);
++		return result;
++	}
++
++	// Wait for connection
++	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
++		http_client->poll();
++		OS::get_singleton()->delay_usec(1000);
++	}
++
++	if (http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
++		result["success"] = false;
++		result["message"] = "Failed to connect to host after polling.";
++		memdelete(http_client);
++		return result;
++	}
++
++	// Prepare request body
++	Dictionary request_data;
++	request_data["file_content"] = p_file_content;
++	request_data["prompt"] = p_prompt;
++
++	print_line("DEBUG: Sending to backend - file_content length: " + itos(p_file_content.length()));
++	print_line("DEBUG: Sending to backend - prompt: " + p_prompt);
++
++	Ref<JSON> json;
++	json.instantiate();
++	String request_body_str = json->stringify(request_data);
++	PackedByteArray request_body = request_body_str.to_utf8_buffer();
++
++	print_line("DEBUG: Request body: " + request_body_str);
++
++	PackedStringArray headers;
++	headers.push_back("Content-Type: application/json");
++	headers.push_back("Content-Length: " + itos(request_body.size()));
++
++	err = http_client->request(HTTPClient::METHOD_POST, predict_path, headers, request_body.ptr(), request_body.size());
++	if (err != OK) {
++		result["success"] = false;
++		result["message"] = "HTTPClient->request failed.";
++		memdelete(http_client);
++		return result;
++	}
++
++	// Wait for response
++	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
++		http_client->poll();
++		OS::get_singleton()->delay_usec(1000);
++	}
++
++	if (http_client->get_status() != HTTPClient::STATUS_BODY && http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
++		result["success"] = false;
++		result["message"] = "Request failed after sending.";
++		memdelete(http_client);
++		return result;
++	}
++
++	if (!http_client->has_response()) {
++		result["success"] = false;
++		result["message"] = "Request completed, but no response received.";
++		memdelete(http_client);
++		return result;
++	}
++
++	int response_code = http_client->get_response_code();
++	PackedByteArray body;
++
++	while (http_client->get_status() == HTTPClient::STATUS_BODY) {
++		http_client->poll();
++		PackedByteArray chunk = http_client->read_response_body_chunk();
++		if (chunk.size() == 0) {
++			OS::get_singleton()->delay_usec(1000);
++		} else {
++			body.append_array(chunk);
++		}
++	}
++
++	String response_str = String::utf8((const char *)body.ptr(), body.size());
++
++	memdelete(http_client);
++
++	if (response_code != 200) {
++		result["success"] = false;
++		result["message"] = "Prediction server returned error " + itos(response_code) + ": " + response_str;
++		return result;
++	}
++
++	err = json->parse(response_str);
++	if (err != OK) {
++		result["success"] = false;
++		result["message"] = "Failed to parse JSON response from prediction server.";
++		return result;
++	}
++
++	Dictionary response_data = json->get_data();
++	response_data["success"] = true;
++	return response_data;
++}
++
++Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
++    Dictionary result;
++    // This tool is now handled in AIChatDock, this is just a placeholder
++    result["success"] = true;
++    result["message"] = "This tool is handled in the AI Chat Dock.";
++    return result;
++} 
+\ No newline at end of file
+diff --git a/editor/ai/editor_tools.h b/editor/ai/editor_tools.h
+new file mode 100644
+index 0000000000..9ee8ac1677
+--- /dev/null
++++ b/editor/ai/editor_tools.h
+@@ -0,0 +1,43 @@
++#pragma once
++
++#include "core/object/class_db.h"
++#include "core/object/object.h"
++#include "core/variant/dictionary.h"
++
++class Node;
++
++class EditorTools : public Object {
++	GDCLASS(EditorTools, Object);
++
++private:
++	static Dictionary _get_node_info(Node *p_node);
++	static Node *_get_node_from_path(const String &p_path, Dictionary &r_error_result);
++
++public:
++    static Dictionary _predict_code_edit(const String &p_file_content, const String &p_prompt, const String &p_api_endpoint);
++    static void set_api_endpoint(const String &p_endpoint);
++
++	static Dictionary get_scene_info(const Dictionary &p_args);
++	static Dictionary get_all_nodes(const Dictionary &p_args);
++	static Dictionary search_nodes_by_type(const Dictionary &p_args);
++	static Dictionary get_editor_selection(const Dictionary &p_args);
++    static Dictionary get_node_properties(const Dictionary &p_args);
++	static Dictionary save_scene(const Dictionary &p_args);
++	static Dictionary get_available_classes(const Dictionary &p_args);
++
++	static Dictionary create_node(const Dictionary &p_args);
++	static Dictionary delete_node(const Dictionary &p_args);
++	static Dictionary set_node_property(const Dictionary &p_args);
++	static Dictionary move_node(const Dictionary &p_args);
++	static Dictionary call_node_method(const Dictionary &p_args);
++	static Dictionary get_node_script(const Dictionary &p_args);
++	static Dictionary attach_script(const Dictionary &p_args);
++	static Dictionary manage_scene(const Dictionary &p_args);
++	static Dictionary add_collision_shape(const Dictionary &p_args);
++	static Dictionary generalnodeeditor(const Dictionary &p_args);
++
++	static Dictionary list_project_files(const Dictionary &p_args);
++	static Dictionary read_file_content(const Dictionary &p_args);
++	static Dictionary read_file_advanced(const Dictionary &p_args);
++	static Dictionary apply_edit(const Dictionary &p_args);
++}; 
+\ No newline at end of file
+diff --git a/editor/docks/ai_chat_dock.cpp b/editor/docks/ai_chat_dock.cpp
+new file mode 100644
+index 0000000000..ac2ffb5cf6
+--- /dev/null
++++ b/editor/docks/ai_chat_dock.cpp
+@@ -0,0 +1,1041 @@
++/**************************************************************************/
++/*  ai_chat_dock.cpp                                                      */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#include "ai_chat_dock.h"
++
++#include "core/io/config_file.h"
++#include "core/io/json.h"
++#include "core/os/time.h"
++#include "core/io/file_access.h"
++#include "editor/editor_node.h"
++#include "editor/editor_string_names.h"
++#include "editor/settings/editor_settings.h"
++#include "scene/gui/box_container.h"
++#include "scene/gui/button.h"
++#include "scene/gui/label.h"
++#include "scene/gui/margin_container.h"
++#include "scene/gui/option_button.h"
++#include "scene/gui/panel.h"
++#include "scene/gui/panel_container.h"
++#include "scene/gui/rich_text_label.h"
++#include "scene/gui/scroll_container.h"
++#include "scene/gui/separator.h"
++#include "scene/gui/line_edit.h"
++#include "scene/gui/text_edit.h"
++#include "scene/gui/tree.h"
++#include "scene/main/http_request.h"
++#include "scene/resources/style_box_flat.h"
++
++#include "../ai/editor_tools.h"
++#include "diff_viewer.h"
++
++void AIChatDock::_bind_methods() {
++	ClassDB::bind_method(D_METHOD("_on_send_button_pressed"), &AIChatDock::_on_send_button_pressed);
++	ClassDB::bind_method(D_METHOD("_on_input_text_changed"), &AIChatDock::_on_input_text_changed);
++	ClassDB::bind_method(D_METHOD("_on_input_field_gui_input"), &AIChatDock::_on_input_field_gui_input);
++	ClassDB::bind_method(D_METHOD("_on_model_selected"), &AIChatDock::_on_model_selected);
++	ClassDB::bind_method(D_METHOD("_on_tool_output_toggled"), &AIChatDock::_on_tool_output_toggled);
++	ClassDB::bind_method(D_METHOD("_on_tool_file_link_pressed", "path"), &AIChatDock::_on_tool_file_link_pressed);
++}
++
++void AIChatDock::_notification(int p_notification) {
++	switch (p_notification) {
++		case NOTIFICATION_POST_ENTER_TREE: {
++			// UI setup moved from constructor to here to ensure theme is available.
++			// Model selection at the top - following Godot dock patterns
++			HBoxContainer *model_container = memnew(HBoxContainer);
++			add_child(model_container);
++
++			Label *model_label = memnew(Label);
++			model_label->set_text("Model:");
++			model_container->add_child(model_label);
++
++			model_dropdown = memnew(OptionButton);
++			model_dropdown->add_item("gpt-4o");
++			model_dropdown->add_item("gpt-4-turbo");
++			model_dropdown->add_item("gpt-3.5-turbo");
++			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
++			model_container->add_child(model_dropdown);
++
++			// Chat history area - expand to fill available space
++			chat_scroll = memnew(ScrollContainer);
++			chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
++			chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
++			add_child(chat_scroll);
++
++			chat_container = memnew(VBoxContainer);
++			chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++			chat_scroll->add_child(chat_container);
++
++			// Input area at the bottom
++			HBoxContainer *input_container = memnew(HBoxContainer);
++			add_child(input_container);
++
++			input_field = memnew(TextEdit);
++			Ref<StyleBoxFlat> input_style = memnew(StyleBoxFlat);
++			input_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
++			input_style->set_border_width_all(1);
++			input_style->set_border_color(get_theme_color(SNAME("dark_color_3"), SNAME("Editor")));
++			input_field->add_theme_style_override("normal", input_style);
++			input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++			input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
++			input_field->set_placeholder("Ask me anything about Godot...");
++			input_field->set_custom_minimum_size(Size2(0, 100)); // Minimum height for the input box
++			input_field->connect("text_changed", callable_mp(this, &AIChatDock::_on_input_text_changed));
++			input_field->connect("gui_input", callable_mp(this, &AIChatDock::_on_input_field_gui_input));
++			input_container->add_child(input_field);
++
++			send_button = memnew(Button);
++			send_button->set_text("Send");
++			send_button->set_disabled(true);
++			send_button->connect("pressed", callable_mp(this, &AIChatDock::_on_send_button_pressed));
++			input_container->add_child(send_button);
++
++			// Load saved model from settings, now that UI is ready.
++			if (EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
++				String saved_model = EditorSettings::get_singleton()->get_setting("ai_chat/model");
++				model = saved_model;
++				// Set the dropdown to the saved model
++				for (int i = 0; i < model_dropdown->get_item_count(); i++) {
++					if (model_dropdown->get_item_text(i) == saved_model) {
++						model_dropdown->select(i);
++						break;
++					}
++				}
++			}
++
++			// Add welcome message after the UI is fully initialized.
++			_add_message_to_chat("assistant", "# Hello! I'm your AI assistant\n\nI can help you with **Godot development**, *scripting questions*, `debugging`, and more.\n\n## What I can help with:\n- Scene and node management\n- Code analysis and suggestions\n- Project file operations\n- And much more!\n\n```gdscript\n# Example: Creating a simple node\nfunc _ready():\n    var new_node = Node2D.new()\n    add_child(new_node)\n```\n\nHow can I assist you today?");
++		} break;
++		case NOTIFICATION_PROCESS: {
++			if (http_client.is_valid()) {
++				http_client->poll();
++				if (http_status == STATUS_CONNECTING && http_client->get_status() == HTTPClient::STATUS_CONNECTED) {
++					http_status = STATUS_REQUESTING;
++					Error err = http_client->request(HTTPClient::METHOD_POST, pending_request_path, pending_request_headers, pending_request_body.ptr(), pending_request_body.size());
++					if (err != OK) {
++						_add_message_to_chat("system", "Failed to send request to backend.");
++						is_waiting_for_response = false;
++						_update_ui_state();
++						http_status = STATUS_DONE;
++						return;
++					}
++				} else if (http_status == STATUS_REQUESTING && http_client->get_status() == HTTPClient::STATUS_BODY) {
++					http_status = STATUS_BODY;
++				}
++
++				if (http_client->get_status() == HTTPClient::STATUS_BODY) {
++					PackedByteArray chunk = http_client->read_response_body_chunk();
++					if (chunk.size() > 0) {
++						_handle_response_chunk(chunk);
++					}
++				}
++
++				if (http_client->get_status() == HTTPClient::STATUS_DISCONNECTED || http_client->get_status() == HTTPClient::STATUS_CONNECTION_ERROR || http_client->get_status() == HTTPClient::STATUS_CANT_CONNECT) {
++					is_waiting_for_response = false;
++					_update_ui_state();
++					http_status = STATUS_DONE;
++					current_assistant_message_label = nullptr;
++					set_process(false);
++				}
++			}
++		} break;
++		case NOTIFICATION_ENTER_TREE: {
++			// Load API key from editor settings
++			if (EditorSettings::get_singleton()->has_setting("ai_chat/api_key")) {
++				api_key = EditorSettings::get_singleton()->get_setting("ai_chat/api_key");
++			}
++		} break;
++		case NOTIFICATION_THEME_CHANGED: {
++			// Theme updates handled automatically
++		} break;
++	}
++}
++
++void AIChatDock::_on_send_button_pressed() {
++	String message = input_field->get_text().strip_edges();
++	if (message.is_empty() || is_waiting_for_response) {
++		return;
++	}
++
++	input_field->set_text("");
++	_add_message_to_chat("user", message);
++	_send_chat_request();
++	input_field->grab_focus();
++}
++
++void AIChatDock::_on_input_text_changed() {
++	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
++}
++
++void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
++	Ref<InputEventKey> key_event = p_event;
++	if (key_event.is_valid() && key_event->is_pressed() && !key_event->is_echo()) {
++		if (key_event->get_keycode() == Key::ENTER && !key_event->is_shift_pressed()) {
++			_on_send_button_pressed();
++			get_viewport()->set_input_as_handled(); // Consume the event to prevent the default newline behavior
++		}
++	}
++}
++
++void AIChatDock::_on_model_selected(int p_index) {
++	if (model_dropdown) {
++		String selected_model = model_dropdown->get_item_text(p_index);
++		model = selected_model;
++		// Save the selected model to editor settings
++		EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
++	}
++}
++
++void AIChatDock::_handle_response_chunk(const PackedByteArray &p_chunk) {
++	response_buffer += String::utf8((const char *)p_chunk.ptr(), p_chunk.size());
++
++	int newline_pos;
++	while ((newline_pos = response_buffer.find("\n")) != -1) {
++		String line = response_buffer.substr(0, newline_pos);
++		response_buffer = response_buffer.substr(newline_pos + 1);
++		if (line.strip_edges().is_empty()) {
++			continue;
++		}
++		_process_ndjson_line(line);
++	}
++}
++
++void AIChatDock::_process_ndjson_line(const String &p_line) {
++	Ref<JSON> json;
++	json.instantiate();
++	Error err = json->parse(p_line);
++	if (err != OK) {
++		_add_message_to_chat("system", "Error parsing streaming response: " + p_line);
++		return;
++	}
++
++	Dictionary data = json->get_data();
++
++	if (data.has("error")) {
++		_add_message_to_chat("system", "Backend error: " + String(data["error"]));
++		return;
++	}
++
++	if (data.has("status") && data["status"] == "executing_tools") {
++		if (data.has("assistant_message")) {
++			Dictionary assistant_message = data["assistant_message"];
++			// This status means a new assistant turn is starting with tool calls.
++			// We must create a new message for it, not update a previous one.
++			_add_message_to_chat("assistant", assistant_message.get("content", ""), assistant_message.get("tool_calls", Array()));
++
++			if (assistant_message.has("tool_calls")) {
++				_execute_tool_calls(assistant_message.get("tool_calls", Array()));
++			}
++		}
++		return; // Stop further processing for this line
++	}
++
++	// This handles streaming content deltas
++	if (data.has("content_delta")) {
++		RichTextLabel *label = _get_or_create_current_assistant_message_label();
++		String delta = data["content_delta"];
++		if (!chat_history.is_empty()) {
++			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
++			if (last_msg.role == "assistant") {
++				last_msg.content += delta;
++				// Convert the accumulated content to BBCode and set it
++				label->set_text(_markdown_to_bbcode(last_msg.content));
++			}
++		}
++		call_deferred("_scroll_to_bottom");
++	}
++
++	// This handles the final message of a stream.
++	if (data.has("assistant_message")) {
++		Dictionary assistant_message = data["assistant_message"];
++
++		// If this final message has tool calls, we shouldn't be processing it here.
++		// It should have been handled by the "executing_tools" status.
++		// But as a fallback, we can add it to the chat.
++		if (assistant_message.has("tool_calls")) {
++			_add_message_to_chat("assistant", assistant_message.get("content", ""), assistant_message.get("tool_calls", Array()));
++			return;
++		}
++
++		RichTextLabel *label = _get_or_create_current_assistant_message_label();
++		String final_content = assistant_message.get("content", "");
++		if (final_content == "<null>") {
++			final_content = "";
++		}
++		
++		if (!chat_history.is_empty()) {
++			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
++			if (last_msg.role == "assistant") {
++				// Update the content in history and then render from history.
++				last_msg.content = final_content;
++				label->set_text(_markdown_to_bbcode(last_msg.content));
++			}
++		} else {
++			// This case should ideally not happen if the stream started correctly.
++			label->set_text(_markdown_to_bbcode(final_content));
++		}
++	}
++}
++
++RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
++	// If a label is already assigned, use it.
++	if (current_assistant_message_label != nullptr) {
++		// Make sure its parent is visible.
++		Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
++		if (bubble_panel && !bubble_panel->is_visible()) {
++			bubble_panel->set_visible(true);
++		}
++		return current_assistant_message_label;
++	}
++
++	// If the last message was an assistant message (likely with tool calls but no content yet),
++	// find its label and reuse it.
++	if (!chat_history.is_empty()) {
++		const ChatMessage &last_msg = chat_history[chat_history.size() - 1];
++		if (last_msg.role == "assistant") {
++			// Find the last message bubble created.
++			for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
++				PanelContainer *panel = Object::cast_to<PanelContainer>(chat_container->get_child(i));
++				if (panel) {
++					RichTextLabel *rt = find_rich_text_label_in_children(panel);
++					if (rt) {
++						current_assistant_message_label = rt;
++						panel->set_visible(true); // Ensure it's visible.
++						return current_assistant_message_label;
++					}
++				}
++			}
++		}
++	}
++
++	// Otherwise, create a new message bubble.
++	_add_message_to_chat("assistant", "");
++	return current_assistant_message_label; // _add_message_to_chat sets this.
++}
++
++void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
++	for (int i = 0; i < p_tool_calls.size(); i++) {
++		Dictionary tool_call = p_tool_calls[i];
++		String tool_call_id = tool_call.get("id", "");
++		Dictionary function_dict = tool_call.get("function", Dictionary());
++		String function_name = function_dict.get("name", "");
++		String arguments_str = function_dict.get("arguments", "{}");
++
++		// Don't add system messages - they break OpenAI format!
++		// _add_message_to_chat("system", "🔧 Executing: " + function_name);
++
++		Ref<JSON> json;
++		json.instantiate();
++		Error err = json->parse(arguments_str);
++		Dictionary args;
++		if (err == OK) {
++			args = json->get_data();
++		}
++
++		Dictionary result;
++
++		// Execute the tool
++		if (function_name == "get_scene_info") {
++			result = EditorTools::get_scene_info(args);
++		} else if (function_name == "get_all_nodes") {
++			result = EditorTools::get_all_nodes(args);
++		} else if (function_name == "search_nodes_by_type") {
++			result = EditorTools::search_nodes_by_type(args);
++		} else if (function_name == "get_editor_selection") {
++			result = EditorTools::get_editor_selection(args);
++		} else if (function_name == "get_node_properties") {
++			result = EditorTools::get_node_properties(args);
++		} else if (function_name == "save_scene") {
++			result = EditorTools::save_scene(args);
++		} else if (function_name == "get_available_classes") {
++			result = EditorTools::get_available_classes(args);
++		} else if (function_name == "create_node") {
++			result = EditorTools::create_node(args);
++		} else if (function_name == "delete_node") {
++			result = EditorTools::delete_node(args);
++		} else if (function_name == "set_node_property") {
++			result = EditorTools::set_node_property(args);
++		} else if (function_name == "move_node") {
++			result = EditorTools::move_node(args);
++		} else if (function_name == "call_node_method") {
++			result = EditorTools::call_node_method(args);
++		} else if (function_name == "get_node_script") {
++			result = EditorTools::get_node_script(args);
++		} else if (function_name == "attach_script") {
++			result = EditorTools::attach_script(args);
++		} else if (function_name == "manage_scene") {
++			result = EditorTools::manage_scene(args);
++		} else if (function_name == "add_collision_shape") {
++			result = EditorTools::add_collision_shape(args);
++		} else if (function_name == "generalnodeeditor") {
++			result = EditorTools::generalnodeeditor(args);
++		} else if (function_name == "list_project_files") {
++			result = EditorTools::list_project_files(args);
++		} else if (function_name == "read_file_content") {
++			result = EditorTools::read_file_content(args);
++		} else if (function_name == "read_file_advanced") {
++			result = EditorTools::read_file_advanced(args);
++		} else if (function_name == "apply_edit") {
++			String path = args["path"];
++			String prompt = args["prompt"];
++
++			Error err;
++			String file_content = FileAccess::get_file_as_string(path, &err);
++			if (err != OK) {
++				result["success"] = false;
++				result["message"] = "Failed to read file for editing: " + path;
++			} else {
++				Dictionary prediction = EditorTools::_predict_code_edit(file_content, prompt, api_endpoint);
++				if (!prediction.get("success", false)) {
++					result = prediction;
++				} else {
++					String new_content = prediction["edited_content"];
++					diff_viewer->set_diff(path, file_content, new_content);
++					
++					// Check if the script is open in the editor
++					if (diff_viewer->has_script_open(path)) {
++						// Auto-apply to script editor for immediate preview
++						diff_viewer->apply_to_script_editor();
++						result["success"] = true;
++						result["message"] = "Applied changes to script editor for " + path + ". You can save when ready.";
++					} else {
++						// Show popup for files not currently open
++						diff_viewer->popup_centered();
++						result["success"] = true;
++						result["message"] = "Showing diff for " + path;
++					}
++				}
++			}
++		} else {
++			result["success"] = false;
++			result["message"] = "Unknown tool: " + function_name;
++		}
++
++		// Add a proper, separate tool bubble for the output.
++		_add_tool_response_to_chat(tool_call_id, function_name, args, result);
++		
++		// Don't add system messages - they break OpenAI format!
++		// bool success = result.get("success", false);
++		// String message = result.get("message", "");
++		// String status_icon = success ? "✅" : "❌";
++		// _add_message_to_chat("system", status_icon + " " + function_name + ": " + message);
++	}
++
++	// We've finished with this turn's tool calls. Clear the current label
++	// so the next content_delta or assistant_message creates a new bubble
++	// or finds the correct existing one.
++	current_assistant_message_label = nullptr;
++	_send_chat_request();
++}
++
++void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_content, const Array &p_tool_calls) {
++	ChatMessage msg;
++	msg.role = p_role;
++	msg.content = p_content;
++	if (msg.content == "<null>") {
++		msg.content = "";
++	}
++	msg.timestamp = _get_timestamp();
++	msg.tool_calls = p_tool_calls;
++
++	chat_history.push_back(msg);
++	_create_message_bubble(msg);
++	// Show tool call placeholders immediately for better UX
++	if (p_role == "assistant") {
++		_create_tool_call_bubbles(p_tool_calls);
++	}
++
++	// Auto-scroll to bottom
++	call_deferred("_scroll_to_bottom");
++}
++
++void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result) {
++	Ref<JSON> json;
++	json.instantiate();
++
++	ChatMessage msg;
++	msg.role = "tool";
++	msg.tool_call_id = p_tool_call_id;
++	msg.name = p_name;
++	msg.content = json->stringify(p_result);
++	msg.timestamp = _get_timestamp();
++
++	chat_history.push_back(msg);
++
++	// Find the placeholder for this tool and replace its content.
++	PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false));
++	if (!placeholder) {
++		return;
++	}
++
++	// Clear the "loading" text.
++	for (int i = 0; i < placeholder->get_child_count(); i++) {
++		placeholder->get_child(i)->queue_free();
++	}
++
++	// Create the replacement UI.
++	VBoxContainer *tool_container = memnew(VBoxContainer);
++	placeholder->add_child(tool_container);
++
++	Button *toggle_button = memnew(Button);
++	
++	// Show success/failure status in the button
++	Dictionary data = p_result;
++	bool success = data.get("success", false);
++	String message = data.get("message", "");
++	String status_icon = success ? "✅" : "❌";
++	toggle_button->set_text(status_icon + " " + p_name + ": " + message);
++	
++	toggle_button->set_flat(false);
++	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++	toggle_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
++	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
++	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
++	tool_container->add_child(toggle_button);
++
++				PanelContainer *content_panel = memnew(PanelContainer);
++	content_panel->set_visible(false); // Collapsed by default.
++				tool_container->add_child(content_panel);
++				toggle_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_output_toggled).bind(content_panel));
++
++				Ref<StyleBoxFlat> content_style = memnew(StyleBoxFlat);
++				content_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
++	content_style->set_border_width_all(1);
++	content_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
++				content_style->set_content_margin_all(10);
++				content_panel->add_theme_style_override("panel", content_style);
++
++	VBoxContainer *content_vbox = memnew(VBoxContainer);
++	content_panel->add_child(content_vbox);
++
++	HBoxContainer *header_hbox = memnew(HBoxContainer);
++	content_vbox->add_child(header_hbox);
++
++	// Dictionary data = p_result; // Already declared above
++	// bool success = data.get("success", false); // Already declared above
++
++	Label *status_label = memnew(Label);
++	status_label->set_text(success ? "Tool Succeeded" : "Tool Failed");
++	status_label->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
++	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
++	header_hbox->add_child(status_label);
++
++	content_vbox->add_child(memnew(HSeparator));
++
++	// Create specific UI based on the tool that was called.
++	if (p_name == "list_project_files" && success) {
++		Tree *file_tree = memnew(Tree);
++		file_tree->set_hide_root(true);
++		file_tree->set_custom_minimum_size(Size2(0, 300));
++		TreeItem *root = file_tree->create_item();
++
++		Dictionary tree_items;
++
++		Array files = p_result.get("files", Array());
++		for (int i = 0; i < files.size(); i++) {
++			String file_path = files[i];
++			Vector<String> parts = file_path.split("/");
++			TreeItem *current_item = root;
++			String current_path = "";
++
++			for (int j = 0; j < parts.size(); j++) {
++				current_path += parts[j];
++				if (tree_items.has(current_path)) {
++					current_item = (TreeItem *)((Object *)tree_items[current_path]);
++				} else {
++					TreeItem *new_item = file_tree->create_item(current_item);
++					new_item->set_text(0, parts[j]);
++					bool is_dir = j < parts.size() - 1;
++					new_item->set_icon(0, is_dir ? get_theme_icon(SNAME("Folder"), SNAME("EditorIcons")) : get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
++					tree_items[current_path] = new_item;
++					current_item = new_item;
++				}
++				current_path += "/";
++			}
++		}
++		content_vbox->add_child(file_tree);
++
++	} else if (p_name == "read_file_content" && success) {
++		VBoxContainer *file_content_vbox = memnew(VBoxContainer);
++		content_vbox->add_child(file_content_vbox);
++
++		Button *file_link = memnew(Button);
++		file_link->set_text(p_args["path"]);
++		file_link->set_flat(true);
++		file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
++		file_link->add_theme_icon_override("icon", get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
++		file_link->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(p_args["path"]));
++		file_content_vbox->add_child(file_link);
++
++		TextEdit *file_content = memnew(TextEdit);
++		file_content->set_text(p_result["content"]);
++		file_content->set_editable(false);
++		file_content->set_custom_minimum_size(Size2(0, 300));
++		file_content_vbox->add_child(file_content);
++
++	} else {
++		RichTextLabel *content_label = memnew(RichTextLabel);
++		content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
++		content_label->set_text(json->stringify(p_result, "  "));
++		content_label->set_fit_content(true);
++		content_label->set_selection_enabled(true);
++		content_vbox->add_child(content_label);
++	}
++
++	call_deferred("_scroll_to_bottom");
++}
++
++void AIChatDock::_scroll_to_bottom() {
++	if (chat_scroll) {
++		chat_scroll->ensure_control_visible(chat_container);
++		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
++		if (vbar) {
++			vbar->set_value(vbar->get_max());
++		}
++	}
++}
++
++void AIChatDock::_on_tool_file_link_pressed(const String &p_path) {
++	EditorNode::get_singleton()->load_scene(p_path);
++}
++
++void AIChatDock::_create_message_bubble(const ChatMessage &p_message) {
++	PanelContainer *message_panel = memnew(PanelContainer);
++	chat_container->add_child(message_panel);
++
++	// Default to invisible. We'll show it only if it has content.
++	message_panel->set_visible(false);
++
++	// --- Style Configuration ---
++	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
++	panel_style->set_content_margin_all(10);
++	Color role_color;
++
++	if (p_message.role == "user") {
++		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.1));
++		panel_style->set_border_width(SIDE_LEFT, 4);
++		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")));
++		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
++	} else { // Assistant and System
++		panel_style->set_bg_color(get_theme_color(SNAME("dark_color_3"), SNAME("Editor")));
++		panel_style->set_border_width(SIDE_LEFT, 4);
++		panel_style->set_border_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
++		role_color = (p_message.role == "system") ? get_theme_color(SNAME("warning_color"), SNAME("Editor")) : get_theme_color(SNAME("font_color"), SNAME("Editor"));
++	}
++	message_panel->add_theme_style_override("panel", panel_style);
++
++	// --- Content ---
++	VBoxContainer *message_vbox = memnew(VBoxContainer);
++	message_panel->add_child(message_vbox);
++
++	Label *role_label = memnew(Label);
++	role_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
++	role_label->set_text(p_message.role.capitalize());
++	role_label->add_theme_color_override("font_color", role_color);
++	message_vbox->add_child(role_label);
++
++	// Always create a content label for assistant to allow streaming.
++	RichTextLabel *content_label = memnew(RichTextLabel);
++	content_label->set_fit_content(true);
++	content_label->set_selection_enabled(true);
++	content_label->set_use_bbcode(true);
++	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++	message_vbox->add_child(content_label);
++
++	if (p_message.role == "assistant") {
++		current_assistant_message_label = content_label;
++	}
++
++	if (!p_message.content.strip_edges().is_empty()) {
++		content_label->set_text(_markdown_to_bbcode(p_message.content));
++		message_panel->set_visible(true);
++	}
++
++	if (!p_message.tool_calls.is_empty()) {
++		message_panel->set_visible(true);
++	}
++
++	// Add spacing after each message panel
++	Control *spacer = memnew(Control);
++	spacer->set_custom_minimum_size(Size2(0, 10));
++	chat_container->add_child(spacer);
++}
++
++void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
++	if (!current_assistant_message_label) {
++		return;
++	}
++
++	Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
++	VBoxContainer *message_vbox = Object::cast_to<VBoxContainer>(bubble_panel->get_child(0));
++
++	if (!message_vbox) {
++		return;
++	}
++
++	for (int i = 0; i < p_tool_calls.size(); i++) {
++		Dictionary tool_call = p_tool_calls[i];
++		String tool_call_id = tool_call.get("id", "");
++		Dictionary function_dict = tool_call.get("function", Dictionary());
++		String func_name = function_dict.get("name", "unknown_tool");
++
++		// Create a container that will hold either the "loading" label or the final tool output.
++		// This avoids replacing nodes, which was causing errors.
++		PanelContainer *placeholder = memnew(PanelContainer);
++		placeholder->set_name("tool_placeholder_" + tool_call_id);
++		message_vbox->add_child(placeholder);
++
++		Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
++		placeholder_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
++		placeholder_style->set_content_margin_all(10);
++		placeholder_style->set_border_width_all(1);
++		placeholder_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
++		placeholder_style->set_corner_radius_all(5);
++		placeholder->add_theme_style_override("panel", placeholder_style);
++
++		HBoxContainer *tool_hbox = memnew(HBoxContainer);
++		placeholder->add_child(tool_hbox);
++
++		Label *tool_label = memnew(Label);
++		tool_label->set_text("Calling tool: " + func_name + "...");
++		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
++		tool_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
++		tool_hbox->add_child(tool_label);
++	}
++}
++
++void AIChatDock::_on_tool_output_toggled(Control *p_content) {
++	p_content->set_visible(!p_content->is_visible());
++}
++
++void AIChatDock::_send_chat_request() {
++	is_waiting_for_response = true;
++	_update_ui_state();
++	response_buffer.clear();
++	http_status = STATUS_IDLE;
++
++	// Build the messages array for the API
++	Array messages;
++	for (int i = 0; i < chat_history.size(); i++) {
++		const ChatMessage &msg = chat_history[i];
++		Dictionary api_msg;
++		api_msg["role"] = msg.role;
++		api_msg["content"] = msg.content;
++		if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
++			api_msg["tool_calls"] = msg.tool_calls;
++		}
++		if (msg.role == "tool") {
++			api_msg["tool_call_id"] = msg.tool_call_id;
++			api_msg["name"] = msg.name;
++		}
++		messages.push_back(api_msg);
++	}
++
++	// Build request data
++	Dictionary request_data;
++	request_data["messages"] = messages;
++
++	Ref<JSON> json;
++	json.instantiate();
++	String request_body = json->stringify(request_data);
++
++	PackedStringArray headers;
++	headers.push_back("Content-Type: application/json");
++
++	// Setup HTTPClient
++	http_client->set_read_chunk_size(4096); // 4kb chunk size
++
++	// Extract host and port from endpoint
++	String host = api_endpoint;
++	int port = 80;
++	bool use_ssl = false;
++
++	if (host.begins_with("https://")) {
++		host = host.trim_prefix("https://");
++		use_ssl = true;
++		port = 443;
++	} else if (host.begins_with("http://")) {
++		host = host.trim_prefix("http://");
++	}
++
++	String path = "/";
++	if (host.find("/") != -1) {
++		path = host.substr(host.find("/"), -1);
++		host = host.substr(0, host.find("/"));
++	}
++
++	if (host.find(":") != -1) {
++		port = host.substr(host.find(":") + 1, -1).to_int();
++		host = host.substr(0, host.find(":"));
++	}
++
++	PackedByteArray request_body_data = request_body.to_utf8_buffer();
++	Error err = http_client->connect_to_host(host, port, (use_ssl ? TLSOptions::client_unsafe(Ref<X509Certificate>()) : Ref<TLSOptions>()));
++	if (err != OK) {
++		_add_message_to_chat("system", "Failed to connect to backend.");
++		is_waiting_for_response = false;
++		_update_ui_state();
++		return;
++	}
++
++	http_status = STATUS_CONNECTING;
++	pending_request_path = path;
++	pending_request_headers = headers;
++	pending_request_body = request_body_data;
++
++	set_process(true);
++}
++
++void AIChatDock::_update_ui_state() {
++	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
++	input_field->set_editable(!is_waiting_for_response);
++
++	if (is_waiting_for_response) {
++		send_button->set_text("...");
++	} else {
++		send_button->set_text("Send");
++	}
++}
++
++String AIChatDock::_get_timestamp() {
++	Dictionary time_dict = Time::get_singleton()->get_datetime_dict_from_system();
++	return String::num_int64(time_dict["hour"]).pad_zeros(2) + ":" +
++		   String::num_int64(time_dict["minute"]).pad_zeros(2);
++}
++
++String AIChatDock::_process_inline_markdown(String p_line) {
++	String line = p_line;
++
++	// Bold (**text** or __text__)
++	while (true) {
++		int start = line.find("**");
++		if (start == -1) {
++			start = line.find("__");
++			if (start == -1) {
++				break;
++			}
++		}
++
++		String marker = line.substr(start, 2);
++		int end = line.find(marker, start + 2);
++		if (end == -1) {
++			break;
++		}
++
++		String before = line.substr(0, start);
++		String bold_text = line.substr(start + 2, end - start - 2);
++		String after = line.substr(end + 2);
++
++		line = before + "[b]" + bold_text + "[/b]" + after;
++	}
++
++	// Italic (*text* or _text_) - but not inside ** or __
++	int pos = 0;
++	while (pos < line.length()) {
++		int star_pos = line.find("*", pos);
++		int underscore_pos = line.find("_", pos);
++
++		int start = -1;
++		String marker;
++
++		if (star_pos != -1 && (underscore_pos == -1 || star_pos < underscore_pos)) {
++			// Check it's not part of **
++			if ((star_pos > 0 && line[star_pos - 1] == '*') || (star_pos < line.length() - 1 && line[star_pos + 1] == '*')) {
++				pos = star_pos + 1;
++				continue;
++			}
++			start = star_pos;
++			marker = "*";
++		} else if (underscore_pos != -1) {
++			// Check it's not part of __
++			if ((underscore_pos > 0 && line[underscore_pos - 1] == '_') || (underscore_pos < line.length() - 1 && line[underscore_pos + 1] == '_')) {
++				pos = underscore_pos + 1;
++				continue;
++			}
++			start = underscore_pos;
++			marker = "_";
++		}
++
++		if (start == -1) {
++			break;
++		}
++
++		int end = line.find(marker, start + 1);
++		if (end == -1) {
++			pos = start + 1;
++			continue;
++		}
++
++		String before = line.substr(0, start);
++		String italic_text = line.substr(start + 1, end - start - 1);
++		String after = line.substr(end + 1);
++
++		line = before + "[i]" + italic_text + "[/i]" + after;
++		pos = before.length() + 3 + italic_text.length() + 4; // Skip past [i]...[/i]
++	}
++
++	// Inline code (`text`)
++	while (true) {
++		int start = line.find("`");
++		if (start == -1) {
++			break;
++		}
++
++		int end = line.find("`", start + 1);
++		if (end == -1) {
++			break;
++		}
++
++		String before = line.substr(0, start);
++		String code_text = line.substr(start + 1, end - start - 1);
++		String after = line.substr(end + 1);
++
++		line = before + "[code]" + code_text + "[/code]" + after;
++	}
++
++	return line;
++}
++
++String AIChatDock::_markdown_to_bbcode(const String &p_markdown) {
++	if (p_markdown.is_empty()) {
++		return String();
++	}
++
++	Vector<String> lines = p_markdown.split("\n");
++	String result = "";
++	bool in_code_block = false;
++
++	for (int i = 0; i < lines.size(); i++) {
++		String line = lines[i];
++
++		if (line.strip_edges().begins_with("```")) {
++			in_code_block = !in_code_block;
++			if (in_code_block) {
++				result += "[code]";
++			} else {
++				result += "[/code]";
++			}
++		} else if (in_code_block) {
++			result += line.xml_escape(); // Escape to prevent BBCode parsing inside code blocks.
++		} else {
++			if (line.strip_edges().is_empty()) {
++				// Preserve blank lines between paragraphs.
++				result += "";
++			} else {
++				String processed_line = line;
++				String trimmed_line = processed_line.lstrip(" \t");
++
++				// Headers
++				if (trimmed_line.begins_with("#")) {
++					int header_level = 0;
++					while (header_level < trimmed_line.length() && trimmed_line[header_level] == '#') {
++						header_level++;
++					}
++					String header_content = trimmed_line.substr(header_level).strip_edges();
++					if (!header_content.is_empty()) {
++						int font_size = 22 - (header_level * 2);
++						processed_line = "[font_size=" + String::num_int64(font_size) + "][b]" + _process_inline_markdown(header_content) + "[/b][/font_size]";
++					}
++					// Lists
++				} else if (trimmed_line.begins_with("- ") || trimmed_line.begins_with("* ")) {
++					String item_content = trimmed_line.substr(trimmed_line.find(" ") + 1);
++					processed_line = "[indent]" + String::chr(0x2022) + " " + _process_inline_markdown(item_content) + "[/indent]";
++				} else {
++					// Regular paragraph
++					processed_line = _process_inline_markdown(processed_line);
++				}
++				result += processed_line;
++			}
++		}
++
++		if (i < lines.size() - 1) {
++			result += "\n";
++		}
++	}
++
++	return result;
++}
++
++void AIChatDock::clear_chat_history() {
++	chat_history.clear();
++
++	// Clear UI
++	for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
++		Node *child = chat_container->get_child(i);
++		child->queue_free();
++	}
++}
++
++void AIChatDock::set_api_key(const String &p_api_key) {
++	api_key = p_api_key;
++	EditorSettings::get_singleton()->set_setting("ai_chat/api_key", p_api_key);
++}
++
++void AIChatDock::set_api_endpoint(const String &p_endpoint) {
++	api_endpoint = p_endpoint;
++	EditorTools::set_api_endpoint(p_endpoint);
++}
++
++void AIChatDock::set_model(const String &p_model) {
++	model = p_model;
++}
++
++void AIChatDock::_save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const {
++	p_layout->set_value(p_section, "api_endpoint", api_endpoint);
++	p_layout->set_value(p_section, "model", model);
++}
++
++void AIChatDock::_load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section) {
++	if (p_layout->has_section_key(p_section, "api_endpoint")) {
++		api_endpoint = p_layout->get_value(p_section, "api_endpoint");
++	}
++	if (p_layout->has_section_key(p_section, "model")) {
++		model = p_layout->get_value(p_section, "model");
++	}
++}
++
++AIChatDock::AIChatDock() {
++	set_name("AI Chat");
++
++	// HTTP request for API calls
++	http_client = HTTPClient::create();
++
++	diff_viewer = memnew(DiffViewer);
++	add_child(diff_viewer);
++	diff_viewer->connect("diff_accepted", callable_mp(this, &AIChatDock::_on_diff_accepted));
++}
++
++void AIChatDock::_on_diff_accepted(const String &p_path, const String &p_content) {
++    // Changes are now applied directly to script editor
++    // No need to write to disk immediately - user can save when ready
++    print_line("Diff accepted for: " + p_path);
++} 
+\ No newline at end of file
+diff --git a/editor/docks/ai_chat_dock.h b/editor/docks/ai_chat_dock.h
+new file mode 100644
+index 0000000000..cc56673824
+--- /dev/null
++++ b/editor/docks/ai_chat_dock.h
+@@ -0,0 +1,154 @@
++/**************************************************************************/
++/*  ai_chat_dock.h                                                        */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#include "core/io/http_client.h"
++#include "scene/gui/box_container.h"
++#include "diff_viewer.h"
++#include "common.h"
++
++class Button;
++class ConfigFile;
++class EditorTools;
++class HTTPClient;
++class Node;
++class OptionButton;
++class RichTextLabel;
++class ScrollContainer;
++class StyleBoxFlat;
++class TextEdit;
++class DiffViewer;
++
++class AIChatDock : public VBoxContainer {
++	GDCLASS(AIChatDock, VBoxContainer);
++
++private:
++	DiffViewer *diff_viewer;
++	// Helper to find RichTextLabel recursively.
++	static RichTextLabel *find_rich_text_label_in_children(Node *p_node) {
++		if (!p_node) {
++			return nullptr;
++		}
++		RichTextLabel *rt = Object::cast_to<RichTextLabel>(p_node);
++		if (rt) {
++			return rt;
++		}
++		for (int i = 0; i < p_node->get_child_count(); i++) {
++			RichTextLabel *rt = find_rich_text_label_in_children(p_node->get_child(i));
++			if (rt) {
++				return rt;
++			}
++		}
++		return nullptr;
++	}
++
++	enum RequestStatus {
++		STATUS_IDLE,
++		STATUS_CONNECTING,
++		STATUS_REQUESTING,
++		STATUS_BODY,
++		STATUS_DONE,
++	};
++
++	struct ChatMessage {
++		String role; // "user", "assistant", or "tool"
++		String content;
++		String timestamp;
++		// For assistant tool calls.
++		Array tool_calls;
++		// For tool responses.
++		String tool_call_id;
++		String name;
++	};
++
++	ScrollContainer *chat_scroll = nullptr;
++	VBoxContainer *chat_container = nullptr;
++	OptionButton *model_dropdown = nullptr;
++	TextEdit *input_field = nullptr;
++	Button *send_button = nullptr;
++
++	Ref<HTTPClient> http_client;
++	RequestStatus http_status = STATUS_IDLE;
++	String pending_request_path;
++	PackedStringArray pending_request_headers;
++	PackedByteArray pending_request_body;
++	RichTextLabel *current_assistant_message_label = nullptr;
++	String response_buffer;
++
++	Vector<ChatMessage> chat_history;
++	String api_key;
++	String api_endpoint = "http://localhost:8000/chat";
++	String model = "gpt-4o";
++
++	bool is_waiting_for_response = false;
++
++	void _on_send_button_pressed();
++	void _on_input_text_changed();
++	void _on_input_field_gui_input(const Ref<InputEvent> &p_event);
++	void _on_model_selected(int p_index);
++	void _on_tool_output_toggled(Control *p_content);
++	void _handle_response_chunk(const PackedByteArray &p_chunk);
++	void _process_ndjson_line(const String &p_line);
++	void _execute_tool_calls(const Array &p_tool_calls);
++	RichTextLabel *_get_or_create_current_assistant_message_label();
++	void _create_tool_call_bubbles(const Array &p_tool_calls);
++
++	void _add_message_to_chat(const String &p_role, const String &p_content, const Array &p_tool_calls = Array());
++	void _add_tool_response_to_chat(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result);
++	void _send_chat_request();
++	void _update_ui_state();
++	void _create_message_bubble(const ChatMessage &p_message);
++	String _get_timestamp();
++	void _scroll_to_bottom();
++
++	void _on_tool_file_link_pressed(const String &p_path);
++
++	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
++	void _load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section);
++
++	// Markdown to BBCode conversion
++	String _markdown_to_bbcode(const String &p_markdown);
++	String _process_inline_markdown(String p_line);
++
++	void _on_diff_accepted(const String &p_path, const String &p_content);
++
++protected:
++	void _notification(int p_notification);
++	static void _bind_methods();
++
++public:
++	void clear_chat_history();
++	void set_api_key(const String &p_api_key);
++	void set_api_endpoint(const String &p_endpoint);
++	void set_model(const String &p_model);
++
++	AIChatDock();
++}; 
+\ No newline at end of file
+diff --git a/editor/docks/common.h b/editor/docks/common.h
+new file mode 100644
+index 0000000000..8ea1d49d10
+--- /dev/null
++++ b/editor/docks/common.h
+@@ -0,0 +1,3 @@
++#pragma once
++
++class DiffViewer;
+diff --git a/editor/docks/diff_viewer.cpp b/editor/docks/diff_viewer.cpp
+new file mode 100644
+index 0000000000..560ca98188
+--- /dev/null
++++ b/editor/docks/diff_viewer.cpp
+@@ -0,0 +1,344 @@
++#include "diff_viewer.h"
++
++#include "editor/editor_string_names.h"
++#include "editor/themes/editor_scale.h"
++#include "scene/gui/panel_container.h"
++#include "scene/gui/scroll_container.h"
++#include "scene/gui/label.h"
++#include "editor/script/script_editor_plugin.h"
++#include "editor/script/script_text_editor.h"
++#include "editor/editor_interface.h"
++
++void DiffViewer::_bind_methods() {
++    ADD_SIGNAL(MethodInfo("diff_accepted", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "content")));
++    ClassDB::bind_method(D_METHOD("_on_accept_pressed"), &DiffViewer::_on_accept_pressed);
++    ClassDB::bind_method(D_METHOD("_on_reject_pressed"), &DiffViewer::_on_reject_pressed);
++    ClassDB::bind_method(D_METHOD("_on_accept_all_pressed"), &DiffViewer::_on_accept_all_pressed);
++    ClassDB::bind_method(D_METHOD("_on_reject_all_pressed"), &DiffViewer::_on_reject_all_pressed);
++}
++
++DiffViewer::DiffViewer() {
++    set_title(TTRC("Script Changes"));
++    set_exclusive(true);
++
++    VBoxContainer *main_vb = memnew(VBoxContainer);
++    add_child(main_vb);
++
++    ScrollContainer *scroll_container = memnew(ScrollContainer);
++    scroll_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
++    main_vb->add_child(scroll_container);
++
++    hunks_container = memnew(VBoxContainer);
++    hunks_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++    scroll_container->add_child(hunks_container);
++
++    HBoxContainer *button_hb = memnew(HBoxContainer);
++    main_vb->add_child(button_hb);
++
++    accept_all_button = memnew(Button);
++    accept_all_button->set_text(TTRC("Accept All"));
++    accept_all_button->connect("pressed", callable_mp(this, &DiffViewer::_on_accept_all_pressed));
++    button_hb->add_child(accept_all_button);
++
++    reject_all_button = memnew(Button);
++    reject_all_button->set_text(TTRC("Reject All"));
++    reject_all_button->connect("pressed", callable_mp(this, &DiffViewer::_on_reject_all_pressed));
++    button_hb->add_child(reject_all_button);
++
++    button_hb->add_spacer();
++    
++    Button *apply_to_editor_button = memnew(Button);
++    apply_to_editor_button->set_text(TTRC("Apply to Editor"));
++    apply_to_editor_button->connect("pressed", callable_mp(this, &DiffViewer::apply_to_script_editor));
++    button_hb->add_child(apply_to_editor_button);
++
++    accept_button = memnew(Button);
++    accept_button->set_text(TTRC("Accept Selected"));
++    accept_button->connect("pressed", callable_mp(this, &DiffViewer::_on_accept_pressed));
++    button_hb->add_child(accept_button);
++
++    reject_button = memnew(Button);
++    reject_button->set_text(TTRC("Reject"));
++    reject_button->connect("pressed", callable_mp(this, &DiffViewer::_on_reject_pressed));
++    button_hb->add_child(reject_button);
++}
++
++void DiffViewer::_notification(int p_what) {
++    switch (p_what) {
++        case NOTIFICATION_POST_ENTER_TREE: {
++            set_min_size(Size2(800, 600) * EDSCALE);
++            // Add custom theme overrides here if needed
++        } break;
++    }
++}
++
++void DiffViewer::set_diff(const String &p_path, const String &p_original, const String &p_modified) {
++    path = p_path;
++    original_text = p_original;
++    modified_text = p_modified;
++
++    // Clear previous hunks
++    for (int i = 0; i < hunks_container->get_child_count(); i++) {
++        hunks_container->get_child(i)->queue_free();
++    }
++    hunks.clear();
++
++    // Debug: Print the texts being compared
++    print_line("DEBUG: Original text length: " + String::num_int64(p_original.length()));
++    print_line("DEBUG: Modified text length: " + String::num_int64(p_modified.length()));
++
++    Vector<String> original_lines_vec = original_text.split("\n");
++    std::vector<String> original_lines;
++    for (int i = 0; i < original_lines_vec.size(); i++) {
++        original_lines.push_back(original_lines_vec[i]);
++    }
++
++    Vector<String> modified_lines_vec = modified_text.split("\n");
++    std::vector<String> modified_lines;
++    for (int i = 0; i < modified_lines_vec.size(); i++) {
++        modified_lines.push_back(modified_lines_vec[i]);
++    }
++
++    dtl::Diff<String, std::vector<String>> d(original_lines, modified_lines);
++    d.compose();
++    d.composeUnifiedHunks();
++
++    const auto &uni_hunks = d.getUniHunks();
++    print_line("DEBUG: Number of hunks found: " + String::num_int64(uni_hunks.size()));
++
++    if (uni_hunks.empty()) {
++        // If no hunks, create a simple message
++        PanelContainer *panel = memnew(PanelContainer);
++        hunks_container->add_child(panel);
++        
++        VBoxContainer *vb = memnew(VBoxContainer);
++        panel->add_child(vb);
++        
++        Label *no_changes_label = memnew(Label);
++        no_changes_label->set_text("No differences found between original and modified content.");
++        vb->add_child(no_changes_label);
++        return;
++    }
++
++    for (const auto &hunk : uni_hunks) {
++        DiffHunk diff_hunk;
++        diff_hunk.hunk.a = hunk.a;
++        diff_hunk.hunk.b = hunk.b;
++        diff_hunk.hunk.c = hunk.c;
++        diff_hunk.hunk.d = hunk.d;
++        diff_hunk.accepted = true; // Default to accepted
++        for (const auto &line : hunk.change) {
++            DiffLine diff_line;
++            diff_line.text = line.first;
++            diff_line.type = line.second.type;
++            diff_hunk.lines.push_back(diff_line);
++        }
++        hunks.push_back(diff_hunk);
++
++        PanelContainer *panel = memnew(PanelContainer);
++        hunks_container->add_child(panel);
++
++        VBoxContainer *vb = memnew(VBoxContainer);
++        panel->add_child(vb);
++
++        CheckBox *checkbox = memnew(CheckBox);
++        checkbox->set_text("@@ -" + String::num_int64(hunk.a) + "," + String::num_int64(hunk.b) + " +" + String::num_int64(hunk.c) + "," + String::num_int64(hunk.d) + " @@");
++        checkbox->set_pressed(true);
++        vb->add_child(checkbox);
++
++        RichTextLabel *diff_label = memnew(RichTextLabel);
++        diff_label->set_use_bbcode(true);
++        diff_label->set_fit_content(true);
++        diff_label->set_selection_enabled(true);
++        diff_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
++        diff_label->set_custom_minimum_size(Size2(0, 100));
++        vb->add_child(diff_label);
++
++        String diff_text = "";
++        for (const auto &line : diff_hunk.lines) {
++            if (line.type == dtl::SES_ADD) {
++                diff_text += "[color=green]+" + line.text.xml_escape() + "[/color]\n";
++            } else if (line.type == dtl::SES_DELETE) {
++                diff_text += "[color=red]-" + line.text.xml_escape() + "[/color]\n";
++            } else {
++                diff_text += " " + line.text.xml_escape() + "\n";
++            }
++        }
++        
++        print_line("DEBUG: Setting diff text for hunk: " + diff_text.substr(0, 100) + "...");
++        diff_label->set_text(diff_text);
++    }
++}
++
++String DiffViewer::get_final_content() {
++    String new_content = "";
++    Vector<String> original_lines = original_text.split("\n");
++    int last_line = 0;
++
++    for (int i = 0; i < hunks.size(); i++) {
++        const DiffHunk &diff_hunk = hunks[i];
++        
++        // Get checkbox state from UI
++        PanelContainer *panel = Object::cast_to<PanelContainer>(hunks_container->get_child(i));
++        if (panel) {
++            VBoxContainer *vb = Object::cast_to<VBoxContainer>(panel->get_child(0));
++            if (vb) {
++                CheckBox *checkbox = Object::cast_to<CheckBox>(vb->get_child(0));
++                if (checkbox) {
++                    // Apply the hunk if checkbox is checked
++                    if (checkbox->is_pressed()) {
++                        // Add lines before this hunk
++                        for (int j = last_line; j < diff_hunk.hunk.a - 1; j++) {
++                            if (j < original_lines.size()) {
++                                new_content += original_lines[j] + "\n";
++                            }
++                        }
++                        // Add modified lines (excluding deletions)
++                        for (const auto &line : diff_hunk.lines) {
++                            if (line.type != dtl::SES_DELETE) {
++                                new_content += line.text + "\n";
++                            }
++                        }
++                        last_line = diff_hunk.hunk.a + diff_hunk.hunk.b - 1;
++                    } else {
++                        // Keep original lines
++                        for (int j = last_line; j < diff_hunk.hunk.a + diff_hunk.hunk.b - 1; j++) {
++                            if (j < original_lines.size()) {
++                                new_content += original_lines[j] + "\n";
++                            }
++                        }
++                        last_line = diff_hunk.hunk.a + diff_hunk.hunk.b - 1;
++                    }
++                }
++            }
++        }
++    }
++
++    // Add remaining lines
++    for (int i = last_line; i < original_lines.size(); i++) {
++        new_content += original_lines[i] + "\n";
++    }
++
++    return new_content;
++}
++
++bool DiffViewer::has_script_open(const String &p_path) {
++    ScriptEditor *script_editor = ScriptEditor::get_singleton();
++    if (!script_editor) {
++        return false;
++    }
++    
++    // Check if the script is currently open
++    for (int i = 0; i < script_editor->get_open_scripts().size(); i++) {
++        if (script_editor->get_open_scripts()[i]->get_path() == p_path) {
++            return true;
++        }
++    }
++    return false;
++}
++
++void DiffViewer::apply_to_script_editor() {
++    if (path.is_empty()) {
++        return;
++    }
++    
++    ScriptEditor *script_editor = ScriptEditor::get_singleton();
++    if (!script_editor) {
++        return;
++    }
++    
++    // Get the final content based on selected hunks
++    String final_content = get_final_content();
++    
++    // First, try to open the script if not already open
++    Ref<Resource> resource = ResourceLoader::load(path);
++    Ref<Script> script = resource;
++    
++    if (script.is_valid()) {
++        // Open the script in the editor
++        script_editor->edit(script);
++        
++        // Get the current script editor
++        ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
++        if (ste) {
++            // Update the script source directly
++            script->set_source_code(final_content);
++            
++            // Update the text editor content
++            CodeTextEditor *code_editor = ste->get_code_editor();
++            if (code_editor) {
++                CodeEdit *text_editor = code_editor->get_text_editor();
++                if (text_editor) {
++                    // Save cursor position
++                    int cursor_line = text_editor->get_caret_line();
++                    int cursor_column = text_editor->get_caret_column();
++                    
++                    // Update the text
++                    text_editor->set_text(final_content);
++                    
++                    // Restore cursor position (if still valid)
++                    if (cursor_line < text_editor->get_line_count()) {
++                        text_editor->set_caret_line(cursor_line);
++                        int max_column = text_editor->get_line(cursor_line).length();
++                        text_editor->set_caret_column(MIN(cursor_column, max_column));
++                    }
++                    
++                    // Don't mark as saved since we want the user to save manually
++                    // text_editor->tag_saved_version();
++                    
++                    // Validate the script to check for errors
++                    ste->validate();
++                    
++                    // Switch to the Script editor
++                    EditorInterface::get_singleton()->set_main_screen_editor("Script");
++                    
++                    print_line("Applied diff changes to script editor for: " + path);
++                }
++            }
++        }
++    }
++}
++
++void DiffViewer::_on_accept_pressed() {
++    apply_to_script_editor();
++    emit_signal("diff_accepted", path, get_final_content());
++    hide();
++}
++
++void DiffViewer::_on_accept_all_pressed() {
++    for (int i = 0; i < hunks_container->get_child_count(); i++) {
++        PanelContainer *panel = Object::cast_to<PanelContainer>(hunks_container->get_child(i));
++        if (panel) {
++            VBoxContainer *vb = Object::cast_to<VBoxContainer>(panel->get_child(0));
++            if (vb) {
++                CheckBox *checkbox = Object::cast_to<CheckBox>(vb->get_child(0));
++                if (checkbox) {
++                    checkbox->set_pressed(true);
++                }
++            }
++        }
++    }
++    apply_to_script_editor();
++    hide();
++}
++
++void DiffViewer::_on_reject_all_pressed() {
++    for (int i = 0; i < hunks_container->get_child_count(); i++) {
++        PanelContainer *panel = Object::cast_to<PanelContainer>(hunks_container->get_child(i));
++        VBoxContainer *vb = Object::cast_to<VBoxContainer>(panel->get_child(0));
++        CheckBox *checkbox = Object::cast_to<CheckBox>(vb->get_child(0));
++        checkbox->set_pressed(false);
++    }
++}
++
++void DiffViewer::_on_reject_pressed() {
++    for (int i = 0; i < hunks_container->get_child_count(); i++) {
++        PanelContainer *panel = Object::cast_to<PanelContainer>(hunks_container->get_child(i));
++        VBoxContainer *vb = Object::cast_to<VBoxContainer>(panel->get_child(0));
++        CheckBox *checkbox = Object::cast_to<CheckBox>(vb->get_child(0));
++        if (checkbox->is_pressed()) {
++            checkbox->set_pressed(false);
++        }
++    }
++    hide();
++}
+diff --git a/editor/docks/diff_viewer.h b/editor/docks/diff_viewer.h
+new file mode 100644
+index 0000000000..49b0df8e69
+--- /dev/null
++++ b/editor/docks/diff_viewer.h
+@@ -0,0 +1,57 @@
++#pragma once
++
++#include "scene/gui/popup.h"
++#include "scene/gui/rich_text_label.h"
++#include "scene/gui/box_container.h"
++#include "scene/gui/button.h"
++#include "scene/gui/check_box.h"
++#include "dtl/dtl.hpp"
++#include <vector>
++#include "common.h"
++
++struct DiffLine {
++    String text;
++    dtl::edit_t type;
++};
++
++struct DiffHunk {
++    dtl::uniHunk<String> hunk;
++    Vector<DiffLine> lines;
++    bool accepted = true; // Track acceptance state
++};
++
++class DiffViewer : public PopupPanel {
++    GDCLASS(DiffViewer, PopupPanel);
++
++private:
++    VBoxContainer *hunks_container;
++    Button *accept_button;
++    Button *reject_button;
++    Button *accept_all_button;
++    Button *reject_all_button;
++
++    String original_text;
++    String modified_text;
++    String path;
++
++    Vector<DiffHunk> hunks;
++
++protected:
++    void _notification(int p_what);
++    static void _bind_methods();
++
++    void _on_accept_pressed();
++    void _on_reject_pressed();
++    void _on_accept_all_pressed();
++    void _on_reject_all_pressed();
++
++public:
++    DiffViewer();
++
++    void set_diff(const String &p_path, const String &p_original, const String &p_modified);
++    
++    // New methods for direct script editor integration
++    String get_final_content();
++    void apply_to_script_editor();
++    bool has_script_open(const String &p_path);
++};
+diff --git a/editor/docks/filesystem_dock.cpp b/editor/docks/filesystem_dock.cpp
+index 1a663d069a..3b07f02bdc 100644
+--- a/editor/docks/filesystem_dock.cpp
++++ b/editor/docks/filesystem_dock.cpp
+@@ -287,7 +287,7 @@ void FileSystemDock::_create_tree(TreeItem *p_parent, EditorFileSystemDirectory
+ 		const String main_scene = ResourceUID::ensure_path(GLOBAL_GET("application/run/main_scene"));
+ 
+ 		// Build the list of the files to display.
+-		List<FileInfo> file_list;
++		List<EditorFileInfo> file_list;
+ 		for (int i = 0; i < p_dir->get_file_count(); i++) {
+ 			String file_type = p_dir->get_file_type(i);
+ 			if (_is_file_type_disabled_by_feature_profile(file_type)) {
+@@ -295,7 +295,7 @@ void FileSystemDock::_create_tree(TreeItem *p_parent, EditorFileSystemDirectory
+ 				continue;
+ 			}
+ 
+-			FileInfo file_info;
++			EditorFileInfo file_info;
+ 			file_info.name = p_dir->get_file(i);
+ 			file_info.type = p_dir->get_file_type(i);
+ 			file_info.icon_path = p_dir->get_file_icon_path(i);
+@@ -311,7 +311,7 @@ void FileSystemDock::_create_tree(TreeItem *p_parent, EditorFileSystemDirectory
+ 		// Build the tree.
+ 		const int icon_size = get_theme_constant(SNAME("class_icon_size"), EditorStringName(Editor));
+ 
+-		for (const FileInfo &file_info : file_list) {
++		for (const EditorFileInfo &file_info : file_list) {
+ 			TreeItem *file_item = tree->create_item(subdirectory_item);
+ 			const String file_metadata = lpath.path_join(file_info.name);
+ 			file_item->set_text(0, file_info.name);
+@@ -893,7 +893,7 @@ bool FileSystemDock::_is_file_type_disabled_by_feature_profile(const StringName
+ 	return false;
+ }
+ 
+-void FileSystemDock::_search(EditorFileSystemDirectory *p_path, List<FileInfo> *matches, int p_max_items) {
++void FileSystemDock::_search(EditorFileSystemDirectory *p_path, List<EditorFileInfo> *matches, int p_max_items) {
+ 	if (matches->size() > p_max_items) {
+ 		return;
+ 	}
+@@ -906,7 +906,7 @@ void FileSystemDock::_search(EditorFileSystemDirectory *p_path, List<FileInfo> *
+ 		String file = p_path->get_file(i);
+ 
+ 		if (_matches_all_search_tokens(file)) {
+-			FileInfo file_info;
++			EditorFileInfo file_info;
+ 			file_info.name = file;
+ 			file_info.type = p_path->get_file_type(i);
+ 			file_info.path = p_path->get_file_path(i);
+@@ -986,7 +986,7 @@ void FileSystemDock::_update_file_list(bool p_keep_selection) {
+ 	const Color default_folder_color = get_theme_color(SNAME("folder_icon_color"), SNAME("FileDialog"));
+ 
+ 	// Build the FileInfo list.
+-	List<FileInfo> file_list;
++	List<EditorFileInfo> file_list;
+ 	if (current_path == "Favorites") {
+ 		// Display the favorites.
+ 		Vector<String> favorites_list = EditorSettings::get_singleton()->get_favorites();
+@@ -1011,7 +1011,7 @@ void FileSystemDock::_update_file_list(bool p_keep_selection) {
+ 				int index;
+ 				EditorFileSystemDirectory *efd = EditorFileSystem::get_singleton()->find_file(favorite, &index);
+ 
+-				FileInfo file_info;
++				EditorFileInfo file_info;
+ 				file_info.name = favorite.get_file();
+ 				file_info.path = favorite;
+ 				if (efd) {
+@@ -1105,7 +1105,7 @@ void FileSystemDock::_update_file_list(bool p_keep_selection) {
+ 
+ 			// Display the folder content.
+ 			for (int i = 0; i < efd->get_file_count(); i++) {
+-				FileInfo file_info;
++				EditorFileInfo file_info;
+ 				file_info.name = efd->get_file(i);
+ 				file_info.path = directory.path_join(file_info.name);
+ 				file_info.type = efd->get_file_type(i);
+@@ -1123,8 +1123,8 @@ void FileSystemDock::_update_file_list(bool p_keep_selection) {
+ 
+ 	// Fills the ItemList control node from the FileInfos.
+ 	const String main_scene = ResourceUID::ensure_path(GLOBAL_GET("application/run/main_scene"));
+-	for (FileInfo &E : file_list) {
+-		FileInfo *finfo = &(E);
++	for (EditorFileInfo &E : file_list) {
++		EditorFileInfo *finfo = &(E);
+ 		String fname = finfo->name;
+ 		String fpath = finfo->path;
+ 
+diff --git a/editor/docks/filesystem_dock.h b/editor/docks/filesystem_dock.h
+index 1537eb9900..eb6ce50ed5 100644
+--- a/editor/docks/filesystem_dock.h
++++ b/editor/docks/filesystem_dock.h
+@@ -335,7 +335,7 @@ private:
+ 	void _tree_empty_click(const Vector2 &p_pos, MouseButton p_button);
+ 	void _tree_empty_selected();
+ 
+-	void _search(EditorFileSystemDirectory *p_path, List<FileInfo> *matches, int p_max_items);
++	void _search(EditorFileSystemDirectory *p_path, List<EditorFileInfo> *matches, int p_max_items);
+ 
+ 	void _set_current_path_line_edit_text(const String &p_path);
+ 
+diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
+index 9fbc4fb306..ce1c1be68a 100644
+--- a/editor/editor_node.cpp
++++ b/editor/editor_node.cpp
+@@ -80,6 +80,7 @@
+ #include "editor/debugger/editor_debugger_node.h"
+ #include "editor/debugger/script_editor_debugger.h"
+ #include "editor/doc/editor_help.h"
++#include "editor/docks/ai_chat_dock.h"
+ #include "editor/docks/editor_dock_manager.h"
+ #include "editor/docks/filesystem_dock.h"
+ #include "editor/docks/history_dock.h"
+@@ -8354,6 +8355,8 @@ EditorNode::EditorNode() {
+ 	get_project_settings()->connect_filesystem_dock_signals(filesystem_dock);
+ 
+ 	history_dock = memnew(HistoryDock);
++	ai_chat_dock = memnew(AIChatDock);
++	ai_chat_dock->set_api_endpoint("http://127.0.0.1:8000/chat");
+ 
+ 	// Scene: Top left.
+ 	editor_dock_manager->add_dock(SceneTreeDock::get_singleton(), TTRC("Scene"), EditorDockManager::DOCK_SLOT_LEFT_UR, ED_SHORTCUT_AND_COMMAND("docks/open_scene", TTRC("Open Scene Dock")), "PackedScene");
+@@ -8373,6 +8376,9 @@ EditorNode::EditorNode() {
+ 	// History: Full height right, behind Node.
+ 	editor_dock_manager->add_dock(history_dock, TTRC("History"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_history", TTRC("Open History Dock")), "History");
+ 
++	// AI Chat: Full height right, behind History.
++	editor_dock_manager->add_dock(ai_chat_dock, TTRC("AI Chat"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_ai_chat", TTRC("Open AI Chat Dock")), "RigidBody3D");
++
+ 	// Add some offsets to left_r and main hsplits to make LEFT_R and RIGHT_L docks wider than minsize.
+ 	left_r_hsplit->set_split_offset(270 * EDSCALE);
+ 	main_hsplit->set_split_offset(-270 * EDSCALE);
+@@ -8384,7 +8390,7 @@ EditorNode::EditorNode() {
+ 	// Dock numbers are based on DockSlot enum value + 1.
+ 	default_layout->set_value(docks_section, "dock_3", "Scene,Import");
+ 	default_layout->set_value(docks_section, "dock_4", "FileSystem");
+-	default_layout->set_value(docks_section, "dock_5", "Inspector,Node,History");
++	default_layout->set_value(docks_section, "dock_5", "Inspector,Node,History,AI Chat");
+ 
+ 	// There are 4 vsplits and 4 hsplits.
+ 	for (int i = 0; i < editor_dock_manager->get_vsplit_count(); i++) {
+diff --git a/editor/editor_node.h b/editor/editor_node.h
+index 70f3d56fed..399ab60bcd 100644
+--- a/editor/editor_node.h
++++ b/editor/editor_node.h
+@@ -92,6 +92,7 @@ class EditorTitleBar;
+ class ExportTemplateManager;
+ class EditorQuickOpenDialog;
+ class FBXImporterManager;
++class AIChatDock;
+ class FileSystemDock;
+ class HistoryDock;
+ class OrphanResourcesDialog;
+@@ -266,6 +267,7 @@ private:
+ 	EditorSelection *editor_selection = nullptr;
+ 	EditorSettingsDialog *editor_settings_dialog = nullptr;
+ 	HistoryDock *history_dock = nullptr;
++	AIChatDock *ai_chat_dock = nullptr;
+ 
+ 	ProjectExportDialog *project_export = nullptr;
+ 	ProjectSettingsEditor *project_settings_editor = nullptr;
+diff --git a/editor/file_system/editor_file_system.cpp b/editor/file_system/editor_file_system.cpp
+index a6e0be6cab..4e9256e7ac 100644
+--- a/editor/file_system/editor_file_system.cpp
++++ b/editor/file_system/editor_file_system.cpp
+@@ -225,7 +225,7 @@ EditorFileSystemDirectory::EditorFileSystemDirectory() {
+ }
+ 
+ EditorFileSystemDirectory::~EditorFileSystemDirectory() {
+-	for (EditorFileSystemDirectory::FileInfo *fi : files) {
++	for (EditorFileSystemDirectory::EFSDFIleInfo *fi : files) {
+ 		memdelete(fi);
+ 	}
+ 
+@@ -948,7 +948,7 @@ bool EditorFileSystem::_update_scan_actions() {
+ 
+ 				// Restore another script with the same global class name if it exists.
+ 				if (!class_name.is_empty()) {
+-					EditorFileSystemDirectory::FileInfo *old_fi = nullptr;
++					EditorFileSystemDirectory::EFSDFIleInfo *old_fi = nullptr;
+ 					String old_file = _get_file_by_class_name(filesystem, class_name, old_fi);
+ 					if (!old_file.is_empty() && old_fi) {
+ 						_queue_update_script_class(old_file, ScriptClassInfoUpdate::from_file_info(old_fi));
+@@ -1217,7 +1217,7 @@ void EditorFileSystem::_process_file_system(const ScannedDirectory *p_scan_dir,
+ 
+ 		String path = p_scan_dir->full_path.path_join(scan_file);
+ 
+-		EditorFileSystemDirectory::FileInfo *fi = memnew(EditorFileSystemDirectory::FileInfo);
++		EditorFileSystemDirectory::EFSDFIleInfo *fi = memnew(EditorFileSystemDirectory::EFSDFIleInfo);
+ 		fi->file = scan_file;
+ 		p_dir->files.push_back(fi);
+ 
+@@ -1489,7 +1489,7 @@ void EditorFileSystem::_scan_fs_changes(EditorFileSystemDirectory *p_dir, ScanPr
+ 
+ 				if (idx == -1) {
+ 					//never seen this file, add actition to add it
+-					EditorFileSystemDirectory::FileInfo *fi = memnew(EditorFileSystemDirectory::FileInfo);
++					EditorFileSystemDirectory::EFSDFIleInfo *fi = memnew(EditorFileSystemDirectory::EFSDFIleInfo);
+ 					fi->file = f;
+ 
+ 					String path = cd.path_join(fi->file);
+@@ -1619,7 +1619,7 @@ void EditorFileSystem::_delete_internal_files(const String &p_file) {
+ 
+ int EditorFileSystem::_insert_actions_delete_files_directory(EditorFileSystemDirectory *p_dir) {
+ 	int nb_files = 0;
+-	for (EditorFileSystemDirectory::FileInfo *fi : p_dir->files) {
++	for (EditorFileSystemDirectory::EFSDFIleInfo *fi : p_dir->files) {
+ 		ItemAction ia;
+ 		ia.action = ItemAction::ACTION_FILE_REMOVE;
+ 		ia.dir = p_dir;
+@@ -1660,8 +1660,8 @@ bool EditorFileSystem::_remove_invalid_global_class_names(const HashSet<String>
+ 	return must_save;
+ }
+ 
+-String EditorFileSystem::_get_file_by_class_name(EditorFileSystemDirectory *p_dir, const String &p_class_name, EditorFileSystemDirectory::FileInfo *&r_file_info) {
+-	for (EditorFileSystemDirectory::FileInfo *fi : p_dir->files) {
++String EditorFileSystem::_get_file_by_class_name(EditorFileSystemDirectory *p_dir, const String &p_class_name, EditorFileSystemDirectory::EFSDFIleInfo *&r_file_info) {
++	for (EditorFileSystemDirectory::EFSDFIleInfo *fi : p_dir->files) {
+ 		if (fi->class_info.name == p_class_name) {
+ 			r_file_info = fi;
+ 			return p_dir->get_path().path_join(fi->file);
+@@ -1825,7 +1825,7 @@ void EditorFileSystem::_save_filesystem_cache(EditorFileSystemDirectory *p_dir,
+ 	p_file->store_line("::" + p_dir->get_path() + "::" + String::num_int64(p_dir->modified_time));
+ 
+ 	for (int i = 0; i < p_dir->files.size(); i++) {
+-		const EditorFileSystemDirectory::FileInfo *file_info = p_dir->files[i];
++		const EditorFileSystemDirectory::EFSDFIleInfo *file_info = p_dir->files[i];
+ 		if (!file_info->import_group_file.is_empty()) {
+ 			group_file_cache.insert(file_info->import_group_file);
+ 		}
+@@ -2083,7 +2083,7 @@ EditorFileSystem::ScriptClassInfo EditorFileSystem::_get_global_script_class(con
+ 	return info;
+ }
+ 
+-void EditorFileSystem::_update_file_icon_path(EditorFileSystemDirectory::FileInfo *file_info) {
++void EditorFileSystem::_update_file_icon_path(EditorFileSystemDirectory::EFSDFIleInfo *file_info) {
+ 	String icon_path;
+ 	if (file_info->resource_script_class != StringName()) {
+ 		icon_path = EditorNode::get_editor_data().script_class_get_icon_path(file_info->resource_script_class);
+@@ -2125,7 +2125,7 @@ void EditorFileSystem::_update_files_icon_path(EditorFileSystemDirectory *edp) {
+ 	for (EditorFileSystemDirectory *sub_dir : edp->subdirs) {
+ 		_update_files_icon_path(sub_dir);
+ 	}
+-	for (EditorFileSystemDirectory::FileInfo *fi : edp->files) {
++	for (EditorFileSystemDirectory::EFSDFIleInfo *fi : edp->files) {
+ 		_update_file_icon_path(fi);
+ 	}
+ }
+@@ -2373,7 +2373,7 @@ void EditorFileSystem::update_file(const String &p_file) {
+ void EditorFileSystem::update_files(const Vector<String> &p_script_paths) {
+ 	bool updated = false;
+ 	bool update_files_icon_cache = false;
+-	Vector<EditorFileSystemDirectory::FileInfo *> files_to_update_icon_path;
++	Vector<EditorFileSystemDirectory::EFSDFIleInfo *> files_to_update_icon_path;
+ 	for (const String &file : p_script_paths) {
+ 		ERR_CONTINUE(file.is_empty());
+ 		EditorFileSystemDirectory *fs = nullptr;
+@@ -2434,7 +2434,7 @@ void EditorFileSystem::update_files(const Vector<String> &p_script_paths) {
+ 					idx++;
+ 				}
+ 
+-				EditorFileSystemDirectory::FileInfo *fi = memnew(EditorFileSystemDirectory::FileInfo);
++				EditorFileSystemDirectory::EFSDFIleInfo *fi = memnew(EditorFileSystemDirectory::EFSDFIleInfo);
+ 				fi->file = file_name;
+ 				fi->import_modified_time = 0;
+ 				fi->import_valid = (type == "TextFile" || type == "OtherFile") ? true : ResourceLoader::is_import_valid(file);
+@@ -2454,7 +2454,7 @@ void EditorFileSystem::update_files(const Vector<String> &p_script_paths) {
+ 				_save_late_updated_files(); //files need to be updated in the re-scan
+ 			}
+ 
+-			EditorFileSystemDirectory::FileInfo *fi = fs->files[cpos];
++			EditorFileSystemDirectory::EFSDFIleInfo *fi = fs->files[cpos];
+ 			const String old_script_class_icon_path = fi->class_info.icon_path;
+ 			const String old_class_name = fi->class_info.name;
+ 			fi->type = type;
+@@ -2504,7 +2504,7 @@ void EditorFileSystem::update_files(const Vector<String> &p_script_paths) {
+ 
+ 			// Restore another script as the global class name if multiple scripts had the same old class name.
+ 			if (!old_class_name.is_empty() && fi->class_info.name != old_class_name && ClassDB::is_parent_class(type, SNAME("Script"))) {
+-				EditorFileSystemDirectory::FileInfo *old_fi = nullptr;
++				EditorFileSystemDirectory::EFSDFIleInfo *old_fi = nullptr;
+ 				String old_file = _get_file_by_class_name(filesystem, old_class_name, old_fi);
+ 				if (!old_file.is_empty() && old_fi) {
+ 					_queue_update_script_class(old_file, ScriptClassInfoUpdate::from_file_info(old_fi));
+@@ -2518,7 +2518,7 @@ void EditorFileSystem::update_files(const Vector<String> &p_script_paths) {
+ 		if (update_files_icon_cache) {
+ 			_update_files_icon_path();
+ 		} else {
+-			for (EditorFileSystemDirectory::FileInfo *fi : files_to_update_icon_path) {
++			for (EditorFileSystemDirectory::EFSDFIleInfo *fi : files_to_update_icon_path) {
+ 				_update_file_icon_path(fi);
+ 			}
+ 		}
+@@ -2568,7 +2568,7 @@ void EditorFileSystem::register_global_class_script(const String &p_search_path,
+ 	int index_file;
+ 	EditorFileSystemDirectory *efsd = find_file(p_search_path, &index_file);
+ 	if (efsd) {
+-		const EditorFileSystemDirectory::FileInfo *fi = efsd->files[index_file];
++		const EditorFileSystemDirectory::EFSDFIleInfo *fi = efsd->files[index_file];
+ 		EditorFileSystem::get_singleton()->_register_global_class_script(p_search_path, p_target_path, ScriptClassInfoUpdate::from_file_info(fi));
+ 	} else {
+ 		ScriptServer::remove_global_class_by_path(p_search_path);
+@@ -3048,7 +3048,7 @@ Error EditorFileSystem::_reimport_file(const String &p_file, const HashMap<Strin
+ 
+ void EditorFileSystem::_find_group_files(EditorFileSystemDirectory *efd, HashMap<String, Vector<String>> &group_files, HashSet<String> &groups_to_reimport) {
+ 	int fc = efd->files.size();
+-	const EditorFileSystemDirectory::FileInfo *const *files = efd->files.ptr();
++	const EditorFileSystemDirectory::EFSDFIleInfo *const *files = efd->files.ptr();
+ 	for (int i = 0; i < fc; i++) {
+ 		if (groups_to_reimport.has(files[i]->import_group_file)) {
+ 			if (!group_files.has(files[i]->import_group_file)) {
+@@ -3438,7 +3438,7 @@ bool EditorFileSystem::is_group_file(const String &p_path) const {
+ 
+ void EditorFileSystem::_move_group_files(EditorFileSystemDirectory *efd, const String &p_group_file, const String &p_new_location) {
+ 	int fc = efd->files.size();
+-	EditorFileSystemDirectory::FileInfo *const *files = efd->files.ptrw();
++	EditorFileSystemDirectory::EFSDFIleInfo *const *files = efd->files.ptrw();
+ 	for (int i = 0; i < fc; i++) {
+ 		if (files[i]->import_group_file == p_group_file) {
+ 			files[i]->import_group_file = p_new_location;
+diff --git a/editor/file_system/editor_file_system.h b/editor/file_system/editor_file_system.h
+index 9377450219..1309982cab 100644
+--- a/editor/file_system/editor_file_system.h
++++ b/editor/file_system/editor_file_system.h
+@@ -52,7 +52,7 @@ class EditorFileSystemDirectory : public Object {
+ 	EditorFileSystemDirectory *parent = nullptr;
+ 	Vector<EditorFileSystemDirectory *> subdirs;
+ 
+-	struct FileInfo {
++	struct EFSDFIleInfo {
+ 		String file;
+ 		StringName type;
+ 		StringName resource_script_class; // If any resource has script with a global class name, its found here.
+@@ -76,7 +76,7 @@ class EditorFileSystemDirectory : public Object {
+ 		ScriptClassInfo class_info;
+ 	};
+ 
+-	Vector<FileInfo *> files;
++	Vector<EFSDFIleInfo *> files;
+ 
+ 	static void _bind_methods();
+ 
+@@ -164,7 +164,7 @@ class EditorFileSystem : public Node {
+ 		EditorFileSystemDirectory *dir = nullptr;
+ 		String file;
+ 		EditorFileSystemDirectory *new_dir = nullptr;
+-		EditorFileSystemDirectory::FileInfo *new_file = nullptr;
++		EditorFileSystemDirectory::EFSDFIleInfo *new_file = nullptr;
+ 	};
+ 
+ 	struct ScannedDirectory {
+@@ -210,7 +210,7 @@ class EditorFileSystem : public Node {
+ 
+ 	static EditorFileSystem *singleton;
+ 
+-	using ScriptClassInfo = EditorFileSystemDirectory::FileInfo::ScriptClassInfo;
++	using ScriptClassInfo = EditorFileSystemDirectory::EFSDFIleInfo::ScriptClassInfo;
+ 
+ 	/* Used for reading the filesystem cache file */
+ 	struct FileCache {
+@@ -301,7 +301,7 @@ class EditorFileSystem : public Node {
+ 		ScriptClassInfoUpdate() = default;
+ 		explicit ScriptClassInfoUpdate(const ScriptClassInfo &p_info) :
+ 				ScriptClassInfo(p_info) {}
+-		static ScriptClassInfoUpdate from_file_info(const EditorFileSystemDirectory::FileInfo *p_fi) {
++		static ScriptClassInfoUpdate from_file_info(const EditorFileSystemDirectory::EFSDFIleInfo *p_fi) {
+ 			ScriptClassInfoUpdate update;
+ 			update.type = p_fi->type;
+ 			update.name = p_fi->class_info.name;
+@@ -367,10 +367,10 @@ class EditorFileSystem : public Node {
+ 
+ 	Vector<Ref<EditorFileSystemImportFormatSupportQuery>> import_support_queries;
+ 
+-	void _update_file_icon_path(EditorFileSystemDirectory::FileInfo *file_info);
++	void _update_file_icon_path(EditorFileSystemDirectory::EFSDFIleInfo *file_info);
+ 	void _update_files_icon_path(EditorFileSystemDirectory *edp = nullptr);
+ 	bool _remove_invalid_global_class_names(const HashSet<String> &p_existing_class_names);
+-	String _get_file_by_class_name(EditorFileSystemDirectory *p_dir, const String &p_class_name, EditorFileSystemDirectory::FileInfo *&r_file_info);
++	String _get_file_by_class_name(EditorFileSystemDirectory *p_dir, const String &p_class_name, EditorFileSystemDirectory::EFSDFIleInfo *&r_file_info);
+ 
+ 	void _register_global_class_script(const String &p_search_path, const String &p_target_path, const ScriptClassInfoUpdate &p_script_update);
+ 
+diff --git a/editor/file_system/file_info.cpp b/editor/file_system/file_info.cpp
+index e72dc42841..bb44b50441 100644
+--- a/editor/file_system/file_info.cpp
++++ b/editor/file_system/file_info.cpp
+@@ -29,33 +29,33 @@
+ /**************************************************************************/
+ 
+ #include "file_info.h"
++#include "core/string/string_name.h"
++#include "core/templates/list.h"
+ 
+-void sort_file_info_list(List<FileInfo> &r_file_list, FileSortOption p_file_sort_option) {
+-	// Sort the file list if needed.
++void sort_file_info_list(List<EditorFileInfo> &r_file_list, FileSortOption p_file_sort_option) {
+ 	switch (p_file_sort_option) {
++		case FileSortOption::FILE_SORT_NAME:
++			r_file_list.sort();
++			break;
++		case FileSortOption::FILE_SORT_NAME_REVERSE:
++			r_file_list.sort();
++			r_file_list.reverse();
++			break;
+ 		case FileSortOption::FILE_SORT_TYPE:
+-			r_file_list.sort_custom<FileInfoTypeComparator>();
++			r_file_list.sort_custom<EditorFileInfoTypeComparator>();
+ 			break;
+ 		case FileSortOption::FILE_SORT_TYPE_REVERSE:
+-			r_file_list.sort_custom<FileInfoTypeComparator>();
++			r_file_list.sort_custom<EditorFileInfoTypeComparator>();
+ 			r_file_list.reverse();
+ 			break;
+ 		case FileSortOption::FILE_SORT_MODIFIED_TIME:
+-			r_file_list.sort_custom<FileInfoModifiedTimeComparator>();
++			r_file_list.sort_custom<EditorFileInfoModifiedTimeComparator>();
+ 			break;
+ 		case FileSortOption::FILE_SORT_MODIFIED_TIME_REVERSE:
+-			r_file_list.sort_custom<FileInfoModifiedTimeComparator>();
++			r_file_list.sort_custom<EditorFileInfoModifiedTimeComparator>();
+ 			r_file_list.reverse();
+ 			break;
+-		case FileSortOption::FILE_SORT_NAME_REVERSE:
+-			r_file_list.sort();
+-			r_file_list.reverse();
+-			break;
+-		case FileSortOption::FILE_SORT_NAME:
+-			r_file_list.sort();
+-			break;
+ 		default:
+-			ERR_FAIL_MSG("Invalid file sort option.");
+ 			break;
+ 	}
+ }
+diff --git a/editor/file_system/file_info.h b/editor/file_system/file_info.h
+index 942eb8245c..7f60606029 100644
+--- a/editor/file_system/file_info.h
++++ b/editor/file_system/file_info.h
+@@ -43,7 +43,7 @@ enum class FileSortOption {
+ 	FILE_SORT_MAX = 6,
+ };
+ 
+-struct FileInfo {
++struct EditorFileInfo {
+ 	String name;
+ 	String path;
+ 	String icon_path;
+@@ -52,21 +52,21 @@ struct FileInfo {
+ 	bool import_broken = false;
+ 	uint64_t modified_time = 0;
+ 
+-	bool operator<(const FileInfo &p_fi) const {
++	bool operator<(const EditorFileInfo &p_fi) const {
+ 		return FileNoCaseComparator()(name, p_fi.name);
+ 	}
+ };
+ 
+-struct FileInfoTypeComparator {
+-	bool operator()(const FileInfo &p_a, const FileInfo &p_b) const {
++struct EditorFileInfoTypeComparator {
++	bool operator()(const EditorFileInfo &p_a, const EditorFileInfo &p_b) const {
+ 		return FileNoCaseComparator()(p_a.name.get_extension() + p_a.type + p_a.name.get_basename(), p_b.name.get_extension() + p_b.type + p_b.name.get_basename());
+ 	}
+ };
+ 
+-struct FileInfoModifiedTimeComparator {
+-	bool operator()(const FileInfo &p_a, const FileInfo &p_b) const {
++struct EditorFileInfoModifiedTimeComparator {
++	bool operator()(const EditorFileInfo &p_a, const EditorFileInfo &p_b) const {
+ 		return p_a.modified_time > p_b.modified_time;
+ 	}
+ };
+ 
+-void sort_file_info_list(List<FileInfo> &r_file_list, FileSortOption p_file_sort_option);
++void sort_file_info_list(List<EditorFileInfo> &r_file_list, FileSortOption p_file_sort_option);
+diff --git a/editor/gui/editor_file_dialog.cpp b/editor/gui/editor_file_dialog.cpp
+index ce322c3d00..9c8a77b60c 100644
+--- a/editor/gui/editor_file_dialog.cpp
++++ b/editor/gui/editor_file_dialog.cpp
+@@ -1018,7 +1018,7 @@ void EditorFileDialog::update_file_list() {
+ 
+ 	dir_access->list_dir_begin();
+ 
+-	List<FileInfo> file_infos;
++	List<EditorFileInfo> file_infos;
+ 	List<String> dirs;
+ 
+ 	String item = dir_access->get_next();
+@@ -1034,7 +1034,7 @@ void EditorFileDialog::update_file_list() {
+ 			matches_search = item.find(search_string) != -1;
+ 		}
+ 
+-		FileInfo file_info;
++		EditorFileInfo file_info;
+ 		file_info.name = item;
+ 		file_info.path = cdir.path_join(file_info.name);
+ 		file_info.type = item.get_extension();
+@@ -1135,7 +1135,7 @@ void EditorFileDialog::update_file_list() {
+ 	while (!file_infos.is_empty()) {
+ 		bool match = patterns.is_empty();
+ 
+-		FileInfo file_info = file_infos.front()->get();
++		EditorFileInfo file_info = file_infos.front()->get();
+ 		for (const String &E : patterns) {
+ 			if (file_info.name.matchn(E)) {
+ 				match = true;
+diff --git a/editor/script/script_editor_plugin.h b/editor/script/script_editor_plugin.h
+index 2a7f1f14a0..b984eba7d7 100644
+--- a/editor/script/script_editor_plugin.h
++++ b/editor/script/script_editor_plugin.h
+@@ -600,6 +600,8 @@ public:
+ 
+ 	void set_scene_root_script(Ref<Script> p_script);
+ 	Vector<Ref<Script>> get_open_scripts() const;
++	
++	ScriptEditorBase *get_current_editor() const { return _get_current_editor(); }
+ 
+ 	bool script_goto_method(Ref<Script> p_script, const String &p_method);
+ 
+diff --git a/run.sh b/run.sh
+new file mode 100755
+index 0000000000..22d8fc124a
+--- /dev/null
++++ b/run.sh
+@@ -0,0 +1,5 @@
++# for mac os
++scons platform=macos target=editor dev_build=yes vulkan=no
++
++# run
++./bin/godot.macos.editor.dev.arm64
+\ No newline at end of file
+diff --git a/thirdparty/dtl b/thirdparty/dtl
+new file mode 160000
+index 0000000000..32567bb9ec
+--- /dev/null
++++ b/thirdparty/dtl
+@@ -0,0 +1 @@
++Subproject commit 32567bb9ec704f09040fb1ed7431a3d967e3df03
+-- 
+2.45.2
+
