@@ -6,10 +6,10 @@ Based on Godot Engine, with enhancements by Simplifine.
 ### Whats the catch?
 We are integrating a chat bot, with complete access to Godot. 
 The chatbot can:
-  - Read/edit/craete/delete files
-  - understand the entire project as context
-  - create images and keep consistency across images created
-  - edit godot native objects, e.g. nodes, scenes, ...
+  - Read/edit/create/delete files
+  - Understand the entire project as context
+  - Create images and keep consistency across images created
+  - Edit Godot native objects, e.g. nodes, scenes, ...
 
 ### Quick start
 macOS example:
