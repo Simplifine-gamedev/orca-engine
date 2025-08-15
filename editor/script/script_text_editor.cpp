@@ -1642,20 +1642,7 @@ void ScriptTextEditor::_update_gutter_indexes() {
 }
 
 void ScriptTextEditor::_gutter_clicked(int p_line, int p_gutter) {
-    if (p_gutter == diff_gutter) {
-        // Per-hunk accept/reject: click = accept, Shift-click = reject
-        CodeEdit *te = code_editor->get_text_editor();
-        String text = te->get_line_gutter_text(p_line, diff_gutter);
-        if (!text.is_empty()) {
-            PackedStringArray parts = text.strip_edges().split(" ", false);
-            int hunk_index = parts.size() > 0 ? parts[0].to_int() : -1;
-            if (hunk_index >= 0) {
-                bool reject = Input::get_singleton()->is_key_pressed(Key::SHIFT);
-                _apply_single_hunk(hunk_index, !reject);
-                return;
-            }
-        }
-    } else if (p_gutter == connection_gutter) {
+    if (p_gutter == connection_gutter) {
 		Dictionary meta = code_editor->get_text_editor()->get_line_gutter_metadata(p_line, p_gutter);
 		String type = meta.get("type", "");
 		if (type.is_empty()) {
@@ -2781,12 +2768,12 @@ ScriptTextEditor::ScriptTextEditor() {
 	diff_gutter = code_editor->get_text_editor()->get_gutter_count();
 	code_editor->get_text_editor()->add_gutter(diff_gutter);
 	code_editor->get_text_editor()->set_gutter_name(diff_gutter, "diff_gutter");
-    // Show the diff gutter and make it wide enough to display action hints.
-    code_editor->get_text_editor()->set_gutter_draw(diff_gutter, true);
-	code_editor->get_text_editor()->set_gutter_overwritable(diff_gutter, true);
+	    // Hide the diff gutter and collapse its width since per-hunk actions were removed.
+	    code_editor->get_text_editor()->set_gutter_draw(diff_gutter, false);
+	code_editor->get_text_editor()->set_gutter_overwritable(diff_gutter, false);
 	code_editor->get_text_editor()->set_gutter_type(diff_gutter, TextEdit::GUTTER_TYPE_STRING);
-	code_editor->get_text_editor()->set_gutter_clickable(diff_gutter, true);
-    code_editor->get_text_editor()->set_gutter_width(diff_gutter, 140);
+	code_editor->get_text_editor()->set_gutter_clickable(diff_gutter, false);
+	    code_editor->get_text_editor()->set_gutter_width(diff_gutter, 0);
 
 	warnings_panel = memnew(RichTextLabel);
 	warnings_panel->set_custom_minimum_size(Size2(0, 100 * EDSCALE));
@@ -3203,18 +3190,6 @@ void ScriptTextEditor::_show_unified_diff(const String &p_original, const String
         }
     }
 
-    // Render inline Accept/Reject for each hunk by adding small overlay buttons in margin.
-    Vector<Dictionary> hunks = _compute_line_hunks(original_lines, modified_lines);
-    for (int h = 0; h < hunks.size(); h++) {
-        int ms = int(hunks[h].get("mod_start", 0));
-        int me = int(hunks[h].get("mod_end", ms));
-        // We approximate placement by using the first line of the hunk.
-        int gutter = diff_gutter; // reuse dedicated gutter for diff
-        String hint = String::num_int64(h) + String("  [Accept]  [Reject]");
-        if (ms >= 0 && ms < te->get_line_count()) {
-            te->set_line_gutter_text(ms, gutter, hint);
-        }
-    }
 }
 
 void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
@@ -3334,44 +3309,5 @@ void ScriptTextEditor::_on_reject_all_pressed() {
 	_apply_all_diff_hunks(false);
 }
 
-// New handlers for per-hunk Accept/Reject via gutter clicks
-// Removed duplicate definition. Diff gutter handling is integrated into the primary implementation above.
-
-void ScriptTextEditor::_apply_single_hunk(int p_hunk_index, bool p_accept) {
-    // Apply one hunk from modified->buffer or revert to original for that hunk
-    Vector<String> orig_lines = original_content.split("\n");
-    Vector<String> mod_lines = modified_content.split("\n");
-    Vector<Dictionary> hunks = _compute_line_hunks(orig_lines, mod_lines);
-    if (p_hunk_index < 0 || p_hunk_index >= hunks.size()) return;
-
-    int ms = int(hunks[p_hunk_index].get("mod_start", 0));
-    int me = int(hunks[p_hunk_index].get("mod_end", ms));
-    int os = int(hunks[p_hunk_index].get("orig_start", 0));
-    int oe = int(hunks[p_hunk_index].get("orig_end", os));
-
-    CodeEdit *te = code_editor->get_text_editor();
-    te->set_editable(true);
-    // Build current buffer lines (what’s displayed now is modified_content)
-    Vector<String> cur = te->get_text().split("\n");
-    // Replace range ms..me inclusive with chosen source
-    Vector<String> replacement;
-    if (p_accept) {
-        for (int i = ms; i <= me && i < mod_lines.size(); i++) replacement.push_back(mod_lines[i]);
-    } else {
-        for (int i = os; i <= oe && i < orig_lines.size(); i++) replacement.push_back(orig_lines[i]);
-    }
-    // Splice
-    Vector<String> out;
-    for (int i = 0; i < ms && i < cur.size(); i++) out.push_back(cur[i]);
-    for (int i = 0; i < replacement.size(); i++) out.push_back(replacement[i]);
-    for (int i = me + 1; i < cur.size(); i++) out.push_back(cur[i]);
-
-    te->set_text(String("\n").join(out));
-    te->set_editable(false);
-    // Update our modified_content to reflect the applied change
-    modified_content = te->get_text();
-    // Re-render diff to update highlights and gutters
-    _show_unified_diff(original_content, modified_content);
-    _show_diff_toolbar();
-}
+//
 

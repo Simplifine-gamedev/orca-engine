@@ -118,7 +118,7 @@ class ScriptTextEditor : public ScriptEditorBase {
 	int connection_gutter = -1;
 	void _gutter_clicked(int p_line, int p_gutter);
 	void _update_gutter_indexes();
-	void _apply_single_hunk(int p_hunk_index, bool p_accept);
+
 
 	int line_number_gutter = -1;
 	Color default_line_number_color = Color(1, 1, 1);
@@ -359,8 +359,5 @@ public:
 	ScriptTextEditor();
 	~ScriptTextEditor();
 
-    // Helper to rebuild file content after per-hunk decisions
-    String _rebuild_content();
-    Vector<String> _orig_lines_cache;
-    Vector<String> _mod_lines_cache;
+    
 };
