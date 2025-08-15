@@ -1,5 +1,7 @@
 ## Orca Engine
 
+Discord: @https://discord.gg/bvdpdT26Tq
+
 Based on Godot Engine, with enhancements by Simplifine.
 
 
