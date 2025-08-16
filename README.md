@@ -218,7 +218,7 @@ cd backend && python3 app.py
 - Third-party components: see `COPYRIGHT.txt` and licenses under `thirdparty/`.
 - Simplifine original contributions: Non-commercial source-available. See `NOTICE` and `LICENSES/COMPANY-NONCOMMERCIAL.md`.
 
-Commercial licensing is available. Contact: [contact-email-or-url]
+Commercial licensing is available. Contact: [support@simplifine.com]
 
 ### Attribution
 This project is based on Godot Engine by the Godot Engine contributors, Juan Linietsky and Ariel Manzur. We are not affiliated with the Godot project.
