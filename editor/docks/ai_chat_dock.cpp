@@ -1,3 +1,8 @@
+/*
+ * © 2025 Simplifine Corp.
+ * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
+ * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from Simplifine.
+ */
 #include "ai_chat_dock.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
@@ -448,6 +453,9 @@ void AIChatDock::_notification(int p_notification) {
                 conversations_file_path = OS::get_singleton()->get_user_data_dir().path_join("ai_chat_conversations.simplifine");
             }
             _load_conversations();
+
+            // Ensure indexing is set up immediately on startup (guest if needed)
+            _ensure_project_indexing();
 			
 			// Create first conversation if none exist
             if (conversations.is_empty()) {
@@ -615,7 +623,6 @@ void AIChatDock::_on_stop_button_pressed() {
 	stop_requested = true;
 	_send_stop_request();
 }
-
 void AIChatDock::_send_stop_request() {
 	if (current_request_id.is_empty()) {
 		print_line("AI Chat: Cannot send stop request - no current request ID");
@@ -626,9 +633,7 @@ void AIChatDock::_send_stop_request() {
 	Dictionary request_data;
 	request_data["request_id"] = current_request_id;
 	
-	Ref<JSON> json;
-	json.instantiate();
-	String request_body = json->stringify(request_data);
+	String request_body = JSON::stringify(request_data);
 	
     PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
@@ -1252,7 +1257,6 @@ void AIChatDock::_on_index_button_pressed() {
     print_line("AI Chat: ▶️ Index button pressed");
     _ensure_project_indexing();
 }
-
 void AIChatDock::_ensure_project_indexing() {
 	print_line("AI Chat: 🔄 Ensuring project indexing starts...");
 	
@@ -1273,9 +1277,9 @@ void AIChatDock::_ensure_project_indexing() {
 		print_line("AI Chat: 📝 Embedding system already initialized, forcing indexing...");
 		// Reset the flag to ensure fresh indexing
 		initial_indexing_done = false;
-		// Start indexing immediately
-		call_deferred("_perform_initial_indexing");
 	}
+	// Start indexing immediately (deferred) regardless of init path
+	call_deferred("_perform_initial_indexing");
 }
 
 void AIChatDock::_process_send_request_async() {
@@ -2926,10 +2930,13 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         } else if (function_name == "editor_introspect") {
             // Execute multiplexed introspection/debug tool
             result = EditorTools::editor_introspect(args);
-		} else {
-			result["success"] = false;
-			result["message"] = "Unknown tool: " + function_name;
-		}
+        } else if (function_name == "search_across_godot_docs") {
+            // Forward docs search to EditorTools (proxied to backend)
+            result = EditorTools::search_across_godot_docs(args);
+        } else {
+            result["success"] = false;
+            result["message"] = "Unknown tool: " + function_name;
+        }
 
         // Add a proper, separate tool bubble for the output.
         _add_tool_response_to_chat(tool_call_id, function_name, args, result);
@@ -3808,6 +3815,89 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			search_vbox->add_child(nodes_tree);
 		}
 
+	} else if (p_tool_name == "search_across_godot_docs" && p_success) {
+		// Compact rows that expand on demand; keep DOM light by toggling two nodes
+		Array results = p_result.get("results", Array());
+		Label *count_label = memnew(Label);
+		count_label->set_text("Docs results: " + String::num_int64(results.size()));
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		p_content_vbox->add_child(count_label);
+
+		for (int i = 0; i < results.size(); i++) {
+			if (results[i].get_type() != Variant::DICTIONARY) continue;
+			Dictionary r = results[i];
+			String title = r.get("title", "(untitled)");
+			String snippet = r.get("snippet", "");
+			String full_text = r.get("full_content", snippet);
+			String file_path = r.get("file_path", "");
+			double sim = r.get("similarity", 0.0);
+
+			PanelContainer *row = memnew(PanelContainer);
+			Ref<StyleBoxFlat> sb = memnew(StyleBoxFlat);
+			sb->set_bg_color(get_theme_color(SNAME("base_color"), SNAME("Editor")) * Color(1.02, 1.02, 1.06, 1));
+			sb->set_border_width_all(1);
+			sb->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+			sb->set_corner_radius_all(6);
+			sb->set_content_margin_all(12);
+			// Subtle accent on the left for visual grouping
+			sb->set_border_width(SIDE_LEFT, 3);
+			sb->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+			row->add_theme_style_override("panel", sb);
+			p_content_vbox->add_child(row);
+
+			VBoxContainer *holder = memnew(VBoxContainer);
+			holder->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			row->add_child(holder);
+
+			// Header row: title + score
+			HBoxContainer *hdr = memnew(HBoxContainer);
+			holder->add_child(hdr);
+			Label *t = memnew(Label);
+			t->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			t->set_text(title);
+			t->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			hdr->add_child(t);
+			Label *score = memnew(Label);
+			score->set_text("  •  sim: " + String::num_real(sim).substr(0, 5));
+			score->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			hdr->add_child(score);
+
+			// Collapsed snippet node
+			RichTextLabel *snippet_rt = memnew(RichTextLabel);
+			snippet_rt->set_fit_content(true);
+			snippet_rt->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
+			snippet_rt->set_custom_minimum_size(Size2(0, 100));
+			snippet_rt->set_text(snippet);
+			holder->add_child(snippet_rt);
+
+			// Expanded full text node (initially hidden)
+			RichTextLabel *full_rt = memnew(RichTextLabel);
+			full_rt->set_fit_content(false); // allow internal scroll
+			full_rt->set_scroll_active(true);
+			full_rt->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
+			full_rt->set_v_size_flags(Control::SIZE_FILL);
+			full_rt->set_custom_minimum_size(Size2(0, 320));
+			full_rt->set_selection_enabled(true);
+			full_rt->set_text(full_text);
+			full_rt->set_visible(false);
+			holder->add_child(full_rt);
+
+			HBoxContainer *btns = memnew(HBoxContainer);
+			holder->add_child(btns);
+			Button *toggle_btn = memnew(Button);
+			toggle_btn->set_text("Show more");
+			toggle_btn->set_flat(true);
+			btns->add_child(toggle_btn);
+			toggle_btn->connect("pressed", callable_mp(this, &AIChatDock::_toggle_docs_card).bind(snippet_rt, full_rt, toggle_btn, holder));
+
+			if (!file_path.is_empty()) {
+				Label *fp = memnew(Label);
+				fp->set_text(file_path);
+				fp->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+				holder->add_child(fp);
+			}
+		}
+
 	} else if (p_tool_name == "get_editor_selection" && p_success) {
 		VBoxContainer *selection_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(selection_vbox);
@@ -4220,11 +4310,18 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		Array similar_files = results.get("similar_files", Array());
 		Array central_files = results.get("central_files", Array());
 		Dictionary graph_summary = results.get("graph_summary", Dictionary());
-		String query = p_args.get("query", "Unknown query");
+		String query;
+		if (p_args.has("query")) {
+			query = String(p_args.get("query", ""));
+		} else if (p_result.has("query")) {
+			query = String(p_result.get("query", ""));
+		} else {
+			query = "";
+		}
 		
 		// Header with query info
 		Label *query_label = memnew(Label);
-		query_label->set_text("Search Results for: \"" + query + "\"");
+		query_label->set_text("Search across project for: \"" + query + "\"");
 		query_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		query_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
 		search_vbox->add_child(query_label);
@@ -4590,6 +4687,37 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
 	}
+}
+
+void AIChatDock::_toggle_expand_label(RichTextLabel *p_label, Button *p_button, const String &p_full_text, const String &p_snippet_text) {
+    if (!p_label || !p_button) {
+        return;
+    }
+    String current = p_label->get_text();
+    bool showing_snippet = (current == p_snippet_text);
+    if (showing_snippet) {
+        p_label->set_text(p_full_text);
+        p_button->set_text("Show less");
+        p_label->set_custom_minimum_size(Size2(0, 240));
+    } else {
+        p_label->set_text(p_snippet_text);
+        p_button->set_text("Show more");
+        p_label->set_custom_minimum_size(Size2(0, 120));
+    }
+}
+
+void AIChatDock::_toggle_docs_card(Control *p_snippet_node, Control *p_full_node, Button *p_button, VBoxContainer *p_holder) {
+    if (!p_snippet_node || !p_full_node || !p_button) {
+        return;
+    }
+    bool expanding = p_snippet_node->is_visible();
+    p_snippet_node->set_visible(!expanding);
+    p_full_node->set_visible(expanding);
+    p_button->set_text(expanding ? "Show less" : "Show more");
+    // Nudge layout to recompute height
+    if (p_holder) {
+        p_holder->queue_redraw();
+    }
 }
 
 void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages) {
@@ -5893,6 +6021,71 @@ void AIChatDock::_build_hierarchy_tree_item(Tree *p_tree, TreeItem *p_parent, co
 	}
 }
 
+void AIChatDock::_ensure_related_graph_ui() {
+	if (!related_graph_panel) {
+		related_graph_panel = memnew(PopupPanel);
+		add_child(related_graph_panel);
+		VBoxContainer *vb = memnew(VBoxContainer);
+		related_graph_panel->add_child(vb);
+		Label *title = memnew(Label);
+		title->set_text("Related graph");
+		vb->add_child(title);
+		related_graph_tree = memnew(Tree);
+		related_graph_tree->set_v_size_flags(SIZE_EXPAND_FILL);
+		related_graph_tree->set_h_size_flags(SIZE_EXPAND_FILL);
+		related_graph_tree->set_custom_minimum_size(Size2(520, 320));
+		vb->add_child(related_graph_tree);
+	}
+}
+
+void AIChatDock::_populate_related_graph(const Dictionary &p_graph) {
+	if (!related_graph_tree) return;
+	related_graph_tree->clear();
+	TreeItem *root = related_graph_tree->create_item();
+	Array file_keys = p_graph.keys();
+	for (int i = 0; i < file_keys.size(); i++) {
+		String file_path = (String)file_keys[i];
+		Dictionary ctx = p_graph[file_path];
+		TreeItem *file_item = related_graph_tree->create_item(root);
+		file_item->set_text(0, file_path);
+		Array nodes = ctx.has("nodes") ? (Array)ctx["nodes"] : Array();
+		Array edges = ctx.has("edges") ? (Array)ctx["edges"] : Array();
+		TreeItem *nodes_item = related_graph_tree->create_item(file_item);
+		nodes_item->set_text(0, vformat("Nodes (%d)", nodes.size()));
+		for (int n = 0; n < nodes.size(); n++) {
+			Dictionary nd = nodes[n];
+			String ntext = String(nd.get("name", ""));
+			String nkind = String(nd.get("kind", ""));
+			String npath = String(nd.get("node_path", ""));
+			int64_t sline = (int64_t)nd.get("start_line", 0);
+			TreeItem *ni = related_graph_tree->create_item(nodes_item);
+			String display = ntext;
+			if (!nkind.is_empty()) display += " [" + nkind + "]";
+			if (!npath.is_empty()) display += " — " + npath;
+			if (sline > 0) display += vformat(" :%d", (int)sline);
+			ni->set_text(0, display);
+		}
+		TreeItem *edges_item = related_graph_tree->create_item(file_item);
+		edges_item->set_text(0, vformat("Edges (%d)", edges.size()));
+		for (int e = 0; e < edges.size(); e++) {
+			Dictionary ed = edges[e];
+			String ekind = String(ed.get("kind", ""));
+			int64_t sline = (int64_t)ed.get("start_line", 0);
+			TreeItem *ei = related_graph_tree->create_item(edges_item);
+			String display = ekind;
+			if (sline > 0) display += vformat(" :%d", (int)sline);
+			ei->set_text(0, display);
+		}
+	}
+}
+
+void AIChatDock::_show_related_graph(const Dictionary &p_graph) {
+	_ensure_related_graph_ui();
+	_populate_related_graph(p_graph);
+	if (related_graph_panel) {
+		related_graph_panel->popup_centered();
+	}
+}
 AIChatDock::AIChatDock() {
 	set_name("AI Chat");
 	
@@ -6961,8 +7154,11 @@ void AIChatDock::_initialize_embedding_system() {
     _set_embedding_status("Ready to index", false);
 
     if (!_is_user_authenticated()) {
-        print_line("AI Chat: ℹ️ Embedding system ready, but user not authenticated (login to enable indexing)");
-        return;
+        current_user_id = "guest:" + get_machine_id();
+        current_user_name = "Guest";
+        auth_token = "";
+        _update_user_status();
+        print_line("AI Chat: ℹ️ Embedding system ready; indexing as guest session");
     }
 
     // Defer status/indexing to avoid overlapping requests right after init
@@ -6972,8 +7168,8 @@ void AIChatDock::_initialize_embedding_system() {
 void AIChatDock::_perform_initial_indexing() {
 	print_line("AI Chat: 📚 Starting project indexing...");
 	
-	if (!embedding_system_initialized || !_is_user_authenticated()) {
-        print_line("AI Chat: ❌ Cannot start indexing - system not ready (initialized=" + String(embedding_system_initialized ? "true" : "false") + ", authed=" + String(_is_user_authenticated() ? "true" : "false") + ")");
+	if (!embedding_system_initialized) {
+		print_line("AI Chat: ❌ Cannot start indexing - system not initialized");
 		return;
 	}
 	
@@ -6984,8 +7180,20 @@ void AIChatDock::_perform_initial_indexing() {
 	
 	_set_embedding_status("Scanning files", true);
 	
-	// Scan project files and read their contents
-	call_deferred("_scan_and_index_project_files");
+	// Prefer server-side indexing first for speed (parallel, no upload)
+	{
+		Dictionary payload;
+		payload["project_root"] = _get_project_root_path();
+		payload["force_reindex"] = false;
+		String maxw = OS::get_singleton()->get_environment("INDEX_MAX_WORKERS");
+		if (!maxw.is_empty()) {
+			payload["max_workers"] = maxw;
+		}
+		_set_embedding_status("Indexing project", true);
+		_send_embedding_request("index_project", payload);
+	}
+
+	// Fallback: if server unavailable, we will still batch-upload from client when needed
 }
 
 void AIChatDock::_send_embedding_request(const String &p_action, const Dictionary &p_data) {
@@ -7034,7 +7242,6 @@ void AIChatDock::_send_embedding_request(const String &p_action, const Dictionar
 		_set_embedding_status("Request failed", false);
 	}
 }
-
 void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	embedding_request_busy = false;
 	
@@ -7196,38 +7403,20 @@ void AIChatDock::_on_embedding_status_tick() {
 }
 
 bool AIChatDock::_should_index_file(const String &p_file_path) {
-	// Use same logic as the cloud vector manager
+	// Only allow textual/code formats; backend enforces too
 	String ext = p_file_path.get_extension().to_lower();
-	
-	// Skip binary files
-	PackedStringArray binary_exts = PackedStringArray();
-	binary_exts.push_back("png");
-	binary_exts.push_back("jpg");
-	binary_exts.push_back("jpeg");
-	binary_exts.push_back("gif");
-	binary_exts.push_back("bmp");
-	binary_exts.push_back("webp");
-	binary_exts.push_back("mp3");
-	binary_exts.push_back("wav");
-	binary_exts.push_back("ogg");
-	binary_exts.push_back("mp4");
-	binary_exts.push_back("avi");
-	binary_exts.push_back("mov");
-	binary_exts.push_back("exe");
-	binary_exts.push_back("dll");
-	binary_exts.push_back("so");
-	binary_exts.push_back("dylib");
-	
-	if (binary_exts.has(ext)) {
+	static const HashSet<String> allowed_text_ext = {
+		"gd", "cs", "c", "cpp", "h", "hpp", "glsl", "shader", "gdshader",
+		"tscn", "scn", "tres", "res", "godot", "import",
+		"json", "cfg", "ini", "yaml", "yml", "xml", "md", "txt", "rst"
+	};
+	if (!allowed_text_ext.has(ext)) {
 		return false;
 	}
-	
-	// Skip hidden files and system directories
 	String filename = p_file_path.get_file();
 	if (filename.begins_with(".")) {
 		return false;
 	}
-	
 	return true;
 }
 void AIChatDock::_update_file_embedding(const String &p_file_path) {
@@ -7431,6 +7620,24 @@ Dictionary AIChatDock::_read_file_for_indexing(const String &p_file_path, const 
 	
 	String content = file->get_as_text(true); // Skip BOM if present
 	file->close();
+
+	// Sanitize content to avoid invalid JSON: strip control chars except whitespace
+	{
+		String sanitized;
+		for (int i = 0; i < content.length(); i++) {
+			char32_t ch = content[i];
+			if (ch >= 32 || ch == '\n' || ch == '\t' || ch == '\r') {
+				sanitized += ch;
+			}
+		}
+		content = sanitized;
+	}
+
+	// Cap per-file payload size
+	const int64_t max_len = 200000; // ~200 KB
+	if (content.length() > max_len) {
+		content = content.substr(0, max_len);
+	}
 	
 	// Skip empty files or files with only whitespace
 	if (content.strip_edges().is_empty()) {

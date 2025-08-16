@@ -191,6 +191,32 @@ FLASK_SECRET_KEY=a-secure-random-string-here
 DEV_MODE=true
 ```
 
+#### Indexing performance (large projects)
+
+The editor triggers server-side indexing automatically. For large codebases, set these to speed things up (in `backend/.env` locally or before running `backend/deploy.sh` so Cloud Run picks them up as secrets):
+
+```env
+# Parallelism and batching
+INDEX_MAX_WORKERS=32         # number of parallel file workers on the backend
+EMBED_MAX_PARALLEL=12        # concurrent embedding batches (respect provider limits)
+EMBED_BATCH_SIZE=256         # embeddings per batch
+CHUNK_MAX_LINES=100          # larger chunks = fewer embedding calls
+
+# Small response caches
+SEARCH_CACHE_TTL=45
+GRAPH_CACHE_TTL=45
+```
+
+Notes:
+- You can also pass `INDEX_MAX_WORKERS` from the editor via env; it is forwarded to the backend for `index_project`/`index_files`.
+- When deploying to Cloud Run, ensure sufficient resources (e.g., `--cpu 4`, `--memory 8Gi`, higher `--concurrency`).
+
+### Godot Docs Search (RAG)
+
+To index and query the official Godot documentation corpus used by the `search_across_godot_docs` tool, see:
+
+- [Godot Docs Search: Indexing and Querying](./godot_doc_search.md)
+
 #### Quick Start Commands
 
 After setup, use these commands to run Orca Engine:

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+© 2025 Simplifine Corp. Personal Non‑Commercial License.
+See LICENSES/COMPANY-NONCOMMERCIAL.md for terms.
+
 Project Graph Manager for Godot projects
 Creates and manages a graph structure of project relationships
 """

@@ -727,6 +727,7 @@ protected:
 	void _notification(int p_what);
 
 public:
+	AIChatDock *get_ai_chat_dock() const { return ai_chat_dock; }
 	// Public for use with callable_mp.
 	void init_plugins();
 	void _on_plugin_ready(Object *p_script, const String &p_activate_name);

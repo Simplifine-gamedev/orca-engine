@@ -1,6 +1,6 @@
-Orca Engine
+Orca Engine (Godot fork)
 
-Copyright © 2025 Simplifine Corp.
+Copyright © 2025 Project Owner
 
 This project includes and is based on Godot Engine:
 - © 2014–present Godot Engine contributors
@@ -10,16 +10,15 @@ Licensed under the Expat (MIT) License. See `LICENSE.txt`.
 Licensing summary
 - Upstream Godot Engine code: Expat (MIT) (see `LICENSE.txt`)
 - Third-party components: see `COPYRIGHT.txt` and licenses under `thirdparty/`
-- Simplifine original contributions identified in this NOTICE and file headers: Company Non-Commercial License (see `LICENSES/COMPANY-NONCOMMERCIAL.md`)
+- Project Owner original contributions identified in this NOTICE and file headers: Personal Non‑Commercial License (see `LICENSES/COMPANY-NONCOMMERCIAL.md`)
 
-Simplifine original contribution scope
-- Backend service code under `backend/` (e.g., `app.py`, `multi_model_app.py`, `litellm-demo.py`, and helpers)
+Project Owner original contribution scope
+- Backend service code under `backend/` (e.g., `app.py`, `multi_model_app.py`, and helpers)
 - Editor integrations under `editor/ai/` and `editor/docks/` related to AI tooling (e.g., `editor_tools.*`, `ai_tool_server.*`, `ai_chat_dock.*`)
-- Any files with a Simplifine header stating non‑commercial licensing
+- Any files with a Project Owner header stating non‑commercial licensing
 
 Commercial licensing
-Commercial use of Simplifine’s original contributions requires a separate license.
-Contact: support@simplifine.com
+Commercial use of the Project Owner’s original contributions requires a separate license. Contact the Project Owner to discuss commercial licensing.
 
 Trademarks
 Godot Engine, and any related names, logos, and brands are property of their respective owners. No trademark rights are granted by this NOTICE.

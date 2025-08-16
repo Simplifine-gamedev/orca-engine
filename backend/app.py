@@ -1,7 +1,7 @@
 """
-© 2025 Simplifine Corp. Original backend contribution for Orca Engine.
-Free personal/non-commercial use only under Company Non‑Commercial License.
-Commercial use requires a separate license from Simplifine. See LICENSES/COMPANY-NONCOMMERCIAL.md.
+© 2025 Simplifine Corp. Original backend contribution for this Godot fork.
+Personal Non‑Commercial License applies. Commercial use requires a separate license from Simplifine.
+See LICENSES/COMPANY-NONCOMMERCIAL.md.
 """
 from flask import Flask, request, Response, jsonify, redirect, session, stream_with_context
 import openai
@@ -20,6 +20,10 @@ import time
 import tempfile
 import hashlib
 from cloud_vector_manager import CloudVectorManager
+try:
+    from local_vector_manager import LocalVectorManager
+except Exception:
+    LocalVectorManager = None
 from auth_manager import AuthManager
 
 # Load environment variables from .env file
@@ -98,12 +102,21 @@ def get_model_friendly_name(model_id: str) -> str:
 # Initialize Authentication Manager
 auth_manager = AuthManager()
 
-# Initialize Cloud Vector Manager
+# Initialize Vector Manager (cloud if configured; else local fallback)
 GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID')
 CLOUD_VECTOR_ENABLED = bool(GCP_PROJECT_ID)
 cloud_vector_manager = None
 if CLOUD_VECTOR_ENABLED:
     cloud_vector_manager = CloudVectorManager(GCP_PROJECT_ID, client)
+else:
+    if LocalVectorManager and client is not None:
+        try:
+            cloud_vector_manager = LocalVectorManager(client)
+            print("VECTOR_INDEX: Using local JSON index (no GCP project configured)")
+        except Exception as e:
+            print(f"VECTOR_INDEX ERROR: Failed to init LocalVectorManager: {e}")
+    else:
+        print("VECTOR_INDEX: LocalVectorManager unavailable or OpenAI client missing; semantic indexing disabled")
 
 # Load system prompt from file (once at startup)
 SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
@@ -469,6 +482,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return process_asset_internal(arguments)
     elif function_name == "search_across_project":
         return search_across_project_internal(arguments)
+    elif function_name == "search_across_godot_docs":
+        return search_across_godot_docs_internal(arguments)
     else:
         # This shouldn't happen if we filter correctly
         print(f"WARNING: Unknown backend tool called: {function_name}")
@@ -991,6 +1006,21 @@ godot_tools = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_across_godot_docs",
+            "description": "Search the latest Godot documentation (tutorials and class reference) using semantic similarity.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to find in the docs (natural language)."},
+                    "max_results": {"type": "integer", "description": "Maximum results (default 5)", "default": 5}
+                },
+                "required": ["query"]
+            }
+        }
     }
 ]
 
@@ -1275,11 +1305,26 @@ def chat():
 
                 # Now that we've processed all chunks, handle the results
 
-                # --- Backend-Only Tool Execution (Image Generation + Search) ---
-                backend_tools_detected = [func.get("name") for func in tool_call_aggregator.values() if func.get("name") in ["image_operation", "search_across_project"]]
+                # --- Backend-Only Tool Execution (Image Generation + Search + Docs) ---
+                backend_tools_detected = [
+                    func.get("name")
+                    for func in tool_call_aggregator.values()
+                    if func.get("name") in [
+                        "image_operation",
+                        "search_across_project",
+                        "search_across_godot_docs",
+                    ]
+                ]
                 print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
                 
-                if any(func.get("name") in ["image_operation", "search_across_project"] for func in tool_call_aggregator.values()):
+                if any(
+                    func.get("name") in [
+                        "image_operation",
+                        "search_across_project",
+                        "search_across_godot_docs",
+                    ]
+                    for func in tool_call_aggregator.values()
+                ):
                     # This is a backend-only tool call, so we will execute it,
                     # add the results to the conversation, and loop again for the AI's final response.
                     
@@ -1409,6 +1454,54 @@ def chat():
                                 "role": "tool",
                                 "name": "search_across_project",
                                 "content": json.dumps(tool_result_for_openai),
+                            })
+                        elif func["name"] == "search_across_godot_docs":
+                            # Check for stop before tool execution
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "search_across_godot_docs", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                            except Exception:
+                                arguments = {}
+                            # Execute docs search
+                            docs_result = search_across_godot_docs_internal(arguments)
+                            
+                            # Check for stop after tool execution
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            # Yield result to frontend immediately
+                            yield json.dumps({
+                                "tool_executed": "search_across_godot_docs",
+                                "tool_result": docs_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Prepare tool result for conversation history (trim results for token efficiency)
+                            slim = {
+                                "success": docs_result.get("success"),
+                                "query": docs_result.get("query"),
+                                "file_count": docs_result.get("file_count", 0),
+                                "results": [
+                                    {
+                                        "title": it.get("title"),
+                                        "similarity": it.get("similarity"),
+                                    }
+                                    for it in (docs_result.get("results") or [])[:3]
+                                ],
+                            }
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "search_across_godot_docs",
+                                "content": json.dumps(slim),
                             })
                 
                     # Add the assistant's decision to call the tool to history
@@ -1750,7 +1843,14 @@ def auth_callback():
 def auth_status():
     """Check authentication status for a machine"""
     try:
-        data = request.json
+        # Robust JSON parse: fall back to raw body parsing to tolerate stray control chars
+        try:
+            data = request.get_json()
+        except Exception:
+            raw = request.get_data(cache=False, as_text=True)
+            # Remove ASCII control characters except whitespace/newlines/tabs
+            filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+            data = json.loads(filtered)
         machine_id = data.get('machine_id')
         require_provider = data.get('require_provider')
         allow_guest = data.get('allow_guest', True)
@@ -1853,12 +1953,29 @@ def embed_endpoint():
     - clear: Clear project index
     """
     try:
-        # Verify authentication
+        # Parse JSON body first, then auth (we may need machine_id)
+        try:
+            data = request.get_json()
+        except Exception:
+            raw = request.get_data(cache=False, as_text=True)
+            filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+            data = json.loads(filtered)
+
+        # Verify authentication (allow guest fallback for indexing/search)
         user, error_response, status_code = verify_authentication()
         if error_response:
-            return jsonify(error_response), status_code
+            # Attempt guest fallback using machine id if provided
+            machine_id = request.headers.get('X-Machine-ID') or (data.get('machine_id') if isinstance(data, dict) else None)
+            guest_name = request.headers.get('X-Guest-Name')
+            if machine_id:
+                guest_result = auth_manager.create_or_get_guest_session(machine_id, guest_name)
+                if guest_result.get('success'):
+                    user = guest_result['user']
+                else:
+                    return jsonify(error_response), status_code
+            else:
+                return jsonify(error_response), status_code
         
-        data = request.json
         action = data.get('action')
         project_root = data.get('project_root')
         project_id = data.get('project_id')
@@ -1873,10 +1990,10 @@ def embed_endpoint():
         if not project_id:
             project_id = hashlib.md5(project_root.encode()).hexdigest()
         
-        if not CLOUD_VECTOR_ENABLED:
+        if cloud_vector_manager is None:
             return jsonify({
                 "success": False,
-                "error": "Cloud vector indexing disabled (set GCP_PROJECT_ID or run in cloud mode)",
+                "error": "Vector indexing unavailable (configure GCP or ensure local index + OPENAI_API_KEY)",
                 "action": action
             }), 501
 
@@ -1961,6 +2078,9 @@ def embed_endpoint():
             
             max_results = data.get('k', 5)
             include_graph = bool(data.get('include_graph', False))
+            # Default to lighter graph for speed; clients can request deeper
+            graph_depth = int(data.get('graph_depth', 1))
+            graph_edge_kinds = data.get('graph_edge_kinds') or []
             results = cloud_vector_manager.search(query, user['id'], project_id, max_results)
             # Filter out Godot sidecar UID files
             results = [r for r in results if not str(r.get('file_path','')).endswith('.uid')]
@@ -1970,9 +2090,12 @@ def embed_endpoint():
                 "action": "search",
                 "query": query,
                 "results": results,
-                "graph": cloud_vector_manager.get_graph_context_for_files(
-                    [r.get('file_path') for r in results], user['id'], project_id
-                ) if include_graph else {}
+                "graph": (
+                    cloud_vector_manager.get_graph_context_expanded(
+                        [r.get('file_path') for r in results], user['id'], project_id,
+                        depth=graph_depth, kinds=graph_edge_kinds
+                    ) if include_graph else {}
+                )
             })
         
         elif action == 'status':
@@ -2045,10 +2168,10 @@ def search_project():
         max_results = data.get('max_results', 5)
 
         # Search using cloud vector manager
-        if not CLOUD_VECTOR_ENABLED or cloud_vector_manager is None:
+        if cloud_vector_manager is None:
             return jsonify({
                 "success": False,
-                "error": "Cloud vector search disabled (set GCP_PROJECT_ID or run in cloud mode)"
+                "error": "Vector search unavailable (configure GCP or ensure local index + OPENAI_API_KEY)"
             }), 501
         results = cloud_vector_manager.search(query, user['id'], project_id, max_results)
         # Filter out Godot sidecar UID files
@@ -2121,7 +2244,84 @@ def health_check():
         "available_models": list(MODEL_MAP.keys())
     })
 
+# --- Docs search (shared corpus)
+DOCS_USER_ID = os.getenv('DOCS_USER_ID', 'public_docs')
+DOCS_PROJECT_ID = os.getenv('DOCS_PROJECT_ID', 'godot_docs_latest')
+DOCS_DATASET = os.getenv('EMBED_DATASET', 'godot_embeddings')
+DOCS_TABLE = os.getenv('EMBED_TABLE', 'embeddings')
 
+def _search_godot_docs_bq(query: str, max_results: int = 5) -> list[dict]:
+    if cloud_vector_manager is None:
+        return []
+    try:
+        return cloud_vector_manager.search(query, DOCS_USER_ID, DOCS_PROJECT_ID, max_results)
+    except Exception as e:
+        print(f"DOCS_SEARCH_FALLBACK: {e}")
+        return []
+
+def search_across_godot_docs_internal(arguments: dict) -> dict:
+    try:
+        query = arguments.get('query', '')
+        if not query:
+            return {"success": False, "error": "Query parameter is required"}
+        max_results = int(arguments.get('max_results', 5))
+        results = _search_godot_docs_bq(query, max_results)
+        formatted = []
+        for r in results:
+            fp = r.get('file_path', '')
+            # Prefer plain content; fall back to content_preview from search, then nested chunk content
+            raw_content = (
+                r.get('content')
+                or r.get('content_preview')
+                or (r.get('chunk', {}) or {}).get('content')
+                or ''
+            )
+            formatted.append({
+                'title': fp,
+                'snippet': raw_content[:400],
+                'full_content': raw_content,
+                'similarity': r.get('similarity', 0.0),
+                'source': 'godot_docs',
+                'file_path': fp,
+            })
+        return {
+            'success': True,
+            'query': query,
+            'results': formatted,
+            'file_count': len(formatted)
+        }
+    except Exception as e:
+        print(f"DOCS_SEARCH_ERROR: {e}")
+        return {"success": False, "error": f"Docs search failed: {str(e)}"}
+
+
+
+@app.route('/search_docs', methods=['POST'])
+def search_docs():
+    """HTTP endpoint to search across the shared Godot docs corpus.
+    Thin wrapper around search_across_godot_docs_internal.
+    """
+    # Optional server key gate
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+
+    try:
+        data = request.json or {}
+        query = data.get('query', '')
+        if not query:
+            return jsonify({"success": False, "error": "Query parameter is required"}), 400
+        max_results = int(data.get('max_results', 5))
+        result = search_across_godot_docs_internal({
+            'query': query,
+            'max_results': max_results,
+        })
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Local dev only; in production use Gunicorn (configured in Dockerfile)

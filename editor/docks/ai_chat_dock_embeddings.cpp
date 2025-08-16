@@ -1,5 +1,8 @@
 /**************************************************************************/
 /*  ai_chat_dock_embeddings.cpp                                           */
+/*  © 2025 Simplifine Corp.                                              */
+/*  Licensed under Personal Non‑Commercial License.                       */
+/*  See LICENSES/COMPANY-NONCOMMERCIAL.md.                                */
 /**************************************************************************/
 
 #include "ai_chat_dock.h"
@@ -86,10 +89,7 @@ void AIChatDock::_on_filesystem_changed() {
         print_line("AI Chat: 🚫 Skipping indexing - system not initialized");
         return;
     }
-    if (!_is_user_authenticated()) {
-        print_line("AI Chat: 🚫 Skipping indexing - user not authenticated");
-        return;
-    }
+    // Allow indexing as guest automatically; don't block on auth.
     if (embedding_request_busy) {
         print_line("AI Chat: ⏳ Skipping indexing - previous embedding request still in flight");
         return;
@@ -229,20 +229,45 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
         }
         int count = similar.size();
         print_line(vformat("AI Chat: 🔎 Suggested relevant files: %d", count));
+
+        // Log returned graph context (totals) if present
+        if (resp.has("graph")) {
+            Dictionary graph = resp["graph"];
+            int total_nodes = 0;
+            int total_edges = 0;
+            Array keys = graph.keys();
+            for (int i = 0; i < keys.size(); i++) {
+                String k = (String)keys[i];
+                Dictionary ctx = graph[k];
+                if (ctx.has("nodes")) {
+                    Array ns = ctx["nodes"];
+                    total_nodes += ns.size();
+                }
+                if (ctx.has("edges")) {
+                    Array es = ctx["edges"];
+                    total_edges += es.size();
+                }
+            }
+            print_line(vformat("AI Chat: 🧭 Graph context received: nodes=%d edges=%d (depth requested)", total_nodes, total_edges));
+            // Show a simple related-graph panel
+            _show_related_graph(graph);
+        }
     }
     embedding_request_busy = false;
 }
 
 bool AIChatDock::_should_index_file(const String &p_file_path) {
-    // Basic client-side filter; backend has authoritative filter
+    // Only index textual/code resources on the client; backend will enforce too
     String ext = p_file_path.get_extension().to_lower();
-    static const HashSet<String> allowed_ext = {
-        "gd", "cs", "js", "tscn", "scn", "tres", "res", "json", "cfg", "md", "txt",
-        "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "tga", "exr",
-        "wav", "ogg", "mp3", "aac", "flac",
-        "mp4", "mov", "avi", "webm"
+    static const HashSet<String> allowed_text_ext = {
+        // Code
+        "gd", "cs", "c", "cpp", "h", "hpp", "glsl", "shader", "gdshader",
+        // Godot resources/scenes/config
+        "tscn", "scn", "tres", "res", "godot", "import",
+        // Data / docs
+        "json", "cfg", "ini", "yaml", "yml", "xml", "md", "txt", "rst"
     };
-    return allowed_ext.has(ext);
+    return allowed_text_ext.has(ext);
 }
 
 String AIChatDock::_get_project_root_path() {
@@ -288,6 +313,22 @@ void AIChatDock::_suggest_relevant_files(const String &p_query) {
     payload["query"] = p_query;
     payload["k"] = 5;
     payload["include_graph"] = true;
+    // Request multi-hop graph context with relevant edge kinds
+    payload["graph_depth"] = 1; // faster default; user can request deeper later
+    Array kinds;
+    kinds.push_back("CONNECTS_SIGNAL");
+    kinds.push_back("ATTACHES_SCRIPT");
+    kinds.push_back("INSTANTIATES_SCENE");
+    kinds.push_back("CHILD_OF");
+    kinds.push_back("DEFINES_FUNCTION");
+    kinds.push_back("DEFINES_CLASS");
+    kinds.push_back("DEFINES_SIGNAL");
+    kinds.push_back("SCRIPT_EXTENDS");
+    kinds.push_back("CALLS_FUNCTION");
+    kinds.push_back("EMITS_SIGNAL");
+    kinds.push_back("GROUP_MEMBER");
+    kinds.push_back("REFERENCES_RESOURCE");
+    payload["graph_edge_kinds"] = kinds;
     _send_embedding_request("search", payload);
 }
 

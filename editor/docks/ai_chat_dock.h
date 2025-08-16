@@ -186,6 +186,10 @@ private:
 	Tree *scene_tree = nullptr;
 	EditorFileDialog *resource_dialog = nullptr;
 
+	// Related graph UI
+	PopupPanel *related_graph_panel = nullptr;
+	Tree *related_graph_tree = nullptr;
+
 	// For saving images
 	String pending_save_image_data; // Base64 image data to save
 	String pending_save_image_format; // "png" or "jpg"
@@ -297,9 +301,15 @@ private:
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);
 	void _create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args = Dictionary());
+	void _toggle_expand_label(RichTextLabel *p_label, Button *p_button, const String &p_full_text, const String &p_snippet_text);
+	void _toggle_docs_card(Control *p_snippet_node, Control *p_full_node, Button *p_button, VBoxContainer *p_holder);
 	void _rebuild_conversation_ui(const Vector<ChatMessage> &p_messages);
 	void _apply_tool_result_deferred(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results);
 	void _build_hierarchy_tree_item(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_node_data);
+
+	void _ensure_related_graph_ui();
+	void _populate_related_graph(const Dictionary &p_graph);
+	void _show_related_graph(const Dictionary &p_graph);
 
 	void _add_message_to_chat(const String &p_role, const String &p_content, const Array &p_tool_calls = Array());
 	void _add_tool_response_to_chat(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result);
