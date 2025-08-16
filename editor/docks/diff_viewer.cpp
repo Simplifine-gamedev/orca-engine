@@ -222,6 +222,133 @@ String DiffViewer::get_final_content() {
     return new_content;
 }
 
+void DiffViewer::set_structured_edits(const String &p_path, const String &p_original, const Dictionary &p_structured) {
+    path = p_path;
+    original_text = p_original;
+    modified_text = String();
+    structured_edits = p_structured;
+
+    // Clear previous hunks UI
+    for (int i = 0; i < hunks_container->get_child_count(); i++) {
+        hunks_container->get_child(i)->queue_free();
+    }
+    hunks.clear();
+
+    // Render edits as hunks-like view
+    String mode = structured_edits.get("mode", "full");
+    if (mode == "range" && structured_edits.has("range_edit")) {
+        Dictionary re = structured_edits["range_edit"];
+        int a = int(re.get("start_line", 1));
+        int b = int(re.get("end_line", a - 1)) - a + 1; // orig count
+        Vector<String> new_lines;
+        Variant nlv = re.get("new_lines", Array());
+        if (nlv.get_type() == Variant::ARRAY) {
+            Array arr = nlv;
+            for (int i = 0; i < arr.size(); i++) new_lines.push_back(String(arr[i]));
+        } else {
+            new_lines = String(nlv).split("\n");
+        }
+
+        PanelContainer *panel = memnew(PanelContainer);
+        hunks_container->add_child(panel);
+        VBoxContainer *vb = memnew(VBoxContainer);
+        panel->add_child(vb);
+        CheckBox *cb = memnew(CheckBox);
+        cb->set_text("@@ -" + String::num_int64(a) + "," + String::num_int64(MAX(0, b)) + " +" + String::num_int64(a) + "," + String::num_int64(new_lines.size()) + " @@");
+        cb->set_pressed(true);
+        vb->add_child(cb);
+        RichTextLabel *rtl = memnew(RichTextLabel);
+        rtl->set_use_bbcode(true);
+        rtl->set_fit_content(true);
+        rtl->set_selection_enabled(true);
+        vb->add_child(rtl);
+
+        Vector<String> orig_lines = original_text.split("\n");
+        String diff_text;
+        for (int i = 0; i < b; i++) {
+            int idx = a - 1 + i;
+            if (idx >= 0 && idx < orig_lines.size()) diff_text += "[color=red]-" + orig_lines[idx].xml_escape() + "[/color]\n";
+        }
+        for (int i = 0; i < new_lines.size(); i++) {
+            diff_text += "[color=green]+" + new_lines[i].xml_escape() + "[/color]\n";
+        }
+        rtl->set_text(diff_text);
+
+        // Track minimal hunk data for get_final_content()
+        DiffHunk dh;
+        dh.hunk.a = a;
+        dh.hunk.b = b;
+        dh.hunk.c = a;
+        dh.hunk.d = new_lines.size();
+        for (int i = 0; i < b; i++) {
+            int idx = a - 1 + i;
+            DiffLine dl; dl.type = dtl::SES_DELETE; dl.text = (idx >= 0 && idx < orig_lines.size()) ? orig_lines[idx] : String();
+            dh.lines.push_back(dl);
+        }
+        for (int i = 0; i < new_lines.size(); i++) { DiffLine dl; dl.type = dtl::SES_ADD; dl.text = new_lines[i]; dh.lines.push_back(dl);}        
+        hunks.push_back(dh);
+        return;
+    }
+
+    if (mode == "full" && structured_edits.has("edits")) {
+        Array edits = structured_edits["edits"];
+        // Render each edit as a hunk
+        Vector<String> orig_lines = original_text.split("\n");
+        for (int e = 0; e < edits.size(); e++) {
+            if (edits[e].get_type() != Variant::DICTIONARY) continue;
+            Dictionary op = edits[e];
+            String t = String(op.get("type", "")).to_lower();
+            PanelContainer *panel = memnew(PanelContainer);
+            hunks_container->add_child(panel);
+            VBoxContainer *vb = memnew(VBoxContainer);
+            panel->add_child(vb);
+            RichTextLabel *rtl = memnew(RichTextLabel);
+            rtl->set_use_bbcode(true);
+            rtl->set_fit_content(true);
+            rtl->set_selection_enabled(true);
+            vb->add_child(rtl);
+            CheckBox *cb = memnew(CheckBox);
+            cb->set_pressed(true);
+            vb->add_child(cb);
+
+            String diff_text;
+            DiffHunk dh;
+            if (t == "replace") {
+                int a = int(op.get("start", 1));
+                int end = int(op.get("end", a - 1));
+                int b = MAX(0, end - a + 1);
+                Array lines = op.get("lines", Array());
+                Vector<String> new_lines; for (int i = 0; i < lines.size(); i++) new_lines.push_back(String(lines[i]));
+                cb->set_text("@@ -" + String::num_int64(a) + "," + String::num_int64(b) + " +" + String::num_int64(a) + "," + String::num_int64(new_lines.size()) + " @@");
+                for (int i = 0; i < b; i++) { int idx = a - 1 + i; if (idx >= 0 && idx < orig_lines.size()) diff_text += "[color=red]-" + orig_lines[idx].xml_escape() + "[/color]\n"; }
+                for (int i = 0; i < new_lines.size(); i++) diff_text += "[color=green]+" + new_lines[i].xml_escape() + "[/color]\n";
+                dh.hunk.a = a; dh.hunk.b = b; dh.hunk.c = a; dh.hunk.d = new_lines.size();
+                for (int i = 0; i < b; i++) { int idx = a - 1 + i; DiffLine dl; dl.type = dtl::SES_DELETE; dl.text = (idx >= 0 && idx < orig_lines.size()) ? orig_lines[idx] : String(); dh.lines.push_back(dl);}                
+                for (int i = 0; i < new_lines.size(); i++) { DiffLine dl; dl.type = dtl::SES_ADD; dl.text = new_lines[i]; dh.lines.push_back(dl);}                
+            } else if (t == "insert") {
+                int after = int(op.get("after", 0));
+                Array lines = op.get("lines", Array());
+                Vector<String> new_lines; for (int i = 0; i < lines.size(); i++) new_lines.push_back(String(lines[i]));
+                cb->set_text("@@ -" + String::num_int64(after + 1) + ",0 +" + String::num_int64(after + 1) + "," + String::num_int64(new_lines.size()) + " @@");
+                for (int i = 0; i < new_lines.size(); i++) diff_text += "[color=green]+" + new_lines[i].xml_escape() + "[/color]\n";
+                dh.hunk.a = after + 1; dh.hunk.b = 0; dh.hunk.c = after + 1; dh.hunk.d = new_lines.size();
+                for (int i = 0; i < new_lines.size(); i++) { DiffLine dl; dl.type = dtl::SES_ADD; dl.text = new_lines[i]; dh.lines.push_back(dl);}                
+            } else if (t == "delete") {
+                int a = int(op.get("start", 1));
+                int end = int(op.get("end", a - 1));
+                int b = MAX(0, end - a + 1);
+                cb->set_text("@@ -" + String::num_int64(a) + "," + String::num_int64(b) + " +" + String::num_int64(a) + ",0 @@");
+                for (int i = 0; i < b; i++) { int idx = a - 1 + i; if (idx >= 0 && idx < orig_lines.size()) diff_text += "[color=red]-" + orig_lines[idx].xml_escape() + "[/color]\n"; }
+                dh.hunk.a = a; dh.hunk.b = b; dh.hunk.c = a; dh.hunk.d = 0;
+                for (int i = 0; i < b; i++) { int idx = a - 1 + i; DiffLine dl; dl.type = dtl::SES_DELETE; dl.text = (idx >= 0 && idx < orig_lines.size()) ? orig_lines[idx] : String(); dh.lines.push_back(dl);}                
+            }
+
+            rtl->set_text(diff_text);
+            hunks.push_back(dh);
+        }
+    }
+}
+
 bool DiffViewer::has_script_open(const String &p_path) {
     ScriptEditor *script_editor = ScriptEditor::get_singleton();
     if (!script_editor) {

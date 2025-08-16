@@ -47,6 +47,10 @@ public:
     static bool has_preview_overlay(const String &p_path);
     static String get_preview_overlay(const String &p_path);
 
+    // Runtime error collection (Debugger/Output → AI)
+    static void record_runtime_error(const Dictionary &p_error);
+    static Dictionary get_runtime_errors(const Dictionary &p_args);
+
     // File utilities
     static int get_file_line_count(const String &p_path, int p_max_bytes = 0);
 

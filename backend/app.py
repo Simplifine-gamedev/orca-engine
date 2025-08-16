@@ -1094,8 +1094,7 @@ def chat():
                 if msg is not None and isinstance(msg, dict) and msg.get('role'):
                     conversation_messages.append(msg)
                 else:
-                    print(f"STARTUP_FILTER: Skipping invalid message: {type(msg)} = {msg}")
-                
+                    pass
                 # Check for stop even during initial processing
                 if check_stop():
                     print(f"STOP_DETECTED: Request {request_id} stopped during message filtering")
@@ -1684,31 +1683,79 @@ def predict_code_edit():
     if gate is not None:
         return gate
     """
-    Uses OpenAI's Predicted Outputs feature to edit code files.
-    Provides the original file content as prediction and returns the complete edited file.
+    AI-powered apply edit endpoint.
+    - Requests a structured JSON diff from the model rather than a full file.
+    - Applies the diff server-side to reconstruct the full edited content.
+    - Returns the structured edits, full edited content, and a unified diff.
+    Supports both full-file edits and range edits.
     """
     data = request.json
     file_content = data.get('file_content', '')
     prompt = data.get('prompt')
+    # Optional range-edit context from frontend
+    lines_mode = (data.get('lines') or data.get('mode') or 'all').lower()
+    start_line = int(data.get('start_line') or 0)
+    end_line = int(data.get('end_line') or 0)
+    pre_text = data.get('pre_text') or ''
+    post_text = data.get('post_text') or ''
+    path = data.get('path') or ''
     
     print(f"APPLY_EDIT_REQUEST: Received request with prompt: '{prompt}' for file content length: {len(file_content)}")
 
     if not prompt:
         return jsonify({"error": "Missing 'prompt'"}), 400
 
-    # Simple, clear prompt for file editing
-    user_prompt = f"Edit this file according to the request: {prompt}\n\nReturn the complete edited file content."
+    # Build instruction for structured edits
+    # For full-file edits, LLM should output operations with 1-based line indices.
+    # For range edits, LLM should output a single replacement for the provided range.
+    instruction = {
+        "goal": "Edit the code per the user's request using a structured edit plan, not full file output.",
+        "output_format": {
+            "mode": "full|range",
+            "edits": [
+                {"type": "replace", "start": 1, "end": 3, "lines": ["..."]},
+                {"type": "insert", "after": 10, "lines": ["..."]},
+                {"type": "delete", "start": 20, "end": 22}
+            ],
+            "range_edit": {"start_line": 12, "end_line": 18, "new_lines": ["..."]}
+        },
+        "rules": [
+            "Always return minified JSON only (no markdown fences, no prose).",
+            "Use mode 'range' only if editing exactly the provided selection; otherwise use 'full'.",
+            "Line numbers are 1-based and inclusive.",
+            "Prefer small targeted edits over large replacements."
+        ]
+    }
 
     try:
-        # Simple approach: provide file content in context and ask for complete edited file
-        full_prompt = f"""Edit this file according to the request: {prompt}
-
-Original file content:
-```
-{file_content}
-```
-
-Return the complete edited file content (no explanations, just the code):"""
+        import json as _json
+        # Prompt the model to generate structured JSON edits, not full code
+        is_range = (lines_mode == 'range') or (start_line > 0 and end_line >= start_line)
+        if is_range:
+            # Provide only the selected segment for range mode to reduce tokens
+            full_prompt = (
+                "You are an assistant editing a code segment.\n"
+                f"User request: {prompt}\n\n"
+                "Return ONLY minified JSON per schema: {\"mode\":\"range\", \"range_edit\":{\"start_line\":INT, \"end_line\":INT, \"new_lines\":[STRING...]}}.\n"
+                "- Do not include code fences.\n"
+                "- start_line and end_line refer to the provided segment (1-based).\n"
+                "- new_lines must be the full replacement of the selected range.\n\n"
+                "Provided segment (lines to edit):\n" + file_content
+            )
+        else:
+            # Full-file mode: provide full content and ask for small diffs
+            # Keep context succinct; the model returns structured ops
+            sample_schema = _json.dumps(instruction["output_format"])  # example schema
+            rules = "\n".join([f"- {r}" for r in instruction["rules"]])
+            full_prompt = (
+                "You are an assistant editing a code file.\n"
+                f"User request: {prompt}\n\n"
+                f"Schema example (not literal, just shape): {sample_schema}\n"
+                f"Rules:\n{rules}\n\n"
+                "Return ONLY minified JSON with {\"mode\":\"full\", \"edits\":[...]} using the operations above.\n"
+                "Do not include any code fences or commentary.\n\n"
+                "Original file content follows:\n" + file_content
+            )
 
         response = completion(
             model=get_validated_chat_model(data.get('model')),
@@ -1717,13 +1764,139 @@ Return the complete edited file content (no explanations, just the code):"""
             ]
         )
 
-        edited_content = response.choices[0].message.content
-        print(f"APPLY_EDIT_MODEL: Received edited file content (length: {len(edited_content)})")
-        
-        # Return the complete edited file content
+        raw = response.choices[0].message.content
+        print(f"APPLY_EDIT_MODEL: Raw model output (first 600 chars): {raw[:600]}")
+
+        # Helper: clean code fences and parse json
+        def _clean_to_json_string(s: str) -> str:
+            s = (s or '').strip()
+            if s.startswith('```'):
+                parts = s.split('\n')
+                if parts and parts[0].startswith('```'):
+                    parts = parts[1:]
+                if parts and parts[-1].strip() == '```':
+                    parts = parts[:-1]
+                s = '\n'.join(parts)
+            s = s.replace('```json', '').replace('```', '').strip()
+            return s
+
+        import json
+        model_json = None
+        try:
+            model_json = json.loads(_clean_to_json_string(raw))
+        except Exception as _:
+            model_json = None
+
+        # Fallback: if the model failed to return JSON, treat output as full replacement (legacy)
+        def _split_lines(text: str) -> list[str]:
+            return (text or '').split('\n')
+
+        def _apply_full_ops(orig_lines: list[str], ops: list[dict]) -> list[str]:
+            # Apply in descending order of positions to avoid index shift
+            def op_key(d: dict) -> int:
+                if d.get('type') == 'insert':
+                    return int(d.get('after') or 0)
+                return int(d.get('start') or 0)
+            new_lines = list(orig_lines)
+            for op in sorted(ops, key=op_key, reverse=True):
+                t = (op.get('type') or '').lower()
+                if t == 'replace':
+                    start = max(1, int(op.get('start') or 1))
+                    end = max(start - 1, int(op.get('end') or (start - 1)))
+                    repl = op.get('lines') or []
+                    new_lines[start-1:end] = repl
+                elif t == 'insert':
+                    after = int(op.get('after') or 0)
+                    ins = op.get('lines') or []
+                    idx = max(0, after)  # insert after N means at index N
+                    new_lines[idx:idx] = ins
+                elif t == 'delete':
+                    start = max(1, int(op.get('start') or 1))
+                    end = max(start - 1, int(op.get('end') or (start - 1)))
+                    del new_lines[start-1:end]
+            return new_lines
+
+        import difflib
+
+        is_range_mode = (lines_mode == 'range') or (start_line > 0 and end_line >= start_line)
+        if is_range_mode:
+            # Build original full from pre/segment/post
+            original_full = (pre_text or '')
+            if original_full and file_content and not original_full.endswith('\n'):
+                original_full += '\n'
+            original_full += (file_content or '')
+            if post_text:
+                if original_full and not original_full.endswith('\n'):
+                    original_full += '\n'
+                original_full += post_text
+
+            if model_json and (model_json.get('mode') or '').lower() == 'range' and isinstance(model_json.get('range_edit'), dict):
+                redit = model_json['range_edit']
+                seg_start = int(redit.get('start_line') or 1)
+                seg_end = int(redit.get('end_line') or seg_start - 1)
+                new_lines = redit.get('new_lines')
+                if isinstance(new_lines, str):
+                    new_lines = new_lines.split('\n')
+                if not isinstance(new_lines, list):
+                    new_lines = _split_lines(file_content)
+                # Apply to the provided segment only, splice back into full
+                seg_lines = _split_lines(file_content)
+                seg_lines[seg_start-1:seg_end] = new_lines
+                full_edited_content = (pre_text or '')
+                if full_edited_content and seg_lines and not full_edited_content.endswith('\n'):
+                    full_edited_content += '\n'
+                full_edited_content += "\n".join(seg_lines)
+                if post_text:
+                    if full_edited_content and not full_edited_content.endswith('\n'):
+                        full_edited_content += '\n'
+                    full_edited_content += post_text
+                structured_edits = {"mode": "range", "range_edit": redit}
+            else:
+                # Fallback: treat raw as new segment
+                cleaned = _clean_to_json_string(raw)
+                full_edited_content = (pre_text or '')
+                if full_edited_content and cleaned and not full_edited_content.endswith('\n'):
+                    full_edited_content += '\n'
+                full_edited_content += cleaned
+                if post_text:
+                    if full_edited_content and not full_edited_content.endswith('\n'):
+                        full_edited_content += '\n'
+                    full_edited_content += post_text
+                structured_edits = None
+        else:
+            # Full-file mode
+            original_full = file_content or ''
+            if model_json and (model_json.get('mode') or '').lower() == 'full' and isinstance(model_json.get('edits'), list):
+                orig_lines = _split_lines(original_full)
+                new_lines = _apply_full_ops(orig_lines, model_json['edits'])
+                full_edited_content = "\n".join(new_lines)
+                structured_edits = {"mode": "full", "edits": model_json['edits']}
+            else:
+                # Fallback: assume raw is full content replacement
+                cleaned = _clean_to_json_string(raw)
+                full_edited_content = cleaned
+                structured_edits = None
+
+        diff_lines = list(difflib.unified_diff(
+            (original_full or '').splitlines(),
+            (full_edited_content or '').splitlines(),
+            fromfile=f"{path} (original)" if path else 'original',
+            tofile=f"{path} (modified)" if path else 'modified',
+            lineterm=''
+        ))
+        diff_text = "\n".join(diff_lines)
+
         return jsonify({
-            "edited_content": edited_content,
-            "success": True
+            "success": True,
+            "mode": "range" if is_range_mode else "full",
+            "path": path,
+            "start_line": start_line,
+            "end_line": end_line,
+            "structured_edits": structured_edits if structured_edits is not None else {},
+            "full_edited_content": full_edited_content,
+            # For compatibility with existing frontend expecting edited_content
+            "edited_content": full_edited_content,
+            "diff": diff_text,
         })
         
     except Exception as e:

@@ -43,8 +43,10 @@
 #include "editor/docks/inspector_dock.h"
 #include "editor/editor_log.h"
 #include "editor/editor_node.h"
+#include "editor/docks/ai_chat_dock.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/ai/editor_tools.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/gui/editor_toaster.h"
 #include "editor/inspector/editor_property_name_processor.h"
@@ -85,6 +87,41 @@ void ScriptEditorDebugger::debug_copy() {
 		return;
 	}
 	DisplayServer::get_singleton()->clipboard_set(msg);
+}
+
+void ScriptEditorDebugger::_fix_with_ai_pressed() {
+	// Build a concise error summary from the selected top-level error item.
+	TreeItem *root = error_tree->get_root();
+	if (!root) {
+		return;
+	}
+	TreeItem *selected = error_tree->get_selected();
+	if (!selected) {
+		selected = root->get_first_child();
+	}
+	if (!selected) {
+		return;
+	}
+	// Ensure we reference the top-level container entry
+	while (selected->get_parent() && selected->get_parent() != root) {
+		selected = selected->get_parent();
+	}
+	String summary;
+	summary += selected->get_text(0) + "  " + selected->get_text(1) + "\n";
+	for (TreeItem *ci = selected->get_first_child(); ci; ci = ci->get_next()) {
+		summary += ci->get_text(0) + "  " + ci->get_text(1) + "\n";
+	}
+
+	EditorNode *en = EditorNode::get_singleton();
+	if (!en) {
+		return;
+	}
+	AIChatDock *dock = en->get_ai_chat_dock();
+	if (!dock) {
+		return;
+	}
+	String prompt = String("Please help me diagnose and fix this runtime error.\n\n") + summary;
+	dock->send_error_message(prompt);
 }
 
 void ScriptEditorDebugger::debug_skip_breakpoints() {
@@ -733,6 +770,22 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	} else {
 		error_count++;
 	}
+
+	// Record for AI runtime errors API
+	{
+		Dictionary rec;
+		rec["type"] = oe.warning ? String("warning") : String("error");
+		rec["time_ms"] = OS::get_singleton()->get_ticks_msec();
+		rec["message"] = error_title;
+		rec["file"] = oe.source_file;
+		rec["line"] = oe.source_line;
+		rec["is_warning"] = oe.warning;
+		#ifdef TOOLS_ENABLED
+		#ifdef TOOLS_ENABLED
+		EditorTools::record_runtime_error(rec);
+		#endif
+		#endif
+	}
 }
 
 void ScriptEditorDebugger::_msg_servers_function_signature(uint64_t p_thread_id, const Array &p_data) {
@@ -991,7 +1044,15 @@ void ScriptEditorDebugger::_set_reason_text(const String &p_reason, MessageType 
 			break;
 	}
 
-	reason->set_text(p_reason);
+	last_reason_text = p_reason;
+	String display = p_reason;
+	if (!p_reason.is_empty()) {
+		display += String("  ");
+		display += String("[color=#80c8ff][u][url=fix_with_ai_debugger:]Fix with AI[/url][/u][/color]");
+		reason->set_use_bbcode(true);
+	}
+
+	reason->set_text(display);
 
 	_update_reason_content_height();
 
@@ -2024,6 +2085,14 @@ ScriptEditorDebugger::ScriptEditorDebugger() {
 		copy->set_tooltip_text(TTR("Copy Error"));
 		copy->connect(SceneStringName(pressed), callable_mp(this, &ScriptEditorDebugger::debug_copy));
 
+		reason->connect("meta_clicked", callable_mp(this, &ScriptEditorDebugger::_reason_meta_clicked));
+
+		fix_with_ai = memnew(Button);
+		fix_with_ai->set_theme_type_variation(SceneStringName(FlatButton));
+		hbc->add_child(fix_with_ai);
+		fix_with_ai->set_tooltip_text(TTR("Fix with AI"));
+		fix_with_ai->connect(SceneStringName(pressed), callable_mp(this, &ScriptEditorDebugger::_fix_with_ai_pressed));
+
 		hbc->add_child(memnew(VSeparator));
 
 		step = memnew(Button);
@@ -2364,4 +2433,52 @@ ScriptEditorDebugger::~ScriptEditorDebugger() {
 		peer.unref();
 	}
 	memdelete(scene_tree);
+}
+
+void ScriptEditorDebugger::_reason_meta_clicked(const Variant &p_meta) {
+	if (p_meta.get_type() != Variant::STRING) {
+		return;
+	}
+	String meta = p_meta;
+	if (meta != "fix_with_ai_debugger:") {
+		return;
+	}
+
+	String text = last_reason_text;
+	if (text.is_empty()) {
+		text = reason->get_text();
+	}
+	if (text.is_empty()) {
+		return;
+	}
+
+	// Try to include top-of-stack file/line
+	String location;
+	if (stack_dump && stack_dump->get_root()) {
+		TreeItem *first = stack_dump->get_root()->get_first_child();
+		if (first) {
+			Dictionary md = first->get_metadata(0);
+			String file = md.get("file", String());
+			int line = md.get("line", -1);
+			if (!file.is_empty() && line >= 0) {
+				location = vformat("File: %s\nLine: %d", file, line);
+			}
+		}
+	}
+
+	EditorNode *en = EditorNode::get_singleton();
+	if (!en) {
+		return;
+	}
+	AIChatDock *dock = en->get_ai_chat_dock();
+	if (!dock) {
+		return;
+	}
+	String prompt;
+	if (!location.is_empty()) {
+		prompt = String("Please help me fix this runtime error.\n") + location + "\n\n" + text;
+	} else {
+		prompt = String("Please help me fix this runtime error.\n\n") + text;
+	}
+	dock->send_error_message(prompt);
 }

@@ -354,6 +354,8 @@ private:
 	String _process_inline_markdown(String p_line);
 
 	void _on_diff_accepted(const String &p_path, const String &p_content);
+	void _on_apply_preview_to_editor(const String &p_path, const String &p_content);
+	void _on_discard_preview(const String &p_path);
 
 	// Image processing methods
 	bool _is_image_file(const String &p_path);
@@ -406,6 +408,10 @@ private:
 	HashSet<String> tool_calls_ui_applied;
 	HashSet<String> tool_result_deferred_pending;
 	Dictionary tool_result_retry_counts; // key: tool_call_id -> int tries
+
+	// Global AI-busy flag for overlay scoping and UI state correctness
+	int ai_busy_count = 0;
+	Mutex ai_busy_mutex;
 
 	void _schedule_tool_result_retry(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results);
 	void _on_tool_result_retry_timeout(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results);

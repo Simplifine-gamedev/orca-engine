@@ -36,6 +36,9 @@ private:
 
     Vector<DiffHunk> hunks;
 
+    // Structured edits support from backend/LLM
+    Dictionary structured_edits; // { mode:"full|range", edits:[...]} or {mode:"range", range_edit:{...}}
+
 protected:
     void _notification(int p_what);
     static void _bind_methods();
@@ -49,6 +52,7 @@ public:
     DiffViewer();
 
     void set_diff(const String &p_path, const String &p_original, const String &p_modified);
+    void set_structured_edits(const String &p_path, const String &p_original, const Dictionary &p_structured);
     
     // New methods for direct script editor integration
     String get_final_content();

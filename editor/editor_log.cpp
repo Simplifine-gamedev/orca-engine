@@ -209,7 +209,7 @@ void EditorLog::_meta_clicked(const String &p_meta) {
 			print_line("AI Chat: Unable to send error - AI Chat dock not available or empty error text");
 		}
 	} else {
-		// Handle regular URL/meta clicks
+		// Handle regular URL/meta clicks, but also record runtime error/warning when clicked
 		OS::get_singleton()->shell_open(p_meta);
 	}
 }

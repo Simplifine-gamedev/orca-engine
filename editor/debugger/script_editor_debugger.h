@@ -119,10 +119,12 @@ private:
 	TabContainer *tabs = nullptr;
 
 	RichTextLabel *reason = nullptr;
+	String last_reason_text;
 
 	Button *skip_breakpoints = nullptr;
 	Button *ignore_error_breaks = nullptr;
 	Button *copy = nullptr;
+	Button *fix_with_ai = nullptr;
 	Button *step = nullptr;
 	Button *next = nullptr;
 	Button *dobreak = nullptr;
@@ -268,7 +270,9 @@ private:
 	void _breakpoints_item_rmb_selected(const Vector2 &p_pos, MouseButton p_button);
 	void _error_tree_item_rmb_selected(const Vector2 &p_pos, MouseButton p_button);
 	void _item_menu_id_pressed(int p_option);
+	void _fix_with_ai_pressed();
 	void _tab_changed(int p_tab);
+	void _reason_meta_clicked(const Variant &p_meta);
 
 	void _put_msg(const String &p_message, const Array &p_data, uint64_t p_thread_id = Thread::MAIN_ID);
 	void _export_csv();
