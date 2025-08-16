@@ -1,4 +1,4 @@
-# Keep Docker build context small
+# Files and directories to exclude from Cloud Build upload (backend context)
 
 # VCS and metadata
 .git/

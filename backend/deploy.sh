@@ -22,6 +22,10 @@ echo "Project ID: ${PROJECT_ID}"
 echo "Service Name: ${SERVICE_NAME}"
 echo "Region: ${REGION}"
 
+# Always run from this script's directory so build context is only the backend/
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+pushd "$SCRIPT_DIR" >/dev/null
+
 # Check if gcloud is authenticated
 if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q .; then
     echo "❌ Error: No active gcloud authentication found."
@@ -42,7 +46,7 @@ gcloud services enable bigquery.googleapis.com
 # gcloud services enable aiplatform.googleapis.com  # Not needed for OpenAI embeddings
 
 # Build and push the container image
-echo "🏗️  Building container image..."
+echo "🏗️  Building container image (scoped to backend/ context)..."
 gcloud builds submit --tag ${IMAGE_NAME}
 
 # Upload secrets to GCP Secret Manager if .env exists
