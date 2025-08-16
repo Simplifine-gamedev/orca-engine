@@ -6,6 +6,7 @@
  */
 #include "editor_tools.h"
 
+// Add core includes early so they're available to helper functions below
 #include "core/crypto/crypto.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
@@ -30,6 +31,72 @@
 #include "modules/gdscript/gdscript_parser.h"
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_compiler.h"
+
+// In-memory overlay of edited content awaiting user Accept/Reject in the editor.
+// Key: absolute or res:// path; Value: edited content string
+static Dictionary s_preview_overlays;
+
+void EditorTools::set_preview_overlay(const String &p_path, const String &p_content) {
+	if (p_path.is_empty()) {
+		return;
+	}
+	s_preview_overlays[p_path] = p_content;
+}
+
+void EditorTools::clear_preview_overlay(const String &p_path) {
+	if (p_path.is_empty()) {
+		return;
+	}
+	if (s_preview_overlays.has(p_path)) {
+		s_preview_overlays.erase(p_path);
+	}
+}
+
+bool EditorTools::has_preview_overlay(const String &p_path) {
+	return !p_path.is_empty() && s_preview_overlays.has(p_path);
+}
+
+String EditorTools::get_preview_overlay(const String &p_path) {
+	if (!p_path.is_empty() && s_preview_overlays.has(p_path)) {
+		return String(s_preview_overlays[p_path]);
+	}
+	return String();
+}
+
+int EditorTools::get_file_line_count(const String &p_path, int p_max_bytes) {
+	if (p_path.is_empty()) {
+		return 0;
+	}
+	// Prefer overlay if present
+	if (EditorTools::has_preview_overlay(p_path)) {
+		Vector<String> lines = EditorTools::get_preview_overlay(p_path).split("\n");
+		return lines.size();
+	}
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
+	if (f.is_null()) {
+		return 0;
+	}
+	int64_t remaining = p_max_bytes > 0 ? p_max_bytes : INT64_MAX;
+	int line_count = 0;
+	const int64_t CHUNK = 64 * 1024;
+	PackedByteArray buf;
+	while (!f->eof_reached() && remaining > 0) {
+		int64_t to_read = MIN(CHUNK, remaining);
+		buf.resize(to_read);
+		int64_t read = f->get_buffer(buf.ptrw(), to_read);
+		if (read <= 0) {
+			break;
+		}
+		for (int64_t i = 0; i < read; i++) {
+			if (buf[i] == '\n') {
+				line_count++;
+			}
+		}
+		remaining -= read;
+	}
+	f->close();
+	return line_count;
+}
 
 #include <functional>
 #include <utility>
@@ -1054,7 +1121,12 @@ Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 				}
 			} else {
 				if (filter.is_empty() || file_name.match(filter)) {
-					files.push_back(file_name);
+					String full_path = path.ends_with("/") ? path + file_name : path + String("/") + file_name;
+					Dictionary info;
+					info["name"] = file_name;
+					info["path"] = full_path;
+					info["line_count"] = get_file_line_count(full_path, 512 * 1024); // up to ~512KB
+					files.push_back(info);
 				}
 			}
 			file_name = dir->get_next();
@@ -1087,34 +1159,41 @@ Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	}
 	String path = p_args["path"];
 	Error err;
+	// Prefer in-memory preview overlay if present
+	if (EditorTools::has_preview_overlay(path)) {
+		String overlay = EditorTools::get_preview_overlay(path);
+		result["success"] = true;
+		result["content"] = overlay;
+		return result;
+	}
 	String content = FileAccess::get_file_as_string(path, &err);
-    if (err == OK) {
-        result["success"] = true;
-        result["content"] = content;
-        return result;
-    }
+	if (err == OK) {
+		result["success"] = true;
+		result["content"] = content;
+		return result;
+	}
 
-    // Fallback: attempt a bounded preview for very large or special files (e.g., big .tres)
-    Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
-    if (f.is_valid()) {
-        const int64_t MAX_PREVIEW_BYTES = 64 * 1024; // 64 KiB preview
-        int64_t file_len = f->get_length();
-        int64_t to_read = file_len < MAX_PREVIEW_BYTES ? file_len : MAX_PREVIEW_BYTES;
-        PackedByteArray bytes;
-        bytes.resize(to_read);
-        int64_t read = f->get_buffer(bytes.ptrw(), to_read);
-        f->close();
-        String preview = String::utf8((const char *)bytes.ptr(), (int)read);
-        result["success"] = true;
-        result["content"] = preview + (file_len > to_read ? String("\n\n…\n[Truncated preview. Use read_file_advanced with start_line/end_line to fetch specific sections.]") : String());
-        result["truncated"] = file_len > to_read;
-        return result;
-    }
+	// Fallback: attempt a bounded preview for very large or special files (e.g., big .tres)
+	Ref<FileAccess> f = FileAccess::open(path, FileAccess::READ);
+	if (f.is_valid()) {
+		const int64_t MAX_PREVIEW_BYTES = 64 * 1024; // 64 KiB preview
+		int64_t file_len = f->get_length();
+		int64_t to_read = file_len < MAX_PREVIEW_BYTES ? file_len : MAX_PREVIEW_BYTES;
+		PackedByteArray bytes;
+		bytes.resize(to_read);
+		int64_t read = f->get_buffer(bytes.ptrw(), to_read);
+		f->close();
+		String preview = String::utf8((const char *)bytes.ptr(), (int)read);
+		result["success"] = true;
+		result["content"] = preview + (file_len > to_read ? String("\n\n…\n[Truncated preview. Use read_file_advanced with start_line/end_line to fetch specific sections.]") : String());
+		result["truncated"] = file_len > to_read;
+		return result;
+	}
 
-    // If fallback also fails, report the original error
-    result["success"] = false;
-    result["message"] = "Failed to read file: " + path;
-    return result;
+	// If fallback also fails, report the original error
+	result["success"] = false;
+	result["message"] = "Failed to read file: " + path;
+	return result;
 }
 
 Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
@@ -1125,6 +1204,21 @@ Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
 		return result;
 	}
 	String path = p_args["path"];
+	// Honor in-memory overlay if present
+	if (EditorTools::has_preview_overlay(path)) {
+		int start_line = p_args.has("start_line") ? (int)p_args["start_line"] : 1;
+		int end_line = p_args.has("end_line") ? (int)p_args["end_line"] : -1;
+		String overlay = EditorTools::get_preview_overlay(path);
+		Vector<String> lines = overlay.split("\n");
+		if (end_line == -1) end_line = lines.size();
+		String out;
+		for (int i = MAX(1, start_line); i <= MIN(end_line, lines.size()); i++) {
+			out += lines[i - 1] + "\n";
+		}
+		result["success"] = true;
+		result["content"] = out;
+		return result;
+	}
 	Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
 	if (file.is_null()) {
 		result["success"] = false;
@@ -1307,10 +1401,14 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		host = host.substr(0, host.find(":"));
 	}
 	
-	// Construct the apply endpoint path
-	String apply_path = base_path.replace("/chat", "/apply");
+	// Construct the apply endpoint path expected by backend
+	String apply_path = base_path.replace("/chat", "/predict_code_edit");
 
-	Error err = http_client->connect_to_host(host, port, use_ssl ? Ref<TLSOptions>() : Ref<TLSOptions>());
+	Ref<TLSOptions> tls;
+	if (use_ssl) {
+		tls = TLSOptions::client();
+	}
+	Error err = http_client->connect_to_host(host, port, tls);
 	if (err != OK) {
 		result["success"] = false;
 		result["message"] = "Failed to connect to host: " + host;
@@ -1326,26 +1424,58 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 
 	if (http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
 		result["success"] = false;
-		result["message"] = "Failed to connect to host after polling.";
+		result["message"] = "Failed to connect to host after polling. Status: " + itos(http_client->get_status());
 		memdelete(http_client);
+		print_line("APPLY_EDIT ERROR: Connection failed with status: " + itos(http_client->get_status()));
 		return result;
 	}
+	
+	print_line("APPLY_EDIT: Successfully connected to " + host + ":" + itos(port) + ", sending request to: " + apply_path);
 
 	// Prepare request body to match backend's expected format
 	Dictionary request_data;
-	request_data["file_name"] = p_file_path;
 	request_data["file_content"] = p_file_content;
 	request_data["prompt"] = p_ai_args.get("prompt", "");
-	request_data["tool_arguments"] = p_ai_args;
 
 	Ref<JSON> json;
 	json.instantiate();
 	String request_body_str = json->stringify(request_data);
 	PackedByteArray request_body = request_body_str.to_utf8_buffer();
 
+	// Build headers (mirror chat/image requests)
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
 	headers.push_back("Content-Length: " + itos(request_body.size()));
+	headers.push_back("Accept: application/json");
+
+	// Auth and context headers
+	String auth_token;
+	String user_id;
+	if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
+		auth_token = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
+	}
+	if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
+		user_id = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
+	}
+	String machine_id = OS::get_singleton()->get_unique_id();
+	if (machine_id.is_empty()) {
+		machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
+		machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
+	}
+	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
+
+	if (!auth_token.is_empty()) {
+		headers.push_back("Authorization: Bearer " + auth_token);
+	}
+	if (!user_id.is_empty()) {
+		headers.push_back("X-User-ID: " + user_id);
+	}
+	if (!machine_id.is_empty()) {
+		headers.push_back("X-Machine-ID: " + machine_id);
+	}
+	if (!project_root.is_empty()) {
+		headers.push_back("X-Project-Root: " + project_root);
+	}
 
 	err = http_client->request(HTTPClient::METHOD_POST, apply_path, headers, request_body.ptr(), request_body.size());
 	if (err != OK) {
@@ -1363,7 +1493,8 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 
 	if (http_client->get_status() != HTTPClient::STATUS_BODY && http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
 		result["success"] = false;
-		result["message"] = "Request failed after sending.";
+		result["message"] = "Request failed after sending. Status: " + itos(http_client->get_status());
+		print_line("APPLY_EDIT ERROR: Request failed with status: " + itos(http_client->get_status()) + " (expected STATUS_BODY=" + itos(HTTPClient::STATUS_BODY) + " or STATUS_CONNECTED=" + itos(HTTPClient::STATUS_CONNECTED) + ")");
 		memdelete(http_client);
 		return result;
 	}
@@ -1443,22 +1574,38 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         file_content = ""; // create new file from scratch
         print_line("APPLY_EDIT: Target file does not exist; will create new file: " + path);
     }
-    
-    // Use OS system call to bypass Godot's broken HTTPClient
-    Dictionary local_result;
-    String edit_prompt = p_args.get("prompt", "");
-    
-    print_line("APPLY_EDIT: Using OS curl to call backend API - prompt: " + edit_prompt);
-    
-    // Create JSON request
-    Dictionary request_data;
-    request_data["file_content"] = file_content;
-    request_data["prompt"] = edit_prompt;
-    
-    Ref<JSON> json;
-    json.instantiate();
-    String request_json = json->stringify(request_data);
-    
+
+    // Determine edit scope: full file vs line range
+    String lines_mode = String(p_args.get("lines", "all")).to_lower();
+    int range_start = (int)p_args.get("start_line", 0);
+    int range_end = (int)p_args.get("end_line", 0);
+    bool use_range = (lines_mode == "range") || (range_start > 0 && range_end >= range_start);
+
+    Vector<String> file_lines = file_content.split("\n");
+    String pre_text, segment_text, post_text;
+    int total_lines = file_lines.size();
+    if (use_range) {
+        // Clamp range within file
+        if (range_start <= 0) range_start = 1;
+        if (range_end <= 0 || range_end > total_lines) range_end = total_lines;
+        // Build pre/segment/post
+        for (int i = 0; i < range_start - 1 && i < total_lines; i++) {
+            pre_text += file_lines[i];
+            if (i < range_start - 2 || total_lines > 1) pre_text += "\n";
+        }
+        for (int i = range_start - 1; i < range_end && i < total_lines; i++) {
+            segment_text += file_lines[i];
+            if (i < range_end - 1) segment_text += "\n";
+        }
+        for (int i = range_end; i < total_lines; i++) {
+            if (!post_text.is_empty()) post_text += "\n";
+            post_text += file_lines[i];
+        }
+    }
+
+    // Prepare request content: either whole file or only the selected segment
+    String content_for_model = use_range ? segment_text : file_content;
+
     // Prepare auth/context headers to mirror chat/image generation
     String auth_token = String();
     String user_id = String();
@@ -1475,128 +1622,95 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
     }
     String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
 
-    // Write request to temporary file
-    String temp_request_path = OS::get_singleton()->get_user_data_dir() + "/temp_request.json";
-    String temp_response_path = OS::get_singleton()->get_user_data_dir() + "/temp_response.json";
-    
-    Ref<FileAccess> request_file = FileAccess::open(temp_request_path, FileAccess::WRITE);
-    if (request_file.is_valid()) {
-        request_file->store_string(request_json);
-        request_file->close();
-        
-        // Use curl via OS system call, mirroring headers used by chat/image gen
-        // Determine backend URL using same logic as main chat system
-        String base_url;
-        String is_dev = OS::get_singleton()->get_environment("IS_DEV");
-        if (is_dev.is_empty()) {
-            // Backward-compat with DEV_MODE
-            is_dev = OS::get_singleton()->get_environment("DEV_MODE");
-        }
-        if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-            base_url = "http://127.0.0.1:8000";
-        } else {
-            base_url = "https://gamechat.simplifine.com";
-        }
-        
-        // Allow override via editor settings or environment variable
-        if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-            String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
-            if (!override_url.is_empty()) {
-                base_url = override_url;
-            }
-        } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
-            base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
-        }
-        String curl_command = String("curl -X POST ") + base_url + String("/predict_code_edit ") +
-            "-H \"Content-Type: application/json\" " +
-            (auth_token.is_empty() ? String("") : String("-H \"Authorization: Bearer ") + auth_token + "\" ") +
-            (user_id.is_empty() ? String("") : String("-H \"X-User-ID: ") + user_id + "\" ") +
-            (machine_id.is_empty() ? String("") : String("-H \"X-Machine-ID: ") + machine_id + "\" ") +
-            (project_root.is_empty() ? String("") : String("-H \"X-Project-Root: ") + project_root + "\" ") +
-            String("-d @\"") + temp_request_path + String("\" -o \"") + temp_response_path + String("\" -s");
-        
-        print_line("APPLY_EDIT: Executing curl command to backend");
-        
-        List<String> args;
-        args.push_back("-c");
-        args.push_back(curl_command);
-        int exit_code;
-        Error exec_err = OS::get_singleton()->execute("sh", args, nullptr, &exit_code);
-        
-        if (exec_err == OK && exit_code == 0) {
-            // Read response from file
-            Error err;
-            String response_content = FileAccess::get_file_as_string(temp_response_path, &err);
-            
-            if (err == OK && response_content.length() > 0) {
-                Ref<JSON> response_json;
-                response_json.instantiate();
-                Error parse_err = response_json->parse(response_content);
-                
-                if (parse_err == OK) {
-                    Dictionary response_data = response_json->get_data();
-                    local_result["success"] = true;
-                    local_result["edited_content"] = response_data.get("edited_content", file_content);
-                    print_line("APPLY_EDIT: Successfully received response via curl (" + String::num_int64(String(local_result["edited_content"]).length()) + " chars)");
-                } else {
-                    local_result["success"] = false;
-                    local_result["message"] = "Failed to parse curl response JSON";
-                    print_line("APPLY_EDIT ERROR: JSON parse failed - " + response_content.substr(0, 200));
-                }
-            } else {
-                local_result["success"] = false;
-                local_result["message"] = "Failed to read curl response file";
-                print_line("APPLY_EDIT ERROR: Could not read response file");
-            }
-            
-            // Cleanup temp files
-            if (FileAccess::exists(temp_response_path)) {
-                OS::get_singleton()->move_to_trash(temp_response_path);
-            }
-        } else {
-            local_result["success"] = false;
-            local_result["message"] = "Curl command failed with exit code: " + String::num_int64(exit_code);
-            print_line("APPLY_EDIT ERROR: Curl failed - " + String(local_result["message"]));
-        }
-        
-        // Cleanup request file
-        if (FileAccess::exists(temp_request_path)) {
-            OS::get_singleton()->move_to_trash(temp_request_path);
-        }
-    } else {
-        local_result["success"] = false;
-        local_result["message"] = "Failed to create temporary request file";
-        print_line("APPLY_EDIT ERROR: Could not create temp file");
+    print_line("APPLY_EDIT: Using HTTPClient to call backend API - prompt: " + prompt);
+
+    // Determine backend URL using same logic as main chat system
+    String base_url;
+    String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+    if (is_dev.is_empty()) {
+        // Backward-compat with DEV_MODE
+        is_dev = OS::get_singleton()->get_environment("DEV_MODE");
     }
-    // Dictionary local_result = _call_apply_endpoint(path, file_content, p_args, "");
-    
+    if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+        base_url = "http://127.0.0.1:8000";
+    } else {
+        base_url = "https://gamechat.simplifine.com";
+    }
+    // Allow override via editor settings or environment variable
+    if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+        String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+        if (!override_url.is_empty()) {
+            base_url = override_url;
+        }
+    } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+        base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+    }
+
+    // Call backend using only the segment if range mode is used
+    Dictionary args_for_backend = p_args.duplicate();
+    args_for_backend["prompt"] = prompt; // ensure present
+    Dictionary local_result = _call_apply_endpoint(path, content_for_model, args_for_backend, base_url + "/chat");
+
     if (local_result.get("success", false)) {
-        String new_content = local_result["edited_content"];
-        String cleaned_content = _clean_backend_content(new_content);
+        String new_content_segment = local_result.get("edited_content", content_for_model);
+        String cleaned_segment = _clean_backend_content(new_content_segment);
+
+        // Reconstruct full edited content if we only edited a segment
+        String full_edited_content;
+        if (use_range) {
+            full_edited_content = pre_text;
+            if (!pre_text.is_empty() && !cleaned_segment.is_empty() && !pre_text.ends_with("\n")) {
+                // Ensure newline separation if needed
+                full_edited_content += "\n";
+            }
+            full_edited_content += cleaned_segment;
+            if (!post_text.is_empty()) {
+                if (!full_edited_content.is_empty() && !full_edited_content.ends_with("\n")) {
+                    full_edited_content += "\n";
+                }
+                full_edited_content += post_text;
+            }
+        } else {
+            full_edited_content = cleaned_segment;
+        }
 
         // Generate a lightweight diff summary (UI will show proper diff using original/edited content)
         String diff = "";
-        if (file_content.length() > 100000 || cleaned_content.length() > 100000) {
-            diff = "Diff skipped - file too large (original: " + String::num_int64(file_content.length()) + " chars, new: " + String::num_int64(cleaned_content.length()) + " chars)";
+        if (file_content.length() > 100000 || full_edited_content.length() > 100000) {
+            diff = "Diff skipped - file too large (original: " + String::num_int64(file_content.length()) + " chars, new: " + String::num_int64(full_edited_content.length()) + " chars)";
         } else {
-            diff = "=== TEMPORARY SIMPLE DIFF ===\nOriginal length: " + String::num_int64(file_content.length()) + " chars\nNew length: " + String::num_int64(cleaned_content.length()) + " chars\n=== END DIFF ===";
+            diff = "=== TEMPORARY SIMPLE DIFF ===\nOriginal length: " + String::num_int64(file_content.length()) + " chars\nNew length: " + String::num_int64(full_edited_content.length()) + " chars\n=== END DIFF ===";
         }
 
-        // Check compilation/static errors against the edited content before previewing
-        Array comp_errors = _check_compilation_errors(path, cleaned_content);
-        bool has_errors = comp_errors.size() > 0;
+        // Optional compilation check
+        bool skip_compilation_check = p_args.get("skip_compilation_check", false);
+        Array comp_errors;
+        bool has_errors = false;
+        if (!skip_compilation_check) {
+            comp_errors = _check_compilation_errors(path, full_edited_content);
+            has_errors = comp_errors.size() > 0;
+            print_line("APPLY_EDIT: Compilation check completed - found " + String::num_int64(comp_errors.size()) + " errors/warnings");
+        } else {
+            print_line("APPLY_EDIT: Skipping compilation check for better performance");
+        }
 
-        // Do NOT write to disk here. Leave Accept/Reject to the UI layer.
         Dictionary result;
         result["success"] = true;
         result["message"] = file_missing ? String("File does not exist; preview created. Use Accept/Reject to apply.") : String("Preview created. Use Accept/Reject to apply.");
         result["path"] = path;
         result["original_content"] = file_content;
-        result["edited_content"] = cleaned_content;
+        result["edited_content"] = full_edited_content;
         result["diff"] = diff;
         result["compilation_errors"] = comp_errors;
         result["has_errors"] = has_errors;
         result["dynamic_approach"] = false;
+        if (use_range) {
+            Dictionary edit_range;
+            edit_range["start_line"] = range_start;
+            edit_range["end_line"] = range_end;
+            result["edit_range"] = edit_range;
+            result["edited_segment"] = cleaned_segment;
+        }
         return result;
     }
     
@@ -1606,7 +1720,7 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
     failed_result["compilation_errors"] = Array();
     failed_result["has_errors"] = false;
     return failed_result;
-} 
+}
 
 String EditorTools::_clean_backend_content(const String &p_content) {
 	String content = p_content;
@@ -2184,9 +2298,7 @@ Dictionary EditorTools::inspect_physics_body(const Dictionary &p_args) {
 	
 	// Check if it's a physics body
 	if (node->is_class("RigidBody2D") || node->is_class("CharacterBody2D") || 
-		node->is_class("StaticBody2D") || node->is_class("AnimatableBody2D") ||
-		node->is_class("RigidBody3D") || node->is_class("CharacterBody3D") ||
-		node->is_class("StaticBody3D") || node->is_class("AnimatableBody3D")) {
+		node->is_class("StaticBody2D") || node->is_class("Area2D")) {
 		
 		physics_info["is_physics_body"] = true;
 		
