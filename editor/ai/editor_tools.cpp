@@ -1,8 +1,7 @@
 /*
  * © 2025 Simplifine Corp.
- * This file is an original contribution to Orca Engine (based on Godot Engine).
- * Licensed for free personal/non-commercial use under the Company Non‑Commercial License.
- * See LICENSES/COMPANY-NONCOMMERCIAL.md. Commercial use requires a separate license from Simplifine.
+ * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
+ * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from the Project Owner.
  */
 #include "editor_tools.h"
 
@@ -2610,6 +2609,7 @@ Dictionary EditorTools::search_across_project(const Dictionary &p_args) {
 	bool include_graph = p_args.get("include_graph", true);
 	int max_results = p_args.get("max_results", 5);
 	String modality_filter = p_args.get("modality_filter", "");
+	int graph_depth = p_args.get("graph_depth", 2);
 	
 	// Get project root path
 	String project_root = ProjectSettings::get_singleton()->get_resource_path();
@@ -2650,6 +2650,25 @@ Dictionary EditorTools::search_across_project(const Dictionary &p_args) {
 	request_data["project_root"] = project_root;
 	request_data["user_id"] = user_id;
 	request_data["machine_id"] = machine_id;
+	request_data["graph_depth"] = graph_depth;
+	if (p_args.has("graph_edge_kinds")) {
+		request_data["graph_edge_kinds"] = p_args["graph_edge_kinds"];
+	} else {
+		Array kinds;
+		kinds.push_back("CONNECTS_SIGNAL");
+		kinds.push_back("ATTACHES_SCRIPT");
+		kinds.push_back("INSTANTIATES_SCENE");
+		kinds.push_back("CHILD_OF");
+		kinds.push_back("DEFINES_FUNCTION");
+		kinds.push_back("DEFINES_CLASS");
+		kinds.push_back("DEFINES_SIGNAL");
+		kinds.push_back("SCRIPT_EXTENDS");
+		kinds.push_back("CALLS_FUNCTION");
+		kinds.push_back("EMITS_SIGNAL");
+		kinds.push_back("GROUP_MEMBER");
+		kinds.push_back("REFERENCES_RESOURCE");
+		request_data["graph_edge_kinds"] = kinds;
+	}
 	
 	if (!modality_filter.is_empty()) {
 		request_data["modality_filter"] = modality_filter;
@@ -3307,5 +3326,20 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
     // Signals and trace operations not yet implemented in this stub.
     result["success"] = false;
     result["message"] = String("Operation not implemented: ") + operation;
+    return result;
+}
+
+Dictionary EditorTools::search_across_godot_docs(const Dictionary &p_args) {
+    Dictionary result;
+    String query = p_args.get("query", "");
+    if (query.is_empty()) {
+        result["success"] = false;
+        result["error"] = "Query parameter is required";
+        return result;
+    }
+    // This method is invoked via AIToolServer and will be forwarded to backend
+    // through the existing chat tool execution path. Keep it lightweight.
+    result["success"] = true;
+    result["query"] = query;
     return result;
 }

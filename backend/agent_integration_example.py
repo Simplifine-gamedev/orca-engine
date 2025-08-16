@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+© 2025 Simplifine Corp. Personal Non‑Commercial License.
+See LICENSES/COMPANY-NONCOMMERCIAL.md for terms.
+
 Example of how the main AI agent can integrate with the embedding system
 Shows practical usage patterns for RAG (Retrieval-Augmented Generation)
 """

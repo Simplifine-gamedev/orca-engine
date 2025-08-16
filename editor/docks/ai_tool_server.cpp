@@ -1,8 +1,7 @@
 /*
  * © 2025 Simplifine Corp.
- * This file is an original contribution to Orca Engine (based on Godot Engine).
- * Licensed for free personal/non-commercial use under the Company Non‑Commercial License.
- * See LICENSES/COMPANY-NONCOMMERCIAL.md. Commercial use requires a separate license from Simplifine.
+ * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
+ * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from the Project Owner.
  */
 #include "ai_tool_server.h"
 #include "editor/ai/editor_tools.h"
@@ -170,6 +169,12 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
         args["project_root"] = project_root;
         print_line("AI Tool Server: search_across_project invoking with project_root=" + project_root);
 		result = EditorTools::search_across_project(args);
+	} else if (function_name == "search_across_godot_docs") {
+		if (!args.has("max_results")) {
+			args["max_results"] = 5;
+		}
+		print_line("AI Tool Server: search_across_godot_docs invoking");
+		result = EditorTools::search_across_godot_docs(args);
 	} else if (function_name == "editor_introspect") {
 		result = EditorTools::editor_introspect(args);
 	} else {

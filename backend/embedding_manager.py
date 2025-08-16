@@ -1,4 +1,7 @@
 """
+© 2025 Project Owner. Personal Non‑Commercial License.
+See LICENSES/COMPANY-NONCOMMERCIAL.md for terms.
+
 Embedding Manager for Godot Project Files
 Handles file indexing, embedding generation, and storage in GCP Cloud Storage
 """

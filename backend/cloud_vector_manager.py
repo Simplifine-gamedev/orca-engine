@@ -1,7 +1,12 @@
+"""
+© 2025 Project Owner. Personal Non‑Commercial License.
+See LICENSES/COMPANY-NONCOMMERCIAL.md for terms.
+"""
 import os
 import json
 import hashlib
 import time
+import datetime as dt
 from typing import List, Dict, Tuple, Optional, Set
 from dataclasses import dataclass
 import numpy as np
@@ -89,6 +94,37 @@ class CloudVectorManager:
         
         # Create dataset and table if they don't exist
         self._init_bigquery_schema()
+
+        # In-memory caches to reduce repeated query latency
+        self._cache_lock = threading.Lock()
+        self._search_cache: Dict[str, Tuple[float, List[Dict]]] = {}
+        self._graph_cache: Dict[str, Tuple[float, Dict[str, Dict]]] = {}
+        self._cache_ttl_seconds = int(os.getenv('SEARCH_CACHE_TTL', '45'))
+        self._graph_cache_ttl_seconds = int(os.getenv('GRAPH_CACHE_TTL', '45'))
+
+    def _cache_get(self, cache: Dict[str, Tuple[float, object]], key: str, ttl_seconds: int):
+        try:
+            with self._cache_lock:
+                item = cache.get(key)
+                if not item:
+                    return None
+                ts, value = item
+                if time.time() - ts > ttl_seconds:
+                    cache.pop(key, None)
+                    return None
+                return value
+        except Exception:
+            return None
+
+    def _cache_set(self, cache: Dict[str, Tuple[float, object]], key: str, value: object):
+        try:
+            with self._cache_lock:
+                # Simple size guard
+                if len(cache) > 256:
+                    cache.clear()
+                cache[key] = (time.time(), value)
+        except Exception:
+            pass
     
     def _init_bigquery_schema(self):
         """Initialize BigQuery dataset and table with vector support"""
@@ -229,6 +265,13 @@ class CloudVectorManager:
             return self._chunk_code_file(content, file_path, max_lines)
         
         # Default: chunk by lines with overlap
+        # Allow tuning chunk size via env to reduce embedding calls for large projects
+        try:
+            max_lines_env = int(os.getenv('CHUNK_MAX_LINES', str(max_lines)))
+            if max_lines_env > 0:
+                max_lines = max_lines_env
+        except Exception:
+            pass
         chunk_size = max_lines
         overlap = 10
         
@@ -377,6 +420,70 @@ class CloudVectorManager:
                         time.sleep(sleep_s)
         
         return all_embeddings
+
+    def _insert_rows_with_backoff(self, table_ref_or_name, rows: List[Dict], max_attempts: int = 5) -> bool:
+        """Insert rows into BigQuery with exponential backoff and jitter."""
+        if not rows:
+            return True
+        # Accept either full table path string or already fetched Table
+        table = table_ref_or_name
+        if isinstance(table_ref_or_name, str):
+            try:
+                table = self.bq_client.get_table(table_ref_or_name)
+            except Exception as e:
+                print(f"CloudVector: Failed to get table {table_ref_or_name}: {e}")
+                return False
+        attempt = 0
+        while True:
+            try:
+                errors = self.bq_client.insert_rows_json(table, rows)
+                if errors:
+                    raise RuntimeError(str(errors))
+                return True
+            except Exception as e:
+                attempt += 1
+                if attempt >= max_attempts:
+                    print(f"CloudVector: Insert failed after retries: {e}")
+                    return False
+                sleep_s = min(30.0, (2 ** attempt) + random.uniform(0, 0.5))
+                print(f"CloudVector: Insert retry {attempt} in {sleep_s:.2f}s: {e}")
+                time.sleep(sleep_s)
+
+    def _fetch_existing_file_hashes(self, user_id: str, project_id: str, file_paths: Optional[List[str]] = None) -> Dict[str, str]:
+        """Fetch a map of file_path -> any existing file_hash for the project, batched in a single query.
+
+        If file_paths is provided, limits to those paths only.
+        """
+        try:
+            table_ref = f"{self.gcp_project_id}.{self.dataset_id}.{self.table_id}"
+            if file_paths:
+                query = f"""
+                SELECT file_path, ANY_VALUE(file_hash) AS file_hash
+                FROM `{table_ref}`
+                WHERE user_id = @user_id AND project_id = @project_id AND file_path IN UNNEST(@paths)
+                GROUP BY file_path
+                """
+                cfg = bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                    bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                    bigquery.ArrayQueryParameter("paths", "STRING", file_paths),
+                ])
+            else:
+                query = f"""
+                SELECT file_path, ANY_VALUE(file_hash) AS file_hash
+                FROM `{table_ref}`
+                WHERE user_id = @user_id AND project_id = @project_id
+                GROUP BY file_path
+                """
+                cfg = bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                    bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                ])
+            rows = list(self.bq_client.query(query, job_config=cfg).result())
+            return {r.file_path: r.file_hash for r in rows if getattr(r, 'file_path', None)}
+        except Exception as e:
+            print(f"CloudVector: Failed to fetch existing file hashes: {e}")
+            return {}
     
     def index_file(self, file_path: str, user_id: str, project_id: str, project_root: str) -> bool:
         """Index a single file"""
@@ -459,16 +566,15 @@ class CloudVectorManager:
                         "start_line": chunk.start_line,
                         "end_line": chunk.end_line,
                         "file_hash": file_hash,
-                        "indexed_at": time.time(),
+                        "indexed_at": dt.datetime.utcnow().isoformat(),
                         "embedding": embedding
                     })
             
             # Insert rows
             if rows_to_insert:
                 table_ref = f"{self.gcp_project_id}.{self.dataset_id}.{self.table_id}"
-                errors = self.bq_client.insert_rows_json(table_ref, rows_to_insert)
-                if errors:
-                    print(f"Error inserting rows: {errors}")
+                ok = self._insert_rows_with_backoff(table_ref, rows_to_insert)
+                if not ok:
                     return False
 
             # Upsert File node for this file
@@ -520,14 +626,31 @@ class CloudVectorManager:
                         pass
                 files_to_index.append(file_path)
 
-        # Second pass: parallel indexing of files
+        # Second pass: parallel indexing of files with prefetch of existing hashes
         if files_to_index:
             workers = max_workers or self.default_index_workers
             indexed_count = 0
             skipped_or_failed = 0
 
+            # Prefetch existing hashes for all candidate files to avoid per-file queries
+            try:
+                rels = [os.path.relpath(fp, project_root) for fp in files_to_index]
+            except Exception:
+                rels = [os.path.basename(fp) for fp in files_to_index]
+            existing_hashes = self._fetch_existing_file_hashes(user_id, project_id, rels)
+
             def _worker(fp: str) -> bool:
                 try:
+                    # Fast skip using precomputed hash map
+                    try:
+                        with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        rel = os.path.relpath(fp, project_root)
+                        file_hash = self._get_file_hash(content)
+                        if existing_hashes.get(rel) == file_hash:
+                            return True  # counted as up-to-date
+                    except Exception:
+                        pass
                     return self.index_file(fp, user_id, project_id, project_root)
                 except Exception as e:
                     print(f"CloudVector: Exception indexing {fp}: {e}")
@@ -633,7 +756,11 @@ class CloudVectorManager:
             return False
     
     def search(self, query: str, user_id: str, project_id: str, max_results: int = 10) -> List[Dict]:
-        """Search for similar content using BigQuery vector search"""
+        """Search for similar content using BigQuery vector search with a small memory cache."""
+        cache_key = f"q:{project_id}:{max_results}:{hashlib.md5((query or '').encode()).hexdigest()}"
+        cached = self._cache_get(self._search_cache, cache_key, self._cache_ttl_seconds)
+        if cached is not None:
+            return cached
         # Generate embedding for query
         query_embeddings = self._generate_embeddings_batch([query])
         if not query_embeddings:
@@ -696,12 +823,15 @@ class CloudVectorManager:
             print(f"Search query failed: {e}")
             return []
         
+        self._cache_set(self._search_cache, cache_key, results)
         return results
 
     def get_graph_context_for_files(self, file_paths: List[str], user_id: str, project_id: str, nodes_limit: int = 20, edges_limit: int = 50) -> Dict[str, Dict]:
         """Return lightweight graph context (nodes/edges) for each file.
 
         Limits results per file to keep payload small.
+        NOTE: Backwards-compatible wrapper. For multi-hop expansion or edge filtering,
+        prefer get_graph_context_expanded.
         """
         context: Dict[str, Dict] = {}
         try:
@@ -763,6 +893,157 @@ class CloudVectorManager:
                 context[fp] = {'nodes': nodes, 'edges': edges}
         except Exception as e:
             print(f"CloudVector: get_graph_context_for_files error: {e}")
+        return context
+
+    def get_graph_context_expanded(
+        self,
+        file_paths: List[str],
+        user_id: str,
+        project_id: str,
+        depth: int = 1,
+        kinds: Optional[List[str]] = None,
+        nodes_limit: int = 200,
+        edges_limit: int = 400,
+    ) -> Dict[str, Dict]:
+        """Return graph context with limited multi-hop expansion with cache and batched queries.
+
+        - depth: number of hops to expand from nodes belonging to the file
+        - kinds: optional filter of edge kinds to include
+        """
+        depth = max(1, min(depth, 2))
+        kinds = kinds or []
+        # Cache lookup
+        cache_key = f"g:{project_id}:{depth}:{','.join(sorted(kinds)) if kinds else '*'}:{','.join(sorted(set(file_paths)))}"
+        cached = self._cache_get(self._graph_cache, cache_key, self._graph_cache_ttl_seconds)
+        if cached is not None:
+            return cached
+
+        context: Dict[str, Dict] = {}
+        try:
+            dataset_ref = f"{self.gcp_project_id}.{self.dataset_id}"
+            nodes_table = f"{dataset_ref}.graph_nodes"
+            edges_table = f"{dataset_ref}.graph_edges"
+            # Batch fetch nodes for all files
+            kind_filter = "" if not kinds else " AND kind IN UNNEST(@kinds)"
+            q_nodes = f"""
+            SELECT file_path, id, kind, name, node_type, node_path, start_line, end_line
+            FROM `{nodes_table}`
+            WHERE user_id = @user_id AND project_id = @project_id AND file_path IN UNNEST(@fps)
+            LIMIT @limit_nodes
+            """
+            params_nodes = [
+                bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                bigquery.ArrayQueryParameter("fps", "STRING", list(set(file_paths))),
+                bigquery.ScalarQueryParameter("limit_nodes", "INTEGER", nodes_limit * max(1, len(file_paths))),
+            ]
+            cfg_nodes = bigquery.QueryJobConfig(query_parameters=params_nodes)
+            nr = list(self.bq_client.query(q_nodes, job_config=cfg_nodes).result())
+            seed_ids_by_file: Dict[str, List[str]] = {}
+            nodes_by_file: Dict[str, List[Dict]] = {}
+            for r in nr:
+                fp = r.file_path
+                seed_ids_by_file.setdefault(fp, []).append(r.id)
+                nodes_by_file.setdefault(fp, []).append({
+                    'id': r.id,
+                    'kind': r.kind,
+                    'name': r.name,
+                    'node_type': r.node_type,
+                    'node_path': r.node_path,
+                    'start_line': r.start_line,
+                    'end_line': r.end_line,
+                })
+
+            # Batch fetch first-hop edges for all files
+            q_edges = f"""
+            SELECT file_path, src_id, dst_id, kind, start_line, end_line
+            FROM `{edges_table}`
+            WHERE user_id = @user_id AND project_id = @project_id AND file_path IN UNNEST(@fps){kind_filter}
+            LIMIT @limit_edges
+            """
+            params_edges = [
+                bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                bigquery.ArrayQueryParameter("fps", "STRING", list(set(file_paths))),
+                bigquery.ScalarQueryParameter("limit_edges", "INTEGER", edges_limit * max(1, len(file_paths))),
+            ]
+            if kinds:
+                params_edges.append(bigquery.ArrayQueryParameter("kinds", "STRING", kinds))
+            cfg_edges = bigquery.QueryJobConfig(query_parameters=params_edges)
+            er = list(self.bq_client.query(q_edges, job_config=cfg_edges).result())
+            edges_by_file: Dict[str, List[Dict]] = {}
+            neighbor_ids: Set[str] = set()
+            for r in er:
+                fp = r.file_path
+                e = {
+                    'src_id': r.src_id,
+                    'dst_id': r.dst_id,
+                    'kind': r.kind,
+                    'start_line': r.start_line,
+                    'end_line': r.end_line,
+                }
+                edges_by_file.setdefault(fp, []).append(e)
+                neighbor_ids.add(r.src_id)
+                neighbor_ids.add(r.dst_id)
+
+            # Optional second hop
+            extra_nodes: List[Dict] = []
+            if depth > 1 and neighbor_ids:
+                q_edges2 = f"""
+                SELECT src_id, dst_id, kind, start_line, end_line
+                FROM `{edges_table}`
+                WHERE user_id = @user_id AND project_id = @project_id
+                  AND (src_id IN UNNEST(@ids) OR dst_id IN UNNEST(@ids))
+                  {kind_filter}
+                LIMIT @limit_edges
+                """
+                params2 = [
+                    bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                    bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                    bigquery.ArrayQueryParameter("ids", "STRING", list(neighbor_ids)),
+                    bigquery.ScalarQueryParameter("limit_edges", "INTEGER", edges_limit),
+                ]
+                if kinds:
+                    params2.append(bigquery.ArrayQueryParameter("kinds", "STRING", kinds))
+                cfg_edges2 = bigquery.QueryJobConfig(query_parameters=params2)
+                er2 = list(self.bq_client.query(q_edges2, job_config=cfg_edges2).result())
+                # Collect extra node ids
+                ref_ids = list({r.src_id for r in er2}.union({r.dst_id for r in er2}))
+                if ref_ids:
+                    q_nodes2 = f"""
+                    SELECT id, kind, name, node_type, node_path, start_line, end_line, file_path
+                    FROM `{nodes_table}`
+                    WHERE user_id = @user_id AND project_id = @project_id AND id IN UNNEST(@ids)
+                    LIMIT @limit_nodes
+                    """
+                    cfg_nodes2 = bigquery.QueryJobConfig(query_parameters=[
+                        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                        bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                        bigquery.ArrayQueryParameter("ids", "STRING", ref_ids),
+                        bigquery.ScalarQueryParameter("limit_nodes", "INTEGER", nodes_limit),
+                    ])
+                    extra_nodes = list(self.bq_client.query(q_nodes2, job_config=cfg_nodes2).result())
+
+            # Assemble context by file
+            for fp in set(file_paths):
+                nlist = nodes_by_file.get(fp, [])
+                elist = edges_by_file.get(fp, [])
+                # Attach extra nodes if their file_path matches
+                for r in extra_nodes:
+                    if getattr(r, 'file_path', None) == fp:
+                        nlist.append({
+                            'id': r.id,
+                            'kind': r.kind,
+                            'name': r.name,
+                            'node_type': r.node_type,
+                            'node_path': r.node_path,
+                            'start_line': r.start_line,
+                            'end_line': r.end_line,
+                        })
+                context[fp] = {'nodes': nlist[:nodes_limit], 'edges': elist[:edges_limit]}
+        except Exception as e:
+            print(f"CloudVector: get_graph_context_expanded error: {e}")
+        self._cache_set(self._graph_cache, cache_key, context)
         return context
     
     def get_stats(self, user_id: str, project_id: str) -> Dict:
@@ -880,15 +1161,17 @@ class CloudVectorManager:
                     rows_to_insert.append(row)
                 table_ref = f"{self.gcp_project_id}.{self.dataset_id}.{self.table_id}"
                 table = self.bq_client.get_table(table_ref)
-                errors = self.bq_client.insert_rows_json(table, rows_to_insert)
-                if errors:
-                    print(f"CloudVector: Error inserting {file_path}: {errors}")
+                ok = self._insert_rows_with_backoff(table, rows_to_insert)
+                if not ok:
+                    print(f"CloudVector: Error inserting {file_path}: backoff exhausted")
                     return (file_path, 0, 0, 1)
 
                 # Upserts
                 self._upsert_file_node(file_path, user_id, project_id)
                 if file_path.endswith('.tscn') or file_path.endswith('.tres'):
                     self._upsert_scene_graph(file_path, content, user_id, project_id)
+                elif file_path.endswith('.gd'):
+                    self._upsert_gdscript_symbol_graph(file_path, content, user_id, project_id)
 
                 print(f"CloudVector: ✅ Indexed {file_path} ({len(chunks)} chunks)")
                 return (file_path, 1, 0, 0)
@@ -944,7 +1227,7 @@ class CloudVectorManager:
             dataset_ref = f"{self.gcp_project_id}.{self.dataset_id}"
             nodes_table = f"{dataset_ref}.graph_nodes"
             edges_table = f"{dataset_ref}.graph_edges"
-            now_ts = time.time()
+            now_ts = dt.datetime.utcnow().isoformat()
 
             # First, clear prior graph rows for this file (best effort; ignore streaming buffer)
             for tbl in (nodes_table, edges_table):
@@ -990,6 +1273,7 @@ class CloudVectorManager:
                             ntype = self._extract_attr(current_header, 'type') or ''
                             parent_attr = self._extract_attr(current_header, 'parent')
                             node_attr = self._extract_attr(current_header, 'node')
+                            groups_attr = self._extract_attr(current_header, 'groups') or ''
                             if node_attr:
                                 npath = node_attr
                             elif parent_attr and parent_attr != '.':
@@ -1010,6 +1294,16 @@ class CloudVectorManager:
                                 target_scene = ext_res[inst_id]['path']
                                 dst_id = hashlib.md5(f"{project_id}:{target_scene}".encode()).hexdigest()
                                 edges.append((node_id, dst_id, 'INSTANTIATES_SCENE', current_section_start, i - 1))
+                            # Groups on this node (Godot 4 stores groups in header)
+                            if groups_attr:
+                                try:
+                                    grp_values = re.findall(r'"([^"]+)"', groups_attr)
+                                    for g in grp_values:
+                                        gid = hashlib.md5(f"{project_id}:GROUP:{g}".encode()).hexdigest()
+                                        # Represent group as a node record later via upsert_file_node? We'll use an edge only.
+                                        edges.append((node_id, gid, 'GROUP_MEMBER', current_section_start, i - 1))
+                                except Exception:
+                                    pass
                     # Open new section
                     current_header = s
                     current_section_start = i
@@ -1019,6 +1313,7 @@ class CloudVectorManager:
                 ntype = self._extract_attr(current_header, 'type') or ''
                 parent_attr = self._extract_attr(current_header, 'parent')
                 node_attr = self._extract_attr(current_header, 'node')
+                groups_attr = self._extract_attr(current_header, 'groups') or ''
                 if node_attr:
                     npath = node_attr
                 elif parent_attr and parent_attr != '.':
@@ -1039,6 +1334,14 @@ class CloudVectorManager:
                     target_scene = ext_res[inst_id]['path']
                     dst_id = hashlib.md5(f"{project_id}:{target_scene}".encode()).hexdigest()
                     edges.append((node_id, dst_id, 'INSTANTIATES_SCENE', current_section_start, len(lines)))
+                if groups_attr:
+                    try:
+                        grp_values = re.findall(r'"([^"]+)"', groups_attr)
+                        for g in grp_values:
+                            gid = hashlib.md5(f"{project_id}:GROUP:{g}".encode()).hexdigest()
+                            edges.append((node_id, gid, 'GROUP_MEMBER', current_section_start, len(lines)))
+                    except Exception:
+                        pass
 
             # Attach script edges by scanning lines within node ranges
             for node_id, name, ntype, npath, start_l, end_l in nodes:
@@ -1069,6 +1372,17 @@ class CloudVectorManager:
                     dst_id = hashlib.md5(f"{project_id}:{rel_path}:{to_p}".encode()).hexdigest()
                     kind = f"CONNECTS_SIGNAL:{sig}->{method}" if sig or method else "CONNECTS_SIGNAL"
                     edges.append((src_id, dst_id, kind, i, i))
+
+                # Resource references inside node/property blocks: ExtResource("id")
+                m = re.search(r'ExtResource\("([^\"]+)"\)', s)
+                if m and m.group(1) in ext_res:
+                    # Attach to file-level; we do not track exact node range here
+                    res_path = ext_res[m.group(1)]['path']
+                    # Use a synthetic resource id keyed by path
+                    res_id = hashlib.md5(f"{project_id}:{res_path}".encode()).hexdigest()
+                    # Link file node to resource
+                    file_node_id = hashlib.md5(f"{project_id}:{rel_path}".encode()).hexdigest()
+                    edges.append((file_node_id, res_id, 'REFERENCES_RESOURCE', i, i))
 
             # Insert nodes
             if nodes:
@@ -1112,11 +1426,226 @@ class CloudVectorManager:
         except Exception as e:
             print(f"CloudVector: _upsert_scene_graph error for {rel_path}: {e}")
 
+    def _upsert_gdscript_symbol_graph(self, rel_path: str, content: str, user_id: str, project_id: str):
+        """Parse a .gd file for classes, functions, signals and simple relations.
+
+        Creates nodes for ScriptClass (class_name), ScriptFunction (func), Signal (signal) and edges:
+        DEFINES_*, SCRIPT_EXTENDS, CALLS_FUNCTION (same-file), EMITS_SIGNAL.
+        """
+        try:
+            lines = content.split('\n')
+            dataset_ref = f"{self.gcp_project_id}.{self.dataset_id}"
+            nodes_table = f"{dataset_ref}.graph_nodes"
+            edges_table = f"{dataset_ref}.graph_edges"
+            now_ts = dt.datetime.utcnow().isoformat()
+
+            # Wipe prior graph rows for this file
+            for tbl in (nodes_table, edges_table):
+                try:
+                    q = f"""
+                    DELETE FROM `{tbl}`
+                    WHERE user_id = @user_id AND project_id = @project_id AND file_path = @file_path
+                    """
+                    cfg = bigquery.QueryJobConfig(query_parameters=[
+                        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+                        bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                        bigquery.ScalarQueryParameter("file_path", "STRING", rel_path),
+                    ])
+                    self.bq_client.query(q, job_config=cfg).result()
+                except Exception as e:
+                    if "streaming buffer" in str(e):
+                        pass
+
+            class_name = None
+            extends_base = None
+            functions: List[Tuple[str, int, int]] = []  # (name, start_line, end_line_est)
+            signals: List[Tuple[str, int]] = []  # (name, line)
+
+            # First pass: identify symbols and rough ranges
+            for i, line in enumerate(lines, start=1):
+                s = line.strip()
+                m_cls = re.match(r'^class_name\s+(\w+)', s)
+                if m_cls:
+                    class_name = m_cls.group(1)
+                m_ext = re.match(r'^extends\s+([\w\.\"\']+)', s)
+                if m_ext:
+                    extends_base = m_ext.group(1)
+                m_sig = re.match(r'^signal\s+(\w+)', s)
+                if m_sig:
+                    signals.append((m_sig.group(1), i))
+                m_func = re.match(r'^func\s+(\w+)\s*\(', s)
+                if m_func:
+                    functions.append((m_func.group(1), i, i))
+
+            # Estimate function end lines by next symbol or file end
+            for idx in range(len(functions)):
+                name, start_l, _ = functions[idx]
+                end_l = len(lines)
+                for j in range(idx + 1, len(functions)):
+                    _, next_start, _ = functions[j]
+                    if next_start > start_l:
+                        end_l = next_start - 1
+                        break
+                functions[idx] = (name, start_l, end_l)
+
+            # Prepare node rows
+            node_rows = []
+            if class_name:
+                cid = hashlib.md5(f"{project_id}:{rel_path}:CLASS:{class_name}".encode()).hexdigest()
+                node_rows.append({
+                    'id': cid,
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'file_path': rel_path,
+                    'kind': 'ScriptClass',
+                    'name': class_name,
+                    'node_type': None,
+                    'node_path': class_name,
+                    'start_line': 1,
+                    'end_line': 1,
+                    'updated_at': now_ts,
+                })
+            fid = hashlib.md5(f"{project_id}:{rel_path}".encode()).hexdigest()
+            for fname, s_l, e_l in functions:
+                nid = hashlib.md5(f"{project_id}:{rel_path}:FUNC:{fname}".encode()).hexdigest()
+                node_rows.append({
+                    'id': nid,
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'file_path': rel_path,
+                    'kind': 'ScriptFunction',
+                    'name': fname,
+                    'node_type': None,
+                    'node_path': fname,
+                    'start_line': s_l,
+                    'end_line': e_l,
+                    'updated_at': now_ts,
+                })
+            for sname, s_l in signals:
+                nid = hashlib.md5(f"{project_id}:{rel_path}:SIGNAL:{sname}".encode()).hexdigest()
+                node_rows.append({
+                    'id': nid,
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'file_path': rel_path,
+                    'kind': 'Signal',
+                    'name': sname,
+                    'node_type': None,
+                    'node_path': sname,
+                    'start_line': s_l,
+                    'end_line': s_l,
+                    'updated_at': now_ts,
+                })
+
+            if node_rows:
+                table = self.bq_client.get_table(nodes_table)
+                self.bq_client.insert_rows_json(table, node_rows)
+
+            # Prepare edge rows
+            edge_rows = []
+            if class_name:
+                cid = hashlib.md5(f"{project_id}:{rel_path}:CLASS:{class_name}".encode()).hexdigest()
+                edge_rows.append({
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'src_id': fid,
+                    'dst_id': cid,
+                    'kind': 'DEFINES_CLASS',
+                    'file_path': rel_path,
+                    'start_line': 1,
+                    'end_line': 1,
+                    'updated_at': now_ts,
+                })
+                if extends_base:
+                    bid = hashlib.md5(f"{project_id}:CLASS:{extends_base}".encode()).hexdigest()
+                    edge_rows.append({
+                        'user_id': user_id,
+                        'project_id': project_id,
+                        'src_id': cid,
+                        'dst_id': bid,
+                        'kind': 'SCRIPT_EXTENDS',
+                        'file_path': rel_path,
+                        'start_line': 1,
+                        'end_line': 1,
+                        'updated_at': now_ts,
+                    })
+            for fname, s_l, e_l in functions:
+                fn_id = hashlib.md5(f"{project_id}:{rel_path}:FUNC:{fname}".encode()).hexdigest()
+                edge_rows.append({
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'src_id': fid,
+                    'dst_id': fn_id,
+                    'kind': 'DEFINES_FUNCTION',
+                    'file_path': rel_path,
+                    'start_line': s_l,
+                    'end_line': e_l,
+                    'updated_at': now_ts,
+                })
+            for sname, s_l in signals:
+                sig_id = hashlib.md5(f"{project_id}:{rel_path}:SIGNAL:{sname}".encode()).hexdigest()
+                edge_rows.append({
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'src_id': fid,
+                    'dst_id': sig_id,
+                    'kind': 'DEFINES_SIGNAL',
+                    'file_path': rel_path,
+                    'start_line': s_l,
+                    'end_line': s_l,
+                    'updated_at': now_ts,
+                })
+
+            # Calls and emits (same-file heuristic)
+            func_names = {f[0] for f in functions}
+            for fname, s_l, e_l in functions:
+                body = '\n'.join(lines[s_l-1:e_l])
+                # CALLS_FUNCTION to known functions in same file
+                for callee in func_names:
+                    if callee == fname:
+                        continue
+                    if re.search(r'\b' + re.escape(callee) + r'\s*\(', body):
+                        src = hashlib.md5(f"{project_id}:{rel_path}:FUNC:{fname}".encode()).hexdigest()
+                        dst = hashlib.md5(f"{project_id}:{rel_path}:FUNC:{callee}".encode()).hexdigest()
+                        edge_rows.append({
+                            'user_id': user_id,
+                            'project_id': project_id,
+                            'src_id': src,
+                            'dst_id': dst,
+                            'kind': 'CALLS_FUNCTION',
+                            'file_path': rel_path,
+                            'start_line': s_l,
+                            'end_line': e_l,
+                            'updated_at': now_ts,
+                        })
+                # EMITS_SIGNAL edges
+                for sname, _ in signals:
+                    if re.search(r'emit_signal\s*\(\s*"' + re.escape(sname) + r'"', body):
+                        src = hashlib.md5(f"{project_id}:{rel_path}:FUNC:{fname}".encode()).hexdigest()
+                        dst = hashlib.md5(f"{project_id}:{rel_path}:SIGNAL:{sname}".encode()).hexdigest()
+                        edge_rows.append({
+                            'user_id': user_id,
+                            'project_id': project_id,
+                            'src_id': src,
+                            'dst_id': dst,
+                            'kind': 'EMITS_SIGNAL',
+                            'file_path': rel_path,
+                            'start_line': s_l,
+                            'end_line': e_l,
+                            'updated_at': now_ts,
+                        })
+
+            if edge_rows:
+                table = self.bq_client.get_table(edges_table)
+                self.bq_client.insert_rows_json(table, edge_rows)
+        except Exception as e:
+            print(f"CloudVector: _upsert_gdscript_symbol_graph error for {rel_path}: {e}")
+
     def _upsert_file_node(self, file_path: str, user_id: str, project_id: str):
         try:
             dataset_ref = f"{self.gcp_project_id}.{self.dataset_id}"
             nodes_table = f"{dataset_ref}.graph_nodes"
-            now_ts = time.time()
+            now_ts = dt.datetime.utcnow().isoformat()
             file_id = hashlib.md5(f"{project_id}:{file_path}".encode()).hexdigest()
             row = {
                 'id': file_id,

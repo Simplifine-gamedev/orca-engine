@@ -1,4 +1,7 @@
 """
+© 2025 Simplifine Corp. Personal Non‑Commercial License.
+See LICENSES/COMPANY-NONCOMMERCIAL.md for terms.
+
 Authentication Manager for Google/GitHub OAuth
 Handles user authentication and session management
 """

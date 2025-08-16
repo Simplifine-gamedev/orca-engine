@@ -85,6 +85,7 @@ public:
 	static Dictionary inspect_animation_state(const Dictionary &p_args);
 	static Dictionary get_layers_and_zindex(const Dictionary &p_args);
 	static Dictionary search_across_project(const Dictionary &p_args);
+	static Dictionary search_across_godot_docs(const Dictionary &p_args);
 
 	// Universal Tools (New Consolidated API)
 	static Dictionary universal_node_manager(const Dictionary &p_args);
