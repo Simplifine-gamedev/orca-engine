@@ -645,7 +645,6 @@ void AIChatDock::_send_stop_request() {
 	print_line("AI Chat: Sending stop request to: " + stop_endpoint);
 	stop_http_request->request(stop_endpoint, headers, HTTPClient::METHOD_POST, request_body);
 }
-
 void AIChatDock::_on_stop_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String response_body = String::utf8((const char *)p_body.ptr(), p_body.size());
 	print_line("AI Chat: Stop request completed - Result: " + String::num(p_result) + ", Code: " + String::num(p_code) + ", Body: " + response_body);
@@ -780,7 +779,6 @@ void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_me
 	// Focus the edit field
 	edit_field->grab_focus();
 }
-
 PanelContainer *AIChatDock::_build_edit_message_panel(const AIChatDock::ChatMessage &p_message, int p_message_index) {
     PanelContainer *message_panel = memnew(PanelContainer);
     if (p_message_index >= 0) {
@@ -1296,7 +1294,6 @@ void AIChatDock::_process_send_request_async() {
 	// Now send the actual request (this is the heavy operation)
 	_send_chat_request();
 }
-
 void AIChatDock::_save_conversations_async() {
 	// Start the async save to prevent UI blocking during file operations
 	call_deferred("_save_conversations_chunked", 0);
@@ -1495,7 +1492,6 @@ void AIChatDock::_execute_delayed_save() {
 	
 	print_line("AI Chat: Started background conversation save");
 }
-
 void AIChatDock::_background_save(void *p_data_ptr) {
 	struct SaveData {
 		Vector<Conversation> *snapshot;
@@ -1897,7 +1893,6 @@ void AIChatDock::_on_scene_tree_node_selected() {
 	// Hide the popup after selection
 	scene_tree_popup->hide();
 }
-
 void AIChatDock::_on_files_selected(const Vector<String> &p_files) {
 	for (int i = 0; i < p_files.size(); i++) {
 		String file_path = p_files[i];
@@ -2244,7 +2239,6 @@ void AIChatDock::_attach_external_files(const Vector<String> &p_files) {
 	
 	_update_attached_files_display();
 }
-
 void AIChatDock::_attach_dragged_nodes(const Array &p_nodes) {
 	for (int i = 0; i < p_nodes.size(); i++) {
 		NodePath node_path = p_nodes[i];
@@ -2384,7 +2378,6 @@ void AIChatDock::_handle_response_chunk(const PackedByteArray &p_chunk) {
 		_process_ndjson_line(line);
 	}
 }
-
 void AIChatDock::_process_ndjson_line(const String &p_line) {
 	Ref<JSON> json;
 	json.instantiate();
@@ -2868,7 +2861,11 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
             // Deprecated: route to unified read
             result = EditorTools::read_file(args);
         } else if (function_name == "apply_edit") {
-            // Run apply_edit asynchronously to avoid blocking the UI (curl/OS execute can freeze main thread)
+            // Run apply_edit asynchronously to avoid blocking the UI
+            // Skip compilation checking by default for better performance
+            if (!args.has("skip_compilation_check")) {
+                args["skip_compilation_check"] = true;
+            }
             pending_tool_tasks++;
             _update_tool_placeholder_status(tool_call_id, function_name, "running");
             _execute_apply_edit_async(tool_call_id, args);
@@ -3024,7 +3021,6 @@ void AIChatDock::_on_apply_edit_thread_done() {
         _send_chat_request();
     }
 }
-
 void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_content, const Array &p_tool_calls) {
 	AIChatDock::ChatMessage msg;
 	msg.role = p_role;
@@ -3608,7 +3604,6 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
         content_panel->set_visible(true);
     }
 }
-
 void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
 	Ref<JSON> json;
 	json.instantiate();
@@ -3624,7 +3619,23 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 
 		Array files = p_result.get("files", Array());
 		for (int i = 0; i < files.size(); i++) {
-			String file_path = files[i];
+			Variant f = files[i];
+			String file_path;
+			int64_t line_count = -1;
+			if (f.get_type() == Variant::DICTIONARY) {
+				Dictionary fd = f;
+				file_path = fd.get("path", String());
+				line_count = (int64_t)fd.get("line_count", (int64_t)-1);
+				if (file_path.is_empty() && fd.has("name")) {
+					// Fallback to name only
+					file_path = String(fd.get("name", String()));
+				}
+			} else {
+				file_path = String(f);
+			}
+			if (file_path.is_empty()) {
+				continue;
+			}
 			Vector<String> parts = file_path.split("/");
 			TreeItem *current_item = root;
 			String current_path = "";
@@ -3638,6 +3649,10 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 					new_item->set_text(0, parts[j]);
 					bool is_dir = j < parts.size() - 1;
 					new_item->set_icon(0, is_dir ? get_theme_icon(SNAME("Folder"), SNAME("EditorIcons")) : get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+					// Add line count tooltip on leaf when available
+					if (!is_dir && line_count >= 0) {
+						new_item->set_tooltip_text(0, String::num_int64(line_count) + " lines");
+					}
 					tree_items[current_path] = new_item;
 					current_item = new_item;
 				}
@@ -3985,7 +4000,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                 }
             }
 
-            // If editing a non-script file, don’t try to open it in the ScriptEditor,
+            // If editing a non-script file, don't try to open it in the ScriptEditor,
             // as Godot would create a bogus .tscn.gd tab and force a save.
             String ext = file_path.get_extension().to_lower();
             if (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl") {
@@ -4007,6 +4022,10 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                 ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
                 if (ste) {
                     ste->set_diff(original_content, edited_content);
+                }
+                // Make edited content visible to subsequent read_file calls before user accepts
+                if (!file_path.is_empty()) {
+                    EditorTools::set_preview_overlay(file_path, edited_content);
                 }
             } else {
                 // For non-script resources, provide a compact inline preview only,
@@ -4710,7 +4729,6 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 void AIChatDock::_on_tool_output_toggled(Control *p_content) {
 	p_content->set_visible(!p_content->is_visible());
 }
-
 void AIChatDock::_send_chat_request() {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	
@@ -4924,7 +4942,6 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 	// All chunks processed, now send the request
 	call_deferred("_finalize_chat_request");
 }
-
 Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 	Dictionary api_msg;
 	api_msg["role"] = p_msg.role;
@@ -5308,7 +5325,6 @@ String AIChatDock::_process_inline_markdown(String p_line) {
 
 	return line;
 }
-
 String AIChatDock::_markdown_to_bbcode(const String &p_markdown) {
 	// Safety check for empty strings
 	if (p_markdown.is_empty()) {
@@ -5719,7 +5735,6 @@ void AIChatDock::_save_conversations() {
         file->close();
     }
 }
-
 void AIChatDock::_create_new_conversation() {
 	AIChatDock::Conversation new_conv;
 	new_conv.id = _generate_conversation_id();
@@ -5924,6 +5939,8 @@ void AIChatDock::_on_diff_accepted(const String &p_path, const String &p_content
     String ext = p_path.get_extension().to_lower();
     if (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl" ) {
         print_line("Diff accepted for script-like file: " + p_path);
+        // Clear in-memory overlay now that user accepted, so read_file returns saved version
+        EditorTools::clear_preview_overlay(p_path);
         return;
     }
 
@@ -5953,7 +5970,6 @@ void AIChatDock::_apply_file_edit_immediate(const String &p_path, const String &
     }
     print_line("AI Chat: Wrote edited content to: " + p_path);
 }
-
 void AIChatDock::send_error_message(const String &p_error_text) {
 	String formatted_message = "Please help fix this error:\n\n" + p_error_text;
 	
@@ -6417,7 +6433,6 @@ void AIChatDock::_display_generated_image_in_tool_result(VBoxContainer *p_contai
 	save_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_image_pressed).bind(p_base64_data, "png"));
 	tech_container->add_child(save_button);
 }
-
 void AIChatDock::_display_image_unified(VBoxContainer *p_container, const String &p_base64_data, const Dictionary &p_metadata) {
 	if (!p_container || p_base64_data.is_empty()) {
 		return;
@@ -6578,7 +6593,6 @@ void AIChatDock::_on_save_image_pressed(const String &p_base64_data, const Strin
 	save_image_dialog->set_current_file("generated_image." + p_format);
 	save_image_dialog->popup_centered(Size2(800, 600));
 }
-
 void AIChatDock::_on_save_image_location_selected(const String &p_file_path) {
 	if (p_file_path.is_empty() || pending_save_image_data.is_empty()) {
 		return;
@@ -7216,7 +7230,6 @@ bool AIChatDock::_should_index_file(const String &p_file_path) {
 	
 	return true;
 }
-
 void AIChatDock::_update_file_embedding(const String &p_file_path) {
 	if (!embedding_system_initialized || !_should_index_file(p_file_path)) {
 		return;
@@ -7228,7 +7241,6 @@ void AIChatDock::_update_file_embedding(const String &p_file_path) {
 	
 	_send_embedding_request("index_file", payload);
 }
-
 void AIChatDock::_remove_file_embedding(const String &p_file_path) {
 	if (!embedding_system_initialized) {
 		return;
@@ -7492,4 +7504,3 @@ AIChatDock::~AIChatDock() {
 		memdelete(save_mutex);
 	}
 }
-

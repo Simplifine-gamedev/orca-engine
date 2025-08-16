@@ -41,6 +41,15 @@ public:
 	static Array _check_compilation_errors(const String &p_file_path, const String &p_content);
     static void set_api_endpoint(const String &p_endpoint);
 
+    // Pending preview overlay management (in-memory edited content before save)
+    static void set_preview_overlay(const String &p_path, const String &p_content);
+    static void clear_preview_overlay(const String &p_path);
+    static bool has_preview_overlay(const String &p_path);
+    static String get_preview_overlay(const String &p_path);
+
+    // File utilities
+    static int get_file_line_count(const String &p_path, int p_max_bytes = 0);
+
 	// Individual Tool Methods (used by universal tools)
 	static Dictionary get_scene_info(const Dictionary &p_args);
 	static Dictionary get_all_nodes(const Dictionary &p_args);

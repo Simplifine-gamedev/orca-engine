@@ -431,6 +431,8 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
                     "chunk_index": r['chunk']['chunk_index'] if r.get('chunk') else 0,
                     "chunk_start": r['chunk']['start_line'] if r.get('chunk') else None,
                     "chunk_end": r['chunk']['end_line'] if r.get('chunk') else None,
+                    # If backend provides file_line_count, pass it through; else leave None
+                    "line_count": r.get('file_line_count')
                 }
                 for r in results
             ],
@@ -807,7 +809,7 @@ godot_tools = [
         "type": "function",
         "function": {
             "name": "apply_edit",
-            "description": "Apply AI-powered edits to a file",
+            "description": "Apply AI-powered edits to a file. Supports partial edits by line range.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -818,6 +820,20 @@ godot_tools = [
                     "prompt": {
                         "type": "string",
                         "description": "Description of the edit to apply"
+                    },
+                    "lines": {
+                        "type": "string",
+                        "enum": ["all", "range"],
+                        "description": "Edit scope: 'all' for whole file (default), or 'range' to edit only a specific set of lines",
+                        "default": "all"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "When lines='range', the 1-based start line (inclusive)"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "When lines='range', the 1-based end line (inclusive)"
                     }
                 },
                 "required": ["path", "prompt"]
@@ -2048,6 +2064,8 @@ def search_project():
                     "chunk_index": r['chunk']['chunk_index'] if r.get('chunk') else 0,
                     "chunk_start": r['chunk']['start_line'] if r.get('chunk') else None,
                     "chunk_end": r['chunk']['end_line'] if r.get('chunk') else None,
+                    # If backend provides file_line_count, pass it through; else leave None
+                    "line_count": r.get('file_line_count')
                 }
                 for r in results
             ],
