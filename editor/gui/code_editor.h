@@ -185,6 +185,7 @@ class CodeTextEditor : public VBoxContainer {
 	RichTextLabel *error = nullptr;
 	int error_line;
 	int error_column;
+	String last_error_text;
 
 	bool preview_navigation_change = false;
 	Dictionary previous_state;
@@ -217,6 +218,7 @@ class CodeTextEditor : public VBoxContainer {
 	void _set_show_errors_panel(bool p_show);
 	void _set_show_warnings_panel(bool p_show);
 	void _error_pressed(const Ref<InputEvent> &p_event);
+	void _error_meta_clicked(const Variant &p_meta);
 
 	void _zoom_popup_id_pressed(int p_idx);
 

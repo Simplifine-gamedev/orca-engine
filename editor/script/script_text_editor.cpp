@@ -38,6 +38,8 @@
 #include "editor/doc/editor_help.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
+#include "modules/gdscript/gdscript_cache.h"
+#include "editor/script/script_editor_plugin.h"
 #include "editor/gui/editor_toaster.h"
 #include "editor/inspector/editor_context_menu_plugin.h"
 #include "editor/settings/editor_command_palette.h"
@@ -3209,6 +3211,21 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
         // Save the revert so on re-open it matches the old version
         apply_code();
 	}
+    
+    // CRITICAL: Clear GDScript cache and force save to disk
+    if (script.is_valid() && script->get_path().get_extension() == "gd") {
+        GDScriptCache::remove_script(script->get_path());
+        
+        // Save the script to disk
+        EditorNode::get_singleton()->save_resource(script);
+        
+        // Force reload
+        script->reload(true);
+        
+        // Trigger live reload
+        ScriptEditor::get_singleton()->trigger_live_script_reload(script->get_path());
+    }
+    
     // Mark the current buffer as up to date and reset undo history
     te->clear_undo_history();
     te->tag_saved_version();

@@ -34,6 +34,7 @@
 #include "core/os/keyboard.h"
 #include "core/string/string_builder.h"
 #include "editor/editor_node.h"
+#include "editor/docks/ai_chat_dock.h"
 #include "editor/editor_string_names.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/settings/editor_settings.h"
@@ -1511,7 +1512,15 @@ Variant CodeTextEditor::get_navigation_state() {
 }
 
 void CodeTextEditor::set_error(const String &p_error) {
-	error->set_text(p_error);
+	last_error_text = p_error;
+	String display_text = p_error;
+	if (!p_error.is_empty()) {
+		display_text += String("  ");
+		display_text += String("[color=#80c8ff][u][url=fix_with_ai:]Fix with AI[/url][/u][/color]");
+	}
+
+	error->set_use_bbcode(true);
+	error->set_text(display_text);
 
 	_update_error_content_height();
 
@@ -1564,6 +1573,57 @@ void CodeTextEditor::goto_error() {
 
 		goto_line_centered(error_line, corrected_column);
 	}
+}
+
+void CodeTextEditor::_error_meta_clicked(const Variant &p_meta) {
+    if (p_meta.get_type() != Variant::STRING) {
+        return;
+    }
+    String meta = p_meta;
+    if (!meta.begins_with("fix_with_ai:")) {
+        // Backward compat if using url meta format without payload
+        if (meta == "fix_with_ai:") {
+            // Fallthrough with last_error_text
+        } else {
+            return;
+        }
+    }
+
+    String error_text = last_error_text;
+    if (error_text.is_empty()) {
+        error_text = error->get_text();
+    }
+
+    if (error_text.is_empty()) {
+        return;
+    }
+
+    EditorNode *en = EditorNode::get_singleton();
+    if (!en) {
+        return;
+    }
+    AIChatDock *dock = en->get_ai_chat_dock();
+    if (!dock) {
+        return;
+    }
+    // Try to include file and position for better context
+    String file_info;
+    ScriptEditor *se = ScriptEditor::get_singleton();
+    if (se && se->get_current_editor()) {
+        Ref<Resource> res = se->get_current_editor()->get_edited_resource();
+        if (res.is_valid() && res->get_path() != String()) {
+            file_info = String("File: ") + res->get_path();
+        }
+    }
+    Point2i pos = get_error_pos();
+    if (!file_info.is_empty()) {
+        file_info += vformat("\nLine: %d, Column: %d", pos.y + 1, pos.x + 1);
+    } else {
+        file_info = vformat("Line: %d, Column: %d", pos.y + 1, pos.x + 1);
+    }
+
+    String prompt = String("Please help me fix this error in my script.\n") + file_info + "\n\n" + error_text;
+    dock->send_error_message(prompt);
 }
 
 void CodeTextEditor::_update_text_editor_theme() {
@@ -1935,6 +1995,7 @@ CodeTextEditor::CodeTextEditor() {
 	error->set_v_size_flags(SIZE_SHRINK_CENTER);
 	error->connect(SceneStringName(gui_input), callable_mp(this, &CodeTextEditor::_error_pressed));
 	error->connect(SceneStringName(resized), callable_mp(this, &CodeTextEditor::_update_error_content_height));
+	error->connect("meta_clicked", callable_mp(this, &CodeTextEditor::_error_meta_clicked));
 	status_bar->add_child(error);
 
 	// Errors

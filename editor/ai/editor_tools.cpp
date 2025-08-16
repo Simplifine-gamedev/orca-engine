@@ -34,6 +34,7 @@
 // In-memory overlay of edited content awaiting user Accept/Reject in the editor.
 // Key: absolute or res:// path; Value: edited content string
 static Dictionary s_preview_overlays;
+static Array s_runtime_errors; // Array of Dictionary: { type, time_ms, message, file, line, is_warning }
 
 void EditorTools::set_preview_overlay(const String &p_path, const String &p_content) {
 	if (p_path.is_empty()) {
@@ -60,6 +61,41 @@ String EditorTools::get_preview_overlay(const String &p_path) {
 		return String(s_preview_overlays[p_path]);
 	}
 	return String();
+}
+
+void EditorTools::record_runtime_error(const Dictionary &p_error) {
+    // Store up to a reasonable number to avoid unbounded growth
+    const int MAX_STORED = 500;
+    s_runtime_errors.push_back(p_error);
+    if (s_runtime_errors.size() > MAX_STORED) {
+        // Remove oldest
+        s_runtime_errors.pop_front();
+    }
+}
+
+Dictionary EditorTools::get_runtime_errors(const Dictionary &p_args) {
+    Dictionary result;
+    Array out;
+    bool include_warnings = p_args.get("include_warnings", true);
+    int max_count = p_args.get("max_count", 100);
+    String file_filter = p_args.get("file", "");
+
+    // iterate from newest to oldest
+    for (int i = s_runtime_errors.size() - 1; i >= 0 && out.size() < max_count; i--) {
+        Dictionary e = s_runtime_errors[i];
+        bool is_warning = e.get("is_warning", false);
+        if (!include_warnings && is_warning) {
+            continue;
+        }
+        if (!file_filter.is_empty() && String(e.get("file", "")) != file_filter) {
+            continue;
+        }
+        out.push_back(e);
+    }
+    result["success"] = true;
+    result["errors"] = out;
+    result["count"] = out.size();
+    return result;
 }
 
 int EditorTools::get_file_line_count(const String &p_path, int p_max_bytes) {
@@ -1158,8 +1194,9 @@ Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	}
 	String path = p_args["path"];
 	Error err;
-	// Prefer in-memory preview overlay if present
-	if (EditorTools::has_preview_overlay(path)) {
+	// Prefer in-memory preview overlay only when AI is actively editing
+	bool use_overlay = false; // default off; AI dock will use overlay via direct apply flow
+	if (use_overlay && EditorTools::has_preview_overlay(path)) {
 		String overlay = EditorTools::get_preview_overlay(path);
 		result["success"] = true;
 		result["content"] = overlay;
@@ -1203,8 +1240,8 @@ Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
 		return result;
 	}
 	String path = p_args["path"];
-	// Honor in-memory overlay if present
-	if (EditorTools::has_preview_overlay(path)) {
+	// Honor in-memory overlay only for advanced reads when explicitly desired (future flag)
+	if (false && EditorTools::has_preview_overlay(path)) {
 		int start_line = p_args.has("start_line") ? (int)p_args["start_line"] : 1;
 		int end_line = p_args.has("end_line") ? (int)p_args["end_line"] : -1;
 		String overlay = EditorTools::get_preview_overlay(path);
@@ -1435,6 +1472,13 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	Dictionary request_data;
 	request_data["file_content"] = p_file_content;
 	request_data["prompt"] = p_ai_args.get("prompt", "");
+	// Forward optional range context so backend can reconstruct full diff
+	if (p_ai_args.has("lines")) request_data["lines"] = p_ai_args.get("lines", "all");
+	if (p_ai_args.has("start_line")) request_data["start_line"] = p_ai_args.get("start_line", 0);
+	if (p_ai_args.has("end_line")) request_data["end_line"] = p_ai_args.get("end_line", 0);
+	if (p_ai_args.has("pre_text")) request_data["pre_text"] = p_ai_args.get("pre_text", String());
+	if (p_ai_args.has("post_text")) request_data["post_text"] = p_ai_args.get("post_text", String());
+	if (p_ai_args.has("path")) request_data["path"] = p_ai_args.get("path", String());
 
 	Ref<JSON> json;
 	json.instantiate();
@@ -1645,40 +1689,58 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
     }
 
-    // Call backend using only the segment if range mode is used
+    // Call backend using only the segment if range mode is used, and pass range context for diff reconstruction
     Dictionary args_for_backend = p_args.duplicate();
     args_for_backend["prompt"] = prompt; // ensure present
+    if (use_range) {
+        args_for_backend["lines"] = String("range");
+        args_for_backend["start_line"] = range_start;
+        args_for_backend["end_line"] = range_end;
+        args_for_backend["pre_text"] = pre_text;
+        args_for_backend["post_text"] = post_text;
+        args_for_backend["path"] = path;
+    } else {
+        args_for_backend["lines"] = String("all");
+        args_for_backend["path"] = path;
+    }
     Dictionary local_result = _call_apply_endpoint(path, content_for_model, args_for_backend, base_url + "/chat");
 
     if (local_result.get("success", false)) {
-        String new_content_segment = local_result.get("edited_content", content_for_model);
-        String cleaned_segment = _clean_backend_content(new_content_segment);
+        String backend_segment = local_result.get("edited_content", content_for_model);
+        String cleaned_segment = _clean_backend_content(backend_segment);
 
-        // Reconstruct full edited content if we only edited a segment
-        String full_edited_content;
-        if (use_range) {
-            full_edited_content = pre_text;
-            if (!pre_text.is_empty() && !cleaned_segment.is_empty() && !pre_text.ends_with("\n")) {
-                // Ensure newline separation if needed
-                full_edited_content += "\n";
-            }
-            full_edited_content += cleaned_segment;
-            if (!post_text.is_empty()) {
-                if (!full_edited_content.is_empty() && !full_edited_content.ends_with("\n")) {
+        // Prefer backend-provided full content when available
+        String full_edited_content = local_result.has("full_edited_content")
+                ? String(local_result.get("full_edited_content", String()))
+                : String();
+        if (full_edited_content.is_empty()) {
+            // Reconstruct full edited content if we only edited a segment
+            if (use_range) {
+                full_edited_content = pre_text;
+                if (!pre_text.is_empty() && !cleaned_segment.is_empty() && !pre_text.ends_with("\n")) {
+                    // Ensure newline separation if needed
                     full_edited_content += "\n";
                 }
-                full_edited_content += post_text;
+                full_edited_content += cleaned_segment;
+                if (!post_text.is_empty()) {
+                    if (!full_edited_content.is_empty() && !full_edited_content.ends_with("\n")) {
+                        full_edited_content += "\n";
+                    }
+                    full_edited_content += post_text;
+                }
+            } else {
+                full_edited_content = cleaned_segment;
             }
-        } else {
-            full_edited_content = cleaned_segment;
         }
 
-        // Generate a lightweight diff summary (UI will show proper diff using original/edited content)
-        String diff = "";
-        if (file_content.length() > 100000 || full_edited_content.length() > 100000) {
-            diff = "Diff skipped - file too large (original: " + String::num_int64(file_content.length()) + " chars, new: " + String::num_int64(full_edited_content.length()) + " chars)";
-        } else {
-            diff = "=== TEMPORARY SIMPLE DIFF ===\nOriginal length: " + String::num_int64(file_content.length()) + " chars\nNew length: " + String::num_int64(full_edited_content.length()) + " chars\n=== END DIFF ===";
+        // Prefer backend diff if supplied, else fall back to simple summary
+        String diff = local_result.has("diff") ? String(local_result.get("diff", String())) : String();
+        if (diff.is_empty()) {
+            if (file_content.length() > 100000 || full_edited_content.length() > 100000) {
+                diff = "Diff skipped - file too large (original: " + String::num_int64(file_content.length()) + " chars, new: " + String::num_int64(full_edited_content.length()) + " chars)";
+            } else {
+                diff = "=== TEMPORARY SIMPLE DIFF ===\nOriginal length: " + String::num_int64(file_content.length()) + " chars\nNew length: " + String::num_int64(full_edited_content.length()) + " chars\n=== END DIFF ===";
+            }
         }
 
         // Optional compilation check
@@ -1709,6 +1771,19 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
             edit_range["end_line"] = range_end;
             result["edit_range"] = edit_range;
             result["edited_segment"] = cleaned_segment;
+        }
+        // Pass-through of backend-provided structured edits when available
+        if (local_result.has("structured_edits")) {
+            result["structured_edits"] = local_result.get("structured_edits", Dictionary());
+        }
+        if (local_result.has("mode")) {
+            result["mode"] = local_result.get("mode", String());
+        }
+        if (local_result.has("start_line")) {
+            result["start_line"] = local_result.get("start_line", 0);
+        }
+        if (local_result.has("end_line")) {
+            result["end_line"] = local_result.get("end_line", 0);
         }
         return result;
     }
@@ -2049,9 +2124,15 @@ Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
     Array errors;
     
     if (path.get_extension() == "gd") {
-        // Read the file content and parse it directly
-        Error file_err;
-        String file_content = FileAccess::get_file_as_string(path, &file_err);
+        // Prefer unsaved preview overlay content if present
+        Error file_err = OK;
+        String file_content;
+        if (EditorTools::has_preview_overlay(path)) {
+            file_content = EditorTools::get_preview_overlay(path);
+            print_line("CHECK_COMPILATION_ERRORS: Using preview overlay content for " + path);
+        } else {
+            file_content = FileAccess::get_file_as_string(path, &file_err);
+        }
         
         if (file_err != OK) {
             Dictionary error_dict;

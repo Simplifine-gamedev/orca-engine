@@ -24,6 +24,7 @@
 #include "editor/script/script_editor_plugin.h"
 #include "editor/script/script_text_editor.h"
 #include "modules/gdscript/gdscript.h"
+#include "modules/gdscript/gdscript_cache.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
@@ -2990,8 +2991,16 @@ void AIChatDock::_apply_edit_thread(void *p_userdata) {
     if (!task || !task->dock) {
         return;
     }
+    // Mark AI frontend busy for overlay usage and UI state
+    task->dock->ai_busy_mutex.lock();
+    task->dock->ai_busy_count++;
+    task->dock->ai_busy_mutex.unlock();
     // Perform the heavy work off the main thread
     Dictionary result = EditorTools::apply_edit(task->args);
+    // Decrement busy when finished
+    task->dock->ai_busy_mutex.lock();
+    task->dock->ai_busy_count = MAX(0, task->dock->ai_busy_count - 1);
+    task->dock->ai_busy_mutex.unlock();
     task->result = result;
     // Stash pointer for main thread consumption (deferred)
     if (!task->dock->apply_edit_mutex) {
@@ -3017,6 +3026,12 @@ void AIChatDock::_on_apply_edit_thread_done() {
         if (!task) continue;
 
         pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
+        // Keep UI busy if background apply threads still running
+        bool busy = false;
+        ai_busy_mutex.lock();
+        busy = ai_busy_count > 0;
+        ai_busy_mutex.unlock();
+        is_waiting_for_response = busy || pending_tool_tasks > 0;
         const String tool_name = "apply_edit";
         _update_tool_placeholder_status(task->tool_call_id, tool_name, "completed");
         _add_tool_response_to_chat(task->tool_call_id, tool_name, task->args, task->result);
@@ -4069,10 +4084,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		}
 
     } else if (p_tool_name == "apply_edit" && p_success) {
-        // Inline Accept/Reject diff preview in the Script Editor
+        // Inline Accept/Reject diff preview in the Script Editor, or structured hunk viewer
         String file_path = p_args.has("path") ? p_args.get("path", "Unknown") : p_args.get("file_path", "Unknown");
         String original_content = p_result.get("original_content", "");
         String edited_content = p_result.get("edited_content", "");
+        Dictionary structured_edits = p_result.get("structured_edits", Dictionary());
         Array comp_errors = p_result.get("compilation_errors", Array());
         bool has_errors = p_result.get("has_errors", false);
 
@@ -4094,6 +4110,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             // as Godot would create a bogus .tscn.gd tab and force a save.
             String ext = file_path.get_extension().to_lower();
             if (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl") {
+                // Always open the script and show inline diff in Script Editor
                 Ref<Resource> resource = ResourceLoader::load(file_path);
                 Ref<Script> script = resource;
                 if (script.is_valid()) {
@@ -4117,6 +4134,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                 if (!file_path.is_empty()) {
                     EditorTools::set_preview_overlay(file_path, edited_content);
                 }
+                // Do not show the hunk viewer popup; rely solely on inline diff UX
             } else {
                 // For non-script resources, provide a compact inline preview only,
                 // and rely on _on_diff_accepted to write the file when user accepts.
@@ -4134,6 +4152,24 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         status->set_text(status_text);
         status->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.8));
         edit_vbox->add_child(status);
+
+        // Provide explicit controls to apply or discard the preview (script-like files)
+        if (!file_path.is_empty() && (file_path.get_extension().to_lower() == "gd" || file_path.get_extension().to_lower() == "cs" || file_path.get_extension().to_lower() == "shader" || file_path.get_extension().to_lower() == "glsl")) {
+            HBoxContainer *btns = memnew(HBoxContainer);
+            edit_vbox->add_child(btns);
+
+            Button *apply_btn = memnew(Button);
+            apply_btn->set_text("Apply to Editor");
+            apply_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
+            btns->add_child(apply_btn);
+            apply_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_apply_preview_to_editor).bind(file_path, edited_content));
+
+            Button *discard_btn = memnew(Button);
+            discard_btn->set_text("Discard Preview");
+            discard_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Remove"), SNAME("EditorIcons")));
+            btns->add_child(discard_btn);
+            discard_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_discard_preview).bind(file_path));
+        }
 
         // If there are errors, show a brief list
         if (has_errors && comp_errors.size() > 0) {
@@ -4687,6 +4723,77 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
 	}
+}
+
+void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String &p_content) {
+    if (p_path.is_empty()) {
+        return;
+    }
+    ScriptEditor *script_editor = ScriptEditor::get_singleton();
+    if (!script_editor) {
+        return;
+    }
+    Ref<Resource> resource = ResourceLoader::load(p_path);
+    Ref<Script> script = resource;
+    if (!script.is_valid()) {
+        // Create a temporary script resource to host the text
+        Ref<GDScript> tmp_script;
+        tmp_script.instantiate();
+        tmp_script->set_path_cache(p_path);
+        tmp_script->set_source_code(p_content);
+        script = tmp_script;
+        script_editor->edit(script);
+    } else {
+        script_editor->edit(script);
+        script->set_source_code(p_content);
+    }
+    
+    // Save the script immediately to disk
+    if (script.is_valid() && resource.is_valid()) {
+        // Remove from cache first to ensure fresh reload
+        GDScriptCache::remove_script(p_path);
+        
+        EditorNode::get_singleton()->save_resource(resource);
+        
+        // Force complete reload
+        script->reload(true);
+        
+        // Trigger reload to ensure all caches are updated
+        script_editor->trigger_live_script_reload(p_path);
+        script_editor->reload_scripts(false);
+    }
+    
+    ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
+    if (ste) {
+        CodeTextEditor *code_editor = ste->get_code_editor();
+        if (code_editor) {
+            CodeEdit *text_editor = code_editor->get_text_editor();
+            if (text_editor) {
+                // Preserve caret when possible
+                int caret_line = text_editor->get_caret_line();
+                int caret_col = text_editor->get_caret_column();
+                text_editor->set_text(p_content);
+                if (caret_line < text_editor->get_line_count()) {
+                    text_editor->set_caret_line(caret_line);
+                    int max_col = text_editor->get_line(caret_line).length();
+                    text_editor->set_caret_column(MIN(caret_col, max_col));
+                }
+                // Mark as saved version so it doesn't show as modified
+                text_editor->tag_saved_version();
+            }
+        }
+        // Validate to refresh errors and clear stale diagnostics
+        ste->validate();
+    }
+    // Once applied to the editor buffer, overlay is no longer needed
+    EditorTools::clear_preview_overlay(p_path);
+    // Switch to Script main screen
+    EditorInterface::get_singleton()->set_main_screen_editor("Script");
+}
+
+void AIChatDock::_on_discard_preview(const String &p_path) {
+    if (p_path.is_empty()) return;
+    EditorTools::clear_preview_overlay(p_path);
 }
 
 void AIChatDock::_toggle_expand_label(RichTextLabel *p_label, Button *p_button, const String &p_full_text, const String &p_snippet_text) {
@@ -6128,11 +6235,38 @@ AIChatDock::AIChatDock() {
 
 
 void AIChatDock::_on_diff_accepted(const String &p_path, const String &p_content) {
-    // For script-like files, let ScriptEditor own the save
+    // For script-like files, we need to properly update and save the script
     String ext = p_path.get_extension().to_lower();
     if (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl" ) {
         print_line("Diff accepted for script-like file: " + p_path);
-        // Clear in-memory overlay now that user accepted, so read_file returns saved version
+        
+        // CRITICAL: Remove the script from cache first to force a fresh reload
+        // This is necessary because Godot caches compiled scripts and errors
+        GDScriptCache::remove_script(p_path);
+        
+        // Load the script resource and update its source code
+        Ref<Resource> resource = ResourceLoader::load(p_path);
+        Ref<Script> script = resource;
+        if (script.is_valid()) {
+            script->set_source_code(p_content);
+            
+            // Save the script to disk immediately
+            // This ensures the game runtime sees the updated content
+            EditorNode::get_singleton()->save_resource(resource);
+            
+            // Force a complete reload of the script
+            script->reload(true);
+            
+            // Trigger script reload to update any cached state
+            ScriptEditor *script_editor = ScriptEditor::get_singleton();
+            if (script_editor) {
+                script_editor->trigger_live_script_reload(p_path);
+                // Also reload the script in the editor
+                script_editor->reload_scripts(false);
+            }
+        }
+        
+        // Clear in-memory overlay after saving
         EditorTools::clear_preview_overlay(p_path);
         return;
     }
@@ -6162,6 +6296,9 @@ void AIChatDock::_apply_file_edit_immediate(const String &p_path, const String &
         ResourceSaver::save(res, p_path); // ensure import metadata/ecosystem catches up if needed
     }
     print_line("AI Chat: Wrote edited content to: " + p_path);
+
+    // Clear overlay once written to disk to avoid masking real file content
+    EditorTools::clear_preview_overlay(p_path);
 }
 void AIChatDock::send_error_message(const String &p_error_text) {
 	String formatted_message = "Please help fix this error:\n\n" + p_error_text;
@@ -7467,6 +7604,8 @@ void AIChatDock::_on_editor_resource_saved(Object *p_res) {
         return;
     }
     print_line("AI Chat: 💾 resource_saved -> " + path);
+    // Clear overlay on save to ensure subsequent reads/checks use disk content
+    EditorTools::clear_preview_overlay(path);
     // Always queue for periodic batch to avoid immediate requests
     String abs_path_res = ProjectSettings::get_singleton()->globalize_path(path);
     if (_should_index_file(abs_path_res)) {
