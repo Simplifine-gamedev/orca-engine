@@ -16,6 +16,8 @@
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
+#include "editor/file_system/editor_file_system.h"
+#include "core/io/image.h"
 #include "editor/settings/editor_settings.h"
 #include "core/variant/typed_array.h"
 #include "editor/editor_string_names.h"
@@ -61,6 +63,34 @@ String EditorTools::get_preview_overlay(const String &p_path) {
 		return String(s_preview_overlays[p_path]);
 	}
 	return String();
+}
+
+Dictionary EditorTools::batch_set_node_properties(const Dictionary &p_args) {
+    Dictionary result;
+    Array ops = p_args.get("operations", Array());
+    bool save_after = p_args.get("save_after", false);
+    int applied = 0;
+    Array failures;
+    for (int i = 0; i < ops.size(); i++) {
+        Dictionary op = ops[i];
+        Dictionary r = set_node_property(op);
+        if (r.get("success", false)) {
+            applied++;
+        } else {
+            failures.push_back(r);
+        }
+    }
+    if (save_after) {
+        String current_scene = EditorNode::get_singleton()->get_edited_scene()->get_scene_file_path();
+        if (!current_scene.is_empty()) {
+            EditorNode::get_singleton()->save_scene_if_open(current_scene);
+        }
+    }
+    result["success"] = failures.is_empty();
+    result["applied"] = applied;
+    result["failed"] = failures.size();
+    if (!failures.is_empty()) result["failures"] = failures;
+    return result;
 }
 
 void EditorTools::record_runtime_error(const Dictionary &p_error) {
@@ -584,14 +614,33 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
         }
     }
 
-    // If value is a resource path string, attempt to load it as a Resource (helps for properties like sprite_frames, material, texture, etc.)
+    // If value is a path string, load via ResourceLoader only; do NOT embed raw Image data.
     if (value.get_type() == Variant::STRING) {
         String s = (String)value;
-        if (s.begins_with("res://") || s.ends_with(".tres") || s.ends_with(".res") || s.ends_with(".png") || s.ends_with(".jpg") || s.ends_with(".jpeg")) {
+        bool looks_like_resource = s.begins_with("res://") || s.ends_with(".tres") || s.ends_with(".res") || s.ends_with(".png") || s.ends_with(".jpg") || s.ends_with(".jpeg");
+        if (looks_like_resource) {
+            // If absolute path to image, copy into res:// and use imported Texture2D path instead.
+            if (!s.begins_with("res://") && (s.ends_with(".png") || s.ends_with(".jpg") || s.ends_with(".jpeg"))) {
+                String base_dir = ProjectSettings::get_singleton()->globalize_path("res://assets");
+                Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+                if (da.is_valid()) {
+                    da->make_dir_recursive(base_dir);
+                    String file_name = String(s.get_file());
+                    String dst_abs = base_dir.path_join(file_name);
+                    if (da->copy(s, dst_abs) == OK) {
+                        String dst_res = ProjectSettings::get_singleton()->localize_path(dst_abs);
+                        s = dst_res;
+                        if (EditorFileSystem::get_singleton()) {
+                            EditorFileSystem::get_singleton()->update_file(dst_res);
+                            EditorFileSystem::get_singleton()->scan_changes();
+                        }
+                    }
+                }
+            }
             Ref<Resource> res = ResourceLoader::load(s);
             if (res.is_valid()) {
-                value = res;
-                print_line("SET_NODE_PROPERTY: Loaded resource from path for property '" + String(prop) + "': " + s);
+                value = res; // Texture2D/Resource reference; avoids embedding raw pixels
+                print_line("SET_NODE_PROPERTY: Loaded resource for '" + String(prop) + "' from " + s);
             }
         }
     }
@@ -645,19 +694,50 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
 	bool valid = false;
 	node->set(prop, value, &valid);
     if (!valid) {
+        // Fallbacks for method-backed or virtual properties
+        String prop_name = String(prop);
+        // Camera current handling via make_current/clear_current
+        if (prop_name == "current" && node->has_method("make_current")) {
+            bool want_current = false;
+            if (value.get_type() == Variant::BOOL) want_current = (bool)value;
+            else if (value.get_type() == Variant::INT) want_current = ((int64_t)value) != 0;
+            else if (value.get_type() == Variant::STRING) want_current = !String(value).is_empty();
+            if (want_current) {
+                node->callv("make_current", Array());
+            } else if (node->has_method("clear_current")) {
+                node->callv("clear_current", Array());
+            }
+            result["success"] = true;
+            result["message"] = "Applied camera current via make_current/clear_current";
+            return result;
+        }
+        // Generic setter fallback, e.g., set_zoom
+        String setter = String("set_") + prop_name;
+        if (node->has_method(setter)) {
+            Array args; args.push_back(value);
+            node->callv(setter, args);
+            result["success"] = true;
+            result["message"] = "Applied via setter method: " + setter;
+            return result;
+        }
         result["success"] = false;
         result["error_code"] = "PROPERTY_INVALID_OR_READONLY";
         result["message"] = "Failed to set property '" + String(prop) + "'. It might be invalid or read-only. Node type: " + node->get_class();
         return result;
     }
 	
-	// Auto-save the scene after property changes so changes persist when running the game
-	String current_scene = EditorNode::get_singleton()->get_edited_scene()->get_scene_file_path();
-	if (!current_scene.is_empty()) {
-		EditorNode::get_singleton()->save_scene_if_open(current_scene);
-		print_line("SET_NODE_PROPERTY: Auto-saved scene after property change: " + current_scene);
-	} else {
-		print_line("SET_NODE_PROPERTY: Scene has no save path, cannot auto-save");
+	// Optional auto-save: default OFF; allow explicit control via p_args.save=true
+	String autosave_env = OS::get_singleton()->get_environment("AI_DISABLE_AUTOSAVE_ON_PROPERTY_CHANGE");
+	bool disable_autosave = !autosave_env.is_empty() && (autosave_env.to_lower() == "1" || autosave_env.to_lower() == "true");
+	bool request_save = p_args.get("save", false);
+	if (!disable_autosave && request_save) {
+		String current_scene = EditorNode::get_singleton()->get_edited_scene()->get_scene_file_path();
+		if (!current_scene.is_empty()) {
+			EditorNode::get_singleton()->save_scene_if_open(current_scene);
+			print_line("SET_NODE_PROPERTY: Auto-saved scene after property change: " + current_scene);
+		} else {
+			print_line("SET_NODE_PROPERTY: Scene has no save path, cannot auto-save");
+		}
 	}
 	
 	result["success"] = true;
@@ -707,10 +787,25 @@ Dictionary EditorTools::call_node_method(const Dictionary &p_args) {
 		args = (Array)p_args["method_args"];
 	}
 
+	// If the node doesn't implement the method, return a structured error so the agent can self-correct.
+	if (!node->has_method(method)) {
+		result["success"] = false;
+		result["error"] = "method_not_found";
+		result["message"] = String("Method not found on node: ") + String(method);
+		result["node_path"] = String(node->get_path());
+		result["node_class"] = String(node->get_class());
+		result["method"] = String(method);
+		result["args"] = args;
+		return result;
+	}
+
 	Variant ret = node->callv(method, args);
 
 	result["success"] = true;
 	result["return_value"] = ret;
+	result["node_path"] = String(node->get_path());
+	result["node_class"] = String(node->get_class());
+	result["method"] = String(method);
 
 	return result;
 }
@@ -1194,12 +1289,13 @@ Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	}
 	String path = p_args["path"];
 	Error err;
-	// Prefer in-memory preview overlay only when AI is actively editing
-	bool use_overlay = false; // default off; AI dock will use overlay via direct apply flow
-	if (use_overlay && EditorTools::has_preview_overlay(path)) {
+	// CRITICAL: Always prefer in-memory preview overlay if present
+	// This ensures subsequent edits use the staged content, not stale disk content
+	if (EditorTools::has_preview_overlay(path)) {
 		String overlay = EditorTools::get_preview_overlay(path);
 		result["success"] = true;
 		result["content"] = overlay;
+		print_line("READ_FILE: Using preview overlay for " + path + " (staged edit pending)");
 		return result;
 	}
 	String content = FileAccess::get_file_as_string(path, &err);
@@ -1240,8 +1336,8 @@ Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
 		return result;
 	}
 	String path = p_args["path"];
-	// Honor in-memory overlay only for advanced reads when explicitly desired (future flag)
-	if (false && EditorTools::has_preview_overlay(path)) {
+	// CRITICAL: Always honor in-memory overlay for consistency
+	if (EditorTools::has_preview_overlay(path)) {
 		int start_line = p_args.has("start_line") ? (int)p_args["start_line"] : 1;
 		int end_line = p_args.has("end_line") ? (int)p_args["end_line"] : -1;
 		String overlay = EditorTools::get_preview_overlay(path);
@@ -1253,6 +1349,7 @@ Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
 		}
 		result["success"] = true;
 		result["content"] = out;
+		print_line("READ_FILE_ADVANCED: Using preview overlay for " + path + " (staged edit pending)");
 		return result;
 	}
 	Ref<FileAccess> file = FileAccess::open(path, FileAccess::READ);
@@ -1581,11 +1678,17 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 
 	Dictionary response_data = json->get_data();
 
-	// Clean up the edited_content if it exists
+	// Clean up the edited_content only for script-like files; keep raw for .tres/.tscn/etc.
 	if (response_data.has("edited_content")) {
 		String edited_content = response_data["edited_content"];
-		String cleaned_content = _clean_backend_content(edited_content);
-		response_data["edited_content"] = cleaned_content;
+		String ext = p_file_path.get_extension().to_lower();
+		bool is_script_like = (ext == "gd" || ext == "cs" || ext == "glsl" || ext == "shader");
+		if (is_script_like) {
+			String cleaned_content = _clean_backend_content(edited_content);
+			response_data["edited_content"] = cleaned_content;
+		} else {
+			response_data["edited_content"] = edited_content;
+		}
 	}
 
 	response_data["success"] = true;
@@ -1610,12 +1713,20 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
     
     // Read the file content (treat missing file as empty to allow creation)
     Error err;
-    String file_content = FileAccess::get_file_as_string(path, &err);
+    String file_content;
     bool file_missing = false;
-    if (err != OK) {
-        file_missing = true;
-        file_content = ""; // create new file from scratch
-        print_line("APPLY_EDIT: Target file does not exist; will create new file: " + path);
+    
+    // CRITICAL: Check for preview overlay first to ensure chained edits work
+    if (EditorTools::has_preview_overlay(path)) {
+        file_content = EditorTools::get_preview_overlay(path);
+        print_line("APPLY_EDIT: Using preview overlay as base content for " + path);
+    } else {
+        file_content = FileAccess::get_file_as_string(path, &err);
+        if (err != OK) {
+            file_missing = true;
+            file_content = ""; // create new file from scratch
+            print_line("APPLY_EDIT: Target file does not exist; will create new file: " + path);
+        }
     }
 
     // Determine edit scope: full file vs line range
@@ -1798,6 +1909,41 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
 
 String EditorTools::_clean_backend_content(const String &p_content) {
 	String content = p_content;
+	
+	// CRITICAL: First check if content looks like JSON structure
+	// This prevents writing JSON diffs to files
+	String trimmed = content.strip_edges();
+	if (trimmed.begins_with("{") && trimmed.ends_with("}")) {
+		// Check for telltale signs of our structured edit JSON
+		if (trimmed.find("\"mode\"") != -1 || trimmed.find("\"edits\"") != -1 || 
+		    trimmed.find("\"range_edit\"") != -1 || trimmed.find("\"start_line\"") != -1) {
+			print_line("ERROR: Backend returned JSON structure instead of file content!");
+			print_line("First 200 chars: " + trimmed.substr(0, 200));
+			// Try to extract actual content from common JSON fields
+			int content_start = trimmed.find("\"content\":");
+			if (content_start != -1) {
+				content_start += 10; // Skip past "content":
+				int quote_start = trimmed.find("\"", content_start);
+				if (quote_start != -1) {
+					int quote_end = trimmed.find("\"", quote_start + 1);
+					while (quote_end != -1 && trimmed[quote_end - 1] == '\\') {
+						quote_end = trimmed.find("\"", quote_end + 1);
+					}
+					if (quote_end != -1) {
+						String extracted = trimmed.substr(quote_start + 1, quote_end - quote_start - 1);
+						// Unescape JSON escapes
+						extracted = extracted.replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\");
+						content = extracted;
+						print_line("Extracted content from JSON structure");
+					}
+				}
+			}
+			if (content == p_content) {
+				// Extraction failed, return empty to prevent corruption
+				return "";
+			}
+		}
+	}
 	
 	// Remove code block wrappers (```javascript, ```gdscript, etc.)
 	// Handle various possible code block formats
@@ -2808,6 +2954,237 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         return node;
     };
 
+    if (operation == "refresh_resources") {
+        // Generic resource refresh so the agent can force reimport after saving files.
+        Array paths = p_args.get("paths", Array());
+        bool wait = p_args.get("wait", true);
+        if (EditorFileSystem::get_singleton()) {
+            for (int i = 0; i < paths.size(); i++) {
+                String p = paths[i];
+                if (!p.is_empty()) {
+                    EditorFileSystem::get_singleton()->update_file(p);
+                }
+            }
+            if (wait) {
+                EditorFileSystem::get_singleton()->scan_changes();
+            } else {
+                // Asynchronous change detection; schedule scan without blocking
+                EditorFileSystem::get_singleton()->scan_changes();
+            }
+        }
+        result["success"] = true;
+        result["message"] = "Resources refreshed";
+        result["paths"] = paths;
+        return result;
+    }
+
+    if (operation == "slice_spritesheet") {
+        // Args: sheet_path:String (required), tile_size:String or Vector2i (e.g., "32x32")
+        // Optional: grid:String (e.g., "8x4"), margin:int (px), spacing:int (px), out_dir:String
+        // Advanced (robust slicing): auto_detect:bool, bg_tolerance:int (0..50), alpha_threshold:int (0..255),
+        // tight_crop:bool, padding:int, fuzzy:int, normalize_to:String (e.g., "32x32")
+        String sheet_path = p_args.get("sheet_path", String(""));
+        if (sheet_path.is_empty()) {
+            result["success"] = false;
+            result["message"] = "Missing 'sheet_path'";
+            return result;
+        }
+
+        auto parse_vec2i = [&](const Variant &v, Vector2i def)->Vector2i{
+            if (v.get_type() == Variant::VECTOR2I) return v;
+            if (v.get_type() == Variant::STRING) {
+                String s = (String)v;
+                Vector<String> parts = s.strip_edges().to_lower().replace(" ", "").split("x");
+                if (parts.size() == 2 && parts[0].is_valid_int() && parts[1].is_valid_int()) {
+                    return Vector2i(parts[0].to_int(), parts[1].to_int());
+                }
+            }
+            return def;
+        };
+
+        Vector2i tile_sz = parse_vec2i(p_args.get("tile_size", String("32x32")), Vector2i(32, 32));
+        Vector2i normalize_to = parse_vec2i(p_args.get("normalize_to", Variant()), tile_sz);
+        int margin = (int)p_args.get("margin", 0);
+        int spacing = (int)p_args.get("spacing", 0);
+        bool auto_detect = (bool)p_args.get("auto_detect", true);
+        int bg_tol = (int)p_args.get("bg_tolerance", 24); // color distance tolerance
+        int alpha_thresh = (int)p_args.get("alpha_threshold", 1); // treat alpha<=this as background
+        bool tight_crop = (bool)p_args.get("tight_crop", true);
+        int padding = (int)p_args.get("padding", 0);
+        int fuzzy = (int)p_args.get("fuzzy", 2); // expand bounds to avoid cutoffs
+        String grid_str = p_args.get("grid", String(""));
+        int grid_cols = 0, grid_rows = 0;
+        if (!grid_str.is_empty()) {
+            Vector<String> parts = grid_str.to_lower().split("x");
+            if (parts.size() == 2 && parts[0].is_valid_int() && parts[1].is_valid_int()) {
+                grid_cols = parts[0].to_int();
+                grid_rows = parts[1].to_int();
+            }
+        }
+        String out_dir = p_args.get("out_dir", String(""));
+        if (out_dir.is_empty()) {
+            out_dir = String(sheet_path.get_base_dir()) + "/slices";
+        }
+
+        Ref<Image> sheet = Image::load_from_file(sheet_path);
+        if (sheet.is_null() || sheet->is_empty()) {
+            result["success"] = false;
+            result["message"] = String("Failed to load sheet: ") + sheet_path;
+            return result;
+        }
+
+        // Auto compute grid/margins/spacing (robust) if requested or if missing.
+        if (auto_detect || grid_cols <= 0 || grid_rows <= 0) {
+            // Estimate background color from corners
+            auto get_px = [&](int x, int y)->Color{ return sheet->get_pixel(x, y); };
+            Color corners[4] = { get_px(0,0), get_px(sheet->get_width()-1,0), get_px(0,sheet->get_height()-1), get_px(sheet->get_width()-1, sheet->get_height()-1) };
+            Color bg = corners[0];
+            // Average corners for stability
+            for (int i=1;i<4;i++) { bg.r += corners[i].r; bg.g += corners[i].g; bg.b += corners[i].b; bg.a += corners[i].a; }
+            bg.r/=4; bg.g/=4; bg.b/=4; bg.a/=4;
+            auto is_bg = [&](const Color &c)->bool{
+                if (alpha_thresh > 0 && c.a * 255.0 <= alpha_thresh) return true;
+                float dr = fabsf(c.r - bg.r), dg = fabsf(c.g - bg.g), db = fabsf(c.b - bg.b);
+                return (dr*255.0 <= bg_tol && dg*255.0 <= bg_tol && db*255.0 <= bg_tol);
+            };
+            // Scan for empty rows/cols to infer margins/spacing and cell spans
+            PackedInt32Array col_non_empty, row_non_empty;
+            col_non_empty.resize(sheet->get_width());
+            row_non_empty.resize(sheet->get_height());
+            for (int x=0; x<sheet->get_width(); x++) {
+                bool any = false; for (int y=0; y<sheet->get_height(); y++) { if (!is_bg(sheet->get_pixel(x,y))) { any=true; break; } }
+                col_non_empty.set(x, any ? 1 : 0);
+            }
+            for (int y=0; y<sheet->get_height(); y++) {
+                bool any = false; for (int x=0; x<sheet->get_width(); x++) { if (!is_bg(sheet->get_pixel(x,y))) { any=true; break; } }
+                row_non_empty.set(y, any ? 1 : 0);
+            }
+            // Determine margins as outermost empty bands
+            int left=0; while (left < sheet->get_width() && col_non_empty[left]==0) left++;
+            int right=sheet->get_width()-1; while (right>=0 && col_non_empty[right]==0) right--;
+            int top=0; while (top < sheet->get_height() && row_non_empty[top]==0) top++;
+            int bottom=sheet->get_height()-1; while (bottom>=0 && row_non_empty[bottom]==0) bottom--;
+            if (left < right && top < bottom) {
+                margin = MAX(margin, MIN(left, top));
+            }
+            // Estimate spacing by finding periodic empty bands between non-empty spans
+            auto estimate_spacing = [&](bool horizontal)->int{
+                int max_len = horizontal ? sheet->get_width() : sheet->get_height();
+                int best = spacing;
+                int run=0; bool prev_empty=false; Vector<int> gaps;
+                for (int i=0;i<max_len;i++) {
+                    bool empty = (horizontal ? col_non_empty[i]==0 : row_non_empty[i]==0);
+                    if (empty) { run++; prev_empty=true; }
+                    else { if (prev_empty && run>0) gaps.push_back(run); run=0; prev_empty=false; }
+                }
+                if (gaps.size() > 0) {
+                    // use median gap (robust)
+                    gaps.sort(); best = gaps[gaps.size()/2];
+                    // bound spacing to reasonable values
+                    if (best > tile_sz.x*2) best = spacing; // ignore absurd gaps
+                }
+                return best;
+            };
+            if (spacing == 0) {
+                int hsp = estimate_spacing(true);
+                int vsp = estimate_spacing(false);
+                spacing = MAX(0, MIN(hsp, vsp));
+            }
+            // Estimate grid if missing
+            if (grid_cols <= 0 || grid_rows <= 0) {
+                int usable_w = sheet->get_width() - margin * 2 + spacing;
+                int usable_h = sheet->get_height() - margin * 2 + spacing;
+                grid_cols = MAX(1, (usable_w + spacing) / (tile_sz.x + spacing));
+                grid_rows = MAX(1, (usable_h + spacing) / (tile_sz.y + spacing));
+            }
+        }
+        if (grid_cols <= 0 || grid_rows <= 0) {
+            result["success"] = false;
+            result["message"] = "Invalid grid computed from image/tile_size";
+            return result;
+        }
+
+        // Ensure out_dir exists
+        Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_RESOURCES);
+        if (da.is_valid()) {
+            if (!da->dir_exists(out_dir)) {
+                da->make_dir_recursive(out_dir);
+            }
+        }
+
+        Array saved_paths;
+        for (int y = 0; y < grid_rows; y++) {
+            for (int x = 0; x < grid_cols; x++) {
+                Vector2i origin = Vector2i(margin, margin) + Vector2i(x * (tile_sz.x + spacing), y * (tile_sz.y + spacing));
+                if (origin.x + tile_sz.x > sheet->get_width() || origin.y + tile_sz.y > sheet->get_height()) {
+                    continue;
+                }
+                Rect2i cell_rect(origin, tile_sz);
+                // Expand with fuzzy margin to avoid cutting off if slightly misaligned
+                cell_rect.position -= Vector2i(fuzzy, fuzzy);
+                cell_rect.size += Vector2i(fuzzy*2, fuzzy*2);
+                cell_rect.position.x = MAX(0, cell_rect.position.x);
+                cell_rect.position.y = MAX(0, cell_rect.position.y);
+                cell_rect.size.x = MIN(sheet->get_width() - cell_rect.position.x, cell_rect.size.x);
+                cell_rect.size.y = MIN(sheet->get_height() - cell_rect.position.y, cell_rect.size.y);
+
+                Ref<Image> sub = sheet->get_region(cell_rect);
+
+                // Tight crop inside the cell based on background, then paste onto normalized canvas
+                Ref<Image> final_img;
+                final_img.instantiate();
+                final_img->initialize_data(normalize_to.x + padding*2, normalize_to.y + padding*2, false, Image::FORMAT_RGBA8);
+                final_img->fill(Color(0,0,0,0));
+
+                Rect2i content_rect(Vector2i(0,0), sub->get_size());
+                if (tight_crop) {
+                    int minx=sub->get_width(), miny=sub->get_height(), maxx=-1, maxy=-1;
+                    for (int cy=0; cy<sub->get_height(); cy++) {
+                        for (int cx=0; cx<sub->get_width(); cx++) {
+                            Color c = sub->get_pixel(cx, cy);
+                            bool bgp = (alpha_thresh>0 && c.a*255.0 <= alpha_thresh) || false; // ignore color match for tight crop
+                            if (!bgp) { if (cx<minx) minx=cx; if (cy<miny) miny=cy; if (cx>maxx) maxx=cx; if (cy>maxy) maxy=cy; }
+                        }
+                    }
+                    if (maxx >= minx && maxy >= miny) {
+                        content_rect = Rect2i(Vector2i(minx, miny), Vector2i(maxx-minx+1, maxy-miny+1));
+                    }
+                }
+
+                Ref<Image> cropped = sub->get_region(content_rect);
+                // Center on final canvas
+                int dst_w = final_img->get_width();
+                int dst_h = final_img->get_height();
+                int ox = (dst_w - cropped->get_width())/2;
+                int oy = (dst_h - cropped->get_height())/2;
+                final_img->blit_rect(cropped, Rect2i(Vector2i(0,0), cropped->get_size()), Vector2i(ox, oy));
+
+                String fname = vformat("%s/frame_%02d_%02d.png", out_dir, y, x);
+                Error se = final_img->save_png(fname);
+                if (se == OK) {
+                    saved_paths.push_back(fname);
+                }
+            }
+        }
+
+        // Refresh editor file system so new frames are recognized
+        if (EditorFileSystem::get_singleton()) {
+            for (int i = 0; i < saved_paths.size(); i++) {
+                EditorFileSystem::get_singleton()->update_file(saved_paths[i]);
+            }
+            EditorFileSystem::get_singleton()->scan_changes();
+        }
+
+        result["success"] = true;
+        result["message"] = "Spritesheet sliced";
+        result["paths"] = saved_paths;
+        result["grid_cols"] = grid_cols;
+        result["grid_rows"] = grid_rows;
+        result["tile_size"] = normalize_to;
+        result["out_dir"] = out_dir;
+        return result;
+    }
+
     if (operation == "list_node_signals") {
         Node *node = require_path(result);
         if (!node) return result;
@@ -3188,7 +3565,7 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         }
         Dictionary reg = trace_registry[trace_id];
         Array connections = reg.get("connections", Array());
-        Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+        // Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root(); // Currently unused
         for (int i = 0; i < connections.size(); i++) {
             Dictionary c = connections[i];
             Dictionary err;

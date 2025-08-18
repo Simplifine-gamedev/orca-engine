@@ -1,7 +1,5 @@
 # Orca Engine – Backend (AI Service)
 
-Note on licensing: Backend scripts are original contributions and are licensed under the Personal Non‑Commercial License (see `../LICENSES/COMPANY-NONCOMMERCIAL.md`). Upstream Godot remains under MIT (`../LICENSE.txt`). For commercial licensing of backend code, contact the Project Owner.
-
 Backend service for Orca Engine’s AI assistant. It handles OpenAI API calls, streams responses, and provides cloud vector search over project files.
 
 ## Architecture

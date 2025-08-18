@@ -247,14 +247,32 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         description = arguments.get('description', '')
         style = arguments.get('style', '')
         image_ids = arguments.get('images', []) or []
-        size = arguments.get('size', '1024x1024')  # optional
+        size = arguments.get('size', '1024x1024')  # optional, may be arbitrary WxH
+        # Exact pixel control parameters (optional)
+        exact_size = arguments.get('exact_size') or arguments.get('size_exact')
+        # Optional high-level spritesheet spec (lets the model follow an explicit layout)
+        spritesheet = arguments.get('spritesheet') or {}
+        tile_size = arguments.get('tile_size') or (spritesheet.get('tile_size') if isinstance(spritesheet, dict) else None)  # e.g., "32x32"
+        grid = arguments.get('grid') or (spritesheet.get('grid') if isinstance(spritesheet, dict) else None)            # e.g., "2x2" (cols x rows)
+        # Additional layout hints
+        ss_order = (spritesheet.get('order') or 'row-major') if isinstance(spritesheet, dict) else 'row-major'
+        ss_margin = int(spritesheet.get('margin') or 0) if isinstance(spritesheet, dict) else 0
+        ss_spacing = int(spritesheet.get('spacing') or 0) if isinstance(spritesheet, dict) else 0
+        ss_row_labels = spritesheet.get('row_labels') if isinstance(spritesheet, dict) else None
+        ss_normalize_to = spritesheet.get('normalize_to') if isinstance(spritesheet, dict) else None
+        resize_filter = (arguments.get('resize_filter') or '').lower()  # nearest|bilinear|bicubic|lanczos
         # For cloud safety: we do not write to local file systems from the server.
         # If provided, path_to_save is simply echoed back so the Godot editor can
         # save client-side after receiving the image.
-        path_to_save = arguments.get('path_to_save')
+        # Allow both 'path_to_save' and the more concise 'path'
+        path_to_save = arguments.get('path_to_save') or arguments.get('path')
 
         print("IMAGE_OP DEBUG: Incoming arguments:")
         print(f"  - description len: {len(description)} | style: '{style}' | size: {size}")
+        if exact_size:
+            print(f"  - exact_size: {exact_size}")
+        if tile_size or grid:
+            print(f"  - tile_size: {tile_size} | grid: {grid}")
         if isinstance(image_ids, list):
             print(f"  - requested image ids: {image_ids} (count={len(image_ids)})")
         else:
@@ -266,6 +284,26 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         prompt_text = description
         if style:
             prompt_text += f", {style} style"
+
+        # If spritesheet spec is provided, append strict layout constraints for better consistency
+        if isinstance(spritesheet, dict) and (grid or (spritesheet.get('rows') and spritesheet.get('cols'))):
+            # Normalize grid string
+            if not grid and spritesheet.get('rows') and spritesheet.get('cols'):
+                grid = f"{int(spritesheet['cols'])}x{int(spritesheet['rows'])}"
+            prompt_text += "\n\nSPRITESHEET CONSTRAINTS:" \
+                           f"\n- Grid: {grid or 'unspecified'} ({ss_order})" \
+                           f"\n- Tile size: {tile_size or 'consistent tiles'}" \
+                           f"\n- Spacing: {ss_spacing}px, Margins: {ss_margin}px" \
+                           "\n- Each tile must be contained entirely within its cell with uniform padding, aligned to a fixed grid, and with transparent background." \
+                           "\n- Left-to-right within a row is chronological frame order. Top-to-bottom is row order." \
+                           "\n- Keep palette and proportions consistent across all cells."
+            if isinstance(ss_row_labels, list) and ss_row_labels:
+                try:
+                    # Render row labels as strict instructions
+                    labels = ', '.join([str(x) for x in ss_row_labels])
+                    prompt_text += f"\n- Row labels (top→bottom): {labels}"
+                except Exception:
+                    pass
 
         # Gather available images from prior conversation messages
         available_images = {}
@@ -313,23 +351,116 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         print(f"IMAGE_OP DEBUG: available_images keys: {list(available_images.keys())}")
         print(f"IMAGE_OP DEBUG: selected_images count: {len(selected_images)}")
 
+        # Helpers for size parsing and provider compatibility
+        def _parse_size_str(val: str | None) -> tuple[int | None, int | None]:
+            try:
+                if not val:
+                    return None, None
+                parts = str(val).lower().replace(' ', '').split('x')
+                if len(parts) != 2:
+                    return None, None
+                return int(float(parts[0])), int(float(parts[1]))
+            except Exception:
+                return None, None
+
+        def _compute_exact_size() -> tuple[int | None, int | None]:
+            # Priority: exact_size -> tile_size+grid -> size if arbitrary WxH
+            w, h = _parse_size_str(exact_size) if exact_size else (None, None)
+            if w and h:
+                return w, h
+            if tile_size and grid:
+                tw, th = _parse_size_str(tile_size)
+                try:
+                    gc, gr = [int(x) for x in str(grid).lower().split('x')]
+                except Exception:
+                    gc, gr = None, None
+                if tw and th and gc and gr:
+                    # Account for optional spacing/margins for better sheet planning
+                    total_w = tw * gc + ss_spacing * (gc - 1) + ss_margin * 2
+                    total_h = th * gr + ss_spacing * (gr - 1) + ss_margin * 2
+                    return total_w, total_h
+            # If size is an arbitrary WxH (not provider-supported), use that as target
+            sw, sh = _parse_size_str(size)
+            if sw and sh:
+                return sw, sh
+            return None, None
+
+        def _choose_provider_size(target_w: int | None, target_h: int | None) -> str:
+            # Only pass provider-supported sizes to avoid 400 errors.
+            # Allowed: '1024x1024', '1024x1536' (portrait), '1536x1024' (landscape), and 'auto'.
+            allowed = {"1024x1024", "1024x1536", "1536x1024", "auto"}
+            # If the user requested an allowed value, honor it directly.
+            if isinstance(size, str) and size.lower() in allowed:
+                return size.lower()
+            sw, sh = _parse_size_str(size)
+            if sw and sh:
+                candidate = f"{sw}x{sh}".lower()
+                if candidate in allowed:
+                    return candidate
+            # Otherwise infer orientation from target exact size if available
+            if target_w and target_h:
+                if abs(float(target_w) / float(target_h) - 1.0) < 0.15:
+                    return "1024x1024"
+                return "1536x1024" if target_w > target_h else "1024x1536"
+            # Fallback to square if no hints
+            return "1024x1024"
+
+        def _maybe_resize_b64_to_exact(b64_png: str, target_w: int | None, target_h: int | None) -> tuple[str, int | None, int | None]:
+            if not b64_png or not (target_w and target_h):
+                return b64_png, None, None
+            try:
+                raw = base64.b64decode(b64_png)
+                im = Image.open(io.BytesIO(raw))
+                if im.size == (target_w, target_h):
+                    return b64_png, im.size[0], im.size[1]
+                # Choose filter
+                filt = Image.NEAREST if (resize_filter == 'nearest' or 'pixel' in (style or '').lower()) else (
+                    Image.BILINEAR if resize_filter == 'bilinear' else (
+                    Image.BICUBIC if resize_filter == 'bicubic' else Image.LANCZOS))
+                resized = im.resize((int(target_w), int(target_h)), filt)
+                out_buf = io.BytesIO()
+                resized.save(out_buf, format='PNG')
+                out_b64 = base64.b64encode(out_buf.getvalue()).decode('utf-8')
+                return out_b64, resized.size[0], resized.size[1]
+            except Exception as re:
+                print(f"IMAGE_OP RESIZE WARNING: {re}")
+                return b64_png, None, None
+
+        # Determine target exact size and provider size
+        t_w, t_h = _compute_exact_size()
+        provider_size = _choose_provider_size(t_w, t_h)
+
         # If no images selected, do text-to-image generation
         if not selected_images:
             print("IMAGE_OP: Generating new image from prompt using Images API")
-            gen = client.images.generate(model="gpt-image-1", prompt=prompt_text, size=size)
+            gen = client.images.generate(model="gpt-image-1", prompt=prompt_text, size=provider_size)
             if not gen.data or not getattr(gen.data[0], 'b64_json', None):
                 return {"success": False, "error": "Image generation returned no data"}
 
             image_base64 = gen.data[0].b64_json
+            # Resize to exact target if requested
+            image_base64, out_w, out_h = _maybe_resize_b64_to_exact(image_base64, t_w, t_h)
             result = {
                 "success": True,
                 "image_data": image_base64,
                 "prompt": description,
                 "style": style,
                 "format": "png",
+                "width": out_w,
+                "height": out_h,
                 "input_images": 0,
                 "requested_images": len(image_ids)
             }
+            # Provide a compact slice hint for downstream tools (frontend will use editor_introspect.slice_spritesheet)
+            if grid or tile_size:
+                result["slice_hint"] = {
+                    "grid": grid,
+                    "tile_size": tile_size or ss_normalize_to,
+                    "normalize_to": ss_normalize_to or tile_size,
+                    "order": ss_order,
+                    "spacing": ss_spacing,
+                    "margin": ss_margin,
+                }
             if path_to_save:
                 result["path_to_save"] = path_to_save
             return result
@@ -361,10 +492,10 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 images_api = getattr(client, 'images')
                 print(f"IMAGE_OP DEBUG: Using images API method: {'edits' if hasattr(images_api, 'edits') else 'edit'} | prompt len={len(prompt_text)}")
                 if hasattr(images_api, 'edits'):
-                    edit = images_api.edits(model="gpt-image-1", image=img_fh, prompt=prompt_text, size=size)
+                    edit = images_api.edits(model="gpt-image-1", image=img_fh, prompt=prompt_text, size=provider_size)
                 else:
                     # Older SDKs
-                    edit = images_api.edit(model="gpt-image-1", image=img_fh, prompt=prompt_text, size=size)
+                    edit = images_api.edit(model="gpt-image-1", image=img_fh, prompt=prompt_text, size=provider_size)
         finally:
             if temp_path and os.path.exists(temp_path):
                 try:
@@ -377,15 +508,28 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
             return {"success": False, "error": "Image edit returned no data"}
 
         image_base64 = edit.data[0].b64_json
+        # Resize to exact target if requested
+        image_base64, out_w, out_h = _maybe_resize_b64_to_exact(image_base64, t_w, t_h)
         result = {
             "success": True,
             "image_data": image_base64,
             "prompt": description,
             "style": style,
             "format": "png",
+            "width": out_w,
+            "height": out_h,
             "input_images": 1,
             "requested_images": len(image_ids)
         }
+        if grid or tile_size:
+            result["slice_hint"] = {
+                "grid": grid,
+                "tile_size": tile_size or ss_normalize_to,
+                "normalize_to": ss_normalize_to or tile_size,
+                "order": ss_order,
+                "spacing": ss_spacing,
+                "margin": ss_margin,
+            }
         if path_to_save:
             result["path_to_save"] = path_to_save
         return result
@@ -394,6 +538,188 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         print(f"IMAGE_OP ERROR: {str(e)}")
         return {"success": False, "error": f"Image operation failed: {str(e)}"}
 
+# --- Backend Spritesheet Slicing Function ---
+def slice_spritesheet_internal(arguments: dict) -> dict:
+    """Robust spritesheet slicer (backend executed, no file writes).
+
+    Args:
+      - sheet_base64 (preferred) OR sheet_path (absolute/res:// on editor side)
+      - tile_size: 'WxH' (optional if auto_detect)
+      - grid: 'colsxrows' (optional if auto_detect)
+      - margin, spacing: ints
+      - auto_detect: bool (default True)
+      - bg_tolerance: int (default 24)
+      - alpha_threshold: int (default 1)
+      - tight_crop: bool (default True)
+      - padding: int (default 0)
+      - fuzzy: int (default 2)
+      - normalize_to: 'WxH' (optional; default tile_size)
+    Returns:
+      { success, frames:[{row,col,filename,width,height,base64_data}], grid_cols, grid_rows, tile_size, message }
+    """
+    try:
+        b64 = arguments.get('sheet_base64')
+        sheet_path = arguments.get('sheet_path')
+        if not b64 and not sheet_path:
+            return {"success": False, "error": "sheet_base64 or sheet_path required"}
+
+        # Load image into PIL
+        if b64:
+            raw = base64.b64decode(b64)
+            img = Image.open(io.BytesIO(raw)).convert('RGBA')
+        else:
+            # Backend should avoid reading editor paths; this is best-effort for local dev
+            img = Image.open(sheet_path).convert('RGBA')
+
+        def _parse_wh(s):
+            if not s:
+                return None, None
+            parts = str(s).lower().replace(' ', '').split('x')
+            if len(parts) != 2:
+                return None, None
+            return int(float(parts[0])), int(float(parts[1]))
+
+        tw, th = _parse_wh(arguments.get('tile_size'))
+        nw, nh = _parse_wh(arguments.get('normalize_to'))
+        grid = arguments.get('grid')
+        cols = rows = 0
+        if grid and isinstance(grid, str) and 'x' in grid:
+            try:
+                parts = [int(x) for x in grid.lower().split('x')]
+                cols, rows = parts[0], parts[1]
+            except Exception:
+                cols = rows = 0
+        margin = int(arguments.get('margin') or 0)
+        spacing = int(arguments.get('spacing') or 0)
+        auto_detect = bool(arguments.get('auto_detect', True))
+        bg_tol = int(arguments.get('bg_tolerance') or 24)
+        alpha_thresh = int(arguments.get('alpha_threshold') or 1)
+        tight_crop = bool(arguments.get('tight_crop', True))
+        padding = int(arguments.get('padding') or 0)
+        fuzzy = int(arguments.get('fuzzy') or 2)
+
+        if not nw or not nh:
+            nw, nh = (tw or 32), (th or 32)
+
+        W, H = img.size
+        px = img.load()
+        # Estimate background (average corners)
+        corners = [px[0, 0], px[W-1, 0], px[0, H-1], px[W-1, H-1]]
+        def _to_rgba(c):
+            if len(c) == 4:
+                return c
+            return Image.new('RGBA', (1,1), c).getpixel((0,0))
+        corners = [_to_rgba(c) for c in corners]
+        bg = (
+            sum(c[0] for c in corners)/4.0,
+            sum(c[1] for c in corners)/4.0,
+            sum(c[2] for c in corners)/4.0,
+            sum((c[3] if len(c)>3 else 255) for c in corners)/4.0,
+        )
+        def _is_bg(c):
+            if len(c) == 4 and c[3] <= alpha_thresh:
+                return True
+            return (abs(c[0]-bg[0]) <= bg_tol and abs(c[1]-bg[1]) <= bg_tol and abs(c[2]-bg[2]) <= bg_tol)
+
+        # Auto grid/margins if requested or missing
+        if auto_detect or cols <= 0 or rows <= 0 or not tw or not th:
+            # Project to axes
+            col_ne = [0]*W
+            row_ne = [0]*H
+            for x in range(W):
+                col_ne[x] = 1 if any(not _is_bg(px[x, y]) for y in range(H)) else 0
+            for y in range(H):
+                row_ne[y] = 1 if any(not _is_bg(px[x, y]) for x in range(W)) else 0
+            # Margins from outer empties
+            left = 0
+            while left < W and col_ne[left] == 0: left += 1
+            right = W - 1
+            while right >= 0 and col_ne[right] == 0: right -= 1
+            top = 0
+            while top < H and row_ne[top] == 0: top += 1
+            bottom = H - 1
+            while bottom >= 0 and row_ne[bottom] == 0: bottom -= 1
+            if left < right and top < bottom:
+                margin = max(margin, min(left, top))
+            # Spacing via median empty run
+            def _est_space(flags):
+                gaps = []
+                run = 0
+                prev = False
+                for f in flags:
+                    if f == 0:
+                        run += 1; prev = True
+                    else:
+                        if prev and run > 0: gaps.append(run)
+                        run = 0; prev = False
+                return int(sorted(gaps)[len(gaps)//2]) if gaps else 0
+            if spacing == 0:
+                spacing = max(0, min(_est_space(col_ne), _est_space(row_ne)))
+            # Infer cols/rows from usable area if missing
+            if not tw or not th:
+                # approximate from dominant non-empty stride
+                tw = tw or max(8, (right-left+1)//3)
+                th = th or max(8, (bottom-top+1)//3)
+            if cols <= 0 or rows <= 0:
+                usable_w = W - margin*2 + spacing
+                usable_h = H - margin*2 + spacing
+                cols = max(1, (usable_w + spacing)//(tw + spacing))
+                rows = max(1, (usable_h + spacing)//(th + spacing))
+
+        frames = []
+        for r in range(rows):
+            for c in range(cols):
+                ox = margin + c*(tw + spacing)
+                oy = margin + r*(th + spacing)
+                fx = max(0, ox - fuzzy)
+                fy = max(0, oy - fuzzy)
+                fw = min(W - fx, tw + fuzzy*2)
+                fh = min(H - fy, th + fuzzy*2)
+                if fw <= 0 or fh <= 0:
+                    continue
+                cell = img.crop((fx, fy, fx+fw, fy+fh))
+                if tight_crop:
+                    # alpha-based crop
+                    cp = cell.load()
+                    cw, ch = cell.size
+                    minx, miny, maxx, maxy = cw, ch, -1, -1
+                    for yy in range(ch):
+                        for xx in range(cw):
+                            a = cp[xx, yy][3] if len(cp[xx, yy]) == 4 else 255
+                            if a > alpha_thresh:
+                                if xx < minx: minx = xx
+                                if yy < miny: miny = yy
+                                if xx > maxx: maxx = xx
+                                if yy > maxy: maxy = yy
+                    if maxx >= minx and maxy >= miny:
+                        cell = cell.crop((minx, miny, maxx+1, maxy+1))
+                # Center on normalized canvas
+                canvas = Image.new('RGBA', (nw + padding*2, nh + padding*2), (0,0,0,0))
+                dx = (canvas.size[0] - cell.size[0])//2
+                dy = (canvas.size[1] - cell.size[1])//2
+                canvas.alpha_composite(cell, (dx, dy))
+                out_buf = io.BytesIO()
+                canvas.save(out_buf, format='PNG')
+                frames.append({
+                    'row': r,
+                    'col': c,
+                    'filename': f'frame_{r:02d}_{c:02d}.png',
+                    'width': canvas.size[0],
+                    'height': canvas.size[1],
+                    'base64_data': base64.b64encode(out_buf.getvalue()).decode('utf-8')
+                })
+
+        return {
+            'success': True,
+            'frames': frames,
+            'grid_cols': cols,
+            'grid_rows': rows,
+            'tile_size': f"{nw}x{nh}",
+            'message': f'Sliced {len(frames)} frames ({cols}x{rows})'
+        }
+    except Exception as e:
+        print(f"SLICE_SPRITESHEET_ERROR: {e}")
+        return {"success": False, "error": str(e)}
 # --- Search Across Project Function ---
 def search_across_project_internal(arguments: dict, current_user: dict = None) -> dict:
     """Execute search across project using the cloud vector system"""
@@ -607,24 +933,30 @@ godot_tools = [
     {
         "type": "function",
         "function": {
-            "name": "set_node_property",
-            "description": "Set a property on a node",
+            "name": "batch_set_node_properties",
+            "description": "Apply multiple property changes then optionally save once.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the node"
+                    "operations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "property": {"type": "string"},
+                                "value": {}
+                            },
+                            "required": ["path", "property", "value"]
+                        }
                     },
-                    "property": {
-                        "type": "string",
-                        "description": "Property name to set"
-                    },
-                    "value": {
-                        "description": "Value to set for the property"
+                    "save_after": {
+                        "type": "boolean",
+                        "description": "Save scene once after all operations are applied.",
+                        "default": True
                     }
                 },
-                "required": ["path", "property", "value"]
+                "required": ["operations"]
             }
         }
     },
@@ -901,6 +1233,31 @@ godot_tools = [
                         "path_to_save": {
                             "type": "string",
                             "description": "Optional. Local path on the Godot editor machine where the client should save the generated image (e.g., 'res://art/output.png' or absolute). The server will not write this path; it's forwarded for the client to handle."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Alias for path_to_save. If provided, the editor will save the generated image to this path."
+                        },
+                        "size": {
+                            "type": "string",
+                            "description": "Provider size hint. Supports square values like '256x256', '512x512', '1024x1024'."
+                        },
+                        "exact_size": {
+                            "type": "string",
+                            "description": "Exact output dimensions in pixels, e.g., '64x64'. The server will resize to this exactly using the chosen filter."
+                        },
+                        "tile_size": {
+                            "type": "string",
+                            "description": "Tile pixel size 'WxH', e.g., '32x32'. Combine with grid to compute exact_size automatically."
+                        },
+                        "grid": {
+                            "type": "string",
+                            "description": "Grid 'colsxrows', e.g., '2x2'. When used with tile_size, final exact size = tile_size * grid."
+                        },
+                        "resize_filter": {
+                            "type": "string",
+                            "enum": ["nearest", "bilinear", "bicubic", "lanczos"],
+                            "description": "Resampling filter to reach exact_size. Defaults to 'lanczos'; for pixel art use 'nearest'."
                         }
                 },
                 "required": ["description"]
@@ -944,10 +1301,18 @@ godot_tools = [
                             "open_connections_dialog",
                             "start_signal_trace",
                             "stop_signal_trace",
-                            "get_trace_events"
+                            "get_trace_events",
+                            "refresh_resources",
+                            "slice_spritesheet"
                         ],
                         "description": "Operation to perform"
                     },
+                    "sheet_path": { "type": "string", "description": "Spritesheet image path for slice_spritesheet (e.g., 'res://art/hero_sheet.png')" },
+                    "tile_size": { "type": "string", "description": "Tile size 'WxH' for slicing (e.g., '32x32'). Vector2i also supported by frontend." },
+                    "grid": { "type": "string", "description": "Grid 'colsxrows' (e.g., '3x3'). Optional; auto-computed if omitted." },
+                    "margin": { "type": "integer", "description": "Outer margin (pixels) around the sheet", "default": 0 },
+                    "spacing": { "type": "integer", "description": "Spacing (pixels) between tiles", "default": 0 },
+                    "out_dir": { "type": "string", "description": "Output directory for sliced frames (default: <sheet_dir>/slices)" },
                     "path": { "type": "string", "description": "Node path" },
                     "signal_name": { "type": "string", "description": "Signal name" },
                     "source_path": { "type": "string", "description": "Source node path (for connect/disconnect/validate)" },
@@ -964,6 +1329,32 @@ godot_tools = [
                     "since_index": { "type": "integer", "description": "Fetch events/logs since index" }
                 },
                 "required": ["operation"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "slice_spritesheet",
+            "description": "Backend spritesheet slicer. Takes a sheet (base64 or path) and returns frames (row/col indexed) as base64 PNGs with robust auto-detection of grid/margins.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sheet_base64": {"type": "string", "description": "Base64-encoded PNG/JPG spritesheet (preferred)."},
+                    "sheet_path": {"type": "string", "description": "Optional local path for dev; prefer sheet_base64."},
+                    "tile_size": {"type": "string", "description": "Tile size 'WxH' (e.g., '32x32'). Optional if auto_detect."},
+                    "grid": {"type": "string", "description": "Grid 'colsxrows' (e.g., '3x3'). Optional if auto_detect."},
+                    "margin": {"type": "integer", "description": "Outer margin (pixels).", "default": 0},
+                    "spacing": {"type": "integer", "description": "Spacing between tiles (pixels).", "default": 0},
+                    "auto_detect": {"type": "boolean", "description": "Infer margins/spacing/grid from image content.", "default": True},
+                    "bg_tolerance": {"type": "integer", "description": "Color tolerance for background detection (0..50).", "default": 24},
+                    "alpha_threshold": {"type": "integer", "description": "Alpha <= threshold treated as background (0..255).", "default": 1},
+                    "tight_crop": {"type": "boolean", "description": "Crop to non-transparent content inside each cell.", "default": True},
+                    "padding": {"type": "integer", "description": "Padding around cropped content on final tile.", "default": 0},
+                    "fuzzy": {"type": "integer", "description": "Extra pixels to expand cell bounds to avoid cutoffs.", "default": 2},
+                    "normalize_to": {"type": "string", "description": "Final tile canvas 'WxH'. Defaults to tile_size if omitted."}
+                },
+                "required": ["sheet_base64"]
             }
         }
     },
@@ -1061,11 +1452,27 @@ def chat():
     if error_response:
         return error_response, status_code
     
-    data = request.json
+    # Robust JSON parse: tolerate stray control chars or accidental non-JSON bytes
+    try:
+        data = request.get_json()
+    except Exception:
+        raw = request.get_data(cache=False, as_text=True)
+        # Remove ASCII control characters except whitespace/newlines/tabs
+        filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+        import json as _json
+        try:
+            data = _json.loads(filtered)
+        except Exception:
+            return jsonify({"error": "Invalid JSON payload"}), 400
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid request body"}), 400
+
     messages = data.get('messages', [])
     model = get_validated_chat_model(data.get('model'))  # Restrict to allowed models
 
     if not messages:
+        # Return a minimal NDJSON-friendly error envelope so the frontend doesn't try to parse HTML.
         return jsonify({"error": "No messages provided"}), 400
 
     # Generate unique request ID and register it
@@ -1107,6 +1514,42 @@ def chat():
                 print(f"CHAT_HEADERS: X-Project-Root={prj_hdr} X-User-ID={request.headers.get('X-User-ID')} X-Machine-ID={request.headers.get('X-Machine-ID')}")
             except Exception:
                 pass
+
+            # Helper to ensure tool call arguments are valid JSON strings.
+            # Prevents downstream provider adapters (e.g., Gemini) from failing to parse
+            # arguments when malformed content leaks into tool calls.
+            def _sanitize_tool_arguments(arguments_value):
+                try:
+                    import json as _json
+                    import re as _re
+                    if isinstance(arguments_value, dict):
+                        return _json.dumps(arguments_value, separators=(",", ":"))
+                    s = str(arguments_value or "")
+                    if not s:
+                        return "{}"
+                    try:
+                        obj = _json.loads(s)
+                        return _json.dumps(obj, separators=(",", ":"))
+                    except Exception:
+                        pass
+                    start = s.find('{')
+                    end = s.rfind('}')
+                    if start != -1 and end != -1 and end > start:
+                        inner = s[start:end + 1]
+                        try:
+                            obj = _json.loads(inner)
+                            return _json.dumps(obj, separators=(",", ":"))
+                        except Exception:
+                            s = inner
+                    s2 = _re.sub(r"</?[^>]+>", "", s)
+                    s2 = s2.replace("\n", " ").strip()
+                    try:
+                        obj = _json.loads(s2)
+                        return _json.dumps(obj, separators=(",", ":"))
+                    except Exception:
+                        return "{}"
+                except Exception:
+                    return "{}"
 
             while True:  # Loop to handle tool calling and responses
                 # Check for stop before each major operation
@@ -1155,6 +1598,15 @@ def chat():
                                 # Add 'type' field if missing
                                 if 'type' not in fixed_tool_call:
                                     fixed_tool_call['type'] = 'function'
+                                # Sanitize function.arguments to valid JSON string if present
+                                try:
+                                    fn = fixed_tool_call.get('function') or {}
+                                    if isinstance(fn, dict) and 'arguments' in fn:
+                                        fn_args = fn.get('arguments')
+                                        fn['arguments'] = _sanitize_tool_arguments(fn_args)
+                                        fixed_tool_call['function'] = fn
+                                except Exception:
+                                    pass
                                 fixed_tool_calls.append(fixed_tool_call)
                         clean_msg['tool_calls'] = fixed_tool_calls
                         if role == 'assistant' and fixed_tool_calls:
@@ -1312,6 +1764,7 @@ def chat():
                         "image_operation",
                         "search_across_project",
                         "search_across_godot_docs",
+                        "slice_spritesheet",
                     ]
                 ]
                 print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
@@ -1321,6 +1774,7 @@ def chat():
                         "image_operation",
                         "search_across_project",
                         "search_across_godot_docs",
+                        "slice_spritesheet",
                     ]
                     for func in tool_call_aggregator.values()
                 ):
@@ -1338,7 +1792,7 @@ def chat():
                         original_tool_calls_for_history.append({
                             "id": tool_id,
                             "type": "function",
-                            "function": {"name": func["name"], "arguments": func["arguments"]},
+                            "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
                         })
                         
                         if func["name"] == "image_operation":
@@ -1355,9 +1809,25 @@ def chat():
                                 arguments = {}
                             
                             # AI now intelligently specifies which images to use via the 'images' parameter
-
-                            # Execute the operation with conversation context
-                            image_result = image_operation_internal(arguments, conversation_messages)
+                            # Execute the operation with conversation context (with cooperative cancellation)
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_image_op():
+                                try:
+                                    _tool_result_holder["result"] = image_operation_internal(arguments, conversation_messages)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_image_op, daemon=True)
+                            t.start()
+                            # Poll for stop while tool runs
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during image_operation")
+                                    # We don't kill the thread; we just stop streaming and drop the result
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.1)
+                            image_result = _tool_result_holder["result"] or {"success": False, "error": "image_operation returned no result"}
                             
                             # Check for stop after tool execution
                             if check_stop():
@@ -1417,8 +1887,23 @@ def chat():
                                     except Exception:
                                         pass
                             
-                            # Execute the search operation (pass current user context)
-                            search_result = search_across_project_internal(arguments, current_user=user)
+                            # Execute the search operation (pass current user context) with cancellation poll
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_search():
+                                try:
+                                    _tool_result_holder["result"] = search_across_project_internal(arguments, current_user=user)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_search, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during search_across_project")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            search_result = _tool_result_holder["result"] or {"success": False, "error": "search_across_project returned no result"}
                             # If search failed due to missing project_root, synthesize a minimal result to satisfy toolcall contract
                             if not search_result.get('success', False):
                                 msg = search_result.get('error') or search_result.get('message') or 'Search failed'
@@ -1466,8 +1951,66 @@ def chat():
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
                             except Exception:
                                 arguments = {}
-                            # Execute docs search
-                            docs_result = search_across_godot_docs_internal(arguments)
+                            # Execute docs search with cancellation poll
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_docs():
+                                try:
+                                    _tool_result_holder["result"] = search_across_godot_docs_internal(arguments)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_docs, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during search_across_godot_docs")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            docs_result = _tool_result_holder["result"] or {"success": False, "error": "search_across_godot_docs returned no result"}
+                        elif func["name"] == "slice_spritesheet":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            yield json.dumps({"tool_starting": "slice_spritesheet", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                            except Exception:
+                                arguments = {}
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_slice():
+                                try:
+                                    _tool_result_holder["result"] = slice_spritesheet_internal(arguments)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_slice, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during slice_spritesheet")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            slice_result = _tool_result_holder["result"] or {"success": False, "error": "slice_spritesheet returned no result"}
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            yield json.dumps({"tool_executed": "slice_spritesheet", "tool_result": slice_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "slice_spritesheet",
+                                "content": json.dumps({
+                                    "success": slice_result.get("success"),
+                                    "grid_cols": slice_result.get("grid_cols"),
+                                    "grid_rows": slice_result.get("grid_rows"),
+                                    "tile_size": slice_result.get("tile_size"),
+                                    "frames_count": len(slice_result.get("frames", []))
+                                }),
+                            })
                             
                             # Check for stop after tool execution
                             if check_stop():
@@ -1544,13 +2087,13 @@ def chat():
                         tool_calls_for_history.append({
                             "id": tool_id,
                             "type": "function",
-                            "function": {"name": func["name"], "arguments": func["arguments"]},
+                            "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
                         })
                         tool_calls_for_frontend.append({
                             "id": tool_id,
                             "function": {
                                 "name": func["name"],
-                                "arguments": func["arguments"]
+                                "arguments": _sanitize_tool_arguments(func["arguments"]) 
                             }
                         })
                     
@@ -1854,6 +2397,35 @@ def predict_code_edit():
             else:
                 # Fallback: treat raw as new segment
                 cleaned = _clean_to_json_string(raw)
+                
+                # CRITICAL: Check if the cleaned content still looks like JSON
+                # This prevents writing JSON structure to files
+                if (cleaned.strip().startswith('{') and cleaned.strip().endswith('}') and 
+                    ('"mode"' in cleaned or '"edits"' in cleaned or '"range_edit"' in cleaned)):
+                    # The model returned JSON but it failed to parse
+                    # Try to extract actual code content from common patterns
+                    print(f"APPLY_EDIT_FALLBACK: Detected JSON structure in fallback, attempting recovery")
+                    
+                    # Common pattern: model returns code inside a JSON field
+                    import re
+                    # Try to find code in "content", "code", or "new_content" fields
+                    for pattern in [r'"content"\s*:\s*"([^"]*)"', r'"code"\s*:\s*"([^"]*)"', r'"new_content"\s*:\s*"([^"]*)"']:
+                        match = re.search(pattern, cleaned, re.DOTALL)
+                        if match:
+                            extracted = match.group(1)
+                            # Unescape JSON string escapes
+                            extracted = extracted.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                            cleaned = extracted
+                            print(f"APPLY_EDIT_FALLBACK: Extracted code from JSON field")
+                            break
+                    else:
+                        # If no extraction worked, return error
+                        return jsonify({
+                            "success": False,
+                            "error": "Model returned malformed JSON instead of edited code. Please try again with a clearer prompt.",
+                            "debug_info": f"Raw response started with: {raw[:200]}"
+                        }), 400
+                
                 full_edited_content = (pre_text or '')
                 if full_edited_content and cleaned and not full_edited_content.endswith('\n'):
                     full_edited_content += '\n'
@@ -1874,6 +2446,32 @@ def predict_code_edit():
             else:
                 # Fallback: assume raw is full content replacement
                 cleaned = _clean_to_json_string(raw)
+                
+                # CRITICAL: Check if the cleaned content still looks like JSON
+                if (cleaned.strip().startswith('{') and cleaned.strip().endswith('}') and 
+                    ('"mode"' in cleaned or '"edits"' in cleaned)):
+                    # The model returned JSON but it failed to parse
+                    print(f"APPLY_EDIT_FALLBACK: Detected JSON structure in full-file fallback")
+                    
+                    # Try to extract code from JSON
+                    import re
+                    for pattern in [r'"content"\s*:\s*"([^"]*)"', r'"code"\s*:\s*"([^"]*)"', r'"new_content"\s*:\s*"([^"]*)"']:
+                        match = re.search(pattern, cleaned, re.DOTALL)
+                        if match:
+                            extracted = match.group(1)
+                            extracted = extracted.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                            cleaned = extracted
+                            print(f"APPLY_EDIT_FALLBACK: Extracted code from JSON field")
+                            break
+                    else:
+                        # If no extraction worked, just remove obvious JSON structure
+                        # This is a last resort to avoid corrupting files
+                        return jsonify({
+                            "success": False,
+                            "error": "Model returned malformed JSON instead of edited code. Please try again.",
+                            "debug_info": f"Raw response preview: {raw[:200]}"
+                        }), 400
+                
                 full_edited_content = cleaned
                 structured_edits = None
 
@@ -1888,6 +2486,9 @@ def predict_code_edit():
 
         return jsonify({
             "success": True,
+            "status": "pending_user_action",
+            "pending_user_action": True,
+            "applied": False,
             "mode": "range" if is_range_mode else "full",
             "path": path,
             "start_line": start_line,

@@ -217,6 +217,10 @@ class GameView : public VBoxContainer {
 	void _detach_script_debugger();
 	void _remote_window_title_changed(String title);
 
+	// Snapshot helpers
+	void _snap_to_chat_pressed();
+	void _on_snapshot_ready(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+
 	void _debugger_breaked(bool p_breaked, bool p_can_debug);
 
 	void _feature_profile_changed();

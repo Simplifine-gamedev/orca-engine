@@ -2794,6 +2794,11 @@ void ScriptEditor::save_current_script() {
 	if (scr.is_valid()) {
 		update_docs_from_script(scr);
 	}
+	
+	// Emit signal that script was saved
+	if (resource.is_valid() && !resource->get_path().is_empty()) {
+		emit_signal("script_saved", resource->get_path());
+	}
 }
 
 void ScriptEditor::save_all_scripts() {
@@ -2851,6 +2856,11 @@ void ScriptEditor::save_all_scripts() {
 
 		if (scr.is_valid()) {
 			update_docs_from_script(scr);
+		}
+		
+		// Emit signal for external scripts
+		if (!edited_res->is_built_in() && !edited_res->get_path().is_empty()) {
+			emit_signal("script_saved", edited_res->get_path());
 		}
 	}
 
@@ -4207,6 +4217,7 @@ void ScriptEditor::_bind_methods() {
 
 	ADD_SIGNAL(MethodInfo("editor_script_changed", PropertyInfo(Variant::OBJECT, "script", PROPERTY_HINT_RESOURCE_TYPE, "Script")));
 	ADD_SIGNAL(MethodInfo("script_close", PropertyInfo(Variant::OBJECT, "script", PROPERTY_HINT_RESOURCE_TYPE, "Script")));
+	ADD_SIGNAL(MethodInfo("script_saved", PropertyInfo(Variant::STRING, "path")));
 }
 
 ScriptEditor::ScriptEditor(WindowWrapper *p_wrapper) {

@@ -8361,7 +8361,12 @@ EditorNode::EditorNode() {
 	get_project_settings()->connect_filesystem_dock_signals(filesystem_dock);
 
 	history_dock = memnew(HistoryDock);
-    ai_chat_dock = memnew(AIChatDock);
+    // Allow disabling AI Chat dock via environment variable for troubleshooting heavy projects.
+    if (OS::get_singleton()->get_environment("AI_CHAT_DISABLE").to_lower() == "1" || OS::get_singleton()->get_environment("AI_CHAT_DISABLE").to_lower() == "true") {
+        ai_chat_dock = nullptr;
+    } else {
+        ai_chat_dock = memnew(AIChatDock);
+    }
     // Force local backend during development; comment out cloud URL
     // ai_chat_dock->set_api_endpoint("https://gamechat.simplifine.com/chat");
     // AIChatDock resolves its endpoint based on IS_DEV/DEV_MODE; no hardcoded override here
@@ -8385,8 +8390,10 @@ EditorNode::EditorNode() {
 	// History: Full height right, behind Node.
 	editor_dock_manager->add_dock(history_dock, TTRC("History"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_history", TTRC("Open History Dock")), "History");
 
-	// AI Chat: Full height right, behind History.
-	editor_dock_manager->add_dock(ai_chat_dock, TTRC("AI Chat"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_ai_chat", TTRC("Open AI Chat Dock")), "RigidBody3D");
+	// AI Chat: Full height right, behind History (only if enabled).
+	if (ai_chat_dock) {
+		editor_dock_manager->add_dock(ai_chat_dock, TTRC("AI Chat"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_ai_chat", TTRC("Open AI Chat Dock")), "RigidBody3D");
+	}
 
 	// Add some offsets to left_r and main hsplits to make LEFT_R and RIGHT_L docks wider than minsize.
 	left_r_hsplit->set_split_offset(270 * EDSCALE);
