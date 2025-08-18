@@ -37,6 +37,7 @@
 #include "diff_viewer.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/dialogs.h"
+#include "scene/gui/tab_container.h"
 #include "scene/gui/texture_rect.h"
 #include "scene/main/http_request.h"
 
@@ -118,6 +119,9 @@ private:
 		Array tool_results;
 	};
 
+	// Track pending apply_edit operations: path -> {bubble_node_path, status_label_path, bubble_container}
+	Dictionary pending_edits;
+
 	struct Conversation {
 		String id;
 		String title;
@@ -189,6 +193,7 @@ private:
 	// Related graph UI
 	PopupPanel *related_graph_panel = nullptr;
 	Tree *related_graph_tree = nullptr;
+	TabContainer *graph_tabs = nullptr;
 
 	// For saving images
 	String pending_save_image_data; // Base64 image data to save
@@ -252,6 +257,7 @@ private:
 
 	void _on_send_button_pressed();
 	void _on_stop_button_pressed();
+	void _on_show_project_graph_pressed();
 	void _process_send_request_async();
 	void _send_stop_request();
 	void _on_stop_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -319,6 +325,7 @@ private:
 	void _finalize_chat_request();
 	void _update_ui_state();
 	void _create_message_bubble(const AIChatDock::ChatMessage &p_message, int p_message_index = -1);
+	void _build_message_content(PanelContainer *p_message_panel, const AIChatDock::ChatMessage &p_message, int p_message_index);
 	void _update_attached_files_display();
 	void _clear_attachments();
 	String _get_timestamp();
@@ -354,8 +361,15 @@ private:
 	String _process_inline_markdown(String p_line);
 
 	void _on_diff_accepted(const String &p_path, const String &p_content);
-	void _on_apply_preview_to_editor(const String &p_path, const String &p_content);
-	void _on_discard_preview(const String &p_path);
+	void _on_apply_preview_to_editor(const String &p_path, const String &p_content, const NodePath &p_btns_path = NodePath(), const NodePath &p_status_label_path = NodePath());
+	void _on_discard_preview(const String &p_path, const NodePath &p_btns_path = NodePath(), const NodePath &p_status_label_path = NodePath());
+	void _mark_apply_discard_buttons_hidden_and_status(Node *p_context, const String &p_status_text);
+	void _on_script_editor_save(const String &p_path);
+	void _register_pending_edit(const String &p_path, const NodePath &p_btns_path, const NodePath &p_status_label_path);
+	void _clear_pending_edit(const String &p_path);
+	void _connect_script_editor_signals();
+	void _show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified);
+	void _show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified);
 
 	// Image processing methods
 	bool _is_image_file(const String &p_path);
@@ -426,6 +440,8 @@ private:
 	void _remove_file_embedding(const String &p_file_path);
 	void _send_embedding_request(const String &p_action, const Dictionary &p_data = Dictionary());
 	void _on_embedding_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_filesystem_debounced_scan(uint64_t p_scheduled_at);
+	void _perform_filesystem_scan_changes();
 	bool _should_index_file(const String &p_file_path);
 	String _get_project_root_path();
 	String _get_embed_base_url();
@@ -480,4 +496,7 @@ public:
 	String get_current_user_id() const { return current_user_id; }
 	String get_machine_id() const;
 	String get_auth_token() const { return auth_token; }
+
+	// Attach an external file (e.g., screenshot) to the current chat input attachments.
+	void attach_external_file(const String &p_file_path);
 };

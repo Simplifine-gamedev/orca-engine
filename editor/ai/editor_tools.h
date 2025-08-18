@@ -63,6 +63,7 @@ public:
 	static Dictionary create_node(const Dictionary &p_args);
 	static Dictionary delete_node(const Dictionary &p_args);
 	static Dictionary set_node_property(const Dictionary &p_args);
+	static Dictionary batch_set_node_properties(const Dictionary &p_args);
 	static Dictionary move_node(const Dictionary &p_args);
 	static Dictionary call_node_method(const Dictionary &p_args);
 	static Dictionary get_available_classes(const Dictionary &p_args);

@@ -41,6 +41,8 @@
 #include "modules/gdscript/gdscript_cache.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/gui/editor_toaster.h"
+#include "editor/ai/editor_tools.h"
+#include "core/variant/typed_array.h"
 #include "editor/inspector/editor_context_menu_plugin.h"
 #include "editor/settings/editor_command_palette.h"
 #include "editor/settings/editor_settings.h"
@@ -58,6 +60,8 @@
 
 // Persist inline diff state across focus changes/reloads for the same script.
 static String s_pending_diff_path;
+// Map of script path -> { "original": String, "modified": String }
+static Dictionary s_pending_diffs;
 
 // Simple helper to compute diff hunks (line ranges) between original and modified.
 // Returns an array of Dictionaries with keys: mod_start, mod_end, orig_start, orig_end
@@ -218,18 +222,9 @@ void ScriptTextEditor::apply_code() {
 	if (script.is_null()) {
 		return;
 	}
-    // If a diff preview is active, treat save as accepting the diff.
-    if (has_pending_diffs) {
-        CodeEdit *te_local = code_editor->get_text_editor();
-        te_local->set_editable(true);
-    }
 	script->set_source_code(code_editor->get_text_editor()->get_text());
 	script->update_exports();
 	code_editor->get_text_editor()->get_syntax_highlighter()->update_cache();
-    if (has_pending_diffs) {
-        // Saving should exit diff mode so the editor returns to normal state.
-        _clear_diff_data();
-    }
 }
 
 Ref<Resource> ScriptTextEditor::get_edited_resource() const {
@@ -422,11 +417,25 @@ void ScriptTextEditor::reload_text() {
 		_validate_script();
 	}
 
-    // If a diff was pending for this script, restore it
-    if (s_pending_diff_path == script->get_path() && !original_content.is_empty() && !modified_content.is_empty()) {
-        _show_unified_diff(original_content, modified_content);
-        _show_diff_toolbar();
-        has_pending_diffs = true;
+    // If a diff was pending for this script, restore it from stored snapshot or overlay
+    String path = script->get_path();
+    if (s_pending_diff_path == path || s_pending_diffs.has(path)) {
+        String orig = original_content;
+        String mod = modified_content;
+        if ((orig.is_empty() || mod.is_empty()) && s_pending_diffs.has(path)) {
+            Dictionary snap = s_pending_diffs[path];
+            orig = snap.get("original", orig);
+            mod = snap.get("modified", mod);
+        }
+        if (orig.is_empty() && EditorTools::has_preview_overlay(path)) {
+            orig = te->get_text();
+            mod = EditorTools::get_preview_overlay(path);
+        }
+        if (!orig.is_empty() && !mod.is_empty() && orig != mod) {
+            _show_unified_diff(orig, mod);
+            _show_diff_toolbar();
+            has_pending_diffs = true;
+        }
     }
 }
 
@@ -781,10 +790,6 @@ void ScriptTextEditor::convert_indent() {
 void ScriptTextEditor::tag_saved_version() {
 	code_editor->get_text_editor()->tag_saved_version();
 	edited_file_data.last_modified_time = FileAccess::get_modified_time(edited_file_data.path);
-    // Ensure no lingering diff after explicit save operations
-    if (has_pending_diffs) {
-        _clear_diff_data();
-    }
 }
 
 void ScriptTextEditor::goto_line(int p_line, int p_column) {
@@ -3116,6 +3121,10 @@ void ScriptTextEditor::set_diff(const String &p_original_content, const String &
     // Track pending diff for this script path so focus changes don't lose the preview
     if (script.is_valid()) {
         s_pending_diff_path = script->get_path();
+        Dictionary snap;
+        snap["original"] = original_content;
+        snap["modified"] = modified_content;
+        s_pending_diffs[s_pending_diff_path] = snap;
     }
 
 	if (original_content == modified_content) {
@@ -3195,6 +3204,8 @@ void ScriptTextEditor::_show_unified_diff(const String &p_original, const String
 }
 
 void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
+	print_line("ScriptTextEditor::_apply_all_diff_hunks called with accept=" + String(p_accept ? "true" : "false"));
+	
 	CodeEdit *te = code_editor->get_text_editor();
 	
 	// Re-enable editing
@@ -3203,43 +3214,96 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	if (p_accept) {
 		// Apply the modified content (without the header comments)
 		te->set_text(modified_content);
-        // Persist to disk immediately so the editor reflects accepted changes
-        apply_code();
-    } else {
+		// Persist to disk immediately so the editor reflects accepted changes
+		apply_code();
+	} else {
 		// Revert to the original content
 		te->set_text(original_content);
-        // Save the revert so on re-open it matches the old version
-        apply_code();
+		// Save the revert so on re-open it matches the old version
+		apply_code();
 	}
-    
-    // CRITICAL: Clear GDScript cache and force save to disk
-    if (script.is_valid() && script->get_path().get_extension() == "gd") {
-        GDScriptCache::remove_script(script->get_path());
-        
-        // Save the script to disk
-        EditorNode::get_singleton()->save_resource(script);
-        
-        // Force reload
-        script->reload(true);
-        
-        // Trigger live reload
-        ScriptEditor::get_singleton()->trigger_live_script_reload(script->get_path());
-    }
-    
-    // Mark the current buffer as up to date and reset undo history
-    te->clear_undo_history();
-    te->tag_saved_version();
+	
+	// CRITICAL: Clear GDScript cache and force save to disk
+	if (script.is_valid() && script->get_path().get_extension() == "gd") {
+		GDScriptCache::remove_script(script->get_path());
+		
+		// Save the script to disk
+		EditorNode::get_singleton()->save_resource(script);
+		
+		// Force reload
+		script->reload(true);
+		
+		// Trigger live reload
+		ScriptEditor::get_singleton()->trigger_live_script_reload(script->get_path());
+	}
+	
+	// Notify about the diff acceptance/rejection
+	print_line("ScriptTextEditor: Checking script validity and accept status");
+	print_line("  - script.is_valid(): " + String(script.is_valid() ? "true" : "false"));
+	print_line("  - p_accept: " + String(p_accept ? "true" : "false"));
+	
+	if (script.is_valid()) {
+		String path = script->get_path();
+		print_line("  - script path: " + path);
+		
+		if (p_accept) {
+			print_line("ScriptTextEditor: Diff accepted for " + path);
+			
+			// Clear the preview overlay since we've accepted the changes
+			EditorTools::clear_preview_overlay(path);
+			
+			// Find the AI chat dock directly and notify it
+			Node *editor_node = EditorNode::get_singleton();
+			if (editor_node) {
+				// Try to find AI Chat dock
+				Node *ai_chat = nullptr;
+				
+				// First try the common dock container paths
+				TypedArray<Node> docks = editor_node->find_children("AI Chat", "Control", true, false);
+				if (docks.size() > 0) {
+					ai_chat = Object::cast_to<Node>(docks[0]);
+				}
+				
+				if (ai_chat && ai_chat->has_method("_on_script_editor_save")) {
+					print_line("ScriptTextEditor: Found AI Chat dock, calling _on_script_editor_save directly");
+					ai_chat->call("_on_script_editor_save", path);
+				} else {
+					print_line("ScriptTextEditor: Could not find AI Chat dock or method");
+				}
+			}
+			
+			// Also emit the signal for future compatibility
+			ScriptEditor *se = ScriptEditor::get_singleton();
+			if (se) {
+				se->emit_signal("script_saved", path);
+			}
+		}
+	}
+	
+	// Mark the current buffer as up to date and reset undo history
+	te->clear_undo_history();
+	te->tag_saved_version();
 
-    // Ensure we fully reset diff state and highlights so later file opens are clean
-    _clear_diff_data();
+	// Clear diff UI and cached snapshot on completion
+	if (script.is_valid()) {
+		String path_snap = script->get_path();
+		if (s_pending_diffs.has(path_snap)) {
+			s_pending_diffs.erase(path_snap);
+		}
+	}
+	_clear_diff_data();
 }
 
 void ScriptTextEditor::_clear_diff_data() {
 	original_content = "";
 	modified_content = "";
 	has_pending_diffs = false;
-    s_pending_diff_path = "";
-
+	// Clear cached snapshot for last-diff path if present, then reset
+	if (!s_pending_diff_path.is_empty() && s_pending_diffs.has(s_pending_diff_path)) {
+		s_pending_diffs.erase(s_pending_diff_path);
+	}
+	s_pending_diff_path = "";
+	
 	CodeEdit *te = code_editor->get_text_editor();
 	if (te) {
 		// Re-enable editing and clear background colors

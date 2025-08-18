@@ -84,6 +84,8 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		result = EditorTools::delete_node(args);
 	} else if (function_name == "set_node_property") {
 		result = EditorTools::set_node_property(args);
+	} else if (function_name == "batch_set_node_properties") {
+		result = EditorTools::batch_set_node_properties(args);
 	} else if (function_name == "move_node") {
 		result = EditorTools::move_node(args);
 	} else if (function_name == "call_node_method") {
@@ -178,6 +180,10 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		print_line("AI Tool Server: search_across_godot_docs invoking");
 		result = EditorTools::search_across_godot_docs(args);
 	} else if (function_name == "editor_introspect") {
+		result = EditorTools::editor_introspect(args);
+	} else if (function_name == "slice_spritesheet") {
+		// Forward to editor_introspect with slice_spritesheet operation
+		args["operation"] = "slice_spritesheet";
 		result = EditorTools::editor_introspect(args);
 	} else {
 		result["error"] = "Unknown function: " + function_name;
