@@ -39,6 +39,7 @@
 #include "editor/file_system/editor_paths.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
+#include "editor/ai/editor_tools.h"
 #include "scene/gui/separator.h"
 #include "scene/resources/font.h"
 
@@ -349,6 +350,54 @@ void EditorLog::_add_log_line(LogMessage &p_message, bool p_replace_previous) {
 		// The log will be built all at once when it enters the tree and has its theme items.
 		return;
 	}
+
+	// ------------------------------------------------------------
+	// AI Chat: Record errors and warnings for AI/output inspection.
+	// ------------------------------------------------------------
+	// Record errors and warnings for AI/output inspection.
+	if (p_message.type == MSG_TYPE_ERROR || p_message.type == MSG_TYPE_WARNING) {
+		Dictionary rec;
+		rec["type"] = (p_message.type == MSG_TYPE_WARNING) ? String("warning") : String("error");
+		rec["message"] = p_message.text;
+		rec["is_warning"] = (p_message.type == MSG_TYPE_WARNING);
+
+		// Best-effort parse of "path:line[:col] - message" patterns commonly used in Godot logs
+		String file;
+		int line = 0;
+		int column = 0;
+		String txt = p_message.text;
+		int c1 = txt.find(":");
+		int c2 = (c1 >= 0) ? txt.find(":", c1 + 1) : -1;
+		if (c1 >= 0 && c2 > c1) {
+			String maybe_path = txt.substr(0, c1).strip_edges();
+			String line_str = txt.substr(c1 + 1, c2 - c1 - 1).strip_edges();
+			// Heuristic: treat as a file path if it looks like res://, user://, or an absolute path
+			if (maybe_path.contains("://") || maybe_path.begins_with("/") || maybe_path.contains(".gd")) {
+				file = maybe_path;
+				if (line_str.is_valid_int()) {
+					line = line_str.to_int();
+				}
+				// Optional column: third colon before the dash
+				int dash = txt.find(" - ", c2 + 1);
+				int c3 = txt.find(":", c2 + 1);
+				if (c3 != -1 && (dash == -1 || c3 < dash)) {
+					String col_str = txt.substr(c2 + 1, c3 - c2 - 1).strip_edges();
+					if (col_str.is_valid_int()) {
+						column = col_str.to_int();
+					}
+				}
+			}
+		}
+		rec["file"] = file;
+		rec["line"] = line;
+		rec["column"] = column;
+		rec["source"] = String("output");
+
+		EditorTools::record_runtime_error(rec);
+	}
+	// ------------------------------------------------------------
+	// End AI Chat: Record errors and warnings for AI/output inspection.
+	// ------------------------------------------------------------
 
 	if (unlikely(log->is_updating())) {
 		// The new message arrived during log RTL text processing/redraw (invalid BiDi control characters / font error), ignore it to avoid RTL data corruption.

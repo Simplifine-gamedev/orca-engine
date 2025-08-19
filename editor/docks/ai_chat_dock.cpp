@@ -9,6 +9,7 @@
 #include "core/os/time.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource.h"
 #include "core/io/dir_access.h"
 #include "core/io/image.h"
 #include "core/string/ustring.h"
@@ -4680,13 +4681,22 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		p_content_vbox->add_child(compile_vbox);
 
 		Array errors = p_result.get("errors", Array());
+		String mode = p_result.get("mode", "scripts");
 		
 		Label *status_label = memnew(Label);
 		if (errors.size() == 0) {
-			status_label->set_text("No compilation errors found");
+			if (mode == "output") {
+				status_label->set_text("No errors or warnings found in output panel");
+			} else {
+				status_label->set_text("No compilation errors found");
+			}
 			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		} else {
-			status_label->set_text("✗ Found " + String::num_int64(errors.size()) + " compilation errors");
+			if (mode == "output") {
+				status_label->set_text("✗ Found " + String::num_int64(errors.size()) + " errors/warnings in output");
+			} else {
+				status_label->set_text("✗ Found " + String::num_int64(errors.size()) + " compilation errors");
+			}
 			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
 		}
 		status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
@@ -4702,8 +4712,20 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				String file = error.get("file", "Unknown");
 				int line = error.get("line", 0);
 				String message = error.get("message", "Unknown error");
-				error_label->set_text(file + ":" + String::num_int64(line) + " - " + message);
-				error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+				String type = error.get("type", "error");
+				String source = error.get("source", "");
+				
+				String error_text = file + ":" + String::num_int64(line) + " - " + message;
+				if (mode == "output" && !source.is_empty()) {
+					error_text = "[" + source + "] " + error_text;
+				}
+				
+				error_label->set_text(error_text);
+				if (type == "warning") {
+					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				} else {
+					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+				}
 				error_vbox->add_child(error_label);
 			}
 		}
@@ -7414,6 +7436,19 @@ bool AIChatDock::_save_base64_image_to_path(const String &p_base64_data, const S
 		uint64_t scheduled_at = s_last_scan_request_ms;
 		Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.4, true);
 		timer->connect("timeout", callable_mp(this, &AIChatDock::_on_filesystem_debounced_scan).bind(scheduled_at));
+		
+		// Force immediate reimport to generate .import file
+		Vector<String> to_reimport;
+		to_reimport.push_back(p_file_path);
+		EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+		
+		// Clear any cached load failure so the resource can be loaded fresh
+		if (ResourceCache::has(p_file_path)) {
+			Ref<Resource> cached = ResourceCache::get_ref(p_file_path);
+			if (cached.is_valid()) {
+				cached->reload_from_file();
+			}
+		}
 	}
 	return true;
 }
@@ -7454,6 +7489,29 @@ void AIChatDock::_on_save_image_location_selected(const String &p_file_path) {
 	
 	file->store_buffer(image_data);
 	file->close();
+	
+	// Notify the editor file system so the image is imported and usable immediately.
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->update_file(save_path);
+		// Debounce a follow-up scan to avoid re-entrancy issues in editor docks.
+		static uint64_t s_last_scan_request_ms = 0;
+		s_last_scan_request_ms = OS::get_singleton()->get_ticks_msec();
+		uint64_t scheduled_at = s_last_scan_request_ms;
+		Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.4, true);
+		timer->connect("timeout", callable_mp(this, &AIChatDock::_on_filesystem_debounced_scan).bind(scheduled_at));
+		// Force immediate reimport for this file to avoid stale previews until next scan.
+		Vector<String> to_reimport;
+		to_reimport.push_back(save_path);
+		EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+		
+		// Clear any cached load failure so the resource can be loaded fresh
+		if (ResourceCache::has(save_path)) {
+			Ref<Resource> cached = ResourceCache::get_ref(save_path);
+			if (cached.is_valid()) {
+				cached->reload_from_file();
+			}
+		}
+	}
 	
 	print_line("AI Chat: Image saved successfully to: " + save_path);
 	

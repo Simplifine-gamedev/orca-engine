@@ -1191,18 +1191,24 @@ godot_tools = [
         "type": "function",
         "function": {
             "name": "check_compilation_errors",
-            "description": "Check for compilation errors in script files. Can check a specific file or all script files in the project.",
+            "description": "Check for errors in the project. Can check script compilation errors or all output panel errors (runtime errors, warnings, shader errors, etc).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Script file path to check (not required if check_all is true)"
+                        "description": "Script file path to check (only used when check_mode='scripts' and check_all=false)"
                     },
                     "check_all": {
                         "type": "boolean",
-                        "description": "If true, check all script files in the project instead of a specific file",
+                        "description": "If true, check all script files in the project instead of a specific file (only for check_mode='scripts')",
                         "default": False
+                    },
+                    "check_mode": {
+                        "type": "string",
+                        "enum": ["scripts", "output"],
+                        "description": "Mode of checking: 'scripts' for script compilation errors only, 'output' for all errors/warnings from the output panel",
+                        "default": "scripts"
                     }
                 },
                 "required": []
@@ -1669,8 +1675,7 @@ def chat():
                                 fallback = MODEL_MAP.get("gpt-4o")
                             elif model_try == MODEL_MAP.get("gpt-4o") and MODEL_MAP.get("gpt-5") not in providers_tried:
                                 fallback = MODEL_MAP.get("gpt-5")
-                            elif model_try == MODEL_MAP.get("gpt-5") and MODEL_MAP.get("gemini-2.5") not in providers_tried:
-                                fallback = MODEL_MAP.get("gemini-2.5")
+                            # Fallback to Gemini disabled by request to avoid hitting Vertex AI quotas
                         except Exception:
                             fallback = None
 
