@@ -41,6 +41,17 @@
 
 class RichTextLabel;
 
+// Avoid Windows macro collisions that can break enum declarations below when cross-compiling with MinGW.
+#ifdef DELETE
+#undef DELETE
+#endif
+#ifdef INSERT
+#undef INSERT
+#endif
+#ifdef EQUAL
+#undef EQUAL
+#endif
+
 class ConnectionInfoDialog : public AcceptDialog {
 	GDCLASS(ConnectionInfoDialog, AcceptDialog);
 
