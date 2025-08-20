@@ -381,7 +381,7 @@ class CloudVectorManager:
         return chunks
     
     def _generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using OpenAI with batching, throttling, and retries.
+        """Generate embeddings using OpenAI with parallel batching, throttling, and retries.
 
         Note: If a batch fails after retries, its items are skipped and will reduce the
         number of returned embeddings. Callers should not assume 1:1 length on failure.
@@ -389,13 +389,16 @@ class CloudVectorManager:
         if not texts:
             return []
         batch_size = max(1, self.embed_batch_size)
-        all_embeddings: List[List[float]] = []
         
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+        # Initialize thread pool if not exists
+        if not hasattr(self, '_embed_executor'):
+            self._embed_executor = ThreadPoolExecutor(max_workers=8)
+        
+        def embed_batch(batch_texts, batch_idx):
+            """Embed a single batch with retry logic"""
             # Truncate long texts to protect against token limits
-            batch = [t[:8000] if len(t) > 8000 else t for t in batch]
-
+            truncated = [t[:8000] if len(t) > 8000 else t for t in batch_texts]
+            
             # Throttle concurrent batches
             with self._embed_semaphore:
                 # Basic retry with exponential backoff and jitter
@@ -405,21 +408,38 @@ class CloudVectorManager:
                     try:
                         response = self.openai_client.embeddings.create(
                             model="text-embedding-3-small",
-                            input=batch
+                            input=truncated
                         )
-                        for data in response.data:
-                            all_embeddings.append(data.embedding)
-                        break
+                        return [(batch_idx, idx, data.embedding) 
+                                for idx, data in enumerate(response.data)]
                     except Exception as e:
                         attempt += 1
                         if attempt >= max_attempts:
-                            print(f"Error generating embeddings (final): {e}")
-                            break
+                            print(f"Error embedding batch {batch_idx} (final): {e}")
+                            return []
                         sleep_s = (2 ** attempt) + random.uniform(0, 0.25)
-                        print(f"Embedding batch failed (attempt {attempt}), retrying in {sleep_s:.2f}s: {e}")
+                        print(f"Embedding batch {batch_idx} failed (attempt {attempt}), retrying in {sleep_s:.2f}s: {e}")
                         time.sleep(sleep_s)
         
-        return all_embeddings
+        # Submit all batches in parallel
+        futures = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            batch_idx = i // batch_size
+            future = self._embed_executor.submit(embed_batch, batch, batch_idx)
+            futures.append(future)
+        
+        # Collect results in order
+        all_embeddings = [None] * len(texts)
+        for future in as_completed(futures):
+            results = future.result()
+            for batch_idx, idx, embedding in results:
+                global_idx = batch_idx * batch_size + idx
+                if global_idx < len(all_embeddings):
+                    all_embeddings[global_idx] = embedding
+        
+        # Filter out None values (failed embeddings)
+        return [e for e in all_embeddings if e is not None]
 
     def _insert_rows_with_backoff(self, table_ref_or_name, rows: List[Dict], max_attempts: int = 5) -> bool:
         """Insert rows into BigQuery with exponential backoff and jitter."""

@@ -1416,10 +1416,20 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 		return result;
 	}
 
-	// Wait for connection
+	// Wait for connection with timeout
+	int connection_timeout_ms = 10000; // 10 seconds timeout
+	int connection_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		connection_elapsed_ms += 1;
+		if (connection_elapsed_ms > connection_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Connection timeout after " + itos(connection_timeout_ms/1000) + " seconds";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Connection timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1451,10 +1461,20 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 		return result;
 	}
 
-	// Wait for response
+	// Wait for response with timeout
+	int response_timeout_ms = 60000; // 60 seconds timeout for AI response
+	int response_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		response_elapsed_ms += 1;
+		if (response_elapsed_ms > response_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Response timeout after " + itos(response_timeout_ms/1000) + " seconds. The AI is taking too long to process the edit.";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Response timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_BODY && http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1474,13 +1494,24 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 	int response_code = http_client->get_response_code();
 	PackedByteArray body;
 
+	int body_timeout_ms = 30000; // 30 seconds timeout for reading body
+	int body_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_BODY) {
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
 			OS::get_singleton()->delay_usec(1000);
+			body_elapsed_ms += 1;
+			if (body_elapsed_ms > body_timeout_ms) {
+				result["success"] = false;
+				result["message"] = "Timeout reading response body after " + itos(body_timeout_ms/1000) + " seconds";
+				memdelete(http_client);
+				print_line("APPLY_EDIT ERROR: Body read timeout");
+				return result;
+			}
 		} else {
 			body.append_array(chunk);
+			body_elapsed_ms = 0; // Reset timeout on progress
 		}
 	}
 
@@ -1549,10 +1580,20 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		return result;
 	}
 
-	// Wait for connection
+	// Wait for connection with timeout
+	int connection_timeout_ms = 10000; // 10 seconds timeout
+	int connection_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		connection_elapsed_ms += 1;
+		if (connection_elapsed_ms > connection_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Connection timeout after " + itos(connection_timeout_ms/1000) + " seconds";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Connection timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1625,10 +1666,20 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		return result;
 	}
 
-	// Wait for response
+	// Wait for response with timeout
+	int response_timeout_ms = 60000; // 60 seconds timeout for AI response
+	int response_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		response_elapsed_ms += 1;
+		if (response_elapsed_ms > response_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Response timeout after " + itos(response_timeout_ms/1000) + " seconds. The AI is taking too long to process the edit.";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Response timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_BODY && http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1649,13 +1700,24 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	int response_code = http_client->get_response_code();
 	PackedByteArray body;
 
+	int body_timeout_ms = 30000; // 30 seconds timeout for reading body
+	int body_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_BODY) {
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
 			OS::get_singleton()->delay_usec(1000);
+			body_elapsed_ms += 1;
+			if (body_elapsed_ms > body_timeout_ms) {
+				result["success"] = false;
+				result["message"] = "Timeout reading response body after " + itos(body_timeout_ms/1000) + " seconds";
+				memdelete(http_client);
+				print_line("APPLY_EDIT ERROR: Body read timeout");
+				return result;
+			}
 		} else {
 			body.append_array(chunk);
+			body_elapsed_ms = 0; // Reset timeout on progress
 		}
 	}
 
