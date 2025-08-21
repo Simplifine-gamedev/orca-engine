@@ -1705,7 +1705,7 @@ HashMap<StringName, Color> EditorSettings::get_godot2_text_editor_theme() {
 	colors["text_editor/theme/highlighting/caret_color"] = Color(0.67, 0.67, 0.67);
 	colors["text_editor/theme/highlighting/caret_background_color"] = Color(0, 0, 0);
 	colors["text_editor/theme/highlighting/text_selected_color"] = Color(0, 0, 0, 0);
-	colors["text_editor/theme/highlighting/selection_color"] = Color(0.41, 0.61, 0.91, 0.35);
+	colors["text_editor/theme/highlighting/selection_color"] = Color(1, 1, 1, 0.35);
 	colors["text_editor/theme/highlighting/brace_mismatch_color"] = Color(1, 0.2, 0.2);
 	colors["text_editor/theme/highlighting/current_line_color"] = Color(0.3, 0.5, 0.8, 0.15);
 	colors["text_editor/theme/highlighting/line_length_guideline_color"] = Color(0.3, 0.5, 0.8, 0.1);
@@ -1715,13 +1715,13 @@ HashMap<StringName, Color> EditorSettings::get_godot2_text_editor_theme() {
 	colors["text_editor/theme/highlighting/member_variable_color"] = Color(0.9, 0.31, 0.35);
 	colors["text_editor/theme/highlighting/mark_color"] = Color(1.0, 0.4, 0.4, 0.4);
 	colors["text_editor/theme/highlighting/warning_color"] = Color(1.0, 0.8, 0.4, 0.1);
-	colors["text_editor/theme/highlighting/bookmark_color"] = Color(0.08, 0.49, 0.98);
+	colors["text_editor/theme/highlighting/bookmark_color"] = Color(0.8, 0.8, 0.8);
 	colors["text_editor/theme/highlighting/breakpoint_color"] = Color(0.9, 0.29, 0.3);
 	colors["text_editor/theme/highlighting/executing_line_color"] = Color(0.98, 0.89, 0.27);
 	colors["text_editor/theme/highlighting/code_folding_color"] = Color(0.8, 0.8, 0.8, 0.8);
 	colors["text_editor/theme/highlighting/folded_code_region_color"] = Color(0.68, 0.46, 0.77, 0.2);
 	colors["text_editor/theme/highlighting/search_result_color"] = Color(0.05, 0.25, 0.05, 1);
-	colors["text_editor/theme/highlighting/search_result_border_color"] = Color(0.41, 0.61, 0.91, 0.38);
+	colors["text_editor/theme/highlighting/search_result_border_color"] = Color(0.8, 0.8, 0.8, 0.38);
 	colors["text_editor/theme/highlighting/gdscript/function_definition_color"] = Color(0.4, 0.9, 1.0);
 
 	colors["text_editor/theme/highlighting/gdscript/global_function_color"] = Color(0.64, 0.64, 0.96);

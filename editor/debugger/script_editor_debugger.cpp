@@ -1048,7 +1048,7 @@ void ScriptEditorDebugger::_set_reason_text(const String &p_reason, MessageType 
 	String display = p_reason;
 	if (!p_reason.is_empty()) {
 		display += String("  ");
-		display += String("[color=#80c8ff][u][url=fix_with_ai_debugger:]Fix with AI[/url][/u][/color]");
+		display += String("[color=#cccccc][u][url=fix_with_ai_debugger:]Fix with AI[/url][/u][/color]");
 		reason->set_use_bbcode(true);
 	}
 

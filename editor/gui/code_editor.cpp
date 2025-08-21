@@ -1516,7 +1516,7 @@ void CodeTextEditor::set_error(const String &p_error) {
 	String display_text = p_error;
 	if (!p_error.is_empty()) {
 		display_text += String("  ");
-		display_text += String("[color=#80c8ff][u][url=fix_with_ai:]Fix with AI[/url][/u][/color]");
+		display_text += String("[color=#cccccc][u][url=fix_with_ai:]Fix with AI[/url][/u][/color]");
 	}
 
 	error->set_use_bbcode(true);
