@@ -1345,7 +1345,7 @@ void GameViewPluginBase::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_TRANSLATION_CHANGED: {
 #ifndef ANDROID_ENABLED
-			window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Game Workspace")));
+			window_wrapper->set_window_title(vformat(TTR("%s - Orca"), TTR("Game Workspace")));
 #endif
 		} break;
 		case NOTIFICATION_ENTER_TREE: {

@@ -1,9 +1,9 @@
-short_name = "godot"
-name = "Godot Engine"
+short_name = "orca"
+name = "Orca"
 major = 4
 minor = 5
 patch = 0
 status = "beta"
 module_config = ""
-website = "https://godotengine.org"
+website = "https://orca.engine"
 docs = "latest"
