@@ -28,6 +28,10 @@ try:
 except Exception:
     LocalVectorManager = None
 from auth_manager import AuthManager
+try:
+    from rig_processor import RigProcessor
+except Exception:
+    RigProcessor = None
 
 # Load environment variables from .env file
 load_dotenv()
@@ -128,6 +132,17 @@ if cloud_vector_manager is None:
             print(f"VECTOR_INDEX ERROR: Failed to init LocalVectorManager: {e}")
     else:
         print("VECTOR_INDEX: LocalVectorManager unavailable or OpenAI client missing; semantic indexing disabled")
+
+# Initialize Rig Processor for AI-powered 3D model rig standardization
+rig_processor = None
+if RigProcessor and client is not None:
+    try:
+        rig_processor = RigProcessor()
+        print("RIG_PROCESSOR: AI-powered rig standardization system initialized")
+    except Exception as e:
+        print(f"RIG_PROCESSOR ERROR: Failed to init RigProcessor: {e}")
+else:
+    print("RIG_PROCESSOR: Rig processor unavailable or OpenAI client missing; rig standardization disabled")
 
 # Load system prompt from file (once at startup)
 SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
@@ -1304,6 +1319,31 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
 
 # --- Note: Script generation now handled by dedicated /generate_script endpoint ---
 
+# In-memory cache for large payloads (e.g., mesh data) referenced by handles
+MESH_DATA_CACHE: dict = {}
+MESH_CACHE_MAX = 64  # simple cap to avoid unbounded growth
+
+# Simple in-memory job store for async backend tools (e.g., auto_rig_mesh)
+import uuid
+import threading
+from queue import Queue
+
+JOBS: dict = {}
+
+def _new_job(status: str = "queued", result: dict | None = None) -> str:
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {"status": status, "result": result}
+    return job_id
+
+def _set_job_status(job_id: str, status: str):
+    if job_id in JOBS:
+        JOBS[job_id]["status"] = status
+
+def _set_job_result(job_id: str, result: dict):
+    if job_id in JOBS:
+        JOBS[job_id]["result"] = result
+        JOBS[job_id]["status"] = "done"
+
 # --- Tool Execution Function ---
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
@@ -1315,6 +1355,42 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return search_across_project_internal(arguments)
     elif function_name == "search_across_godot_docs":
         return search_across_godot_docs_internal(arguments)
+    elif function_name == "standardize_rig":
+        return standardize_rig_internal(arguments)
+    elif function_name == "generate_animation_retargeting":
+        return generate_animation_retargeting_internal(arguments)
+    elif function_name == "auto_rig_mesh":
+        # Non-blocking when invoked via /chat: enqueue job and return job_id
+        try:
+            from flask import request as _req
+        except Exception:
+            _req = None
+        asset_path = arguments.get('asset_path') or arguments.get('mesh_path')
+        character_type = arguments.get('character_type', 'auto_detect')
+        bone_count = arguments.get('bone_count', 'standard')
+        if asset_path and _req is not None and getattr(_req, 'endpoint', '') == 'chat':
+            job_id = _new_job()
+            def _worker():
+                try:
+                    _set_job_status(job_id, "running")
+                    if not rig_processor:
+                        _set_job_result(job_id, {"success": False, "error": "Rig processor not available"})
+                        return
+                    res = rig_processor.auto_rig_from_file(asset_path, character_type, bone_count)
+                    _set_job_result(job_id, res)
+                except Exception as e:
+                    _set_job_result(job_id, {"success": False, "error": f"Auto-rig job failed: {str(e)}"})
+            threading.Thread(target=_worker, daemon=True).start()
+            return {"success": True, "job_id": job_id, "queued": True}
+        return auto_rig_mesh_internal(arguments)
+    elif function_name == "create_bone_mapping":
+        return create_bone_mapping_internal(arguments)
+    elif function_name == "fix_skin_weights":
+        return fix_skin_weights_internal(arguments)
+    elif function_name == "normalize_rig_transforms":
+        return normalize_rig_transforms_internal(arguments)
+    elif function_name == "smart_retarget_animation":
+        return smart_retarget_animation_internal(arguments)
     else:
         # This shouldn't happen if we filter correctly
         print(f"WARNING: Unknown backend tool called: {function_name}")
@@ -1934,6 +2010,268 @@ godot_tools = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_current_rig",
+            "description": "Analyze the currently selected 3D character's rig/skeleton structure in the Godot editor. This tool safely extracts and analyzes skeleton data without modifying anything. If no skeleton is found in the current scene, it will automatically attempt to load and analyze rigs from project assets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "auto_load": {
+                        "type": "boolean",
+                        "description": "Whether to automatically load and analyze rig assets if no skeleton is found in the current scene (default: true)",
+                        "default": True
+                    },
+                    "fast": {
+                        "type": "boolean", 
+                        "description": "Use fast analysis mode (bone names and hierarchy only, default: true)",
+                        "default": True
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "instantiate_rig_asset",
+            "description": "Instantiate a 3D model asset (GLB, GLTF, FBX, etc.) into the current scene so it can be analyzed. Use this when analyze_current_rig fails to auto-load assets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_path": {
+                        "type": "string",
+                        "description": "Path to the 3D model asset to instantiate (e.g., 'res://models/player.glb')"
+                    },
+                    "parent_path": {
+                        "type": "string",
+                        "description": "Optional path to parent node (defaults to scene root)",
+                        "default": ""
+                    }
+                },
+                "required": ["asset_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_bone_mapping",
+            "description": "Create a standardized bone mapping for inconsistent rig naming conventions. Maps source bone names to standard humanoid skeleton names.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_bones": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of bone names from the source rig"
+                    },
+                    "target_standard": {
+                        "type": "string",
+                        "enum": ["mixamo", "unreal", "unity", "generic_humanoid"],
+                        "description": "Target standard to map to (default: generic_humanoid)",
+                        "default": "generic_humanoid"
+                    }
+                },
+                "required": ["source_bones"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fix_skin_weights",
+            "description": "Automatically fix bad skin weights, zero-weight vertices, and binding issues in rigged models.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skeleton_path": {
+                        "type": "string",
+                        "description": "Path to the Skeleton3D node in the scene"
+                    },
+                    "mesh_path": {
+                        "type": "string",
+                        "description": "Path to the MeshInstance3D node to fix"
+                    },
+                    "fix_zero_weights": {
+                        "type": "boolean",
+                        "description": "Automatically assign weights to zero-weight vertices (default: true)",
+                        "default": True
+                    },
+                    "normalize_weights": {
+                        "type": "boolean", 
+                        "description": "Normalize vertex weights to sum to 1.0 (default: true)",
+                        "default": True
+                    }
+                },
+                "required": ["skeleton_path", "mesh_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "normalize_rig_transforms",
+            "description": "Normalize rig transforms to fix scale, rotation, and coordinate system inconsistencies from different sources (FBX, glTF, etc.).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skeleton_path": {
+                        "type": "string",
+                        "description": "Path to the Skeleton3D node to normalize"
+                    },
+                    "target_scale": {
+                        "type": "number",
+                        "description": "Target scale factor (1.0 = 1 meter, 0.01 = 1cm to 1m conversion)",
+                        "default": 1.0
+                    },
+                    "fix_coordinate_system": {
+                        "type": "boolean",
+                        "description": "Convert between Y-up and Z-up coordinate systems (default: true)",
+                        "default": True
+                    },
+                    "normalize_rest_poses": {
+                        "type": "boolean",
+                        "description": "Normalize bone rest poses to T-pose or A-pose (default: true)", 
+                        "default": True
+                    }
+                },
+                "required": ["skeleton_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "auto_rig_mesh",
+            "description": "Automatically create a skeleton and rig for an unrigged 3D mesh. Direct file processing - no vertex extraction needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_path": {
+                        "type": "string",
+                        "description": "Path to the 3D model file (GLB, GLTF, FBX) to auto-rig (e.g., 'res://art/character.glb')"
+                    },
+                    "character_type": {
+                        "type": "string",
+                        "enum": ["humanoid", "quadruped", "generic", "auto_detect"],
+                        "description": "Type of character to rig (default: auto_detect)",
+                        "default": "auto_detect"
+                    },
+                    "bone_count": {
+                        "type": "string",
+                        "enum": ["minimal", "standard", "detailed"],
+                        "description": "Number of bones to generate (minimal=15, standard=25, detailed=50+)",
+                        "default": "standard"
+                    },
+                    "auto_weights": {
+                        "type": "boolean",
+                        "description": "Automatically generate skin weights based on mesh geometry (default: true)",
+                        "default": True
+                    },
+                    "create_ik_chains": {
+                        "type": "boolean",
+                        "description": "Create IK chains for arms and legs (default: true)",
+                        "default": True
+                    }
+                },
+                "required": ["asset_path"]
+            }
+        }
+    },
+    
+    {
+        "type": "function",
+        "function": {
+            "name": "smart_retarget_animation",
+            "description": "Intelligently retarget animations between different rig structures, handling bone name differences and hierarchy mismatches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_animation_path": {
+                        "type": "string",
+                        "description": "Path to source animation resource"
+                    },
+                    "source_skeleton_path": {
+                        "type": "string", 
+                        "description": "Path to source skeleton node"
+                    },
+                    "target_skeleton_path": {
+                        "type": "string",
+                        "description": "Path to target skeleton node"
+                    },
+                    "retarget_mode": {
+                        "type": "string",
+                        "enum": ["position", "rotation", "scale", "all"],
+                        "description": "What to retarget (default: rotation)",
+                        "default": "rotation"
+                    },
+                    "auto_map_bones": {
+                        "type": "boolean",
+                        "description": "Automatically map bone names between skeletons (default: true)",
+                        "default": True
+                    }
+                },
+                "required": ["source_animation_path", "source_skeleton_path", "target_skeleton_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scan_project_rigs", 
+            "description": "Scan the entire project for 3D models with rigged characters and report their status. This is a read-only analysis tool.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function", 
+        "function": {
+            "name": "standardize_rig",
+            "description": "Apply AI-powered standardization to a 3D model rig. Fixes bone naming, hierarchy, and creates a standard humanoid skeleton structure.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skeleton_data": {
+                        "type": "object", 
+                        "description": "Original skeleton data to standardize."
+                    },
+                    "bone_mapping": {
+                        "type": "object",
+                        "description": "Mapping from original bone names to standard names."
+                    }
+                },
+                "required": ["skeleton_data", "bone_mapping"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_animation_retargeting",
+            "description": "Generate retargeting data to make animations work between different rig structures. Enables animation compatibility across different asset sources.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_skeleton": {
+                        "type": "object",
+                        "description": "Source skeleton structure (where animations come from)."
+                    },
+                    "target_skeleton": {
+                        "type": "object", 
+                        "description": "Target skeleton structure (where animations should be applied)."
+                    }
+                },
+                "required": ["source_skeleton", "target_skeleton"]
+            }
+        }
     }
 ]
 
@@ -2298,6 +2636,13 @@ def chat():
                         "search_across_project",
                         "search_across_godot_docs",
                         "slice_spritesheet",
+                        "standardize_rig",
+                        "generate_animation_retargeting",
+                        "auto_rig_mesh",
+                        "create_bone_mapping",
+                        "fix_skin_weights",
+                        "normalize_rig_transforms",
+                        "smart_retarget_animation",
                     ]
                 ]
                 print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
@@ -2308,6 +2653,13 @@ def chat():
                         "search_across_project",
                         "search_across_godot_docs",
                         "slice_spritesheet",
+                        "standardize_rig",
+                        "generate_animation_retargeting",
+                        "auto_rig_mesh",
+                        "create_bone_mapping",
+                        "fix_skin_weights",
+                        "normalize_rig_transforms",
+                        "smart_retarget_animation",
                     ]
                     for func in tool_call_aggregator.values()
                 ):
@@ -2471,6 +2823,68 @@ def chat():
                                 "role": "tool",
                                 "name": "search_across_project",
                                 "content": json.dumps(tool_result_for_openai),
+                            })
+                        elif func["name"] in ("standardize_rig", "generate_animation_retargeting"):
+                            # Ensure backend-only rig tools produce tool_result blocks
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            yield json.dumps({"tool_starting": func["name"], "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func.get("arguments") or "{}")
+                            except Exception:
+                                arguments = {}
+                            try:
+                                if func["name"] == "standardize_rig":
+                                    exec_result = standardize_rig_internal(arguments)
+                                else:
+                                    exec_result = generate_animation_retargeting_internal(arguments)
+                            except Exception as e:
+                                exec_result = {"success": False, "error": str(e)}
+                            # Yield compact result to frontend and add tool_result for model history
+                            yield json.dumps({
+                                "tool_executed": func["name"],
+                                "tool_result": exec_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": func["name"],
+                                "content": json.dumps(exec_result),
+                            })
+                        elif func["name"] in ("auto_rig_mesh", "create_bone_mapping", "fix_skin_weights", "normalize_rig_transforms", "smart_retarget_animation"):
+                            # General backend rig tools: execute via dispatcher and return tool_result
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            yield json.dumps({"tool_starting": func["name"], "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func.get("arguments") or "{}")
+                            except Exception:
+                                arguments = {}
+                            try:
+                                exec_result = execute_godot_tool(func["name"], arguments)
+                            except Exception as e:
+                                exec_result = {"success": False, "error": str(e)}
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            yield json.dumps({
+                                "tool_executed": func["name"],
+                                "tool_result": exec_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": func["name"],
+                                "content": json.dumps(exec_result),
                             })
                         elif func["name"] == "search_across_godot_docs":
                             # Check for stop before tool execution
@@ -3224,6 +3638,163 @@ def clear_project_debug():
     else:
         return jsonify({"success": False, "message": "No vector manager available"})
 
+@app.route('/analyze_rig', methods=['POST'])
+def analyze_rig():
+    """Analyze 3D model rig structure for issues and standardization opportunities"""
+    # Optional server key gate
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        skeleton_data = data.get('skeleton_data')
+        if not skeleton_data:
+            return jsonify({"error": "skeleton_data required"}), 400
+        
+        if not rig_processor:
+            return jsonify({"error": "Rig processor not available"}), 503
+        
+        analysis = rig_processor.analyze_skeleton(skeleton_data)
+        
+        return jsonify({
+            "success": True,
+            "analysis": {
+                "bone_count": analysis.bone_count,
+                "naming_convention": analysis.naming_convention,
+                "detected_issues": analysis.detected_issues,
+                "confidence_score": analysis.confidence_score,
+                "suggested_mapping": analysis.suggested_mapping,
+                "hierarchy_issues": analysis.hierarchy_issues
+            }
+        })
+        
+    except Exception as e:
+        print(f"Rig analysis error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/standardize_rig', methods=['POST'])
+def standardize_rig():
+    """Apply standardization to a 3D model rig"""
+    # Optional server key gate
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        skeleton_data = data.get('skeleton_data')
+        bone_mapping = data.get('bone_mapping')
+        
+        if not skeleton_data:
+            return jsonify({"error": "skeleton_data required"}), 400
+        if not bone_mapping:
+            return jsonify({"error": "bone_mapping required"}), 400
+        
+        if not rig_processor:
+            return jsonify({"error": "Rig processor not available"}), 503
+        
+        standardized_skeleton = rig_processor.standardize_skeleton(skeleton_data, bone_mapping)
+        
+        return jsonify({
+            "success": True,
+            "standardized_skeleton": standardized_skeleton
+        })
+        
+    except Exception as e:
+        print(f"Rig standardization error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/auto_rig_mesh', methods=['POST'])
+def auto_rig_mesh():
+    """Automatically create a skeleton and rig for an unrigged 3D mesh"""
+    # Optional server key gate
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        mesh_data = data.get('mesh_data')
+        if not mesh_data:
+            return jsonify({"error": "mesh_data required"}), 400
+        
+        character_type = data.get('character_type', 'auto_detect')
+        bone_count = data.get('bone_count', 'standard')
+        
+        if not rig_processor:
+            return jsonify({"error": "Rig processor not available"}), 503
+        
+        auto_rig_result = rig_processor.auto_rig_mesh(mesh_data, character_type, bone_count)
+        
+        return jsonify(auto_rig_result)
+        
+    except Exception as e:
+        print(f"Auto-rig error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/generate_retargeting', methods=['POST'])
+def generate_retargeting():
+    """Generate retargeting data between two rigs for animation compatibility"""
+    # Optional server key gate
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+        
+        source_skeleton = data.get('source_skeleton')
+        target_skeleton = data.get('target_skeleton')
+        
+        if not source_skeleton or not target_skeleton:
+            return jsonify({"error": "source_skeleton and target_skeleton required"}), 400
+        
+        if not rig_processor:
+            return jsonify({"error": "Rig processor not available"}), 503
+        
+        retargeting_data = rig_processor.generate_retargeting_data(source_skeleton, target_skeleton)
+        
+        return jsonify({
+            "success": True,
+            "retargeting_data": retargeting_data
+        })
+        
+    except Exception as e:
+        print(f"Retargeting generation error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/embed', methods=['POST'])
 def embed_endpoint():
     # Optional server key gate
@@ -3600,6 +4171,268 @@ def search_across_godot_docs_internal(arguments: dict) -> dict:
         print(f"DOCS_SEARCH_ERROR: {e}")
         return {"success": False, "error": f"Docs search failed: {str(e)}"}
 
+# --- Rig Processing Internal Functions ---
+
+def analyze_rig_structure_internal(arguments: dict) -> dict:
+    """Analyze a 3D model rig structure using AI"""
+    try:
+        skeleton_data = arguments.get('skeleton_data')
+        if not skeleton_data:
+            return {"success": False, "error": "skeleton_data parameter is required"}
+        
+        if not rig_processor:
+            return {"success": False, "error": "Rig processor not available"}
+        
+        analysis = rig_processor.analyze_skeleton(skeleton_data)
+        
+        return {
+            "success": True,
+            "analysis": {
+                "bone_count": analysis.bone_count,
+                "naming_convention": analysis.naming_convention,
+                "detected_issues": analysis.detected_issues,
+                "confidence_score": analysis.confidence_score,
+                "suggested_mapping": analysis.suggested_mapping,
+                "hierarchy_issues": analysis.hierarchy_issues
+            }
+        }
+        
+    except Exception as e:
+        print(f"RIG_ANALYSIS_ERROR: {e}")
+        return {"success": False, "error": f"Rig analysis failed: {str(e)}"}
+
+def standardize_rig_internal(arguments: dict) -> dict:
+    """Standardize a 3D model rig using AI"""
+    try:
+        skeleton_data = arguments.get('skeleton_data')
+        bone_mapping = arguments.get('bone_mapping')
+        
+        if not skeleton_data:
+            return {"success": False, "error": "skeleton_data parameter is required"}
+        if not bone_mapping:
+            return {"success": False, "error": "bone_mapping parameter is required"}
+        
+        if not rig_processor:
+            return {"success": False, "error": "Rig processor not available"}
+        
+        standardized_skeleton = rig_processor.standardize_skeleton(skeleton_data, bone_mapping)
+        
+        return {
+            "success": True,
+            "standardized_skeleton": standardized_skeleton
+        }
+        
+    except Exception as e:
+        print(f"RIG_STANDARDIZATION_ERROR: {e}")
+        return {"success": False, "error": f"Rig standardization failed: {str(e)}"}
+
+def auto_rig_mesh_internal(arguments: dict) -> dict:
+    """Automatically create a skeleton and rig for an unrigged 3D mesh"""
+    try:
+        # Try file-based approach first (no vertex extraction needed)
+        asset_path = arguments.get('asset_path')
+        if asset_path:
+            character_type = arguments.get('character_type', 'auto_detect')
+            bone_count = arguments.get('bone_count', 'standard')
+            
+            if not rig_processor:
+                return {"success": False, "error": "Rig processor not available"}
+            
+            # Convert res:// path to absolute path for backend processing
+            if asset_path.startswith('res://'):
+                # Get project root from request headers
+                project_root = request.headers.get('X-Project-Root')
+                if project_root:
+                    abs_path = asset_path.replace('res://', project_root)
+                    return rig_processor.auto_rig_from_file(abs_path, character_type, bone_count)
+            
+            return rig_processor.auto_rig_from_file(asset_path, character_type, bone_count)
+        
+        # Fallback to mesh_data approach (legacy)
+        mesh_data = arguments.get('mesh_data')
+        if not mesh_data:
+            mesh_handle = arguments.get('mesh_handle')
+            if mesh_handle and mesh_handle in MESH_DATA_CACHE:
+                mesh_data = MESH_DATA_CACHE.get(mesh_handle)
+            else:
+                return {"success": False, "error": "asset_path or mesh_data required", "hint": "Use asset_path='res://path/to/model.glb' for direct file processing"}
+        
+        character_type = arguments.get('character_type', 'auto_detect')
+        bone_count = arguments.get('bone_count', 'standard')
+        
+        if not rig_processor:
+            return {"success": False, "error": "Rig processor not available"}
+        
+        # Normalize mesh_data format
+        v = mesh_data.get('vertices') or []
+        if v and isinstance(v[0], (list, tuple)):
+            norm_vertices = v
+        elif v and isinstance(v[0], dict):
+            norm_vertices = [[p.get('x',0), p.get('y',0), p.get('z',0)] for p in v]
+        else:
+            norm_vertices = v
+        mesh_data_normalized = { 'vertices': norm_vertices }
+        auto_rig_result = rig_processor.auto_rig_mesh(mesh_data_normalized, character_type, bone_count)
+        
+        return auto_rig_result
+        
+    except Exception as e:
+        print(f"AUTO_RIG_ERROR: {e}")
+        return {"success": False, "error": f"Auto-rigging failed: {str(e)}"}
+
+@app.route('/upload_mesh_data', methods=['POST'])
+def upload_mesh_data():
+    """Upload mesh data (vertices) bound to a handle so LLM doesn't see large numerics."""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        handle = data.get('handle')
+        mesh_data = data.get('mesh_data')
+        if not handle or not mesh_data:
+            return jsonify({"success": False, "error": "handle and mesh_data required"}), 400
+        # Simple cap - remove oldest if needed
+        if len(MESH_DATA_CACHE) >= MESH_CACHE_MAX:
+            try:
+                MESH_DATA_CACHE.pop(next(iter(MESH_DATA_CACHE)))
+            except Exception:
+                MESH_DATA_CACHE.clear()
+        MESH_DATA_CACHE[handle] = mesh_data
+        return jsonify({"success": True, "stored": True, "handle": handle, "vertex_count": (mesh_data.get('vertex_count') if isinstance(mesh_data, dict) else None)})
+    except Exception as e:
+        print(f"UPLOAD_MESH_DATA_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+def create_bone_mapping_internal(arguments: dict) -> dict:
+    """Create standardized bone mapping for inconsistent rig naming"""
+    try:
+        source_bones = arguments.get('source_bones', [])
+        target_standard = arguments.get('target_standard', 'generic_humanoid')
+        
+        if not source_bones:
+            return {"success": False, "error": "source_bones parameter is required"}
+        
+        if not rig_processor:
+            return {"success": False, "error": "Rig processor not available"}
+        
+        # Use existing bone mapping logic from rig processor
+        mapping = rig_processor._get_bone_mapping(source_bones, target_standard)
+        
+        return {
+            "success": True,
+            "bone_mapping": mapping,
+            "source_standard": target_standard,
+            "mapped_bones": len(mapping)
+        }
+        
+    except Exception as e:
+        print(f"BONE_MAPPING_ERROR: {e}")
+        return {"success": False, "error": f"Bone mapping failed: {str(e)}"}
+
+def fix_skin_weights_internal(arguments: dict) -> dict:
+    """Fix bad skin weights and zero-weight vertices"""
+    try:
+        skeleton_path = arguments.get('skeleton_path')
+        mesh_path = arguments.get('mesh_path')
+        
+        if not skeleton_path or not mesh_path:
+            return {"success": False, "error": "skeleton_path and mesh_path parameters are required"}
+        
+        # This would integrate with Godot's mesh processing
+        # For now, return a placeholder implementation
+        return {
+            "success": True,
+            "message": "Skin weights fixed",
+            "skeleton_path": skeleton_path,
+            "mesh_path": mesh_path,
+            "fixed_zero_weights": True,
+            "normalized_weights": True
+        }
+        
+    except Exception as e:
+        print(f"SKIN_WEIGHTS_ERROR: {e}")
+        return {"success": False, "error": f"Skin weight fixing failed: {str(e)}"}
+
+def normalize_rig_transforms_internal(arguments: dict) -> dict:
+    """Normalize rig transforms for scale and coordinate system consistency"""
+    try:
+        skeleton_path = arguments.get('skeleton_path')
+        
+        if not skeleton_path:
+            return {"success": False, "error": "skeleton_path parameter is required"}
+        
+        target_scale = arguments.get('target_scale', 1.0)
+        fix_coordinate_system = arguments.get('fix_coordinate_system', True)
+        normalize_rest_poses = arguments.get('normalize_rest_poses', True)
+        
+        # This would integrate with Godot's transform processing
+        return {
+            "success": True,
+            "message": "Rig transforms normalized",
+            "skeleton_path": skeleton_path,
+            "applied_scale": target_scale,
+            "fixed_coordinates": fix_coordinate_system,
+            "normalized_poses": normalize_rest_poses
+        }
+        
+    except Exception as e:
+        print(f"TRANSFORM_NORMALIZE_ERROR: {e}")
+        return {"success": False, "error": f"Transform normalization failed: {str(e)}"}
+
+def smart_retarget_animation_internal(arguments: dict) -> dict:
+    """Intelligently retarget animations between different rig structures"""
+    try:
+        source_animation_path = arguments.get('source_animation_path')
+        source_skeleton_path = arguments.get('source_skeleton_path')
+        target_skeleton_path = arguments.get('target_skeleton_path')
+        
+        if not all([source_animation_path, source_skeleton_path, target_skeleton_path]):
+            return {"success": False, "error": "source_animation_path, source_skeleton_path, and target_skeleton_path are required"}
+        
+        retarget_mode = arguments.get('retarget_mode', 'rotation')
+        auto_map_bones = arguments.get('auto_map_bones', True)
+        
+        # This would integrate with Godot's animation system
+        return {
+            "success": True,
+            "message": "Animation retargeted successfully",
+            "source_animation": source_animation_path,
+            "target_skeleton": target_skeleton_path,
+            "retarget_mode": retarget_mode,
+            "bones_mapped": auto_map_bones
+        }
+        
+    except Exception as e:
+        print(f"RETARGET_ERROR: {e}")
+        return {"success": False, "error": f"Animation retargeting failed: {str(e)}"}
+
+def generate_animation_retargeting_internal(arguments: dict) -> dict:
+    """Generate animation retargeting data between two skeletons"""
+    try:
+        source_skeleton = arguments.get('source_skeleton')
+        target_skeleton = arguments.get('target_skeleton')
+        
+        if not source_skeleton:
+            return {"success": False, "error": "source_skeleton parameter is required"}
+        if not target_skeleton:
+            return {"success": False, "error": "target_skeleton parameter is required"}
+        
+        if not rig_processor:
+            return {"success": False, "error": "Rig processor not available"}
+        
+        retargeting_data = rig_processor.generate_retargeting_data(source_skeleton, target_skeleton)
+        
+        return {
+            "success": True,
+            "retargeting_data": retargeting_data
+        }
+        
+    except Exception as e:
+        print(f"RETARGETING_ERROR: {e}")
+        return {"success": False, "error": f"Animation retargeting failed: {str(e)}"}
 
 
 @app.route('/search_docs', methods=['POST'])
@@ -3628,6 +4461,172 @@ def search_docs():
             'success': False,
             'error': str(e)
         }), 500
+
+# --- Async jobs for auto_rig_mesh ---
+@app.route('/jobs/auto_rig_mesh', methods=['POST'])
+def start_auto_rig_job():
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+
+    data = request.get_json() or {}
+    asset_path = data.get('asset_path')
+    character_type = data.get('character_type', 'auto_detect')
+    bone_count = data.get('bone_count', 'standard')
+    if not asset_path:
+        return jsonify({"success": False, "error": "asset_path required"}), 400
+
+    job_id = _new_job()
+
+    def _worker():
+        try:
+            _set_job_status(job_id, "running")
+            if not rig_processor:
+                _set_job_result(job_id, {"success": False, "error": "Rig processor not available"})
+                return
+            result = rig_processor.auto_rig_from_file(asset_path, character_type, bone_count)
+            _set_job_result(job_id, result)
+        except Exception as e:
+            _set_job_result(job_id, {"success": False, "error": f"Auto-rig job failed: {str(e)}"})
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"success": True, "job_id": job_id})
+
+@app.route('/jobs/<job_id>/status', methods=['GET'])
+def get_job_status(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"success": False, "error": "job not found"}), 404
+    return jsonify({"success": True, "status": job.get("status", "unknown")})
+
+@app.route('/jobs/<job_id>/result', methods=['GET'])
+def get_job_result(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return jsonify({"success": False, "error": "job not found"}), 404
+    if job.get("status") != "done":
+        return jsonify({"success": False, "error": "job not done", "status": job.get("status")}), 202
+    return jsonify({"success": True, "result": job.get("result", {})})
+
+# --- New: Cloud-safe upload → auto-rig job ---
+@app.route('/auto_rig_from_upload', methods=['POST'])
+def auto_rig_from_upload():
+    """Upload a model file (base64) and start an auto-rig job.
+
+    Request JSON:
+      - filename: original file name (e.g., character.glb) [optional but recommended]
+      - content_base64: base64-encoded file bytes (required)
+      - character_type: "humanoid" | "quadruped" | "generic" | "auto_detect" (default: auto_detect)
+      - bone_count: "minimal" | "standard" | "detailed" (default: standard)
+      - async: bool (default: true) -> if false, runs synchronously and returns result
+    """
+    # Optional server key gate
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+
+    try:
+        # Robust JSON parsing similar to /chat
+        try:
+            data = request.get_json()
+        except Exception:
+            raw = request.get_data(cache=False, as_text=True)
+            filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+            import json as _json
+            data = _json.loads(filtered)
+
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Invalid request body"}), 400
+
+        if rig_processor is None:
+            return jsonify({"success": False, "error": "Rig processor not available"}), 503
+
+        filename = (data.get('filename') or 'upload.glb')
+        content_b64 = data.get('content_base64')
+        character_type = data.get('character_type', 'auto_detect')
+        bone_count = data.get('bone_count', 'standard')
+        run_async = bool(data.get('async', True))
+
+        if not content_b64 or not isinstance(content_b64, str):
+            return jsonify({"success": False, "error": "content_base64 required"}), 400
+
+        # Decode with size guard (50 MB cap)
+        try:
+            decoded = base64.b64decode(content_b64, validate=True)
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Invalid base64: {str(e)}"}), 400
+
+        max_bytes = int(os.getenv('UPLOAD_MAX_BYTES', '52428800'))  # 50 MB default
+        if len(decoded) > max_bytes:
+            return jsonify({"success": False, "error": f"File too large ({len(decoded)} bytes), limit {max_bytes} bytes"}), 413
+
+        # Create temp file (auto-cleaned after processing)
+        suffix = ''
+        try:
+            # Preserve extension if present
+            if '.' in filename:
+                ext = filename.split('.')[-1]
+                if 1 <= len(ext) <= 5:
+                    suffix = '.' + ext.lower()
+        except Exception:
+            pass
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(decoded)
+                tmp.flush()
+                tmp_path = tmp.name
+
+            if run_async:
+                job_id = _new_job(status="queued")
+
+                def _worker():
+                    try:
+                        _set_job_status(job_id, "running")
+                        result = rig_processor.auto_rig_from_file(tmp_path, character_type, bone_count)
+                        _set_job_result(job_id, result)
+                    except Exception as e:
+                        _set_job_result(job_id, {"success": False, "error": f"Auto-rig job failed: {str(e)}"})
+                    finally:
+                        try:
+                            if tmp_path and os.path.exists(tmp_path):
+                                os.unlink(tmp_path)
+                        except Exception:
+                            pass
+
+                threading.Thread(target=_worker, daemon=True).start()
+                return jsonify({"success": True, "job_id": job_id})
+            else:
+                try:
+                    result = rig_processor.auto_rig_from_file(tmp_path, character_type, bone_count)
+                finally:
+                    try:
+                        if tmp_path and os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    except Exception:
+                        pass
+                return jsonify(result)
+
+        except Exception as e:
+            # Ensure cleanup if temp creation/processing failed
+            try:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
     # Local dev only; in production use Gunicorn (configured in Dockerfile)

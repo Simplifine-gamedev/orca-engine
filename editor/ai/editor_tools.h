@@ -50,6 +50,7 @@ public:
     static void clear_preview_overlay(const String &p_path);
     static bool has_preview_overlay(const String &p_path);
     static String get_preview_overlay(const String &p_path);
+    static void clear_all_preview_overlays();
 
     // Runtime error collection (Debugger/Output → AI)
     static void record_runtime_error(const Dictionary &p_error);
@@ -95,6 +96,16 @@ public:
 	static Dictionary get_layers_and_zindex(const Dictionary &p_args);
 	static Dictionary search_across_project(const Dictionary &p_args);
 	static Dictionary search_across_godot_docs(const Dictionary &p_args);
+
+	// AI Rig Processing Tools (Safe Read-Only Analysis)
+	static Dictionary analyze_current_rig(const Dictionary &p_args);
+	static Dictionary scan_project_rigs(const Dictionary &p_args);
+	static Dictionary analyze_project_rigs(const Dictionary &p_args);
+	static Dictionary analyze_selected_rig(const Dictionary &p_args);
+	static Dictionary standardize_rig_structure(const Dictionary &p_args);
+	static Dictionary batch_fix_rigs(const Dictionary &p_args);
+	static Dictionary extract_mesh_data(const Dictionary &p_args); // Deprecated
+	static Dictionary instantiate_rig_asset(const Dictionary &p_args);
 
 	// Universal Tools (New Consolidated API)
 	static Dictionary universal_node_manager(const Dictionary &p_args);

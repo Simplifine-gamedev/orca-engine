@@ -90,26 +90,10 @@ void ScriptEditorDebugger::debug_copy() {
 }
 
 void ScriptEditorDebugger::_fix_with_ai_pressed() {
-	// Build a concise error summary from the selected top-level error item.
-	TreeItem *root = error_tree->get_root();
-	if (!root) {
+	// Simple implementation like output console - just send the current error text
+	String error_text = reason->get_text();
+	if (error_text.is_empty()) {
 		return;
-	}
-	TreeItem *selected = error_tree->get_selected();
-	if (!selected) {
-		selected = root->get_first_child();
-	}
-	if (!selected) {
-		return;
-	}
-	// Ensure we reference the top-level container entry
-	while (selected->get_parent() && selected->get_parent() != root) {
-		selected = selected->get_parent();
-	}
-	String summary;
-	summary += selected->get_text(0) + "  " + selected->get_text(1) + "\n";
-	for (TreeItem *ci = selected->get_first_child(); ci; ci = ci->get_next()) {
-		summary += ci->get_text(0) + "  " + ci->get_text(1) + "\n";
 	}
 
 	EditorNode *en = EditorNode::get_singleton();
@@ -120,8 +104,58 @@ void ScriptEditorDebugger::_fix_with_ai_pressed() {
 	if (!dock) {
 		return;
 	}
-	String prompt = String("Please help me diagnose and fix this runtime error.\n\n") + summary;
+	
+	// Include file/line context if available from stack dump
+	String context;
+	if (stack_dump && stack_dump->get_root()) {
+		TreeItem *first = stack_dump->get_root()->get_first_child();
+		if (first) {
+			Dictionary md = first->get_metadata(0);
+			String file = md.get("file", String());
+			int line = md.get("line", -1);
+			if (!file.is_empty() && line >= 0) {
+				context = vformat("File: %s\nLine: %d\n\n", file, line);
+			}
+		}
+	}
+	
+	String prompt = String("Please help me fix this runtime error:\n\n") + context + error_text;
 	dock->send_error_message(prompt);
+}
+
+void ScriptEditorDebugger::_error_tree_button_clicked(TreeItem *p_item, int p_column, int p_id, int p_mouse_button) {
+	// Handle "Fix with AI" button clicks on error tree items (column 2)
+	if (p_column == 2 && p_id == 0 && p_mouse_button == (int)MouseButton::LEFT) {  // Fix with AI button is in column 2
+		Dictionary error_data = p_item->get_meta("fix_ai_data", Dictionary());
+		
+		if (error_data.is_empty()) {
+			return;
+		}
+		
+		// Build error summary from stored metadata
+		String error_text = error_data.get("error_text", "Unknown error");
+		String source_file = error_data.get("source_file", "");
+		int source_line = error_data.get("source_line", 0);
+		String timestamp = error_data.get("timestamp", "");
+		bool is_warning = error_data.get("is_warning", false);
+		
+		String error_summary = timestamp + "  " + error_text + "\n";
+		if (!source_file.is_empty() && source_line > 0) {
+			error_summary += "File: " + source_file + "\nLine: " + String::num_int64(source_line) + "\n";
+		}
+		
+		EditorNode *en = EditorNode::get_singleton();
+		if (!en) {
+			return;
+		}
+		AIChatDock *dock = en->get_ai_chat_dock();
+		if (!dock) {
+			return;
+		}
+		
+		String prompt = String("Please help me fix this ") + (is_warning ? "warning" : "error") + ":\n\n" + error_summary;
+		dock->send_error_message(prompt);
+	}
 }
 
 void ScriptEditorDebugger::debug_skip_breakpoints() {
@@ -679,6 +713,23 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	// If we have a (custom) error message, use it as title, and add a C++ Error
 	// item with the original error condition.
 	error_title += oe.error_descr.is_empty() ? oe.error : oe.error_descr;
+	
+	// Add "Fix with AI" button and blue text in column 2
+	EditorNode *en = EditorNode::get_singleton();
+	if (en && en->get_ai_chat_dock()) {
+		error->set_text(2, "Fix with AI");
+		error->set_custom_color(2, Color(0.5, 0.8, 1.0));  // Light blue color like output console
+		error->add_button(2, get_editor_theme_icon(SNAME("Tools")), 0, false, TTR("Fix with AI"));
+		// Store error data in metadata for button click handler
+		Dictionary error_data;
+		error_data["error_text"] = oe.error_descr.is_empty() ? oe.error : oe.error_descr;
+		error_data["source_file"] = oe.source_file;
+		error_data["source_line"] = oe.source_line;
+		error_data["timestamp"] = time;
+		error_data["is_warning"] = oe.warning;
+		error->set_meta("fix_ai_data", error_data);
+	}
+	
 	error->set_text(1, error_title);
 	error->set_autowrap_mode(1, TextServer::AUTOWRAP_WORD_SMART);
 	tooltip += " " + error_title + "\n";
@@ -1108,6 +1159,7 @@ void ScriptEditorDebugger::_notification(int p_what) {
 			ignore_error_breaks->add_theme_color_override("icon_pressed_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
 			ignore_error_breaks->add_theme_color_override("icon_focus_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
 			copy->set_button_icon(get_editor_theme_icon(SNAME("ActionCopy")));
+			fix_with_ai->set_button_icon(get_editor_theme_icon(SNAME("Tools")));
 			step->set_button_icon(get_editor_theme_icon(SNAME("DebugStep")));
 			next->set_button_icon(get_editor_theme_icon(SNAME("DebugNext")));
 			dobreak->set_button_icon(get_editor_theme_icon(SNAME("Pause")));
@@ -1865,6 +1917,7 @@ void ScriptEditorDebugger::_error_tree_item_rmb_selected(const Vector2 &p_pos, M
 
 	if (error_tree->is_anything_selected()) {
 		item_menu->add_icon_item(get_editor_theme_icon(SNAME("ActionCopy")), TTR("Copy Error"), ACTION_COPY_ERROR);
+		item_menu->add_icon_item(get_editor_theme_icon(SNAME("Tools")), TTR("Fix with AI"), ACTION_FIX_WITH_AI);
 		item_menu->add_icon_item(get_editor_theme_icon(SNAME("ExternalLink")), TTR("Open C++ Source on GitHub"), ACTION_OPEN_SOURCE);
 	}
 
@@ -1901,6 +1954,39 @@ void ScriptEditorDebugger::_item_menu_id_pressed(int p_option) {
 			}
 
 			DisplayServer::get_singleton()->clipboard_set(text);
+		} break;
+
+		case ACTION_FIX_WITH_AI: {
+			TreeItem *ti = error_tree->get_selected();
+			if (!ti) {
+				break;
+			}
+
+			// Find the top-level error item
+			while (ti->get_parent() != error_tree->get_root()) {
+				ti = ti->get_parent();
+			}
+
+			// Build error summary from the selected error
+			String error_summary;
+			error_summary += ti->get_text(0) + "  " + ti->get_text(1) + "\n";
+			
+			// Add child details if any
+			for (TreeItem *child = ti->get_first_child(); child; child = child->get_next()) {
+				error_summary += child->get_text(0) + "  " + child->get_text(1) + "\n";
+			}
+			
+			EditorNode *en = EditorNode::get_singleton();
+			if (!en) {
+				break;
+			}
+			AIChatDock *dock = en->get_ai_chat_dock();
+			if (!dock) {
+				break;
+			}
+			
+			String prompt = String("Please help me fix this error:\n\n") + error_summary;
+			dock->send_error_message(prompt);
 		} break;
 
 		case ACTION_OPEN_SOURCE: {
@@ -2229,6 +2315,8 @@ ScriptEditorDebugger::ScriptEditorDebugger() {
 		space->set_h_size_flags(SIZE_EXPAND_FILL);
 		error_hbox->add_child(space);
 
+
+
 		clear_button = memnew(Button);
 		clear_button->set_text(TTR("Clear"));
 		clear_button->set_h_size_flags(0);
@@ -2237,7 +2325,7 @@ ScriptEditorDebugger::ScriptEditorDebugger() {
 		error_hbox->add_child(clear_button);
 
 		error_tree = memnew(Tree);
-		error_tree->set_columns(2);
+		error_tree->set_columns(3);
 
 		error_tree->set_column_expand(0, false);
 		error_tree->set_column_custom_minimum_width(0, 140);
@@ -2246,12 +2334,17 @@ ScriptEditorDebugger::ScriptEditorDebugger() {
 		error_tree->set_column_expand(1, true);
 		error_tree->set_column_clip_content(1, true);
 
+		error_tree->set_column_expand(2, false);
+		error_tree->set_column_custom_minimum_width(2, 100);
+		error_tree->set_column_clip_content(2, true);
+
 		error_tree->set_select_mode(Tree::SELECT_ROW);
 		error_tree->set_hide_root(true);
 		error_tree->set_v_size_flags(SIZE_EXPAND_FILL);
 		error_tree->set_allow_rmb_select(true);
 		error_tree->set_allow_reselect(true);
 		error_tree->connect("item_mouse_selected", callable_mp(this, &ScriptEditorDebugger::_error_tree_item_rmb_selected));
+		error_tree->connect("button_clicked", callable_mp(this, &ScriptEditorDebugger::_error_tree_button_clicked));
 		errors_tab->add_child(error_tree);
 
 		item_menu = memnew(PopupMenu);

@@ -69,6 +69,8 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_send_button_pressed"), &AIChatDock::_on_send_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_stop_button_pressed"), &AIChatDock::_on_stop_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_stop_request_completed"), &AIChatDock::_on_stop_request_completed);
+    ClassDB::bind_method(D_METHOD("_finalize_simple_tool_async", "tool_call_id", "name", "args", "result"), &AIChatDock::_finalize_simple_tool_async);
+    ClassDB::bind_method(D_METHOD("_run_rig_tool_on_main", "tool_call_id", "name", "args"), &AIChatDock::_run_rig_tool_on_main);
 	ClassDB::bind_method(D_METHOD("_on_edit_message_pressed"), &AIChatDock::_on_edit_message_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_message_send_pressed"), &AIChatDock::_on_edit_message_send_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_send_button_pressed"), &AIChatDock::_on_edit_send_button_pressed);
@@ -3033,6 +3035,8 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 	return current_assistant_message_label; // _add_message_to_chat sets this.
 }
 
+// Background processing structures (unused for now due to UI freeze issues)
+
 void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     // Ensure counter is sane at the start of a batch
     if (pending_tool_tasks < 0) pending_tool_tasks = 0;
@@ -3077,9 +3081,21 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else if (function_name == "get_available_classes") {
 			result = EditorTools::get_available_classes(args);
 		} else if (function_name == "create_node") {
-			result = EditorTools::create_node(args);
+			bool allow = OS::get_singleton()->get_environment("AI_ALLOW_DESTRUCTIVE_TOOLS").to_lower() == "true";
+			if (!allow) {
+				result["success"] = false;
+				result["message"] = String("Destructive tool disabled (create_node). Set AI_ALLOW_DESTRUCTIVE_TOOLS=true to enable.");
+			} else {
+				result = EditorTools::create_node(args);
+			}
 		} else if (function_name == "delete_node") {
-			result = EditorTools::delete_node(args);
+			bool allow = OS::get_singleton()->get_environment("AI_ALLOW_DESTRUCTIVE_TOOLS").to_lower() == "true";
+			if (!allow) {
+				result["success"] = false;
+				result["message"] = String("Destructive tool disabled (delete_node). Set AI_ALLOW_DESTRUCTIVE_TOOLS=true to enable.");
+			} else {
+				result = EditorTools::delete_node(args);
+			}
 		} else if (function_name == "set_node_property") {
 			result = EditorTools::set_node_property(args);
 		} else if (function_name == "batch_set_node_properties") {
@@ -3093,7 +3109,13 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else if (function_name == "attach_script") {
 			result = EditorTools::attach_script(args);
 		} else if (function_name == "manage_scene") {
-			result = EditorTools::manage_scene(args);
+			bool allow = OS::get_singleton()->get_environment("AI_ALLOW_DESTRUCTIVE_TOOLS").to_lower() == "true";
+			if (!allow) {
+				result["success"] = false;
+				result["message"] = String("Destructive tool disabled (manage_scene). Set AI_ALLOW_DESTRUCTIVE_TOOLS=true to enable.");
+			} else {
+				result = EditorTools::manage_scene(args);
+			}
         } else if (function_name == "add_collision_shape") {
 			result = EditorTools::add_collision_shape(args);
 		} else if (function_name == "list_project_files") {
@@ -3175,6 +3197,98 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         } else if (function_name == "editor_introspect") {
             // Execute multiplexed introspection/debug tool
             result = EditorTools::editor_introspect(args);
+        } else if (function_name == "analyze_current_rig") {
+            // Run asynchronously to avoid UI stalls on large scenes
+            pending_tool_tasks++;
+            _update_tool_placeholder_status(tool_call_id, function_name, "running");
+            struct RigTask { AIChatDock *dock; String id; Dictionary args; String name; } *task = memnew(RigTask);
+            task->dock = this; task->id = tool_call_id; task->args = args; task->name = function_name;
+            // Run the actual scene traversal on the main thread to avoid thread violations
+            call_deferred("_run_rig_tool_on_main", tool_call_id, function_name, args);
+            memdelete(task);
+            continue; // Defer result handling
+        } else if (function_name == "scan_project_rigs") {
+            // Run asynchronously to avoid UI stalls
+            pending_tool_tasks++;
+            _update_tool_placeholder_status(tool_call_id, function_name, "running");
+            struct RigTask { AIChatDock *dock; String id; Dictionary args; String name; } *task = memnew(RigTask);
+            task->dock = this; task->id = tool_call_id; task->args = args; task->name = function_name;
+            call_deferred("_run_rig_tool_on_main", tool_call_id, function_name, args);
+            memdelete(task);
+            continue; // Defer result handling
+        } else if (function_name == "analyze_project_rigs") {
+            // Run asynchronously
+            pending_tool_tasks++;
+            _update_tool_placeholder_status(tool_call_id, function_name, "running");
+            struct RigTask { AIChatDock *dock; String id; Dictionary args; String name; } *task = memnew(RigTask);
+            task->dock = this; task->id = tool_call_id; task->args = args; task->name = function_name;
+            call_deferred("_run_rig_tool_on_main", tool_call_id, function_name, args);
+            memdelete(task);
+            continue; // Defer result handling
+        } else if (function_name == "analyze_selected_rig") {
+            // Run asynchronously
+            pending_tool_tasks++;
+            _update_tool_placeholder_status(tool_call_id, function_name, "running");
+            struct RigTask { AIChatDock *dock; String id; Dictionary args; String name; } *task = memnew(RigTask);
+            task->dock = this; task->id = tool_call_id; task->args = args; task->name = function_name;
+            call_deferred("_run_rig_tool_on_main", tool_call_id, function_name, args);
+            memdelete(task);
+            continue; // Defer result handling
+        } else if (function_name == "standardize_rig_structure") {
+            // Apply standardized rig structure to a skeleton
+            result = EditorTools::standardize_rig_structure(args);
+        } else if (function_name == "batch_fix_rigs") {
+            // Batch apply rig fixes
+            result = EditorTools::batch_fix_rigs(args);
+        } else if (function_name == "instantiate_rig_asset") {
+            // Instantiate a rig asset into the current scene
+            result = EditorTools::instantiate_rig_asset(args);
+        } else if (function_name == "extract_mesh_data") {
+            // Deprecated: auto_rig_mesh now works directly with asset_path
+            result["success"] = false;
+            result["message"] = "extract_mesh_data is deprecated. Use auto_rig_mesh with asset_path instead.";
+        } else if (function_name == "auto_rig_mesh") {
+            // Run as async job (non-blocking), mirroring image gen behavior
+            pending_tool_tasks++;
+            _update_tool_placeholder_status(tool_call_id, function_name, "running");
+            // Build job start endpoint
+            String base_url = api_endpoint;
+            if (base_url.ends_with("/chat")) {
+                base_url = base_url.substr(0, base_url.length() - 5);
+            }
+            String start_url = base_url + "/jobs/auto_rig_mesh";
+            // Prepare JSON body
+            Dictionary payload;
+            payload["asset_path"] = String(args.get("asset_path", ""));
+            payload["character_type"] = String(args.get("character_type", "auto_detect"));
+            payload["bone_count"] = String(args.get("bone_count", "standard"));
+            String json_body = JSON::stringify(payload);
+            // Create HTTPRequest node for start, then poll
+            HTTPRequest *req = memnew(HTTPRequest);
+            get_parent()->add_child(req);
+            PackedStringArray headers;
+            headers.push_back("Content-Type: application/json");
+            headers.push_back("X-Project-Root: " + _get_project_root_path());
+            // Capture tool_call_id and args for later
+            String tci = tool_call_id;
+            String poll_base = base_url;
+            req->connect("request_completed", callable_mp(this, &AIChatDock::_on_autorig_start_completed).bind(tci, function_name, args, poll_base));
+            Error err = req->request(start_url, headers, HTTPClient::METHOD_POST, json_body);
+            if (err != OK) {
+                Dictionary fail;
+                fail["success"] = false;
+                fail["message"] = String("Failed to start auto_rig job: ") + String::num_int64(err);
+                _finalize_simple_tool_async(tool_call_id, function_name, args, fail);
+            }
+            continue; // Defer result handling
+        } else if (function_name == "create_bone_mapping" || 
+                   function_name == "fix_skin_weights" || 
+                   function_name == "normalize_rig_transforms" || 
+                   function_name == "smart_retarget_animation") {
+            // These tools should be handled by the backend, not the frontend
+            result["success"] = false;
+            result["message"] = function_name + " should be handled by backend, not frontend";
+            print_line("AI Chat: Received " + function_name + " tool in frontend - this should be handled by backend");
         } else if (function_name == "search_across_godot_docs") {
             // Forward docs search to EditorTools (proxied to backend)
             result = EditorTools::search_across_godot_docs(args);
@@ -3327,6 +3441,112 @@ void AIChatDock::_on_apply_edit_thread_done() {
         _send_chat_request();
     }
 }
+
+// Generic finalizer for simple async tools (used by rig analysis/scan)
+void AIChatDock::_finalize_simple_tool_async(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result) {
+    pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
+    _update_tool_placeholder_status(p_tool_call_id, p_name, "completed");
+    _add_tool_response_to_chat(p_tool_call_id, p_name, p_args, p_result);
+    if (pending_tool_tasks == 0) {
+        current_assistant_message_label = nullptr;
+        _send_chat_request();
+    }
+}
+
+// Async auto-rig job: handle start response, then poll status → result
+void AIChatDock::_on_autorig_start_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, String p_tool_call_id, String p_name, Dictionary p_args, String p_base_url) {
+    String body = String::utf8((const char *)p_body.ptr(), p_body.size());
+    Dictionary json;
+    Ref<JSON> parser; parser.instantiate();
+    if (parser->parse(body) == OK) {
+        json = parser->get_data();
+    }
+    if (!json.get("success", false)) {
+        Dictionary fail; fail["success"] = false; fail["message"] = json.get("error", "Failed to start job");
+        _finalize_simple_tool_async(p_tool_call_id, p_name, p_args, fail);
+        return;
+    }
+    String job_id = String(json.get("job_id", ""));
+    if (job_id.is_empty()) {
+        Dictionary fail; fail["success"] = false; fail["message"] = "No job_id returned";
+        _finalize_simple_tool_async(p_tool_call_id, p_name, p_args, fail);
+        return;
+    }
+    // Start polling status
+    String status_url = p_base_url + "/jobs/" + job_id + "/status";
+    HTTPRequest *poll = memnew(HTTPRequest);
+    get_parent()->add_child(poll);
+    PackedStringArray headers; headers.push_back("X-Project-Root: " + _get_project_root_path());
+    poll->connect("request_completed", callable_mp(this, &AIChatDock::_on_autorig_status_completed).bind(p_tool_call_id, p_name, p_args, p_base_url, job_id));
+    poll->request(status_url, headers, HTTPClient::METHOD_GET);
+}
+
+void AIChatDock::_on_autorig_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, String p_tool_call_id, String p_name, Dictionary p_args, String p_base_url, String p_job_id) {
+    String body = String::utf8((const char *)p_body.ptr(), p_body.size());
+    Dictionary json; Ref<JSON> parser; parser.instantiate();
+    if (parser->parse(body) == OK) json = parser->get_data();
+    String status = String(json.get("status", "unknown"));
+    if (status == "done") {
+        // Fetch result
+        String result_url = p_base_url + "/jobs/" + p_job_id + "/result";
+        HTTPRequest *getr = memnew(HTTPRequest);
+        get_parent()->add_child(getr);
+        PackedStringArray headers; headers.push_back("X-Project-Root: " + _get_project_root_path());
+        getr->connect("request_completed", callable_mp(this, &AIChatDock::_on_autorig_result_completed).bind(p_tool_call_id, p_name, p_args));
+        getr->request(result_url, headers, HTTPClient::METHOD_GET);
+        return;
+    }
+    // Not done yet; schedule another poll
+    String status_url = p_base_url + "/jobs/" + p_job_id + "/status";
+    HTTPRequest *poll = memnew(HTTPRequest);
+    get_parent()->add_child(poll);
+    PackedStringArray headers; headers.push_back("X-Project-Root: " + _get_project_root_path());
+    poll->connect("request_completed", callable_mp(this, &AIChatDock::_on_autorig_status_completed).bind(p_tool_call_id, p_name, p_args, p_base_url, p_job_id));
+    // Delay a bit using a Timer to avoid tight-loop polling
+    Timer *timer = memnew(Timer);
+    timer->set_wait_time(0.8);
+    timer->set_one_shot(true);
+    get_parent()->add_child(timer);
+    timer->connect("timeout", callable_mp(poll, &HTTPRequest::request).bind(status_url, headers, HTTPClient::METHOD_GET));
+    timer->start();
+}
+
+void AIChatDock::_on_autorig_result_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, String p_tool_call_id, String p_name, Dictionary p_args) {
+    String body = String::utf8((const char *)p_body.ptr(), p_body.size());
+    Dictionary json; Ref<JSON> parser; parser.instantiate();
+    if (parser->parse(body) == OK) json = parser->get_data();
+    if (!json.get("success", false)) {
+        Dictionary fail; fail["success"] = false; fail["message"] = json.get("error", "Job result error");
+        _finalize_simple_tool_async(p_tool_call_id, p_name, p_args, fail);
+        return;
+    }
+    Dictionary res = json.get("result", Dictionary());
+    if (!res.has("success")) res["success"] = true; // normalize
+    _finalize_simple_tool_async(p_tool_call_id, p_name, p_args, res);
+}
+
+void AIChatDock::_run_rig_tool_on_main(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args) {
+    Dictionary res;
+    if (p_name == "analyze_current_rig") {
+        res = EditorTools::analyze_current_rig(p_args);
+    } else if (p_name == "scan_project_rigs") {
+        res = EditorTools::scan_project_rigs(p_args);
+    } else if (p_name == "analyze_project_rigs") {
+        res = EditorTools::analyze_project_rigs(p_args);
+    } else if (p_name == "analyze_selected_rig") {
+        res = EditorTools::analyze_selected_rig(p_args);
+    } else if (p_name == "extract_mesh_data") {
+        // Should not reach here in background mode; keep as safe fallback (small budgets)
+        Dictionary safe_args = p_args;
+        if (!safe_args.has("include_vertices")) safe_args["include_vertices"] = false;
+        if (!safe_args.has("time_budget_ms")) safe_args["time_budget_ms"] = 30;
+        if (!safe_args.has("max_vertices")) safe_args["max_vertices"] = 1000;
+        res = EditorTools::extract_mesh_data(safe_args);
+    }
+    _finalize_simple_tool_async(p_tool_call_id, p_name, p_args, res);
+}
+
+// Background threading approach removed due to UI freeze issues with large meshes
 void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_content, const Array &p_tool_calls) {
 	AIChatDock::ChatMessage msg;
 	msg.role = p_role;
@@ -3397,6 +3617,25 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	}
 
     msg.content = json->stringify(result_for_content);
+    // If auto_rig_mesh queued a backend job via /chat, start polling now (non-blocking)
+    if (p_name == "auto_rig_mesh" && p_result.get("queued", false) && p_result.has("job_id")) {
+        String job_id = String(p_result.get("job_id", ""));
+        if (!job_id.is_empty()) {
+            _update_tool_placeholder_status(p_tool_call_id, p_name, "running");
+            String base_url = api_endpoint;
+            if (base_url.ends_with("/chat")) {
+                base_url = base_url.substr(0, base_url.length() - 5);
+            }
+            String status_url = base_url + "/jobs/" + job_id + "/status";
+            HTTPRequest *poll = memnew(HTTPRequest);
+            get_parent()->add_child(poll);
+            PackedStringArray headers; headers.push_back("X-Project-Root: " + _get_project_root_path());
+            poll->connect("request_completed", callable_mp(this, &AIChatDock::_on_autorig_status_completed).bind(p_tool_call_id, p_name, p_args, base_url, job_id));
+            poll->request(status_url, headers, HTTPClient::METHOD_GET);
+            // Do NOT push a tool_result message yet. Wait for final job result to avoid multiple tool_result blocks.
+            return;
+        }
+    }
 
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
@@ -4106,6 +4345,20 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     }
 }
 void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
+    // Guard: show Accept/Reject only if we have a live overlay in memory (prevents resurrecting old edits)
+    if (p_tool_name == "apply_edit") {
+        String path = p_result.get("path", "");
+        if (path.is_empty() || !EditorTools::has_preview_overlay(path)) {
+            // Render a minimal summary only
+            RichTextLabel *lbl = memnew(RichTextLabel);
+            lbl->set_fit_content(true);
+            lbl->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+            String msg = p_result.get("message", "");
+            lbl->set_text((p_success ? String("Edit generated: ") : String("Edit failed: ")) + msg);
+            p_content_vbox->add_child(lbl);
+            return;
+        }
+    }
 	Ref<JSON> json;
 	json.instantiate();
 	
@@ -5497,6 +5750,10 @@ void AIChatDock::_perform_filesystem_scan_changes() {
 }
 
 void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages) {
+    if (ui_rebuild_in_progress) {
+        return;
+    }
+    ui_rebuild_in_progress = true;
 	// Build a mapping of tool call IDs to their results for efficient lookup
 	HashMap<String, ChatMessage> tool_results;
 	for (int i = 0; i < p_messages.size(); i++) {
@@ -5507,7 +5764,12 @@ void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages)
 	}
 	
 	// First pass: Create all non-tool messages (this includes assistant messages with tool_calls)
-	for (int i = 0; i < p_messages.size(); i++) {
+	int start = 0;
+	const int MAX_TO_BUILD = 30;
+	if (p_messages.size() > MAX_TO_BUILD) {
+		start = p_messages.size() - MAX_TO_BUILD;
+	}
+	for (int i = start; i < p_messages.size(); i++) {
 		const ChatMessage &msg = p_messages[i];
 		if (msg.role != "tool") {
 			_create_message_bubble(msg, i);
@@ -5515,13 +5777,14 @@ void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages)
 	}
 	
 	// Second pass: Apply tool results to their corresponding placeholders
-	for (int i = 0; i < p_messages.size(); i++) {
+	for (int i = start; i < p_messages.size(); i++) {
 		const ChatMessage &msg = p_messages[i];
 		if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
 			// Use a small delay to ensure the UI has been updated from the first pass
 			call_deferred("_apply_tool_result_deferred", msg.tool_call_id, msg.name, msg.content, msg.tool_results);
 		}
 	}
+    ui_rebuild_in_progress = false;
 }
 void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results) {
 	// Find the placeholder for this tool call ID
@@ -6701,6 +6964,9 @@ void AIChatDock::_switch_to_conversation(int p_index) {
 	
 	// Rebuild UI from conversation messages with proper tool call handling
 	const Vector<AIChatDock::ChatMessage> &messages = conversations[p_index].messages;
+	// Clear any stale staged edits to prevent resurrecting old Accept/Reject bubbles
+	EditorTools::clear_all_preview_overlays();
+	pending_edits.clear();
 	_rebuild_conversation_ui(messages);
 	
 	call_deferred("_scroll_to_bottom");

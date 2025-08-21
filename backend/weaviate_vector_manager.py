@@ -1,4 +1,7 @@
 """
+© 2025 Simplifine Corp. Personal Non‑Commercial License.
+See LICENSES/COMPANY-NONCOMMERCIAL.md for terms.
+
 Optimized Weaviate Vector Manager with parallelization and efficient querying
 """
 import weaviate

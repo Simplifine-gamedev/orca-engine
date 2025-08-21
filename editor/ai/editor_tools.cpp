@@ -4,6 +4,7 @@
  * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from the Project Owner.
  */
 #include "editor_tools.h"
+#include "ai_rig_analyzer.h"
 
 // Add core includes early so they're available to helper functions below
 #include "core/crypto/crypto.h"
@@ -12,6 +13,7 @@
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
+#include "scene/resources/packed_scene.h"
 #include "core/config/project_settings.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
@@ -28,6 +30,8 @@
 #include "editor/script/script_text_editor.h"
 #include "scene/main/node.h"
 #include "scene/main/window.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/resources/mesh.h"
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_parser.h"
 #include "modules/gdscript/gdscript_analyzer.h"
@@ -63,6 +67,10 @@ String EditorTools::get_preview_overlay(const String &p_path) {
 		return String(s_preview_overlays[p_path]);
 	}
 	return String();
+}
+
+void EditorTools::clear_all_preview_overlays() {
+    s_preview_overlays.clear();
 }
 
 Dictionary EditorTools::batch_set_node_properties(const Dictionary &p_args) {
@@ -1419,10 +1427,11 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 	// Wait for connection with timeout
 	int connection_timeout_ms = 10000; // 10 seconds timeout
 	int connection_elapsed_ms = 0;
+	const int check_interval_ms = 50; // Check every 50ms instead of 1ms
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
-		connection_elapsed_ms += 1;
+		OS::get_singleton()->delay_usec(check_interval_ms * 1000); // Use 50ms delay (50000 microseconds)
+		connection_elapsed_ms += check_interval_ms;
 		if (connection_elapsed_ms > connection_timeout_ms) {
 			result["success"] = false;
 			result["message"] = "Connection timeout after " + itos(connection_timeout_ms/1000) + " seconds";
@@ -1464,10 +1473,11 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 	// Wait for response with timeout
 	int response_timeout_ms = 60000; // 60 seconds timeout for AI response
 	int response_elapsed_ms = 0;
+	const int response_check_interval_ms = 100; // Check every 100ms instead of 1ms
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
-		response_elapsed_ms += 1;
+		OS::get_singleton()->delay_usec(response_check_interval_ms * 1000); // Use 100ms delay (100000 microseconds)
+		response_elapsed_ms += response_check_interval_ms;
 		if (response_elapsed_ms > response_timeout_ms) {
 			result["success"] = false;
 			result["message"] = "Response timeout after " + itos(response_timeout_ms/1000) + " seconds. The AI is taking too long to process the edit.";
@@ -1500,8 +1510,8 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
-			OS::get_singleton()->delay_usec(1000);
-			body_elapsed_ms += 1;
+					OS::get_singleton()->delay_usec(10000); // Use 10ms delay (10000 microseconds)
+		body_elapsed_ms += 10;
 			if (body_elapsed_ms > body_timeout_ms) {
 				result["success"] = false;
 				result["message"] = "Timeout reading response body after " + itos(body_timeout_ms/1000) + " seconds";
@@ -1583,10 +1593,11 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	// Wait for connection with timeout
 	int connection_timeout_ms = 10000; // 10 seconds timeout
 	int connection_elapsed_ms = 0;
+	const int check_interval_ms = 50; // Check every 50ms instead of 1ms
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
-		connection_elapsed_ms += 1;
+		OS::get_singleton()->delay_usec(check_interval_ms * 1000); // Use 50ms delay (50000 microseconds)
+		connection_elapsed_ms += check_interval_ms;
 		if (connection_elapsed_ms > connection_timeout_ms) {
 			result["success"] = false;
 			result["message"] = "Connection timeout after " + itos(connection_timeout_ms/1000) + " seconds";
@@ -1669,10 +1680,11 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	// Wait for response with timeout
 	int response_timeout_ms = 60000; // 60 seconds timeout for AI response
 	int response_elapsed_ms = 0;
+	const int response_check_interval_ms = 100; // Check every 100ms instead of 1ms
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
-		response_elapsed_ms += 1;
+		OS::get_singleton()->delay_usec(response_check_interval_ms * 1000); // Use 100ms delay (100000 microseconds)
+		response_elapsed_ms += response_check_interval_ms;
 		if (response_elapsed_ms > response_timeout_ms) {
 			result["success"] = false;
 			result["message"] = "Response timeout after " + itos(response_timeout_ms/1000) + " seconds. The AI is taking too long to process the edit.";
@@ -1706,8 +1718,8 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
-			OS::get_singleton()->delay_usec(1000);
-			body_elapsed_ms += 1;
+					OS::get_singleton()->delay_usec(10000); // Use 10ms delay (10000 microseconds)
+		body_elapsed_ms += 10;
 			if (body_elapsed_ms > body_timeout_ms) {
 				result["success"] = false;
 				result["message"] = "Timeout reading response body after " + itos(body_timeout_ms/1000) + " seconds";
@@ -4012,5 +4024,672 @@ Dictionary EditorTools::search_across_godot_docs(const Dictionary &p_args) {
     // through the existing chat tool execution path. Keep it lightweight.
     result["success"] = true;
     result["query"] = query;
+    return result;
+}
+
+// --- AI Rig Processing Tools ---
+
+// Safe read-only rig analysis tools (no scene modification)
+Dictionary EditorTools::analyze_current_rig(const Dictionary &p_args) {
+    Dictionary result;
+    
+    // Safely get the currently selected node(s) without modifying anything
+    EditorSelection *selection = EditorInterface::get_singleton()->get_selection();
+    Node *scene_root = EditorInterface::get_singleton()->get_edited_scene_root();
+    const List<Node *> empty_list;
+    const List<Node *> &selected_nodes = selection ? selection->get_top_selected_node_list() : empty_list;
+    
+    // Look for skeleton in the selected nodes - READ ONLY
+    Skeleton3D *skeleton = nullptr;
+    String skeleton_path = "";
+    
+    if (!selected_nodes.is_empty()) {
+        for (const List<Node *>::Element *E = selected_nodes.front(); E; E = E->next()) {
+            Node *node = E->get();
+        
+            // Check if selected node is a skeleton
+            skeleton = Object::cast_to<Skeleton3D>(node);
+            if (skeleton) {
+                skeleton_path = String(node->get_path());
+                break;
+            }
+        
+            // Check if selected node has skeleton children (read-only search)
+            AIRigAnalyzer analyzer;
+            Array found_skeletons = analyzer.find_skeletons_in_scene(node);
+            if (found_skeletons.size() > 0) {
+                Dictionary skeleton_info = found_skeletons[0];
+                Variant skeleton_variant = skeleton_info.get("skeleton", Variant());
+                skeleton = Object::cast_to<Skeleton3D>(skeleton_variant);
+                if (skeleton) {
+                    skeleton_path = skeleton_info.get("path", "");
+                    break;
+                }
+            }
+        }
+    }
+    // If nothing selected or not found, auto-scan the current scene for first Skeleton3D
+    if (!skeleton && scene_root) {
+        // Fast, early-exit BFS with small time/node budget to avoid UI stalls on large scenes
+        const int MAX_VISIT = 10000; // hard cap on nodes visited
+        const uint64_t TIME_BUDGET_MS = 150; // ~0.15s budget
+        uint64_t start_ms = OS::get_singleton()->get_ticks_msec();
+
+        Vector<Node *> queue;
+        queue.push_back(scene_root);
+        int visited = 0;
+
+        while (!queue.is_empty() && visited < MAX_VISIT) {
+            // Time budget check
+            if (OS::get_singleton()->get_ticks_msec() - start_ms > TIME_BUDGET_MS) {
+                break;
+            }
+
+            Node *current = queue[0];
+            queue.remove_at(0);
+            if (!current) {
+                continue;
+            }
+            visited++;
+
+            // Found a skeleton
+            if (Skeleton3D *sk = Object::cast_to<Skeleton3D>(current)) {
+                skeleton = sk;
+                if (scene_root && scene_root->is_ancestor_of(sk)) {
+                    skeleton_path = String(scene_root->get_path_to(sk));
+                } else {
+                    skeleton_path = String(sk->get_path());
+                }
+                break;
+            }
+
+            // Enqueue children
+            for (int i = 0; i < current->get_child_count(); i++) {
+                Node *child = current->get_child(i);
+                if (child) {
+                    queue.push_back(child);
+                }
+            }
+        }
+    }
+    
+    if (!skeleton) {
+        // Optional autonomous fallback: scan project assets and analyze first rig off-tree (no scene modifications)
+        bool auto_load = p_args.get("auto_load", true);
+        if (auto_load) {
+            print_line("AI Rig Analysis: No skeleton in current scene, attempting auto-load fallback...");
+            
+            String project_path = ProjectSettings::get_singleton()->globalize_path("res://");
+            List<String> files;
+            HashSet<String> extensions;
+            extensions.insert("fbx");
+            extensions.insert("gltf");
+            extensions.insert("glb");
+            extensions.insert("dae");
+            extensions.insert("blend");
+            _get_all_project_files(project_path, files, extensions);
+
+            print_line("AI Rig Analysis: Found " + String::num(files.size()) + " model files to check");
+
+            // Time/attempt budget to avoid UI stalls
+            const int MAX_ATTEMPTS = 5;
+            int attempts = 0;
+
+            for (List<String>::Element *E = files.front(); E && attempts < MAX_ATTEMPTS; E = E->next()) {
+                String file_path = E->get();
+                print_line("AI Rig Analysis: Checking file: " + file_path);
+
+                // Convert to res:// path for ResourceLoader
+                String res_path = file_path;
+                if (file_path.begins_with(project_path)) {
+                    res_path = "res://" + file_path.substr(project_path.length()).lstrip("/");
+                }
+
+                // Try to load the resource - could be PackedScene or other imported resource
+                Ref<Resource> res = ResourceLoader::load(res_path);
+                if (res.is_null()) {
+                    print_line("AI Rig Analysis: Failed to load resource: " + res_path);
+                    continue;
+                }
+
+                print_line("AI Rig Analysis: Loaded resource type: " + res->get_class());
+
+                // Try as PackedScene first (most common for imported models)
+                Ref<PackedScene> packed = res;
+                Node *temp_root = nullptr;
+                
+                if (packed.is_valid()) {
+                    print_line("AI Rig Analysis: Resource is PackedScene, instantiating...");
+                    temp_root = packed->instantiate();
+                } else {
+                    // For some imports, the resource might be a different type
+                    // Check if there's an import file that might give us more info
+                    String import_path = file_path + ".import";
+                    if (FileAccess::exists(import_path)) {
+                        print_line("AI Rig Analysis: Found import file, checking import settings...");
+                        
+                        // Try to load the imported scene directly using the res:// path
+                        // Sometimes .glb files are imported as scenes but the main resource isn't a PackedScene
+                        String scene_path = res_path.get_basename() + ".scn";
+                        if (ResourceLoader::exists(scene_path)) {
+                            Ref<PackedScene> imported_scene = ResourceLoader::load(scene_path);
+                            if (imported_scene.is_valid()) {
+                                print_line("AI Rig Analysis: Found imported scene file: " + scene_path);
+                                temp_root = imported_scene->instantiate();
+                            }
+                        }
+                    }
+                    
+                    if (!temp_root) {
+                        print_line("AI Rig Analysis: Resource is not PackedScene and no alternative found, skipping");
+                        continue;
+                    }
+                }
+                
+                attempts++;
+
+                if (!temp_root) {
+                    print_line("AI Rig Analysis: Failed to instantiate PackedScene");
+                    continue;
+                }
+
+                print_line("AI Rig Analysis: Instantiated root node: " + temp_root->get_class() + " (" + temp_root->get_name() + ")");
+
+                // Search for first Skeleton3D in instantiated hierarchy
+                AIRigAnalyzer analyzer;
+                Array found_skeletons = analyzer.find_skeletons_in_scene(temp_root);
+                print_line("AI Rig Analysis: Found " + String::num(found_skeletons.size()) + " skeletons in instantiated scene");
+                
+                if (found_skeletons.size() > 0) {
+                    Dictionary skeleton_info = found_skeletons[0];
+                    Variant skeleton_variant = skeleton_info.get("skeleton", Variant());
+                    Skeleton3D *loaded_sk = Object::cast_to<Skeleton3D>(skeleton_variant);
+                    if (loaded_sk) {
+                        print_line("AI Rig Analysis: Successfully found Skeleton3D with " + String::num(loaded_sk->get_bone_count()) + " bones");
+                        
+                        // Extract data (respect fast mode)
+                        bool fast_mode = p_args.get("fast", true);
+                        Dictionary skeleton_data;
+                        Array validation_issues;
+                        if (fast_mode) {
+                            int bc = loaded_sk->get_bone_count();
+                            Array bones;
+                            bones.resize(bc);
+                            for (int i = 0; i < bc; i++) {
+                                Dictionary b;
+                                b["name"] = loaded_sk->get_bone_name(i);
+                                b["parent"] = loaded_sk->get_bone_parent(i);
+                                bones[i] = b;
+                            }
+                            skeleton_data["bone_count"] = bc;
+                            skeleton_data["bones"] = bones;
+                        } else {
+                            skeleton_data = analyzer.extract_skeleton_data(loaded_sk);
+                            validation_issues = analyzer.validate_skeleton_structure(loaded_sk);
+                        }
+
+                        // Clean up temporary instance
+                        temp_root->queue_free();
+
+                        // Return autonomous analysis result
+                        result["success"] = true;
+                        result["skeleton_data"] = skeleton_data;
+                        if (!validation_issues.is_empty()) {
+                            result["validation_issues"] = validation_issues;
+                        } else if (!fast_mode) {
+                            result["validation_issues"] = Array();
+                        }
+                        result["skeleton_name"] = skeleton_info.get("name", "");
+                        result["skeleton_path"] = String("[autoload]");
+                        result["bone_count"] = skeleton_data.get("bone_count", 0);
+                        result["analysis_type"] = String("imported_asset") + (fast_mode ? String("_fast") : String(""));
+                        result["source_file_path"] = file_path;
+                        print_line("AI Rig Analysis: Auto-load successful!");
+                        return result;
+                    }
+                }
+
+                // Free temporary instance if not used
+                temp_root->queue_free();
+            }
+            
+            print_line("AI Rig Analysis: Auto-load fallback completed, no skeletons found in " + String::num(attempts) + " attempts");
+        }
+
+        // If still not found, provide more helpful guidance
+        result["success"] = false;
+        result["error"] = "No skeleton found in the current scene or importable assets. The auto-load feature found model files but could not instantiate them as PackedScenes with skeletons. Try using the 'instantiate_rig_asset' tool to manually add a rig to the scene first.";
+        return result;
+    }
+    
+    // Fast mode avoids heavy per-bone transforms/weights to keep UI responsive
+    bool fast_mode = p_args.get("fast", true);
+    Dictionary skeleton_data;
+    Array validation_issues;
+    if (fast_mode) {
+        // Minimal snapshot: names + parent relationships only
+        int bc = skeleton->get_bone_count();
+        Array bones;
+        bones.resize(bc);
+        for (int i = 0; i < bc; i++) {
+            Dictionary b;
+            b["name"] = skeleton->get_bone_name(i);
+            b["parent"] = skeleton->get_bone_parent(i);
+            bones[i] = b;
+        }
+        skeleton_data["bone_count"] = bc;
+        skeleton_data["bones"] = bones;
+        // Defer deep validation in fast mode
+    } else {
+        AIRigAnalyzer analyzer;
+        skeleton_data = analyzer.extract_skeleton_data(skeleton);
+        validation_issues = analyzer.validate_skeleton_structure(skeleton);
+    }
+    
+    result["success"] = true;
+    result["skeleton_data"] = skeleton_data;
+    if (!validation_issues.is_empty()) {
+        result["validation_issues"] = validation_issues;
+    } else if (!fast_mode) {
+        result["validation_issues"] = Array();
+    }
+    result["skeleton_name"] = skeleton->get_name();
+    result["skeleton_path"] = skeleton_path;
+    result["bone_count"] = skeleton->get_bone_count();
+    result["analysis_type"] = fast_mode ? String("current_selection_fast") : String("current_selection");
+    
+    return result;
+}
+
+Dictionary EditorTools::scan_project_rigs(const Dictionary &p_args) {
+    Dictionary result;
+    
+    // Safely scan project files without modifying anything
+    Array found_rigs;
+    String project_path = ProjectSettings::get_singleton()->globalize_path("res://");
+    
+    // Find 3D model files (read-only scan)
+    List<String> files;
+    HashSet<String> extensions;
+    extensions.insert("fbx");
+    extensions.insert("gltf");
+    extensions.insert("glb");
+    extensions.insert("dae");
+    extensions.insert("blend");
+    
+    _get_all_project_files(project_path, files, extensions);
+    
+    // Check for import files (read-only check)
+    for (List<String>::Element *E = files.front(); E; E = E->next()) {
+        String file_path = E->get();
+        Dictionary rig_info;
+        rig_info["file_path"] = file_path;
+        rig_info["type"] = "imported_model";
+        
+        String import_path = file_path + ".import";
+        rig_info["has_import_file"] = FileAccess::exists(import_path);
+        
+        found_rigs.push_back(rig_info);
+    }
+    
+    // Also scan current scene for skeleton nodes (read-only)
+    Node *current_scene = EditorInterface::get_singleton()->get_edited_scene_root();
+    if (current_scene) {
+        AIRigAnalyzer analyzer;
+        Array scene_skeletons = analyzer.find_skeletons_in_scene(current_scene);
+        
+        for (int i = 0; i < scene_skeletons.size(); i++) {
+            Dictionary skeleton_info = scene_skeletons[i];
+            Dictionary rig_info;
+            rig_info["type"] = "scene_skeleton";
+            rig_info["skeleton_path"] = skeleton_info.get("path", "");
+            rig_info["bone_count"] = skeleton_info.get("bone_count", 0);
+            rig_info["name"] = skeleton_info.get("name", "");
+            found_rigs.push_back(rig_info);
+        }
+    }
+    
+    result["success"] = true;
+    result["found_rigs"] = found_rigs;
+    result["total_count"] = found_rigs.size();
+    result["analysis_type"] = "project_scan";
+    result["message"] = String("Found ") + String::num(found_rigs.size()) + String(" potential rigs in project");
+    
+    return result;
+}
+
+Dictionary EditorTools::analyze_project_rigs(const Dictionary &p_args) {
+    Dictionary result;
+    
+    // Scan project for 3D models with rigs
+    Array found_rigs;
+    String project_path = ProjectSettings::get_singleton()->globalize_path("res://");
+    
+    // Find all .fbx, .gltf, .dae, .obj files in project
+    List<String> files;
+    HashSet<String> extensions;
+    extensions.insert("fbx");
+    extensions.insert("gltf");
+    extensions.insert("glb");
+    extensions.insert("dae");
+    extensions.insert("blend");
+    
+    _get_all_project_files(project_path, files, extensions);
+    
+    // For each 3D file, check if it has associated skeletons in scenes
+    for (List<String>::Element *E = files.front(); E; E = E->next()) {
+        String file_path = E->get();
+        Dictionary rig_info;
+        rig_info["file_path"] = file_path;
+        rig_info["has_skeleton"] = false;
+        rig_info["skeleton_count"] = 0;
+        
+        // Try to load and check for skeletons
+        // This is a lightweight analysis - detailed skeleton data will be extracted later
+        String relative_path = file_path.get_slice(project_path, 1);
+        if (relative_path.begins_with("/")) {
+            relative_path = relative_path.substr(1);
+        }
+        
+        // Check if there's a corresponding .import file or scene that might contain skeleton data
+        String import_path = file_path + ".import";
+        if (FileAccess::exists(import_path)) {
+            rig_info["has_import_file"] = true;
+        }
+        
+        found_rigs.push_back(rig_info);
+    }
+    
+    // Also scan current scene for skeleton nodes
+    Node *current_scene = EditorInterface::get_singleton()->get_edited_scene_root();
+    
+    if (current_scene) {
+        AIRigAnalyzer analyzer;
+        Array scene_skeletons = analyzer.find_skeletons_in_scene(current_scene);
+        
+        for (int i = 0; i < scene_skeletons.size(); i++) {
+            Dictionary skeleton_info = scene_skeletons[i];
+            Dictionary rig_info;
+            rig_info["type"] = "scene_skeleton";
+            rig_info["skeleton_path"] = skeleton_info.get("path", "");
+            rig_info["bone_count"] = skeleton_info.get("bone_count", 0);
+            rig_info["name"] = skeleton_info.get("name", "");
+            found_rigs.push_back(rig_info);
+        }
+    }
+    
+    result["success"] = true;
+    result["found_rigs"] = found_rigs;
+    result["total_count"] = found_rigs.size();
+    result["message"] = String("Found ") + String::num(found_rigs.size()) + String(" potential rigs in project");
+    
+    return result;
+}
+
+Dictionary EditorTools::analyze_selected_rig(const Dictionary &p_args) {
+    Dictionary result;
+    
+    EditorSelection *selection = EditorInterface::get_singleton()->get_selection();
+    const List<Node *> &selected_nodes = selection->get_top_selected_node_list();
+    
+    Skeleton3D *skeleton = nullptr;
+    
+    // Find skeleton in selection or check if selected node has skeleton children
+    for (const List<Node *>::Element *E = selected_nodes.front(); E; E = E->next()) {
+        Node *node = E->get();
+        
+        // Check if selected node is a skeleton
+        skeleton = Object::cast_to<Skeleton3D>(node);
+        if (skeleton) {
+            break;
+        }
+        
+        // Check if selected node has skeleton children
+        AIRigAnalyzer analyzer;
+        Array found_skeletons = analyzer.find_skeletons_in_scene(node);
+        if (found_skeletons.size() > 0) {
+            Dictionary skeleton_info = found_skeletons[0];
+            skeleton = Object::cast_to<Skeleton3D>(skeleton_info.get("skeleton", Variant()));
+            break;
+        }
+    }
+    
+    if (!skeleton) {
+        result["success"] = false;
+        result["error"] = "No skeleton found in selection. Please select a Skeleton3D node or a node containing skeletons.";
+        return result;
+    }
+    
+    // Extract skeleton data for AI analysis
+    AIRigAnalyzer analyzer;
+    Dictionary skeleton_data = analyzer.extract_skeleton_data(skeleton);
+    
+    // Also extract skin weight data if available
+    // Look for MeshInstance3D nodes that might have skin data
+    Node *parent = skeleton->get_parent();
+    Dictionary skin_weights;
+    
+    if (parent) {
+        for (int i = 0; i < parent->get_child_count(); i++) {
+            MeshInstance3D *mesh_instance = Object::cast_to<MeshInstance3D>(parent->get_child(i));
+            if (mesh_instance && mesh_instance->get_mesh().is_valid()) {
+                // Check if this mesh uses the skeleton
+                if (mesh_instance->get_skeleton_path() == mesh_instance->get_path_to(skeleton)) {
+                    Ref<ImporterMesh> importer_mesh = mesh_instance->get_mesh();
+                    if (importer_mesh.is_valid()) {
+                        skin_weights = analyzer.extract_skin_weights(importer_mesh);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Validate skeleton structure
+    Array validation_issues = analyzer.validate_skeleton_structure(skeleton);
+    
+    result["success"] = true;
+    result["skeleton_data"] = skeleton_data;
+    result["skin_weights"] = skin_weights;
+    result["validation_issues"] = validation_issues;
+    result["skeleton_name"] = skeleton->get_name();
+    result["skeleton_path"] = skeleton->get_path();
+    result["bone_count"] = skeleton->get_bone_count();
+    
+    return result;
+}
+
+Dictionary EditorTools::standardize_rig_structure(const Dictionary &p_args) {
+    Dictionary result;
+    
+    if (!p_args.has("skeleton_path")) {
+        result["success"] = false;
+        result["error"] = "skeleton_path parameter is required";
+        return result;
+    }
+    
+    if (!p_args.has("standardized_skeleton")) {
+        result["success"] = false;
+        result["error"] = "standardized_skeleton parameter is required";
+        return result;
+    }
+    
+    String skeleton_path = p_args["skeleton_path"];
+    Dictionary standardized_data = p_args["standardized_skeleton"];
+    
+    // Get the skeleton node
+    Node *current_scene = EditorInterface::get_singleton()->get_edited_scene_root();
+    if (!current_scene) {
+        result["success"] = false;
+        result["error"] = "No current scene available";
+        return result;
+    }
+    
+    Node *skeleton_node = current_scene->get_node_or_null(skeleton_path);
+    Skeleton3D *skeleton = Object::cast_to<Skeleton3D>(skeleton_node);
+    
+    if (!skeleton) {
+        result["success"] = false;
+        result["error"] = "Skeleton not found at path: " + skeleton_path;
+        return result;
+    }
+    
+    // Apply the standardized skeleton structure
+    AIRigAnalyzer analyzer;
+    Error err = analyzer.apply_standardized_skeleton(skeleton, standardized_data);
+    
+    if (err != OK) {
+        result["success"] = false;
+        result["error"] = "Failed to apply standardized skeleton structure";
+        return result;
+    }
+    
+    // Scene modification is automatically tracked by Godot when skeleton is modifiedstil
+    
+    result["success"] = true;
+    result["message"] = "Successfully applied standardized rig structure";
+    result["skeleton_path"] = skeleton_path;
+    result["new_bone_count"] = skeleton->get_bone_count();
+    
+    return result;
+}
+
+Dictionary EditorTools::batch_fix_rigs(const Dictionary &p_args) {
+    Dictionary result;
+    
+    if (!p_args.has("rig_fixes")) {
+        result["success"] = false;
+        result["error"] = "rig_fixes parameter is required";
+        return result;
+    }
+    
+    Array rig_fixes = p_args["rig_fixes"];
+    Array processed_rigs;
+    Array failed_rigs;
+    
+    for (int i = 0; i < rig_fixes.size(); i++) {
+        Dictionary fix_data = rig_fixes[i];
+        
+        if (!fix_data.has("skeleton_path") || !fix_data.has("standardized_skeleton")) {
+            Dictionary failure;
+            failure["index"] = i;
+            failure["error"] = "Missing skeleton_path or standardized_skeleton";
+            failed_rigs.push_back(failure);
+            continue;
+        }
+        
+        // Apply the fix using the single rig standardization function
+        Dictionary single_fix_result = standardize_rig_structure(fix_data);
+        
+        if (single_fix_result.get("success", false)) {
+            Dictionary success_info;
+            success_info["index"] = i;
+            success_info["skeleton_path"] = fix_data["skeleton_path"];
+            success_info["message"] = single_fix_result.get("message", "");
+            processed_rigs.push_back(success_info);
+        } else {
+            Dictionary failure;
+            failure["index"] = i;
+            failure["skeleton_path"] = fix_data.get("skeleton_path", "");
+            failure["error"] = single_fix_result.get("error", "Unknown error");
+            failed_rigs.push_back(failure);
+        }
+    }
+    
+    result["success"] = true;
+    result["processed_rigs"] = processed_rigs;
+    result["failed_rigs"] = failed_rigs;
+    result["total_processed"] = processed_rigs.size();
+    result["total_failed"] = failed_rigs.size();
+    result["message"] = String("Batch processed ") + String::num(processed_rigs.size()) + 
+                       String(" rigs successfully, ") + String::num(failed_rigs.size()) + String(" failed");
+    
+    return result;
+}
+
+// Deprecated: auto_rig_mesh now works directly with asset_path
+Dictionary EditorTools::extract_mesh_data(const Dictionary &p_args) {
+    Dictionary result;
+    result["success"] = false;
+    result["error"] = "extract_mesh_data is deprecated. Use auto_rig_mesh with asset_path instead.";
+    return result;
+}
+
+// Removed: vertex extraction moved to backend file processing
+
+Dictionary EditorTools::instantiate_rig_asset(const Dictionary &p_args) {
+    Dictionary result;
+    
+    if (!p_args.has("asset_path")) {
+        result["success"] = false;
+        result["error"] = "asset_path parameter is required";
+        return result;
+    }
+    
+    String asset_path = p_args["asset_path"];
+    String parent_path = p_args.get("parent_path", ""); // Optional parent node path
+    
+    // Get current scene
+    Node *scene_root = EditorInterface::get_singleton()->get_edited_scene_root();
+    if (!scene_root) {
+        result["success"] = false;
+        result["error"] = "No current scene available";
+        return result;
+    }
+    
+    // Determine parent node
+    Node *parent_node = scene_root;
+    if (!parent_path.is_empty()) {
+        parent_node = scene_root->get_node_or_null(parent_path);
+        if (!parent_node) {
+            result["success"] = false;
+            result["error"] = "Parent node not found at path: " + parent_path;
+            return result;
+        }
+    }
+    
+    // Load the asset
+    Ref<PackedScene> packed_scene = ResourceLoader::load(asset_path);
+    if (packed_scene.is_null()) {
+        result["success"] = false;
+        result["error"] = "Failed to load asset as PackedScene: " + asset_path;
+        return result;
+    }
+    
+    // Instantiate the scene
+    Node *instantiated = packed_scene->instantiate();
+    if (!instantiated) {
+        result["success"] = false;
+        result["error"] = "Failed to instantiate PackedScene";
+        return result;
+    }
+    
+    // Set a reasonable name
+    String base_name = asset_path.get_file().get_basename();
+    instantiated->set_name(base_name);
+    
+    // Add to the scene
+    parent_node->add_child(instantiated);
+    instantiated->set_owner(scene_root);
+    
+    // Check if it contains skeletons
+    AIRigAnalyzer analyzer;
+    Array found_skeletons = analyzer.find_skeletons_in_scene(instantiated);
+    
+    result["success"] = true;
+    result["message"] = "Asset instantiated successfully";
+    result["instantiated_node_path"] = instantiated->get_path();
+    result["skeleton_count"] = found_skeletons.size();
+    
+    if (found_skeletons.size() > 0) {
+        Array skeleton_paths;
+        for (int i = 0; i < found_skeletons.size(); i++) {
+            Dictionary skeleton_info = found_skeletons[i];
+            skeleton_paths.push_back(skeleton_info.get("path", ""));
+        }
+        result["skeleton_paths"] = skeleton_paths;
+        result["message"] = result["message"].operator String() + " (found " + String::num(found_skeletons.size()) + " skeleton(s))";
+    }
+    
     return result;
 }

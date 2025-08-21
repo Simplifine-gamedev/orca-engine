@@ -209,6 +209,15 @@ private:
 
   // Async tool execution tracking (prevents UI freeze for long tools like apply_edit)
   int pending_tool_tasks = 0;
+  bool ui_rebuild_in_progress = false;
+  bool editing_in_progress = false;
+
+  // Incremental conversation rebuild state
+  Vector<ChatMessage> rebuild_msgs;
+  int rebuild_next_index = 0;
+  Timer *rebuild_timer = nullptr;
+  Timer *loading_anim_timer = nullptr;
+  Control *loading_overlay = nullptr;
   Mutex *apply_edit_mutex = nullptr;
   Vector<void *> apply_edit_done; // stores ApplyEditTaskData* as opaque pointers
 
@@ -306,6 +315,13 @@ private:
   void _execute_apply_edit_async(const String &p_tool_call_id, const Dictionary &p_args);
   static void _apply_edit_thread(void *p_userdata);
   void _on_apply_edit_thread_done();
+  void _finalize_simple_tool_async(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result);
+  void _run_rig_tool_on_main(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args);
+  // Async auto-rig job helpers
+  void _on_autorig_start_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, String p_tool_call_id, String p_name, Dictionary p_args, String p_base_url);
+  void _on_autorig_status_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, String p_tool_call_id, String p_name, Dictionary p_args, String p_base_url, String p_job_id);
+  void _on_autorig_result_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, String p_tool_call_id, String p_name, Dictionary p_args);
+  void _on_rebuild_tick();
 	RichTextLabel *_get_or_create_current_assistant_message_label();
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);

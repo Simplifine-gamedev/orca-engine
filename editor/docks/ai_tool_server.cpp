@@ -185,6 +185,22 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		// Forward to editor_introspect with slice_spritesheet operation
 		args["operation"] = "slice_spritesheet";
 		result = EditorTools::editor_introspect(args);
+	} else if (function_name == "analyze_current_rig") {
+		result = EditorTools::analyze_current_rig(args);
+	} else if (function_name == "scan_project_rigs") {
+		result = EditorTools::scan_project_rigs(args);
+	} else if (function_name == "analyze_project_rigs") {
+		result = EditorTools::analyze_project_rigs(args);
+	} else if (function_name == "analyze_selected_rig") {
+		result = EditorTools::analyze_selected_rig(args);
+	} else if (function_name == "standardize_rig_structure") {
+		result = EditorTools::standardize_rig_structure(args);
+	} else if (function_name == "batch_fix_rigs") {
+		result = EditorTools::batch_fix_rigs(args);
+	} else if (function_name == "instantiate_rig_asset") {
+		result = EditorTools::instantiate_rig_asset(args);
+	} else if (function_name == "extract_mesh_data") {
+		result = EditorTools::extract_mesh_data(args);
 	} else {
 		result["error"] = "Unknown function: " + function_name;
 	}
