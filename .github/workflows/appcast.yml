@@ -1,0 +1,83 @@
+name: appcast
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-appcast:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          brew install sparkle gh
+
+      - name: Setup private key (optional)
+        if: ${{ secrets.SPARKLE_ED25519_PRIV_PEM != '' }}
+        run: |
+          echo "${{ secrets.SPARKLE_ED25519_PRIV_PEM }}" > /tmp/ed25519_priv.pem
+          chmod 600 /tmp/ed25519_priv.pem
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "$GITHUB_REF_NAME" --dir dist || true
+
+      - name: Generate appcast
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          VERSION="${TAG#v}"
+          ASSET=$(ls dist/*.zip dist/*.dmg 2>/dev/null | head -n1 || true)
+          if [ -z "$ASSET" ]; then
+            echo "No .zip or .dmg asset found in release." >&2
+            exit 1
+          fi
+          SIZE=$(stat -f%z "$ASSET" 2>/dev/null || wc -c < "$ASSET")
+          BASENAME=$(basename "$ASSET")
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${BASENAME}"
+          SIG=""
+          if [ -f /tmp/ed25519_priv.pem ]; then
+            SIG=$(sign_update -s /tmp/ed25519_priv.pem "$ASSET")
+          fi
+          mkdir -p docs
+          {
+            echo '<?xml version="1.0" encoding="utf-8"?>'
+            echo '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            echo '  <channel>'
+            echo '    <title>Orca Engine Updates</title>'
+            echo "    <link>https://${REPO%%/*}.github.io/${REPO##*/}/appcast.xml</link>"
+            echo '    <description>Update feed for Orca Engine</description>'
+            echo '    <language>en</language>'
+            echo '    <item>'
+            echo "      <title>Version ${VERSION}</title>"
+            echo "      <sparkle:releaseNotesLink>https://github.com/${REPO}/releases/tag/${TAG}</sparkle:releaseNotesLink>"
+            echo "      <pubDate>$(date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>"
+            if [ -n "$SIG" ]; then
+              echo "      <enclosure url=\"${URL}\" sparkle:version=\"${VERSION}\" sparkle:shortVersionString=\"${VERSION}\" sparkle:edSignature=\"${SIG}\" length=\"${SIZE}\" type=\"application/octet-stream\"/>"
+            else
+              echo "      <enclosure url=\"${URL}\" sparkle:version=\"${VERSION}\" sparkle:shortVersionString=\"${VERSION}\" length=\"${SIZE}\" type=\"application/octet-stream\"/>"
+            fi
+            echo '    </item>'
+            echo '  </channel>'
+            echo '</rss>'
+          } > docs/appcast.xml
+
+      - name: Commit appcast
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/appcast.xml
+          git commit -m "appcast ${TAG}" || exit 0
+          git push
+
+
