@@ -287,6 +287,9 @@ private:
 	void _on_attach_scene_nodes_pressed();
 	void _on_attach_current_script_pressed();
 	void _on_attach_resources_pressed();
+	void _on_reindex_project_pressed();
+	void _perform_project_reindex();
+	void _on_reindex_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_scene_tree_node_selected();
 	void _on_files_selected(const Vector<String> &p_files);
 	void _on_remove_attachment(const String &p_path);
@@ -352,6 +355,7 @@ private:
 	Vector<AIChatDock::ChatMessage> &_get_current_chat_history();
 
 	void _on_tool_file_link_pressed(const String &p_path);
+	String _convert_to_godot_path(const String &p_path);
 
 	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
 	void _load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section);

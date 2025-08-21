@@ -19,7 +19,10 @@ import uuid
 import time
 import tempfile
 import hashlib
-from cloud_vector_manager import CloudVectorManager
+try:
+    from weaviate_vector_manager import WeaviateVectorManager
+except Exception:
+    WeaviateVectorManager = None
 try:
     from local_vector_manager import LocalVectorManager
 except Exception:
@@ -102,17 +105,25 @@ def get_model_friendly_name(model_id: str) -> str:
 # Initialize Authentication Manager
 auth_manager = AuthManager()
 
-# Initialize Vector Manager (cloud if configured; else local fallback)
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID')
-CLOUD_VECTOR_ENABLED = bool(GCP_PROJECT_ID)
+# Initialize Vector Manager with priority: Weaviate -> Local
+WEAVIATE_URL = os.getenv('WEAVIATE_URL')
+WEAVIATE_API_KEY = os.getenv('WEAVIATE_API_KEY')
 cloud_vector_manager = None
-if CLOUD_VECTOR_ENABLED:
-    cloud_vector_manager = CloudVectorManager(GCP_PROJECT_ID, client)
-else:
+
+# Try Weaviate first (fastest option with advanced features)
+if WEAVIATE_URL and WEAVIATE_API_KEY and WeaviateVectorManager and client is not None:
+    try:
+        cloud_vector_manager = WeaviateVectorManager(WEAVIATE_URL, WEAVIATE_API_KEY, client)
+        print(f"VECTOR_INDEX: Using Weaviate at {WEAVIATE_URL} (function-level indexing + signal flows)")
+    except Exception as e:
+        print(f"VECTOR_INDEX: Weaviate init failed: {e}")
+
+# Fallback to local
+if cloud_vector_manager is None:
     if LocalVectorManager and client is not None:
         try:
             cloud_vector_manager = LocalVectorManager(client)
-            print("VECTOR_INDEX: Using local JSON index (no GCP project configured)")
+            print("VECTOR_INDEX: Using local JSON index (no external vector DB configured)")
         except Exception as e:
             print(f"VECTOR_INDEX ERROR: Failed to init LocalVectorManager: {e}")
     else:
@@ -720,6 +731,422 @@ def slice_spritesheet_internal(arguments: dict) -> dict:
     except Exception as e:
         print(f"SLICE_SPRITESHEET_ERROR: {e}")
         return {"success": False, "error": str(e)}
+# --- Graph-Enhanced Search Intelligence ---
+def _enhance_search_with_graph(initial_results: list, query: str, user_id: str, project_id: str, 
+                              max_results: int, vector_manager, include_graph: bool) -> dict:
+    """
+    GRAPH-ENHANCED RANKING: The heart of intelligent Godot project search
+    
+    Combines:
+    1. Semantic similarity (embeddings) 
+    2. Graph centrality (structural importance)
+    3. Relationship strength (how files connect)
+    4. Godot-specific intelligence (scene-script pairs, etc.)
+    """
+    if not initial_results:
+        return {"similar_files": [], "central_files": [], "graph_summary": {}}
+    
+    try:
+        # Step 1: Get all file paths for graph analysis
+        file_paths = [r['file_path'] for r in initial_results]
+        
+        # Step 2: Get graph context for all files
+        graph_context = {}
+        if include_graph:
+            graph_context = vector_manager.get_graph_context_for_files(file_paths, user_id, project_id)
+        
+        # Step 3: Calculate enhanced scores
+        enhanced_files = []
+        for result in initial_results:
+            file_path = result['file_path']
+            base_similarity = result['similarity']
+            
+            # Calculate centrality score (how connected this file is)
+            centrality_score = _calculate_centrality_score(file_path, graph_context)
+            
+            # Calculate relationship strength to other results
+            relationship_score = _calculate_relationship_score(file_path, file_paths, graph_context)
+            
+            # Add Godot-specific intelligence boost
+            godot_boost = _calculate_godot_context_boost(file_path, query, file_paths)
+            
+            # ENHANCED RANKING FORMULA
+            enhanced_score = (
+                base_similarity * 0.5 +          # Semantic similarity (primary)
+                centrality_score * 0.2 +         # Structural importance  
+                relationship_score * 0.2 +       # Connection strength
+                godot_boost * 0.1                # Godot-specific intelligence
+            )
+            
+            # Create explanation for transparency
+            explanation_parts = []
+            if centrality_score > 0.1:
+                explanation_parts.append(f"Hub file ({centrality_score:.2f} centrality)")
+            if relationship_score > 0.1:
+                explanation_parts.append(f"Connected to results ({relationship_score:.2f})")
+            if godot_boost > 0.1:
+                explanation_parts.append(f"Godot pattern match ({godot_boost:.2f})")
+            
+            ranking_explanation = "; ".join(explanation_parts) if explanation_parts else "Semantic match"
+            
+            enhanced_result = result.copy()
+            enhanced_result.update({
+                'enhanced_score': enhanced_score,
+                'centrality_score': centrality_score,
+                'relationship_score': relationship_score,
+                'godot_boost': godot_boost,
+                'ranking_explanation': ranking_explanation
+            })
+            enhanced_files.append(enhanced_result)
+        
+        # Step 4: MULTI-HOP CONTEXT EXPANSION
+        # Add contextually relevant files through intelligent graph traversal
+        expanded_files = _expand_with_multi_hop_context(enhanced_files, graph_context, query)
+        
+        # Step 5: Sort by enhanced score and limit to max_results
+        expanded_files.sort(key=lambda x: x['enhanced_score'], reverse=True)
+        final_results = expanded_files[:max_results]
+        
+        # Step 6: Find central files (high centrality, architectural importance)
+        central_files = []
+        if include_graph:
+            # Include both original and expanded files for centrality analysis
+            all_expanded_paths = [f['file_path'] for f in expanded_files]
+            # Get files already in similar_files to avoid duplication
+            similar_file_paths = {f['file_path'] for f in final_results}
+            
+            for file_path in all_expanded_paths:
+                # Skip if already in similar_files section
+                if file_path in similar_file_paths:
+                    continue
+                    
+                centrality = _calculate_centrality_score(file_path, graph_context)
+                if centrality > 0.3:  # High centrality threshold
+                    central_files.append({
+                        'file_path': file_path,
+                        'centrality': centrality,
+                        'connections': len(graph_context.get(file_path, {}).get('edges', [])),
+                        'role': _identify_architectural_role(file_path, graph_context)
+                    })
+        
+        central_files.sort(key=lambda x: x['centrality'], reverse=True)
+        
+        # Step 7: Generate graph summary
+        total_files = len(file_paths)
+        total_connections = sum(len(ctx.get('edges', [])) for ctx in graph_context.values())
+        avg_centrality = sum(_calculate_centrality_score(fp, graph_context) for fp in file_paths) / max(1, len(file_paths))
+        
+        graph_summary = {
+            'total_files': total_files,
+            'total_connections': total_connections,
+            'avg_centrality': avg_centrality,
+            'architecture_detected': len(central_files) > 0
+        }
+        
+        return {
+            "similar_files": final_results,
+            "central_files": central_files[:5],  # Limit central files
+            "graph_summary": graph_summary
+        }
+        
+    except Exception as e:
+        print(f"GRAPH_ENHANCE_ERROR: {e}")
+        # Fallback to original results on error
+        return {
+            "similar_files": initial_results[:max_results], 
+            "central_files": [], 
+            "graph_summary": {}
+        }
+
+def _calculate_centrality_score(file_path: str, graph_context: dict) -> float:
+    """Calculate how central/important a file is in the project graph"""
+    file_ctx = graph_context.get(file_path, {})
+    edges = file_ctx.get('edges', [])
+    
+    if not edges:
+        return 0.0
+    
+    # Simple degree centrality (could be enhanced with PageRank later)
+    connection_count = len(edges)
+    
+    # Weight by relationship types
+    weighted_score = 0.0
+    for edge in edges:
+        rel_type = edge.get('type', 'reference')
+        if rel_type == 'extends':
+            weighted_score += 1.5  # Inheritance is important
+        elif rel_type == 'preload':
+            weighted_score += 1.2  # Preloads indicate dependency
+        elif rel_type == 'scene_ref':
+            weighted_score += 1.0  # Scene references
+        else:
+            weighted_score += 0.8  # General references
+    
+    # Normalize to 0-1 range (assuming max ~20 connections for most files)
+    return min(1.0, weighted_score / 20.0)
+
+def _calculate_relationship_score(file_path: str, all_files: list, graph_context: dict) -> float:
+    """Calculate how strongly this file relates to other search results"""
+    file_ctx = graph_context.get(file_path, {})
+    edges = file_ctx.get('edges', [])
+    
+    if not edges:
+        return 0.0
+    
+    # Count connections to other files in the result set
+    connections_to_results = 0
+    for edge in edges:
+        target = edge.get('target')
+        source = edge.get('source')
+        connected_file = target if target != file_path else source
+        
+        if connected_file in all_files:
+            connections_to_results += edge.get('weight', 1.0)
+    
+    # Normalize by total result count
+    return min(1.0, connections_to_results / max(1, len(all_files)))
+
+def _calculate_godot_context_boost(file_path: str, query: str, all_files: list) -> float:
+    """
+    GODOT-SPECIFIC INTELLIGENCE: Boost files based on patterns and HP system awareness
+    
+    Enhanced with SIGNAL FLOW INTELLIGENCE for HP system scenarios!
+    """
+    boost = 0.0
+    file_lower = file_path.lower()
+    query_lower = query.lower()
+    
+    # HP SYSTEM INTELLIGENCE - Critical for adding HP to one-hit games!
+    hp_damage_terms = ['health', 'hp', 'damage', 'hit', 'hurt', 'collision', 'die', 'death', 'game_over', 'gameover']
+    if any(term in query_lower for term in hp_damage_terms):
+        print(f"HP_SYSTEM_QUERY: Analyzing {file_path} for HP system relevance")
+        
+        # PLAYER FILES - Central to HP systems
+        if 'player' in file_lower:
+            boost += 0.6  # Major boost - player files are critical for HP
+            print(f"HP_BOOST: Player file {file_path} +0.6")
+        
+        # ENEMY/DAMAGE SOURCES - Need to understand what currently kills player
+        if any(enemy in file_lower for enemy in ['enemy', 'bullet', 'projectile', 'hazard', 'trap']):
+            boost += 0.5  # Major boost - damage sources
+            print(f"HP_BOOST: Damage source {file_path} +0.5")
+        
+        # UI FILES - Need to add health bars/displays
+        if any(ui in file_lower for ui in ['ui', 'hud', 'health', 'bar', 'display', 'interface']):
+            boost += 0.4  # Important for HP display
+            print(f"HP_BOOST: UI file {file_path} +0.4")
+        
+        # GAME MANAGER - Handles game over logic that needs to change  
+        if any(mgr in file_lower for mgr in ['game', 'main', 'manager', 'controller']):
+            boost += 0.4  # Important for game state management
+            print(f"HP_BOOST: Game manager {file_path} +0.4")
+        
+        # COLLISION/DAMAGE LOGIC - The core of what needs to change
+        if any(col in file_lower for col in ['collision', 'damage', 'hit', 'area']):
+            boost += 0.5  # Critical - this is where one-hit logic likely lives
+            print(f"HP_BOOST: Collision/damage logic {file_path} +0.5")
+    
+    # Scene-Script pair detection
+    base_name = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
+    script_pair = f"{base_name}.gd"
+    scene_pair = f"{base_name}.tscn"
+    
+    if file_path.endswith('.gd') and scene_pair in all_files:
+        boost += 0.3  # Script with matching scene
+    elif file_path.endswith('.tscn') and script_pair in all_files:
+        boost += 0.3  # Scene with matching script
+    
+    # ENHANCED Query-specific boosting
+    if 'player' in query_lower:
+        if 'player' in file_lower:
+            boost += 0.4
+    elif 'movement' in query_lower or 'move' in query_lower:
+        if any(word in file_lower for word in ['movement', 'move', 'kinematic', 'character']):
+            boost += 0.3
+    elif 'ui' in query_lower or 'interface' in query_lower:
+        if any(word in file_lower for word in ['ui', 'menu', 'button', 'panel', 'interface', 'hud']):
+            boost += 0.3
+    elif 'audio' in query_lower or 'sound' in query_lower:
+        if any(word in file_lower for word in ['audio', 'sound', 'music', 'sfx']):
+            boost += 0.3
+    elif 'signal' in query_lower or 'connect' in query_lower:
+        # SIGNAL SYSTEM QUERIES - boost files likely to contain signal logic
+        if any(sig in file_lower for sig in ['player', 'game', 'manager', 'controller']):
+            boost += 0.4
+    
+    # File type relevance
+    if 'script' in query_lower and file_path.endswith('.gd'):
+        boost += 0.2
+    elif 'scene' in query_lower and file_path.endswith('.tscn'):
+        boost += 0.2
+    elif 'resource' in query_lower and file_path.endswith(('.tres', '.res')):
+        boost += 0.2
+    
+    # Architectural patterns
+    if any(pattern in file_lower for pattern in ['manager', 'controller', 'system', 'service']):
+        boost += 0.2  # Likely architectural components
+    
+    return min(1.0, boost)  # Cap at 1.0
+
+def _expand_with_multi_hop_context(enhanced_files: list, graph_context: dict, query: str) -> list:
+    """
+    MULTI-HOP CONTEXT EXPANSION: Intelligently traverse the graph to find related files
+    
+    This finds files that should be included based on:
+    1. Scene-Script pairs (if you find Player.gd, also include Player.tscn)  
+    2. Base classes and extensions
+    3. Dependencies and dependents
+    4. Related components in the same architectural layer
+    """
+    if not graph_context:
+        return enhanced_files
+    
+    try:
+        existing_files = {f['file_path'] for f in enhanced_files}
+        expansion_candidates = {}  # file_path -> {'reason': str, 'score': float, 'source': str}
+        
+        for result in enhanced_files:
+            file_path = result['file_path']
+            file_ctx = graph_context.get(file_path, {})
+            edges = file_ctx.get('edges', [])
+            
+            # 1. SCENE-SCRIPT PAIR EXPANSION
+            base_name = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
+            if file_path.endswith('.gd'):
+                # Script found, look for matching scene
+                scene_pair = f"{base_name}.tscn"
+                if scene_pair not in existing_files:
+                    _add_expansion_candidate(expansion_candidates, scene_pair, 
+                                           "Scene-Script Pair", 0.8, file_path)
+            elif file_path.endswith('.tscn'):
+                # Scene found, look for matching script
+                script_pair = f"{base_name}.gd"
+                if script_pair not in existing_files:
+                    _add_expansion_candidate(expansion_candidates, script_pair,
+                                           "Scene-Script Pair", 0.8, file_path)
+            
+            # 2. INHERITANCE CHAIN EXPANSION
+            for edge in edges:
+                if edge.get('type') == 'extends':
+                    target = edge.get('target')
+                    source = edge.get('source')
+                    related_file = target if target != file_path else source
+                    
+                    if related_file and related_file not in existing_files:
+                        if edge.get('source') == file_path:
+                            # This file extends another (find base class)
+                            _add_expansion_candidate(expansion_candidates, related_file,
+                                                   "Base Class", 0.7, file_path)
+                        else:
+                            # Another file extends this (find derived class)
+                            _add_expansion_candidate(expansion_candidates, related_file,
+                                                   "Derived Class", 0.6, file_path)
+            
+            # 3. DEPENDENCY EXPANSION
+            for edge in edges:
+                if edge.get('type') in ['preload', 'load']:
+                    target = edge.get('target')
+                    source = edge.get('source')
+                    related_file = target if target != file_path else source
+                    
+                    if related_file and related_file not in existing_files:
+                        weight = edge.get('weight', 1.0)
+                        reason = "Preloaded Dependency" if edge.get('type') == 'preload' else "Dynamic Dependency"
+                        _add_expansion_candidate(expansion_candidates, related_file,
+                                               reason, 0.5 * weight, file_path)
+            
+            # 4. ARCHITECTURAL LAYER EXPANSION
+            # If we find a manager, look for related systems
+            if 'manager' in file_path.lower() or 'controller' in file_path.lower():
+                for edge in edges:
+                    target = edge.get('target')
+                    source = edge.get('source')
+                    related_file = target if target != file_path else source
+                    
+                    if (related_file and related_file not in existing_files and
+                        any(pattern in related_file.lower() for pattern in ['system', 'service', 'handler'])):
+                        _add_expansion_candidate(expansion_candidates, related_file,
+                                               "Related System", 0.4, file_path)
+        
+        # 5. QUERY-SPECIFIC INTELLIGENT EXPANSION
+        query_lower = query.lower()
+        if 'player' in query_lower:
+            # Look for player-related files in the graph
+            for file_path, ctx in graph_context.items():
+                if (file_path not in existing_files and 'player' in file_path.lower()):
+                    _add_expansion_candidate(expansion_candidates, file_path,
+                                           "Query Pattern Match", 0.6, "query_expansion")
+        
+        # 6. Convert candidates to enhanced results
+        expanded_results = enhanced_files.copy()
+        for candidate_path, info in expansion_candidates.items():
+            # Create a synthetic result for the expanded file
+            expanded_result = {
+                'file_path': candidate_path,
+                'similarity': 0.0,  # No direct semantic match
+                'enhanced_score': info['score'] * 0.8,  # Slightly lower than direct matches
+                'centrality_score': _calculate_centrality_score(candidate_path, graph_context),
+                'relationship_score': info['score'],
+                'godot_boost': _calculate_godot_context_boost(candidate_path, query, list(existing_files)),
+                'ranking_explanation': f"Expanded: {info['reason']} (from {info['source']})",
+                'expansion_source': info['source'],
+                'expansion_reason': info['reason']
+            }
+            
+            # Recalculate enhanced score with expansion context
+            expanded_result['enhanced_score'] = (
+                expanded_result['similarity'] * 0.3 +          # Lower semantic weight for expansions
+                expanded_result['centrality_score'] * 0.3 +    # Higher structural weight  
+                expanded_result['relationship_score'] * 0.3 +  # Higher relationship weight
+                expanded_result['godot_boost'] * 0.1
+            )
+            
+            expanded_results.append(expanded_result)
+        
+        print(f"MULTI_HOP: Expanded {len(enhanced_files)} results to {len(expanded_results)} with {len(expansion_candidates)} contextual additions")
+        return expanded_results
+        
+    except Exception as e:
+        print(f"MULTI_HOP_ERROR: {e}")
+        return enhanced_files  # Fallback to original results
+
+def _add_expansion_candidate(candidates: dict, file_path: str, reason: str, score: float, source: str):
+    """Helper to add or update expansion candidates with best score"""
+    if file_path not in candidates or candidates[file_path]['score'] < score:
+        candidates[file_path] = {
+            'reason': reason,
+            'score': score, 
+            'source': source
+        }
+
+def _identify_architectural_role(file_path: str, graph_context: dict) -> str:
+    """Identify the architectural role of a file based on its connections"""
+    file_ctx = graph_context.get(file_path, {})
+    edges = file_ctx.get('edges', [])
+    file_lower = file_path.lower()
+    
+    # Count incoming vs outgoing connections
+    incoming = len([e for e in edges if e.get('target') == file_path])
+    outgoing = len([e for e in edges if e.get('source') == file_path])
+    
+    # Pattern matching
+    if 'singleton' in file_lower or 'autoload' in file_lower:
+        return 'Singleton/Autoload'
+    elif 'manager' in file_lower and outgoing > incoming:
+        return 'System Manager'
+    elif 'base' in file_lower or 'abstract' in file_lower:
+        return 'Base Class'
+    elif incoming > outgoing * 2:
+        return 'Dependency Hub'
+    elif outgoing > incoming * 2:
+        return 'Consumer'
+    elif file_path.endswith('.tscn'):
+        return 'Scene'
+    elif file_path.endswith('.gd'):
+        return 'Script'
+    else:
+        return 'Resource'
+
 # --- Search Across Project Function ---
 def search_across_project_internal(arguments: dict, current_user: dict = None) -> dict:
     """Execute search across project using the cloud vector system"""
@@ -731,6 +1158,8 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         # Get parameters
         max_results = arguments.get('max_results', 5)
         include_graph = bool(arguments.get('include_graph', True))
+        trace_dependencies = bool(arguments.get('trace_dependencies', False))
+        search_mode = arguments.get('search_mode', 'semantic')
         project_root = arguments.get('project_root')
         project_id = arguments.get('project_id')
         
@@ -757,40 +1186,116 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         if not project_id:
             project_id = hashlib.md5(project_root.encode()).hexdigest()
         
-        # Search using cloud vector manager
-        results = cloud_vector_manager.search(query, user['id'], project_id, max_results)
+        # Smart search mode detection with proper logging
+        detected_mode = search_mode
+        if search_mode == 'semantic':
+            query_lower = query.lower()
+            
+            # Explicit keyword request detection
+            if any(word in query_lower for word in ['keyword', 'exact', 'literal', 'find exact']):
+                detected_mode = 'keyword'
+                print(f"SEARCH_MODE_DETECTION: User explicitly requested KEYWORD search: {query}")
+            
+            # Hybrid search detection (semantic + keyword)
+            elif (any(pattern in query_lower for pattern in ['func ', 'function ', 'def ', 'class ', 'signal ']) or
+                  any(api in query_lower for api in ['set_velocity', 'move_and_slide', 'get_node', 'emit_signal']) or
+                  '"' in query or "'" in query or
+                  # Common exact searches
+                  query_lower in ['_ready', '_process', '_physics_process', '_input', 'add_vectors', 'try_jump']):
+                detected_mode = 'hybrid'
+                print(f"SEARCH_MODE_DETECTION: Auto-detected HYBRID search: {query}")
+            else:
+                print(f"SEARCH_MODE_DETECTION: Using SEMANTIC search: {query}")
+        else:
+            print(f"SEARCH_MODE_DETECTION: Using explicit {detected_mode.upper()} search: {query}")
         
-        # Format results
+        # Search using cloud vector manager with detected/selected mode
+        if detected_mode == 'keyword':
+            # Extract the actual search term from keyword requests
+            search_term = query
+            query_lower = query.lower()
+            
+            # Clean up keyword search queries
+            if 'keyword' in query_lower:
+                # Extract term after "keyword"
+                parts = query_lower.split('keyword')
+                if len(parts) > 1:
+                    search_term = parts[1].strip().split()[0] if parts[1].strip() else query
+            elif 'search for' in query_lower:
+                # Extract term after "search for"
+                parts = query_lower.split('search for')
+                if len(parts) > 1:
+                    remaining = parts[1].strip()
+                    if remaining.startswith('keyword'):
+                        remaining = remaining.replace('keyword', '').strip()
+                    search_term = remaining.split()[0] if remaining else query
+            
+            print(f"SEARCH_EXECUTION: Keyword search - extracted term '{search_term}' from query '{query}'")
+            initial_results = cloud_vector_manager.keyword_search(search_term, user['id'], project_id, max_results * 2)
+            print(f"SEARCH_EXECUTION: Performed pure KEYWORD search")
+        elif detected_mode == 'hybrid' and hasattr(cloud_vector_manager, 'hybrid_search'):
+            initial_results = cloud_vector_manager.hybrid_search(query, user['id'], project_id, max_results * 2)
+            print(f"SEARCH_EXECUTION: Performed HYBRID search")
+        elif trace_dependencies and hasattr(cloud_vector_manager, 'search_with_dependency_context'):
+            # Use enhanced search with dependency tracing
+            initial_results = cloud_vector_manager.search_with_dependency_context(
+                query, user['id'], project_id, max_results * 2, include_dependencies=True
+            )
+            print(f"SEARCH_EXECUTION: Performed DEPENDENCY-TRACED search")
+        else:
+            # Use standard semantic search
+            initial_results = cloud_vector_manager.search(query, user['id'], project_id, max_results * 2)  # Get more for reranking
+            print(f"SEARCH_EXECUTION: Performed standard SEMANTIC search")
+        
+        # NUCLEAR FILTER: Remove .import files from ALL search results (in case old junk persists in database)
+        initial_results = [r for r in initial_results if not r.get('file_path', '').endswith('.import')]
+        print(f"SEARCH_FILTER: Blocked .import files, {len(initial_results)} results remaining")
+        
+        # GRAPH-ENHANCED RANKING: Combine semantic similarity with graph intelligence
+        enhanced_results = _enhance_search_with_graph(
+            initial_results, query, user['id'], project_id, max_results, 
+            cloud_vector_manager, include_graph
+        )
+        
+        # Format results with enhanced scoring
         formatted_results = {
             "similar_files": [
                 {
                     "file_path": r['file_path'],
                     "similarity": r['similarity'],
+                    "enhanced_score": r.get('enhanced_score', r['similarity']),
+                    "centrality_score": r.get('centrality_score', 0.0),
+                    "relationship_score": r.get('relationship_score', 0.0),
+                    "godot_boost": r.get('godot_boost', 0.0),
+                    "ranking_explanation": r.get('ranking_explanation', ''),
                     "modality": "text",
                     "chunk_index": r['chunk']['chunk_index'] if r.get('chunk') else 0,
                     "chunk_start": r['chunk']['start_line'] if r.get('chunk') else None,
                     "chunk_end": r['chunk']['end_line'] if r.get('chunk') else None,
-                    # If backend provides file_line_count, pass it through; else leave None
                     "line_count": r.get('file_line_count')
                 }
-                for r in results
+                for r in enhanced_results['similar_files']
             ],
-            "central_files": [],
-            "graph_summary": {}
+            "central_files": enhanced_results.get('central_files', []),
+            "graph_summary": enhanced_results.get('graph_summary', {})
         }
+        
+        # Get graph context for final results
         graph_context = {}
-        if include_graph and results:
-            files = [r['file_path'] for r in results]
+        if include_graph and enhanced_results['similar_files']:
+            files = [r['file_path'] for r in enhanced_results['similar_files']]
             graph_context = cloud_vector_manager.get_graph_context_for_files(files, user['id'], project_id)
         
         return {
             "success": True,
             "query": query,
+            "search_mode": detected_mode,
             "results": formatted_results,
             "include_graph": include_graph,
+            "trace_dependencies": trace_dependencies,
             "graph": graph_context,
-            "file_count": len(results),
-            "message": f"Found {len(results)} relevant files for query: {query}"
+            "file_count": len(enhanced_results['similar_files']),
+            "message": f"Found {len(enhanced_results['similar_files'])} relevant files using {detected_mode.upper()} search for query: {query}"
         }
         
     except Exception as e:
@@ -1191,18 +1696,24 @@ godot_tools = [
         "type": "function",
         "function": {
             "name": "check_compilation_errors",
-            "description": "Check for compilation errors in script files. Can check a specific file or all script files in the project.",
+            "description": "Check for errors in the project. Can check script compilation errors or all output panel errors (runtime errors, warnings, shader errors, etc).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Script file path to check (not required if check_all is true)"
+                        "description": "Script file path to check (only used when check_mode='scripts' and check_all=false)"
                     },
                     "check_all": {
                         "type": "boolean",
-                        "description": "If true, check all script files in the project instead of a specific file",
+                        "description": "If true, check all script files in the project instead of a specific file (only for check_mode='scripts')",
                         "default": False
+                    },
+                    "check_mode": {
+                        "type": "string",
+                        "enum": ["scripts", "output"],
+                        "description": "Mode of checking: 'scripts' for script compilation errors only, 'output' for all errors/warnings from the output panel",
+                        "default": "scripts"
                     }
                 },
                 "required": []
@@ -1392,6 +1903,17 @@ godot_tools = [
                     "project_id": {
                         "type": "string",
                         "description": "Stable project identifier to segregate indexes across machines (optional)."
+                    },
+                    "trace_dependencies": {
+                        "type": "boolean",
+                        "description": "Enable multi-hop dependency tracing to show what functions call/affect each other (default false).",
+                        "default": False
+                    },
+                    "search_mode": {
+                        "type": "string",
+                        "enum": ["semantic", "keyword", "hybrid"],
+                        "description": "Search mode: 'semantic' (AI understanding), 'keyword' (exact text), 'hybrid' (both). Default: semantic.",
+                        "default": "semantic"
                     }
                 },
                 "required": ["query"]
@@ -1632,11 +2154,13 @@ def chat():
                 if total_chars > 100000:
                     print(f"LITELLM_PREP: WARNING - Very large message content ({total_chars} chars), may hit token limits!")
                 
-                # Resilient model call with brief retry and cross-provider fallback
+                # Resilient model call with 5 retries (1 second each) then fallback to GPT-5
                 attempts = 0
-                max_attempts = 2
+                max_attempts = 5  # 5 retry attempts as requested
                 providers_tried = set()
                 model_try = model
+                
+                # We need to retry the ENTIRE streaming process, not just the initial call
                 while True:
                     try:
                         response = completion(
@@ -1646,113 +2170,122 @@ def chat():
                             tool_choice="auto",
                             stream=True
                         )
+                        
+                        # Process the stream inside the try block to catch streaming errors
+                        full_text_response = ""
+                        tool_call_aggregator = {}
+                        tool_ids = {}
+                        current_tool_index = None
+                        chunk_count = 0
+                        
+                        for chunk in response:
+                            # Check for stop during streaming - this is critical for mid-stream stopping
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped during streaming")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped during streaming"}) + '\n'
+                                return
+                            
+                            chunk_count += 1
+                            if chunk.choices and chunk.choices[0].delta:
+                                delta = chunk.choices[0].delta
+                                
+                                # Handle streaming text content
+                                content = getattr(delta, 'content', None) if hasattr(delta, 'content') else delta.get('content')
+                                if content:
+                                    full_text_response += content
+                                    yield json.dumps({
+                                        "content_delta": content,
+                                        "status": "streaming"
+                                    }) + '\n'
+                                
+                                # Handle tool calls (LiteLLM format)
+                                tool_calls = getattr(delta, 'tool_calls', None) if hasattr(delta, 'tool_calls') else delta.get('tool_calls')
+                                if tool_calls:
+                                    for tool_call in tool_calls:
+                                        # Handle both pydantic and dict formats
+                                        if hasattr(tool_call, 'index'):
+                                            index = tool_call.index
+                                            tc_id = getattr(tool_call, 'id', None)
+                                            fn = getattr(tool_call, 'function', None)
+                                            fn_name = getattr(fn, 'name', None) if fn else None
+                                            fn_args = getattr(fn, 'arguments', '') if fn else ''
+                                        else:
+                                            index = tool_call.get('index', 0)
+                                            tc_id = tool_call.get('id')
+                                            fn = tool_call.get('function', {})
+                                            fn_name = fn.get('name')
+                                            fn_args = fn.get('arguments', '')
+                                        
+                                        current_tool_index = index
+                                        
+                                        # Use index as key for consistent accumulation
+                                        key = f"tool_call_{index}"
+                                        if key not in tool_call_aggregator:
+                                            tool_call_aggregator[key] = {
+                                                "name": "",
+                                                "arguments": ""
+                                            }
+                                            tool_ids[key] = tc_id or f"call_{index}"
+                                        
+                                        # Accumulate function name and arguments
+                                        if fn_name:
+                                            tool_call_aggregator[key]["name"] = fn_name
+                                        if fn_args:
+                                            tool_call_aggregator[key]["arguments"] += fn_args
+                        
+                        print(f"RESPONSE_DEBUG: Processed {chunk_count} chunks, text_length: {len(full_text_response)}, tools: {len(tool_call_aggregator)}")
+                        if tool_call_aggregator:
+                            print(f"RESPONSE_DEBUG: Tool calls: {[f['name'] for f in tool_call_aggregator.values()]}")
+                        if not full_text_response and not tool_call_aggregator:
+                            print("RESPONSE_DEBUG: WARNING - OpenAI responded with NO content and NO tool calls!")
+                        
+                        # Successfully processed the stream, break out of retry loop
                         break
+                        
                     except Exception as e:
+                        print(f"STREAM_ERROR: {e}")
                         err_name = e.__class__.__name__
                         overloaded = "Overloaded" in str(e)
                         transient = err_name in ("InternalServerError", "RateLimitError", "ServiceUnavailableError") or overloaded
+                        
+                        # Check for stop during retry loop
+                        if check_stop():
+                            print(f"STOP_DETECTED: Request {request_id} stopped during retry")
+                            yield json.dumps({"status": "stopped", "message": "Request stopped"}) + '\n'
+                            return
+                        
                         if transient and attempts < max_attempts:
                             attempts += 1
                             yield json.dumps({
                                 "status": "retrying_provider",
                                 "provider": get_model_friendly_name(model_try),
-                                "attempt": attempts
+                                "attempt": attempts,
+                                "max_attempts": max_attempts,
+                                "error": str(e)[:100]  # Show error snippet
                             }) + '\n'
-                            time.sleep(0.6 * attempts)
+                            print(f"RETRY: Attempt {attempts}/{max_attempts} after error: {e}")
+                            time.sleep(1.0)  # Fixed 1 second delay as requested
                             continue
 
-                        # Fallback to a different provider if available
+                        # After 5 retries, fallback to GPT-5 if not already tried
                         providers_tried.add(model_try)
-                        fallback = None
-                        try:
-                            if model_try == MODEL_MAP.get("claude-4") and MODEL_MAP.get("gpt-4o") not in providers_tried:
-                                fallback = MODEL_MAP.get("gpt-4o")
-                            elif model_try == MODEL_MAP.get("gpt-4o") and MODEL_MAP.get("gpt-5") not in providers_tried:
-                                fallback = MODEL_MAP.get("gpt-5")
-                            elif model_try == MODEL_MAP.get("gpt-5") and MODEL_MAP.get("gemini-2.5") not in providers_tried:
-                                fallback = MODEL_MAP.get("gemini-2.5")
-                        except Exception:
-                            fallback = None
-
-                        if fallback and fallback != model_try:
+                        
+                        # Always try GPT-5 after retries exhausted
+                        if MODEL_MAP.get("gpt-5") not in providers_tried:
+                            fallback = MODEL_MAP.get("gpt-5")
                             yield json.dumps({
                                 "status": "switching_model",
                                 "from": get_model_friendly_name(model_try),
-                                "to": get_model_friendly_name(fallback)
+                                "to": "gpt-5",
+                                "reason": f"Provider overloaded after {max_attempts} retries"
                             }) + '\n'
+                            print(f"SWITCHING: From {model_try} to {fallback} after {max_attempts} failed attempts")
                             model_try = fallback
-                            attempts = 0
+                            attempts = 0  # Reset attempts for new provider
                             continue
 
                         # No retries/fallbacks left – bubble up to main handler
                         raise
-
-                full_text_response = ""
-                tool_call_aggregator = {}
-                tool_ids = {}
-                current_tool_index = None
-                chunk_count = 0
-                
-                for chunk in response:
-                    # Check for stop during streaming - this is critical for mid-stream stopping
-                    if check_stop():
-                        print(f"STOP_DETECTED: Request {request_id} stopped during streaming")
-                        yield json.dumps({"status": "stopped", "message": "Request stopped during streaming"}) + '\n'
-                        return
-                    
-                    chunk_count += 1
-                    if chunk.choices and chunk.choices[0].delta:
-                        delta = chunk.choices[0].delta
-                        
-                        # Handle streaming text content
-                        content = getattr(delta, 'content', None) if hasattr(delta, 'content') else delta.get('content')
-                        if content:
-                            full_text_response += content
-                            yield json.dumps({
-                                "content_delta": content,
-                                "status": "streaming"
-                            }) + '\n'
-                        
-                        # Handle tool calls (LiteLLM format)
-                        tool_calls = getattr(delta, 'tool_calls', None) if hasattr(delta, 'tool_calls') else delta.get('tool_calls')
-                        if tool_calls:
-                            for tool_call in tool_calls:
-                                # Handle both pydantic and dict formats
-                                if hasattr(tool_call, 'index'):
-                                    index = tool_call.index
-                                    tc_id = getattr(tool_call, 'id', None)
-                                    fn = getattr(tool_call, 'function', None)
-                                    fn_name = getattr(fn, 'name', None) if fn else None
-                                    fn_args = getattr(fn, 'arguments', '') if fn else ''
-                                else:
-                                    index = tool_call.get('index', 0)
-                                    tc_id = tool_call.get('id')
-                                    fn = tool_call.get('function', {})
-                                    fn_name = fn.get('name')
-                                    fn_args = fn.get('arguments', '')
-                                
-                                current_tool_index = index
-                                
-                                # Use index as key for consistent accumulation
-                                key = f"tool_call_{index}"
-                                if key not in tool_call_aggregator:
-                                    tool_call_aggregator[key] = {
-                                        "name": "",
-                                        "arguments": ""
-                                    }
-                                    tool_ids[key] = tc_id or f"call_{index}"
-                                
-                                # Accumulate function name and arguments
-                                if fn_name:
-                                    tool_call_aggregator[key]["name"] = fn_name
-                                if fn_args:
-                                    tool_call_aggregator[key]["arguments"] += fn_args
-                
-                print(f"RESPONSE_DEBUG: Processed {chunk_count} chunks, text_length: {len(full_text_response)}, tools: {len(tool_call_aggregator)}")
-                if tool_call_aggregator:
-                    print(f"RESPONSE_DEBUG: Tool calls: {[f['name'] for f in tool_call_aggregator.values()]}")
-                if not full_text_response and not tool_call_aggregator:
-                    print("RESPONSE_DEBUG: WARNING - OpenAI responded with NO content and NO tool calls!")
 
                 # Now that we've processed all chunks, handle the results
 
@@ -2153,13 +2686,13 @@ def generate_script():
     
     if not script_type or not description:
         return jsonify({"error": "Missing script_type or description"}), 400
-    
+
     # Generate script using AI
     script_prompt = f"""
     Create a GDScript for a {node_type} that serves as a {script_type}.
-    
+
     Requirements: {description}
-    
+
     CRITICAL REQUIREMENTS:
     - Return ONLY raw GDScript code
     - NO markdown formatting (no ```, no ```gdscript, no ```gd)
@@ -2170,25 +2703,52 @@ def generate_script():
     - Use GODOT 4 syntax: "extends RigidBody2D" (NOT "extends RigidBody2D")
     - Ensure proper GDScript syntax for Godot 4.x
     - Start directly with "extends" or class declaration
-    
+
     Example format:
     extends RefCounted
-    
+
     func my_function():
         pass
     """
-    
+
     try:
-        response = completion(
-            model=get_validated_chat_model(data.get('model')),
-            messages=[{"role": "user", "content": script_prompt}]
-        )
-        
+        # Add retry logic for script generation
+        attempts = 0
+        max_attempts = 5
+        model_for_script = data.get('model', DEFAULT_MODEL)
+
+        while True:
+            try:
+                response = completion(
+                    model=get_validated_chat_model(model_for_script),
+                    messages=[{"role": "user", "content": script_prompt}]
+                )
+                break
+            except Exception as e:
+                err_name = e.__class__.__name__
+                overloaded = "Overloaded" in str(e)
+                transient = err_name in ("InternalServerError", "RateLimitError", "ServiceUnavailableError") or overloaded
+
+                if transient and attempts < max_attempts:
+                    attempts += 1
+                    print(f"GENERATE_SCRIPT: Retry {attempts}/{max_attempts} after error: {str(e)[:100]}")
+                    time.sleep(1.0)
+                    continue
+
+                # After 5 retries, try GPT-5
+                if attempts >= max_attempts and model_for_script != 'gpt-5':
+                    print(f"GENERATE_SCRIPT: Switching to GPT-5 after {max_attempts} failed attempts")
+                    model_for_script = 'gpt-5'
+                    attempts = 0
+                    continue
+
+                raise
+
         script_content = response.choices[0].message.content
-        
+
         # Clean up any markdown wrappers that might have leaked through
         script_content = script_content.strip()
-        
+
         # Remove markdown code blocks if they exist
         if script_content.startswith('```'):
             lines = script_content.split('\n')
@@ -2199,7 +2759,7 @@ def generate_script():
             if lines and lines[-1].strip() == '```':
                 lines = lines[:-1]
             script_content = '\n'.join(lines)
-        
+
         # Remove any remaining ``` markers
         script_content = script_content.replace('```gdscript', '').replace('```gd', '').replace('```', '')
         script_content = script_content.strip()
@@ -2226,10 +2786,10 @@ def predict_code_edit():
     if gate is not None:
         return gate
     """
-    AI-powered apply edit endpoint.
-    - Requests a structured JSON diff from the model rather than a full file.
-    - Applies the diff server-side to reconstruct the full edited content.
-    - Returns the structured edits, full edited content, and a unified diff.
+    Optimized AI-powered apply edit endpoint.
+    - Simplified to ask for edited code directly (no complex JSON schemas)
+    - Faster response parsing
+    - Better error handling
     Supports both full-file edits and range edits.
     """
     data = request.json
@@ -2243,238 +2803,127 @@ def predict_code_edit():
     post_text = data.get('post_text') or ''
     path = data.get('path') or ''
     
-    print(f"APPLY_EDIT_REQUEST: Received request with prompt: '{prompt}' for file content length: {len(file_content)}")
+    print(f"APPLY_EDIT_REQUEST: '{prompt}' for {path} (content_len={len(file_content)})")
 
     if not prompt:
         return jsonify({"error": "Missing 'prompt'"}), 400
 
-    # Build instruction for structured edits
-    # For full-file edits, LLM should output operations with 1-based line indices.
-    # For range edits, LLM should output a single replacement for the provided range.
-    instruction = {
-        "goal": "Edit the code per the user's request using a structured edit plan, not full file output.",
-        "output_format": {
-            "mode": "full|range",
-            "edits": [
-                {"type": "replace", "start": 1, "end": 3, "lines": ["..."]},
-                {"type": "insert", "after": 10, "lines": ["..."]},
-                {"type": "delete", "start": 20, "end": 22}
-            ],
-            "range_edit": {"start_line": 12, "end_line": 18, "new_lines": ["..."]}
-        },
-        "rules": [
-            "Always return minified JSON only (no markdown fences, no prose).",
-            "Use mode 'range' only if editing exactly the provided selection; otherwise use 'full'.",
-            "Line numbers are 1-based and inclusive.",
-            "Prefer small targeted edits over large replacements."
-        ]
-    }
-
     try:
         import json as _json
-        # Prompt the model to generate structured JSON edits, not full code
+        # OPTIMIZATION: Simpler, direct prompts without JSON schemas
         is_range = (lines_mode == 'range') or (start_line > 0 and end_line >= start_line)
+        
+        # Build a simple, clear prompt
         if is_range:
-            # Provide only the selected segment for range mode to reduce tokens
+            # For range edits, provide context about the specific lines
             full_prompt = (
-                "You are an assistant editing a code segment.\n"
-                f"User request: {prompt}\n\n"
-                "Return ONLY minified JSON per schema: {\"mode\":\"range\", \"range_edit\":{\"start_line\":INT, \"end_line\":INT, \"new_lines\":[STRING...]}}.\n"
-                "- Do not include code fences.\n"
-                "- start_line and end_line refer to the provided segment (1-based).\n"
-                "- new_lines must be the full replacement of the selected range.\n\n"
-                "Provided segment (lines to edit):\n" + file_content
+                f"Task: {prompt}\n\n"
+                f"Edit the following code segment (lines {start_line}-{end_line}):\n"
+                f"{file_content}\n\n"
+                "Reply with ONLY the edited code for this segment. No explanations or markdown."
             )
         else:
-            # Full-file mode: provide full content and ask for small diffs
-            # Keep context succinct; the model returns structured ops
-            sample_schema = _json.dumps(instruction["output_format"])  # example schema
-            rules = "\n".join([f"- {r}" for r in instruction["rules"]])
-            full_prompt = (
-                "You are an assistant editing a code file.\n"
-                f"User request: {prompt}\n\n"
-                f"Schema example (not literal, just shape): {sample_schema}\n"
-                f"Rules:\n{rules}\n\n"
-                "Return ONLY minified JSON with {\"mode\":\"full\", \"edits\":[...]} using the operations above.\n"
-                "Do not include any code fences or commentary.\n\n"
-                "Original file content follows:\n" + file_content
-            )
+            # For full file edits, provide the complete file
+            # Add line numbers for context if file is large
+            if len(file_content.split('\n')) > 50:
+                lines = file_content.split('\n')
+                numbered_content = '\n'.join(f"{i+1}: {line}" for i, line in enumerate(lines))
+                full_prompt = (
+                    f"Task: {prompt}\n\n"
+                    f"Current file content (with line numbers for reference):\n"
+                    f"{numbered_content}\n\n"
+                    "Reply with ONLY the complete edited file content. No explanations or markdown."
+                )
+            else:
+                full_prompt = (
+                    f"Task: {prompt}\n\n"
+                    f"Current file content:\n"
+                    f"{file_content}\n\n"
+                    "Reply with ONLY the complete edited file content. No explanations or markdown."
+                )
 
-        response = completion(
-            model=get_validated_chat_model(data.get('model')),
-            messages=[
-                {"role": "user", "content": full_prompt}
-            ]
-        )
+        # OPTIMIZATION: Add temperature and timeout settings
+        # Use claude-4 by default for apply_edit as it's often faster
+        model_for_edit = data.get('model', 'claude-4')
+        
+        # Add retry logic for apply_edit as well
+        attempts = 0
+        max_attempts = 5
+        while True:
+            try:
+                response = completion(
+                    model=get_validated_chat_model(model_for_edit),
+                    messages=[
+                        {"role": "system", "content": "You are a code editor. Output only edited code, no explanations."},
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    temperature=0.3,  # Lower temperature for more consistent edits
+                    max_tokens=8000   # Reasonable limit while allowing for large edits
+                )
+                break
+            except Exception as e:
+                err_name = e.__class__.__name__
+                overloaded = "Overloaded" in str(e)
+                transient = err_name in ("InternalServerError", "RateLimitError", "ServiceUnavailableError") or overloaded
+                
+                if transient and attempts < max_attempts:
+                    attempts += 1
+                    print(f"APPLY_EDIT: Retry {attempts}/{max_attempts} after error: {str(e)[:100]}")
+                    time.sleep(1.0)  # 1 second delay
+                    continue
+                
+                # After 5 retries, try GPT-5
+                if attempts >= max_attempts and model_for_edit != 'gpt-5':
+                    print(f"APPLY_EDIT: Switching to GPT-5 after {max_attempts} failed attempts")
+                    model_for_edit = 'gpt-5'
+                    attempts = 0  # Reset for new provider
+                    continue
+                
+                # If all retries exhausted, return error
+                raise
 
         raw = response.choices[0].message.content
-        print(f"APPLY_EDIT_MODEL: Raw model output (first 600 chars): {raw[:600]}")
+        print(f"APPLY_EDIT: Response length: {len(raw)}")
 
-        # Helper: clean code fences and parse json
-        def _clean_to_json_string(s: str) -> str:
-            s = (s or '').strip()
-            if s.startswith('```'):
-                parts = s.split('\n')
-                if parts and parts[0].startswith('```'):
-                    parts = parts[1:]
-                if parts and parts[-1].strip() == '```':
-                    parts = parts[:-1]
-                s = '\n'.join(parts)
-            s = s.replace('```json', '').replace('```', '').strip()
-            return s
-
-        import json
-        model_json = None
-        try:
-            model_json = json.loads(_clean_to_json_string(raw))
-        except Exception as _:
-            model_json = None
-
-        # Fallback: if the model failed to return JSON, treat output as full replacement (legacy)
-        def _split_lines(text: str) -> list[str]:
-            return (text or '').split('\n')
-
-        def _apply_full_ops(orig_lines: list[str], ops: list[dict]) -> list[str]:
-            # Apply in descending order of positions to avoid index shift
-            def op_key(d: dict) -> int:
-                if d.get('type') == 'insert':
-                    return int(d.get('after') or 0)
-                return int(d.get('start') or 0)
-            new_lines = list(orig_lines)
-            for op in sorted(ops, key=op_key, reverse=True):
-                t = (op.get('type') or '').lower()
-                if t == 'replace':
-                    start = max(1, int(op.get('start') or 1))
-                    end = max(start - 1, int(op.get('end') or (start - 1)))
-                    repl = op.get('lines') or []
-                    new_lines[start-1:end] = repl
-                elif t == 'insert':
-                    after = int(op.get('after') or 0)
-                    ins = op.get('lines') or []
-                    idx = max(0, after)  # insert after N means at index N
-                    new_lines[idx:idx] = ins
-                elif t == 'delete':
-                    start = max(1, int(op.get('start') or 1))
-                    end = max(start - 1, int(op.get('end') or (start - 1)))
-                    del new_lines[start-1:end]
-            return new_lines
-
+        # OPTIMIZATION: Simple response cleaning instead of complex JSON parsing
+        edited_content = raw.strip()
+        
+        # Remove markdown code fences if present
+        if edited_content.startswith('```'):
+            lines = edited_content.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            edited_content = '\n'.join(lines)
+        
+        # Remove any language-specific markdown markers
+        for marker in ['```python', '```py', '```gdscript', '```gd', '```csharp', '```cs', '```cpp', '```c++', '```json', '```javascript', '```js', '```typescript', '```ts', '```java', '```go', '```rust', '```ruby', '```php', '```swift', '```kotlin', '```scala', '```r', '```julia', '```matlab', '```perl', '```lua', '```dart', '```haskell', '```clojure', '```elixir', '```erlang', '```ocaml', '```fsharp', '```nim', '```crystal', '```zig', '```vlang', '```']:
+            edited_content = edited_content.replace(marker, '')
+        
+        edited_content = edited_content.strip()
+        
+        # Build the full edited content based on edit mode
         import difflib
-
-        is_range_mode = (lines_mode == 'range') or (start_line > 0 and end_line >= start_line)
-        if is_range_mode:
-            # Build original full from pre/segment/post
-            original_full = (pre_text or '')
-            if original_full and file_content and not original_full.endswith('\n'):
-                original_full += '\n'
-            original_full += (file_content or '')
+        
+        if is_range:
+            # For range edits, splice the result back into the full file
+            original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+            
+            full_edited_content = (pre_text or '')
+            if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
+                full_edited_content += '\n'
+            full_edited_content += edited_content
             if post_text:
-                if original_full and not original_full.endswith('\n'):
-                    original_full += '\n'
-                original_full += post_text
-
-            if model_json and (model_json.get('mode') or '').lower() == 'range' and isinstance(model_json.get('range_edit'), dict):
-                redit = model_json['range_edit']
-                seg_start = int(redit.get('start_line') or 1)
-                seg_end = int(redit.get('end_line') or seg_start - 1)
-                new_lines = redit.get('new_lines')
-                if isinstance(new_lines, str):
-                    new_lines = new_lines.split('\n')
-                if not isinstance(new_lines, list):
-                    new_lines = _split_lines(file_content)
-                # Apply to the provided segment only, splice back into full
-                seg_lines = _split_lines(file_content)
-                seg_lines[seg_start-1:seg_end] = new_lines
-                full_edited_content = (pre_text or '')
-                if full_edited_content and seg_lines and not full_edited_content.endswith('\n'):
+                if full_edited_content and not full_edited_content.endswith('\n'):
                     full_edited_content += '\n'
-                full_edited_content += "\n".join(seg_lines)
-                if post_text:
-                    if full_edited_content and not full_edited_content.endswith('\n'):
-                        full_edited_content += '\n'
-                    full_edited_content += post_text
-                structured_edits = {"mode": "range", "range_edit": redit}
-            else:
-                # Fallback: treat raw as new segment
-                cleaned = _clean_to_json_string(raw)
-                
-                # CRITICAL: Check if the cleaned content still looks like JSON
-                # This prevents writing JSON structure to files
-                if (cleaned.strip().startswith('{') and cleaned.strip().endswith('}') and 
-                    ('"mode"' in cleaned or '"edits"' in cleaned or '"range_edit"' in cleaned)):
-                    # The model returned JSON but it failed to parse
-                    # Try to extract actual code content from common patterns
-                    print(f"APPLY_EDIT_FALLBACK: Detected JSON structure in fallback, attempting recovery")
-                    
-                    # Common pattern: model returns code inside a JSON field
-                    import re
-                    # Try to find code in "content", "code", or "new_content" fields
-                    for pattern in [r'"content"\s*:\s*"([^"]*)"', r'"code"\s*:\s*"([^"]*)"', r'"new_content"\s*:\s*"([^"]*)"']:
-                        match = re.search(pattern, cleaned, re.DOTALL)
-                        if match:
-                            extracted = match.group(1)
-                            # Unescape JSON string escapes
-                            extracted = extracted.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                            cleaned = extracted
-                            print(f"APPLY_EDIT_FALLBACK: Extracted code from JSON field")
-                            break
-                    else:
-                        # If no extraction worked, return error
-                        return jsonify({
-                            "success": False,
-                            "error": "Model returned malformed JSON instead of edited code. Please try again with a clearer prompt.",
-                            "debug_info": f"Raw response started with: {raw[:200]}"
-                        }), 400
-                
-                full_edited_content = (pre_text or '')
-                if full_edited_content and cleaned and not full_edited_content.endswith('\n'):
-                    full_edited_content += '\n'
-                full_edited_content += cleaned
-                if post_text:
-                    if full_edited_content and not full_edited_content.endswith('\n'):
-                        full_edited_content += '\n'
-                    full_edited_content += post_text
-                structured_edits = None
+                full_edited_content += post_text
         else:
-            # Full-file mode
+            # For full file edits, the response is the complete new file
             original_full = file_content or ''
-            if model_json and (model_json.get('mode') or '').lower() == 'full' and isinstance(model_json.get('edits'), list):
-                orig_lines = _split_lines(original_full)
-                new_lines = _apply_full_ops(orig_lines, model_json['edits'])
-                full_edited_content = "\n".join(new_lines)
-                structured_edits = {"mode": "full", "edits": model_json['edits']}
-            else:
-                # Fallback: assume raw is full content replacement
-                cleaned = _clean_to_json_string(raw)
-                
-                # CRITICAL: Check if the cleaned content still looks like JSON
-                if (cleaned.strip().startswith('{') and cleaned.strip().endswith('}') and 
-                    ('"mode"' in cleaned or '"edits"' in cleaned)):
-                    # The model returned JSON but it failed to parse
-                    print(f"APPLY_EDIT_FALLBACK: Detected JSON structure in full-file fallback")
-                    
-                    # Try to extract code from JSON
-                    import re
-                    for pattern in [r'"content"\s*:\s*"([^"]*)"', r'"code"\s*:\s*"([^"]*)"', r'"new_content"\s*:\s*"([^"]*)"']:
-                        match = re.search(pattern, cleaned, re.DOTALL)
-                        if match:
-                            extracted = match.group(1)
-                            extracted = extracted.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                            cleaned = extracted
-                            print(f"APPLY_EDIT_FALLBACK: Extracted code from JSON field")
-                            break
-                    else:
-                        # If no extraction worked, just remove obvious JSON structure
-                        # This is a last resort to avoid corrupting files
-                        return jsonify({
-                            "success": False,
-                            "error": "Model returned malformed JSON instead of edited code. Please try again.",
-                            "debug_info": f"Raw response preview: {raw[:200]}"
-                        }), 400
-                
-                full_edited_content = cleaned
-                structured_edits = None
+            full_edited_content = edited_content
 
+        # Generate diff for user review
         diff_lines = list(difflib.unified_diff(
             (original_full or '').splitlines(),
             (full_edited_content or '').splitlines(),
@@ -2489,15 +2938,15 @@ def predict_code_edit():
             "status": "pending_user_action",
             "pending_user_action": True,
             "applied": False,
-            "mode": "range" if is_range_mode else "full",
+            "mode": "range" if is_range else "full",
             "path": path,
             "start_line": start_line,
             "end_line": end_line,
-            "structured_edits": structured_edits if structured_edits is not None else {},
+            "structured_edits": {},  # No longer using structured edits
             "full_edited_content": full_edited_content,
-            # For compatibility with existing frontend expecting edited_content
-            "edited_content": full_edited_content,
+            "edited_content": full_edited_content,  # For compatibility
             "diff": diff_text,
+            "original_content": original_full  # Include for frontend diff display
         })
         
     except Exception as e:
@@ -2710,6 +3159,71 @@ def auth_logout():
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
 
+@app.route('/reindex_project', methods=['POST'])
+def reindex_project():
+    """Re-index entire project (clear + fresh index)"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+        
+    try:
+        # Verify authentication
+        user, error_response, status_code = verify_authentication()
+        if error_response:
+            return jsonify(error_response), status_code
+            
+        data = request.json or {}
+        project_root = data.get('project_root')
+        
+        # Fallback to header if not provided in body
+        if not project_root:
+            project_root = request.headers.get('X-Project-Root')
+        
+        if not project_root:
+            return jsonify({"error": "project_root required (pass in body or X-Project-Root header)"}), 400
+        
+        project_id = hashlib.md5(project_root.encode()).hexdigest()
+        
+        if not cloud_vector_manager:
+            return jsonify({"success": False, "error": "Vector search unavailable"}), 501
+        
+        # Step 1: Clear existing data
+        print(f"REINDEX: Clearing project data for {project_root}")
+        cloud_vector_manager.clear_project(user['id'], project_id)
+        
+        # Step 2: Trigger fresh indexing by calling the embed endpoint internally
+        # This will cause the frontend to scan and send files
+        return jsonify({
+            "success": True, 
+            "action": "reindex_project",
+            "message": f"Project cleared. Please trigger indexing from Godot to complete re-indexing.",
+            "project_id": project_id
+        })
+        
+    except Exception as e:
+        print(f"REINDEX ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/clear_project_debug', methods=['POST'])
+def clear_project_debug():
+    """Debug endpoint to clear project data - bypasses auth for testing"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+        
+    # FOR DEBUG: Create a fake user to bypass auth
+    user = {"id": "debug_user"}
+        
+    data = request.json or {}
+    project_root = data.get('project_root') or os.getcwd()
+    project_id = hashlib.md5(project_root.encode()).hexdigest()
+    
+    if cloud_vector_manager:
+        cloud_vector_manager.clear_project(user['id'], project_id)
+        return jsonify({"success": True, "message": f"Cleared project data for {project_id}"})
+    else:
+        return jsonify({"success": False, "message": "No vector manager available"})
+
 @app.route('/embed', methods=['POST'])
 def embed_endpoint():
     # Optional server key gate
@@ -2767,11 +3281,20 @@ def embed_endpoint():
         if cloud_vector_manager is None:
             return jsonify({
                 "success": False,
-                "error": "Vector indexing unavailable (configure GCP or ensure local index + OPENAI_API_KEY)",
+                "error": "Vector indexing unavailable (configure Weaviate or ensure local index + OPENAI_API_KEY)",
                 "action": action
             }), 501
 
         if action == 'index_project':
+            # In cloud deployment, frontend should send files via index_files action
+            if os.environ.get('FLASK_ENV') == 'production' or os.environ.get('GAE_ENV', '').startswith('standard'):
+                return jsonify({
+                    "success": False,
+                    "action": "index_project",
+                    "error": "index_project not supported in cloud deployment. Frontend should use index_files action with file content.",
+                    "project_id": project_id
+                }), 400
+            
             force_reindex = data.get('force_reindex', False)
             max_workers = data.get('max_workers')
             try:
@@ -2786,6 +3309,15 @@ def embed_endpoint():
             })
         
         elif action == 'index_file':
+            # In cloud deployment, frontend should send files via index_files action
+            if os.environ.get('FLASK_ENV') == 'production' or os.environ.get('GAE_ENV', '').startswith('standard'):
+                return jsonify({
+                    "success": False,
+                    "action": "index_file",
+                    "error": "index_file not supported in cloud deployment. Frontend should use index_files action with file content.",
+                    "project_id": project_id
+                }), 400
+            
             file_path = data.get('file_path')
             if not file_path:
                 return jsonify({"error": "file_path required for index_file action"}), 400
@@ -2945,7 +3477,7 @@ def search_project():
         if cloud_vector_manager is None:
             return jsonify({
                 "success": False,
-                "error": "Vector search unavailable (configure GCP or ensure local index + OPENAI_API_KEY)"
+                "error": "Vector search unavailable (configure Weaviate or ensure local index + OPENAI_API_KEY)"
             }), 501
         results = cloud_vector_manager.search(query, user['id'], project_id, max_results)
         # Filter out Godot sidecar UID files

@@ -1416,10 +1416,20 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 		return result;
 	}
 
-	// Wait for connection
+	// Wait for connection with timeout
+	int connection_timeout_ms = 10000; // 10 seconds timeout
+	int connection_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		connection_elapsed_ms += 1;
+		if (connection_elapsed_ms > connection_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Connection timeout after " + itos(connection_timeout_ms/1000) + " seconds";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Connection timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1451,10 +1461,20 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 		return result;
 	}
 
-	// Wait for response
+	// Wait for response with timeout
+	int response_timeout_ms = 60000; // 60 seconds timeout for AI response
+	int response_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		response_elapsed_ms += 1;
+		if (response_elapsed_ms > response_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Response timeout after " + itos(response_timeout_ms/1000) + " seconds. The AI is taking too long to process the edit.";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Response timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_BODY && http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1474,13 +1494,24 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 	int response_code = http_client->get_response_code();
 	PackedByteArray body;
 
+	int body_timeout_ms = 30000; // 30 seconds timeout for reading body
+	int body_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_BODY) {
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
 			OS::get_singleton()->delay_usec(1000);
+			body_elapsed_ms += 1;
+			if (body_elapsed_ms > body_timeout_ms) {
+				result["success"] = false;
+				result["message"] = "Timeout reading response body after " + itos(body_timeout_ms/1000) + " seconds";
+				memdelete(http_client);
+				print_line("APPLY_EDIT ERROR: Body read timeout");
+				return result;
+			}
 		} else {
 			body.append_array(chunk);
+			body_elapsed_ms = 0; // Reset timeout on progress
 		}
 	}
 
@@ -1549,10 +1580,20 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		return result;
 	}
 
-	// Wait for connection
+	// Wait for connection with timeout
+	int connection_timeout_ms = 10000; // 10 seconds timeout
+	int connection_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		connection_elapsed_ms += 1;
+		if (connection_elapsed_ms > connection_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Connection timeout after " + itos(connection_timeout_ms/1000) + " seconds";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Connection timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1625,10 +1666,20 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		return result;
 	}
 
-	// Wait for response
+	// Wait for response with timeout
+	int response_timeout_ms = 60000; // 60 seconds timeout for AI response
+	int response_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
 		OS::get_singleton()->delay_usec(1000);
+		response_elapsed_ms += 1;
+		if (response_elapsed_ms > response_timeout_ms) {
+			result["success"] = false;
+			result["message"] = "Response timeout after " + itos(response_timeout_ms/1000) + " seconds. The AI is taking too long to process the edit.";
+			memdelete(http_client);
+			print_line("APPLY_EDIT ERROR: Response timeout");
+			return result;
+		}
 	}
 
 	if (http_client->get_status() != HTTPClient::STATUS_BODY && http_client->get_status() != HTTPClient::STATUS_CONNECTED) {
@@ -1649,13 +1700,24 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	int response_code = http_client->get_response_code();
 	PackedByteArray body;
 
+	int body_timeout_ms = 30000; // 30 seconds timeout for reading body
+	int body_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_BODY) {
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
 			OS::get_singleton()->delay_usec(1000);
+			body_elapsed_ms += 1;
+			if (body_elapsed_ms > body_timeout_ms) {
+				result["success"] = false;
+				result["message"] = "Timeout reading response body after " + itos(body_timeout_ms/1000) + " seconds";
+				memdelete(http_client);
+				print_line("APPLY_EDIT ERROR: Body read timeout");
+				return result;
+			}
 		} else {
 			body.append_array(chunk);
+			body_elapsed_ms = 0; // Reset timeout on progress
 		}
 	}
 
@@ -2256,20 +2318,59 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
     Dictionary result;
     String path = p_args.get("path", "");
+    bool check_all = p_args.get("check_all", false);
+    String check_mode = String(p_args.get("check_mode", "scripts")).to_lower(); // "scripts" or "output"
     
-    if (path.is_empty()) {
+    // New mode: check all output errors
+    if (check_mode == "output") {
+        print_line("CHECK_COMPILATION_ERRORS: Checking all output errors");
+        Array errors;
+        
+        // Get runtime errors from the output panel
+        Dictionary runtime_args;
+        runtime_args["include_warnings"] = true;
+        runtime_args["max_count"] = 1000;
+        Dictionary runtime_result = get_runtime_errors(runtime_args);
+        Array runtime_errors = runtime_result.get("errors", Array());
+        
+        // Convert runtime errors to our format
+        for (int i = 0; i < runtime_errors.size(); i++) {
+            Dictionary runtime_error = runtime_errors[i];
+            Dictionary error_dict;
+            error_dict["type"] = runtime_error.get("is_warning", false) ? "warning" : "error";
+            error_dict["file"] = runtime_error.get("file", "Unknown");
+            error_dict["line"] = runtime_error.get("line", 0);
+            error_dict["column"] = runtime_error.get("column", 0);
+            error_dict["message"] = runtime_error.get("message", "Unknown error");
+            error_dict["source"] = "output";
+            errors.push_back(error_dict);
+        }
+        
+        // TODO: Add shader compilation errors, scene validation errors, etc.
+        
+        result["success"] = true;
+        result["errors"] = errors;
+        result["mode"] = "output";
+        result["message"] = "Found " + String::num_int64(errors.size()) + " errors/warnings in output";
+        return result;
+    }
+    
+    // Original mode: check script compilation errors
+    if (!check_all && path.is_empty()) {
         result["success"] = false;
-        result["message"] = "Path is required";
+        result["message"] = "Path is required when check_all is false";
         result["errors"] = Array();
         return result;
     }
     
-    print_line("CHECK_COMPILATION_ERRORS: Checking file - " + path);
+    print_line("CHECK_COMPILATION_ERRORS: Checking " + (check_all ? "all scripts" : "file - " + path));
     
-    // Simple approach: Try to reload the script and see if it fails
     Array errors;
     
-    if (path.get_extension() == "gd") {
+    if (check_all) {
+        // Check all script files in the project
+        _check_all_scripts_errors(errors);
+    } else if (path.get_extension() == "gd") {
         // Prefer unsaved preview overlay content if present
         Error file_err = OK;
         String file_content;
@@ -2360,10 +2461,122 @@ Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
     result["errors"] = errors;
     result["has_errors"] = errors.size() > 0;
     result["error_count"] = errors.size();
+    result["mode"] = "scripts";
     
     print_line("CHECK_COMPILATION_ERRORS: Found " + String::num_int64(errors.size()) + " errors in " + path);
     
     return result;
+}
+
+void EditorTools::_check_all_scripts_errors(Array &r_errors) {
+    // Get all script files in the project
+    List<String> script_files;
+    HashSet<String> extensions;
+    extensions.insert("gd");
+    extensions.insert("cs");
+    _get_all_project_files("res://", script_files, extensions);
+    
+    for (const String &script_path : script_files) {
+        if (script_path.get_extension() == "gd") {
+            // Check GDScript
+            Error file_err = OK;
+            String file_content = FileAccess::get_file_as_string(script_path, &file_err);
+            
+            if (file_err != OK) {
+                Dictionary error_dict;
+                error_dict["type"] = "file_error";
+                error_dict["file"] = script_path;
+                error_dict["line"] = 0;
+                error_dict["column"] = 0;
+                error_dict["message"] = "Failed to read file";
+                r_errors.push_back(error_dict);
+                continue;
+            }
+            
+            // Parse the script
+            GDScriptParser parser;
+            Error parse_err = parser.parse(file_content, script_path, false);
+            
+            // Get parser errors
+            const List<GDScriptParser::ParserError> &parser_errors = parser.get_errors();
+            for (const GDScriptParser::ParserError &error : parser_errors) {
+                Dictionary error_dict;
+                error_dict["type"] = "parser_error";
+                error_dict["file"] = script_path;
+                error_dict["line"] = error.line;
+                error_dict["column"] = error.column;
+                error_dict["message"] = error.message;
+                r_errors.push_back(error_dict);
+            }
+            
+            // Only continue to analysis if parsing succeeded
+            if (parse_err == OK && parser_errors.is_empty()) {
+                GDScriptAnalyzer analyzer(&parser);
+                analyzer.analyze();
+                
+                // Get analyzer errors
+                const List<GDScriptParser::ParserError> &analyzer_errors = parser.get_errors();
+                for (const GDScriptParser::ParserError &error : analyzer_errors) {
+                    // Skip duplicates
+                    bool already_collected = false;
+                    for (const GDScriptParser::ParserError &parse_error : parser_errors) {
+                        if (parse_error.line == error.line && parse_error.message == error.message) {
+                            already_collected = true;
+                            break;
+                        }
+                    }
+                    if (!already_collected) {
+                        Dictionary error_dict;
+                        error_dict["type"] = "analyzer_error";
+                        error_dict["file"] = script_path;
+                        error_dict["line"] = error.line;
+                        error_dict["column"] = error.column;
+                        error_dict["message"] = error.message;
+                        r_errors.push_back(error_dict);
+                    }
+                }
+            }
+        } else if (script_path.get_extension() == "cs") {
+            // C# placeholder
+            Dictionary info_dict;
+            info_dict["type"] = "info";
+            info_dict["file"] = script_path;
+            info_dict["line"] = 0;
+            info_dict["column"] = 0;
+            info_dict["message"] = "C# compilation checking not implemented";
+            r_errors.push_back(info_dict);
+        }
+    }
+}
+
+void EditorTools::_get_all_project_files(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions) {
+    Error err;
+    Ref<DirAccess> dir = DirAccess::open(p_path, &err);
+    if (err != OK) {
+        return;
+    }
+    
+    dir->list_dir_begin();
+    String file_name = dir->get_next();
+    
+    while (!file_name.is_empty()) {
+        String full_path = p_path.path_join(file_name);
+        
+        if (dir->current_is_dir() && !file_name.begins_with(".")) {
+            // Recurse into subdirectories
+            _get_all_project_files(full_path, r_files, p_extensions);
+        } else if (!dir->current_is_dir()) {
+            // Check if file has one of the desired extensions
+            String ext = file_name.get_extension().to_lower();
+            if (p_extensions.has(ext)) {
+                r_files.push_back(full_path);
+            }
+        }
+        
+        file_name = dir->get_next();
+    }
+    
+    dir->list_dir_end();
 }
 
 // --- Universal Tools Implementation ---
