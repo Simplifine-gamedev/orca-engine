@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Orca Engine Updates</title>
+    <link>https://simplifine-gamedev.github.io/orca-engine/appcast.xml</link>
+    <description>Update feed for Orca Engine</description>
+    <language>en</language>
+    <!--
+      This initial feed is a placeholder.
+      On each GitHub Release (published), the workflow at
+      .github/workflows/appcast.yml will overwrite this file with a
+      signed entry that points to your release asset (zip/dmg).
+    -->
+  </channel>
+</rss>
+
+
