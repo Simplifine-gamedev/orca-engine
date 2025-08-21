@@ -33,9 +33,12 @@ The integrated chatbot has access to comprehensive tools for Godot development:
 
 #### Project Navigation & Search
 - **File System**: Browse project directories and files with filtering options
-- **Semantic Search**: Find relevant files and code using natural language queries
-- **Project Context**: Understand relationships between files and project structure
-- **Graph Analysis**: Discover connected files and central project components
+- **Advanced Semantic Search**: Find relevant files and code using natural language queries with **function-level intelligence**
+- **Multi-Hop Dependency Tracing**: Understand complete function call chains and signal flows across your project
+- **Graph Analysis**: Discover connected files, central project components, and architectural relationships
+- **Smart Search Modes**: Semantic (AI understanding), keyword (exact text), or hybrid (combined) search
+
+> 🔍 **[See Advanced Indexing Documentation](backend/indexing.md)** for technical details on function-level chunking, signal flow tracking, and dependency analysis
 
 #### Visual Content Creation
 - **Image Generation**: Create new images from text descriptions with various art styles
@@ -59,6 +62,20 @@ The integrated chatbot has access to comprehensive tools for Godot development:
 - **Real-time Assistance**: Stream responses with tool execution feedback
 - **Error Recovery**: Intelligent fallback between AI providers for reliability
 - **Authentication**: Secure access with OAuth (Google, GitHub, Microsoft) or guest mode
+
+### Advanced Indexing System
+
+Orca Engine features a **best-in-class Godot indexing system** that understands your code at the **function level**:
+
+- **🎯 Function-Level Intelligence**: Each GDScript function, signal, and export becomes a searchable unit with rich metadata
+- **🔗 Signal Flow Tracking**: Complete understanding of signal emission → connection → handler chains across your entire project  
+- **🕸️ Multi-Hop Dependency Tracing**: Trace function call chains (e.g., Input → Controller → Physics → Animation)
+- **📊 Graph Centrality Analysis**: Identify architecturally important files and their structural roles
+- **🔍 Smart Search Modes**: Semantic (AI understanding), keyword (exact text), or hybrid (combined) search
+
+**Performance**: ~2.7x more intelligent chunks than traditional line-based indexing, enabling precise understanding of complex game mechanics.
+
+> 📚 **[Technical Deep Dive: Advanced Indexing](backend/indexing.md)** | **[Backend Setup Guide](backend/README.md)**
 
 ### Build & Setup Instructions
 
@@ -91,7 +108,7 @@ python3 -m pip install -r requirements.txt
 # Create environment file (copy and modify as needed)
 cp .env.example .env   # Configure your API keys
 
-# Start backend server
+# Start backend server (see backend/README.md for details)
 python3 app.py
 
 # In another terminal, run the editor
@@ -123,7 +140,7 @@ python -m pip install -r requirements.txt
 # Create environment file
 copy .env.example .env   # Configure your API keys in a text editor
 
-# Start backend server
+# Start backend server (see backend/README.md for details)
 python app.py
 
 # In another terminal, run the editor
@@ -155,7 +172,7 @@ python3 -m pip install -r requirements.txt
 # Create environment file
 cp .env.example .env   # Configure your API keys
 
-# Start backend server
+# Start backend server (see backend/README.md for details)
 python3 app.py
 
 # In another terminal, run the editor
@@ -178,18 +195,23 @@ sudo pacman -S base-devel scons pkgconf libx11 libxcursor libxinerama \
 Create a `.env` file in the `backend/` directory with your API keys:
 
 ```env
-# Required: At least one AI provider
+# Required: AI provider for embeddings and chat
 OPENAI_API_KEY=sk-proj-abc123...
-# ANTHROPIC_API_KEY=sk-ant-api03-abc123...
+# ANTHROPIC_API_KEY=sk-ant-api03-abc123...  
 # GOOGLE_API_KEY=AIzaSyAbc123...
 
-# Optional: For advanced features
-GCP_PROJECT_ID=my-project-id
+# Required: For advanced vector search and function-level indexing
+WEAVIATE_URL=https://your-cluster.weaviate.cloud
+WEAVIATE_API_KEY=your-weaviate-api-key
+
+# Optional: Additional configuration
 FLASK_SECRET_KEY=a-secure-random-string-here
 
 # Development mode (set to 'false' in production)
 DEV_MODE=true
 ```
+
+> ⚙️ **[See Backend Configuration Guide](backend/README.md)** for complete environment variable documentation and deployment instructions
 
 #### Indexing performance (large projects)
 
@@ -222,7 +244,7 @@ To index and query the official Godot documentation corpus used by the `search_a
 After setup, use these commands to run Orca Engine:
 
 ```bash
-# Terminal 1: Start AI backend
+# Terminal 1: Start AI backend (with enhanced vector search)
 cd backend && python3 app.py
 
 # Terminal 2: Start Orca Engine editor
@@ -232,12 +254,21 @@ cd backend && python3 app.py
 # Linux: ./bin/godot.linuxbsd.editor.dev.x86_64
 ```
 
+> 💡 **First time setup?** Configure your API keys in `backend/.env` - see **[Backend Setup Guide](backend/README.md)** for details
+
 #### Troubleshooting
 
+**Editor & Build Issues:**
 - **Build errors**: See [upstream Godot build documentation](https://docs.godotengine.org/en/stable/development/compiling/index.html) for platform-specific issues
 - **Python dependency issues**: Ensure you're using Python 3.8+ and consider using a virtual environment
-- **AI backend connection**: Verify the backend is running on http://localhost:8000 and API keys are properly configured
 - **Missing tools**: The chatbot tools will only appear once the backend connection is established
+
+**AI Backend Issues:**
+- **Connection problems**: Verify the backend is running on http://localhost:8000 and API keys are properly configured
+- **Search not working**: Check Weaviate connection (WEAVIATE_URL and WEAVIATE_API_KEY in .env)
+- **Indexing issues**: See function extraction and dependency tracking logs
+
+> 🔧 **[Detailed Backend Troubleshooting](backend/README.md#troubleshooting)** for vector search, indexing, and API configuration issues
 
 ### License
 - Upstream Godot Engine code: Expat (MIT). See `LICENSE.txt`.

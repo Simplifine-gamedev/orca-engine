@@ -19,7 +19,6 @@ import uuid
 import time
 import tempfile
 import hashlib
-from cloud_vector_manager import CloudVectorManager
 try:
     from weaviate_vector_manager import WeaviateVectorManager
 except Exception:
@@ -106,29 +105,20 @@ def get_model_friendly_name(model_id: str) -> str:
 # Initialize Authentication Manager
 auth_manager = AuthManager()
 
-# Initialize Vector Manager with priority: Weaviate -> GCP BigQuery -> Local
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID')
+# Initialize Vector Manager with priority: Weaviate -> Local
 WEAVIATE_URL = os.getenv('WEAVIATE_URL')
 WEAVIATE_API_KEY = os.getenv('WEAVIATE_API_KEY')
 cloud_vector_manager = None
 
-# Try Weaviate first (fastest option)
+# Try Weaviate first (fastest option with advanced features)
 if WEAVIATE_URL and WEAVIATE_API_KEY and WeaviateVectorManager and client is not None:
     try:
         cloud_vector_manager = WeaviateVectorManager(WEAVIATE_URL, WEAVIATE_API_KEY, client)
-        print(f"VECTOR_INDEX: Using Weaviate at {WEAVIATE_URL} (optimized for speed)")
+        print(f"VECTOR_INDEX: Using Weaviate at {WEAVIATE_URL} (function-level indexing + signal flows)")
     except Exception as e:
         print(f"VECTOR_INDEX: Weaviate init failed: {e}")
 
-# Fall back to GCP BigQuery
-if cloud_vector_manager is None and GCP_PROJECT_ID:
-    try:
-        cloud_vector_manager = CloudVectorManager(GCP_PROJECT_ID, client)
-        print("VECTOR_INDEX: Using BigQuery CloudVectorManager")
-    except Exception as e:
-        print(f"VECTOR_INDEX: CloudVectorManager init failed: {e}")
-
-# Final fallback to local
+# Fallback to local
 if cloud_vector_manager is None:
     if LocalVectorManager and client is not None:
         try:
@@ -822,7 +812,14 @@ def _enhance_search_with_graph(initial_results: list, query: str, user_id: str, 
         if include_graph:
             # Include both original and expanded files for centrality analysis
             all_expanded_paths = [f['file_path'] for f in expanded_files]
+            # Get files already in similar_files to avoid duplication
+            similar_file_paths = {f['file_path'] for f in final_results}
+            
             for file_path in all_expanded_paths:
+                # Skip if already in similar_files section
+                if file_path in similar_file_paths:
+                    continue
+                    
                 centrality = _calculate_centrality_score(file_path, graph_context)
                 if centrality > 0.3:  # High centrality threshold
                     central_files.append({
@@ -1161,6 +1158,8 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         # Get parameters
         max_results = arguments.get('max_results', 5)
         include_graph = bool(arguments.get('include_graph', True))
+        trace_dependencies = bool(arguments.get('trace_dependencies', False))
+        search_mode = arguments.get('search_mode', 'semantic')
         project_root = arguments.get('project_root')
         project_id = arguments.get('project_id')
         
@@ -1187,8 +1186,70 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         if not project_id:
             project_id = hashlib.md5(project_root.encode()).hexdigest()
         
-        # Search using cloud vector manager (initial semantic similarity)
-        initial_results = cloud_vector_manager.search(query, user['id'], project_id, max_results * 2)  # Get more for reranking
+        # Smart search mode detection with proper logging
+        detected_mode = search_mode
+        if search_mode == 'semantic':
+            query_lower = query.lower()
+            
+            # Explicit keyword request detection
+            if any(word in query_lower for word in ['keyword', 'exact', 'literal', 'find exact']):
+                detected_mode = 'keyword'
+                print(f"SEARCH_MODE_DETECTION: User explicitly requested KEYWORD search: {query}")
+            
+            # Hybrid search detection (semantic + keyword)
+            elif (any(pattern in query_lower for pattern in ['func ', 'function ', 'def ', 'class ', 'signal ']) or
+                  any(api in query_lower for api in ['set_velocity', 'move_and_slide', 'get_node', 'emit_signal']) or
+                  '"' in query or "'" in query or
+                  # Common exact searches
+                  query_lower in ['_ready', '_process', '_physics_process', '_input', 'add_vectors', 'try_jump']):
+                detected_mode = 'hybrid'
+                print(f"SEARCH_MODE_DETECTION: Auto-detected HYBRID search: {query}")
+            else:
+                print(f"SEARCH_MODE_DETECTION: Using SEMANTIC search: {query}")
+        else:
+            print(f"SEARCH_MODE_DETECTION: Using explicit {detected_mode.upper()} search: {query}")
+        
+        # Search using cloud vector manager with detected/selected mode
+        if detected_mode == 'keyword':
+            # Extract the actual search term from keyword requests
+            search_term = query
+            query_lower = query.lower()
+            
+            # Clean up keyword search queries
+            if 'keyword' in query_lower:
+                # Extract term after "keyword"
+                parts = query_lower.split('keyword')
+                if len(parts) > 1:
+                    search_term = parts[1].strip().split()[0] if parts[1].strip() else query
+            elif 'search for' in query_lower:
+                # Extract term after "search for"
+                parts = query_lower.split('search for')
+                if len(parts) > 1:
+                    remaining = parts[1].strip()
+                    if remaining.startswith('keyword'):
+                        remaining = remaining.replace('keyword', '').strip()
+                    search_term = remaining.split()[0] if remaining else query
+            
+            print(f"SEARCH_EXECUTION: Keyword search - extracted term '{search_term}' from query '{query}'")
+            initial_results = cloud_vector_manager.keyword_search(search_term, user['id'], project_id, max_results * 2)
+            print(f"SEARCH_EXECUTION: Performed pure KEYWORD search")
+        elif detected_mode == 'hybrid' and hasattr(cloud_vector_manager, 'hybrid_search'):
+            initial_results = cloud_vector_manager.hybrid_search(query, user['id'], project_id, max_results * 2)
+            print(f"SEARCH_EXECUTION: Performed HYBRID search")
+        elif trace_dependencies and hasattr(cloud_vector_manager, 'search_with_dependency_context'):
+            # Use enhanced search with dependency tracing
+            initial_results = cloud_vector_manager.search_with_dependency_context(
+                query, user['id'], project_id, max_results * 2, include_dependencies=True
+            )
+            print(f"SEARCH_EXECUTION: Performed DEPENDENCY-TRACED search")
+        else:
+            # Use standard semantic search
+            initial_results = cloud_vector_manager.search(query, user['id'], project_id, max_results * 2)  # Get more for reranking
+            print(f"SEARCH_EXECUTION: Performed standard SEMANTIC search")
+        
+        # NUCLEAR FILTER: Remove .import files from ALL search results (in case old junk persists in database)
+        initial_results = [r for r in initial_results if not r.get('file_path', '').endswith('.import')]
+        print(f"SEARCH_FILTER: Blocked .import files, {len(initial_results)} results remaining")
         
         # GRAPH-ENHANCED RANKING: Combine semantic similarity with graph intelligence
         enhanced_results = _enhance_search_with_graph(
@@ -1228,11 +1289,13 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         return {
             "success": True,
             "query": query,
+            "search_mode": detected_mode,
             "results": formatted_results,
             "include_graph": include_graph,
+            "trace_dependencies": trace_dependencies,
             "graph": graph_context,
             "file_count": len(enhanced_results['similar_files']),
-            "message": f"Found {len(enhanced_results['similar_files'])} relevant files for query: {query}"
+            "message": f"Found {len(enhanced_results['similar_files'])} relevant files using {detected_mode.upper()} search for query: {query}"
         }
         
     except Exception as e:
@@ -1840,6 +1903,17 @@ godot_tools = [
                     "project_id": {
                         "type": "string",
                         "description": "Stable project identifier to segregate indexes across machines (optional)."
+                    },
+                    "trace_dependencies": {
+                        "type": "boolean",
+                        "description": "Enable multi-hop dependency tracing to show what functions call/affect each other (default false).",
+                        "default": False
+                    },
+                    "search_mode": {
+                        "type": "string",
+                        "enum": ["semantic", "keyword", "hybrid"],
+                        "description": "Search mode: 'semantic' (AI understanding), 'keyword' (exact text), 'hybrid' (both). Default: semantic.",
+                        "default": "semantic"
                     }
                 },
                 "required": ["query"]
@@ -3207,7 +3281,7 @@ def embed_endpoint():
         if cloud_vector_manager is None:
             return jsonify({
                 "success": False,
-                "error": "Vector indexing unavailable (configure GCP or ensure local index + OPENAI_API_KEY)",
+                "error": "Vector indexing unavailable (configure Weaviate or ensure local index + OPENAI_API_KEY)",
                 "action": action
             }), 501
 
@@ -3403,7 +3477,7 @@ def search_project():
         if cloud_vector_manager is None:
             return jsonify({
                 "success": False,
-                "error": "Vector search unavailable (configure GCP or ensure local index + OPENAI_API_KEY)"
+                "error": "Vector search unavailable (configure Weaviate or ensure local index + OPENAI_API_KEY)"
             }), 501
         results = cloud_vector_manager.search(query, user['id'], project_id, max_results)
         # Filter out Godot sidecar UID files
