@@ -17,13 +17,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName",            "Godot Engine"
+            VALUE "CompanyName",            "Orca"
             VALUE "FileDescription",        GODOT_VERSION_NAME " (Console)"
             VALUE "FileVersion",            GODOT_VERSION_NUMBER
             VALUE "ProductName",            GODOT_VERSION_NAME " (Console)"
             VALUE "Licence",                "MIT"
             VALUE "LegalCopyright",         "(c) 2007-present Juan Linietsky, Ariel Manzur and Godot Engine contributors"
-            VALUE "Info",                   "https://godotengine.org"
+            VALUE "Info",                   "https://orca.engine"
             VALUE "ProductVersion",         GODOT_VERSION_FULL_BUILD
         END
     END
