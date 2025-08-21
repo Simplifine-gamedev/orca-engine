@@ -9,6 +9,8 @@
 #include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
+#include "core/templates/list.h"
+#include "core/templates/hash_set.h"
 
 class Node;
 
@@ -39,6 +41,8 @@ public:
 	static String _fix_malformed_content(const String &p_content);
 	static String _generate_unified_diff(const String &p_original, const String &p_modified, const String &p_file_path);
 	static Array _check_compilation_errors(const String &p_file_path, const String &p_content);
+	static void _check_all_scripts_errors(Array &r_errors);
+	static void _get_all_project_files(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions);
     static void set_api_endpoint(const String &p_endpoint);
 
     // Pending preview overlay management (in-memory edited content before save)

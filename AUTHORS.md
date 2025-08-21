@@ -1,11 +1,17 @@
+# Authors
+
+This file lists contributors in sections expected by the build system.
+
 ## Project Founders
-    Orca Team
+    Juan Linietsky
+    Ariel Manzur
 
 ## Lead Developer
-    Orca Team
+    Simplifine Maintainers
 
 ## Project Manager
-    Orca Team
+    Simplifine Maintainers
 
 ## Developers
-    Orca Contributors
+    Simplifine Team
+    Community Contributors (see CONTRIBUTORS.md)
