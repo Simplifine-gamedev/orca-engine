@@ -1,0 +1,151 @@
+name: build-macos-signed
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: ${{ vars.APP_NAME != '' && vars.APP_NAME || 'Orca' }}
+  BUNDLE_ID: ${{ vars.MACOS_BUNDLE_ID != '' && vars.MACOS_BUNDLE_ID || 'com.example.orca' }}
+  # Allow team ID from repo vars OR secrets (APPLE_TEAM_ID)
+  TEAM_ID: ${{ vars.MACOS_TEAM_ID != '' && vars.MACOS_TEAM_ID || secrets.APPLE_TEAM_ID }}
+  VERSION: ${{ github.run_number }}
+
+jobs:
+  build-sign-notarize:
+    name: macOS build, sign, notarize
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install scons
+
+      - name: Build editor (arm64)
+        run: |
+          set -euo pipefail
+          scons platform=macos target=editor dev_build=no arch=arm64 -j"$(sysctl -n hw.ncpu)"
+          ls -la ./bin || true
+
+      - name: Prepare .app bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          APP_NAME="${APP_NAME}"
+          BUNDLE_ID="${BUNDLE_ID}"
+          VERSION="${VERSION}"
+          TEMPLATE="misc/dist/macos_tools.app"
+          BIN="bin/godot.macos.editor.arm64"
+          [ -f "$BIN" ] || BIN="bin/godot.macos.editor.dev.arm64"
+          if [ ! -f "$BIN" ]; then
+            echo "Built binary not found (checked non-dev and dev names)" >&2
+            ls -la bin || true
+            exit 1
+          fi
+          cp -R "$TEMPLATE" "${APP_NAME}.app"
+          # Replace binary
+          install -m 755 "$BIN" "${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+          # Update Info.plist keys
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "${APP_NAME}.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "${APP_NAME}.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${APP_NAME}" "${APP_NAME}.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${APP_NAME}.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "${APP_NAME}.app/Contents/Info.plist"
+          echo "app-path=${APP_NAME}.app" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate to temporary keychain
+        # Support either MACOS_CERT_P12 or MACOS_CERTIFICATE_P12 secret names
+        if: ${{ (secrets.MACOS_CERT_P12 != '' || secrets.MACOS_CERTIFICATE_P12 != '') }}
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12 != '' && secrets.MACOS_CERT_P12 || secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD != '' && secrets.MACOS_CERT_P12_PASSWORD || secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="build.keychain"
+          echo "$CERT_P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+
+      - name: Codesign .app (hardened, runtime)
+        # Allow identity from either MACOS_CODESIGN_IDENTITY or infer from Team ID and app name
+        env:
+          IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY != '' && secrets.MACOS_CODESIGN_IDENTITY || format('Developer ID Application: {0} ({1})', env.APP_NAME, env.TEAM_ID) }}
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          ENTITLEMENTS="misc/dist/macos/editor.entitlements"
+          if [ ! -f "$ENTITLEMENTS" ]; then
+            echo "Entitlements not found at $ENTITLEMENTS" >&2
+            exit 1
+          fi
+          /usr/bin/codesign --force --options runtime --timestamp \
+            --entitlements "$ENTITLEMENTS" \
+            --sign "$IDENTITY" "$APP_PATH"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Create notarization zip
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${APP_PATH%.app}.zip"
+
+      - name: Notarize with notarytool (API key)
+        if: ${{ secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' && secrets.AC_API_PRIVATE_KEY_P8 != '' }}
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_PRIVATE_KEY_P8: ${{ secrets.AC_API_PRIVATE_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          echo "$AC_API_PRIVATE_KEY_P8" > /tmp/AuthKey.p8
+          ZIP_PATH="${{ steps.bundle.outputs.app-path }}"
+          ZIP_PATH="${ZIP_PATH%.app}.zip"
+          xcrun notarytool submit "$ZIP_PATH" \
+            --key "/tmp/AuthKey.p8" \
+            --key-id "$AC_API_KEY_ID" \
+            --issuer "$AC_API_ISSUER_ID" \
+            --wait
+
+      - name: Notarize with notarytool (Apple ID)
+        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && env.TEAM_ID != '' && (secrets.AC_API_KEY_ID == '' || secrets.AC_API_ISSUER_ID == '' || secrets.AC_API_PRIVATE_KEY_P8 == '') }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM_ID: ${{ env.TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ZIP_PATH="${{ steps.bundle.outputs.app-path }}"
+          ZIP_PATH="${ZIP_PATH%.app}.zip"
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$TEAM_ID" \
+            --wait
+
+      - name: Staple ticket
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+
+      - name: Upload signed app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-${{ env.APP_NAME }}.app
+          path: |
+            ${{ steps.bundle.outputs.app-path }}
+            ${{ steps.bundle.outputs.app-path%.app }}.zip
+
+
