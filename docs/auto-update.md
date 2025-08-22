@@ -43,3 +43,28 @@ ditto -c -k --sequesterRsrc --keepParent "/path/to/YourApp.app" "YourApp_1.2.3.z
 - No prompt: make sure `SUFeedURL` and `SUPublicEDKey` are set in `Info.plist`, and that your tag (e.g. `v1.2.3`) matches your app’s version.
 - Feed 404: confirm GitHub Pages is enabled for `main` → `/docs`.
 - Signature error: ensure the repo secret `SPARKLE_ED25519_PRIV_PEM` is set and publish a new Release.
+
+## Windows updates (WinSparkle)
+- WinSparkle is the Windows equivalent of Sparkle and supports the same appcast format.
+- Use a separate feed for Windows: `https://simplifine-gamedev.github.io/orca-engine/appcast-windows.xml`.
+
+One-time (Windows):
+- Integrate WinSparkle in your app and set the appcast URL:
+  - C/C++ (example):
+    ```c
+    #include <winsparkle.h>
+    int main() {
+        win_sparkle_set_appcast_url("https://simplifine-gamedev.github.io/orca-engine/appcast-windows.xml");
+        win_sparkle_init();
+        // your app loop...
+        win_sparkle_cleanup();
+        return 0;
+    }
+    ```
+  - To check at startup: call `win_sparkle_check_update_with_ui();` after init if desired.
+
+Per release (Windows):
+1) Build your installer (`.exe` or `.msi`).
+2) Create a GitHub Release (tag `vX.Y.Z`) and upload the installer as an asset.
+3) The workflow writes `docs/appcast-windows.xml` pointing to that asset (and adds a signature if configured).
+4) WinSparkle shows “Update available” and will download/run the installer.
