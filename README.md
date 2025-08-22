@@ -148,35 +148,25 @@ cd ..
 bin\godot.windows.editor.dev.x86_64.exe
 ```
 
-#### Linux Setup (Ubuntu/Debian)
+#### Linux (Ubuntu/Debian) — Simple Setup
 
+- Backend server (run in its own terminal):
 ```bash
-# Install build dependencies
+cd orca-engine/backend
+python3 -m pip install -r requirements.txt
+cp .env.example .env   # add your API keys
+python3 app.py         # keep this terminal running
+```
+
+- Godot editor (build and run):
+```bash
 sudo apt update
-sudo apt install build-essential scons pkg-config libx11-dev libxcursor-dev \
-    libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev \
-    libpulse-dev libudev-dev libxi-dev libxrandr-dev python3 python3-pip
+sudo apt install -y build-essential scons pkg-config libx11-dev libxcursor-dev \
+  libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev \
+  libpulse-dev libudev-dev libxi-dev libxrandr-dev python3 python3-pip
 
-# Verify Python version
-python3 --version   # Should be 3.8+
-
-# Clone and build Godot editor
-git clone https://github.com/Simplifine-gamedev/orca-engine.git
 cd orca-engine/godot
 scons platform=linuxbsd target=editor dev_build=yes -j$(nproc)
-
-# Setup AI backend
-cd backend
-python3 -m pip install -r requirements.txt
-
-# Create environment file
-cp .env.example .env   # Configure your API keys
-
-# Start backend server (see backend/README.md for details)
-python3 app.py
-
-# In another terminal, run the editor
-cd ..
 ./bin/godot.linuxbsd.editor.dev.x86_64
 ```
 
