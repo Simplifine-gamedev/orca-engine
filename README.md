@@ -97,8 +97,8 @@ brew install scons pkg-config python3
 python3 --version   # Should be 3.8+
 
 # Clone and build Godot editor
-git clone https://github.com/yourusername/orca-engine.git
-cd godot
+git clone https://github.com/Simplifine-gamedev/orca-engine.git
+cd orca-engine/godot
 scons platform=macos target=editor dev_build=yes -j$(sysctl -n hw.ncpu)
 
 # Setup AI backend
@@ -129,8 +129,8 @@ scoop install python scons git
 python --version   # Should be 3.8+
 
 # Clone and build Godot editor
-git clone https://github.com/yourusername/orca-engine.git
-cd godot
+git clone https://github.com/Simplifine-gamedev/orca-engine.git
+cd orca-engine/godot
 scons platform=windows target=editor dev_build=yes -j%NUMBER_OF_PROCESSORS%
 
 # Setup AI backend
@@ -148,35 +148,25 @@ cd ..
 bin\godot.windows.editor.dev.x86_64.exe
 ```
 
-#### Linux Setup (Ubuntu/Debian)
+#### Linux (Ubuntu/Debian) — Simple Setup
 
+- Backend server (run in its own terminal):
 ```bash
-# Install build dependencies
-sudo apt update
-sudo apt install build-essential scons pkg-config libx11-dev libxcursor-dev \
-    libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev \
-    libpulse-dev libudev-dev libxi-dev libxrandr-dev python3 python3-pip
-
-# Verify Python version
-python3 --version   # Should be 3.8+
-
-# Clone and build Godot editor
-git clone https://github.com/yourusername/orca-engine.git
-cd godot
-scons platform=linuxbsd target=editor dev_build=yes -j$(nproc)
-
-# Setup AI backend
-cd backend
+cd orca-engine/backend
 python3 -m pip install -r requirements.txt
+cp .env.example .env   # add your API keys
+python3 app.py         # keep this terminal running
+```
 
-# Create environment file
-cp .env.example .env   # Configure your API keys
+- Godot editor (build and run):
+```bash
+sudo apt update
+sudo apt install -y build-essential scons pkg-config libx11-dev libxcursor-dev \
+  libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev \
+  libpulse-dev libudev-dev libxi-dev libxrandr-dev python3 python3-pip
 
-# Start backend server (see backend/README.md for details)
-python3 app.py
-
-# In another terminal, run the editor
-cd ..
+cd orca-engine/godot
+scons platform=linuxbsd target=editor dev_build=yes -j$(nproc)
 ./bin/godot.linuxbsd.editor.dev.x86_64
 ```
 
@@ -196,16 +186,16 @@ Create a `.env` file in the `backend/` directory with your API keys:
 
 ```env
 # Required: AI provider for embeddings and chat
-OPENAI_API_KEY=sk-proj-abc123...
-# ANTHROPIC_API_KEY=sk-ant-api03-abc123...  
-# GOOGLE_API_KEY=AIzaSyAbc123...
+OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+# ANTHROPIC_API_KEY=YOUR_ANTHROPIC_API_KEY
+# GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY
 
 # Required: For advanced vector search and function-level indexing
-WEAVIATE_URL=https://your-cluster.weaviate.cloud
-WEAVIATE_API_KEY=your-weaviate-api-key
+WEAVIATE_URL=https://YOUR-WEAVIATE-ENDPOINT
+WEAVIATE_API_KEY=YOUR_WEAVIATE_API_KEY
 
 # Optional: Additional configuration
-FLASK_SECRET_KEY=a-secure-random-string-here
+FLASK_SECRET_KEY=YOUR_RANDOM_SECRET_KEY
 
 # Development mode (set to 'false' in production)
 DEV_MODE=true
