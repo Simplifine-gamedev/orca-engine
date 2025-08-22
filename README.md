@@ -77,107 +77,46 @@ Orca Engine features a **best-in-class Godot indexing system** that understands 
 
 > 📚 **[Technical Deep Dive: Advanced Indexing](backend/indexing.md)** | **[Backend Setup Guide](backend/README.md)**
 
-### Build & Setup Instructions
+### Quick Start (Install, Build, Run)
 
-Orca Engine requires building both the Godot editor and setting up the AI backend server.
+Follow the commands for your platform. They clone the repo, build the editor, start the backend, and run Orca.
 
-#### Prerequisites
-
-**All Platforms:**
-- Python 3.8+ (for AI backend)
-- Git (for cloning repository)
-
-#### macOS Setup
-
+macOS:
 ```bash
-# Install build dependencies
-brew install scons pkg-config python3
-
-# Verify Python version
-python3 --version   # Should be 3.8+
-
-# Clone and build Godot editor
 git clone https://github.com/Simplifine-gamedev/orca-engine.git
-cd orca-engine/godot
-scons platform=macos target=editor dev_build=yes -j$(sysctl -n hw.ncpu)
-
-# Setup AI backend
-cd backend
-python3 -m pip install -r requirements.txt
-
-# Create environment file (copy and modify as needed)
-cp .env.example .env   # Configure your API keys
-
-# Start backend server (see backend/README.md for details)
-python3 app.py
-
-# In another terminal, run the editor
-cd ..
-./bin/godot.macos.editor.dev.arm64
+cd orca-engine
+brew install scons pkg-config python3 git
+scons platform=macos target=editor dev_build=yes -j"$(sysctl -n hw.ncpu)"
+# you can skip this if you would like to use our cloud hosted server completely, and skip to last line and just run ./bin/godot.linuxbsd.editor.dev.x86_64
+cd backend && python3 -m pip install -r requirements.txt && cp .env.example .env && python3 app.py
+# In a new terminal:
+cd orca-engine && ./bin/godot.macos.editor.dev.arm64
 ```
 
-#### Windows Setup
-
-```bash
-# Install dependencies (using scoop or chocolatey)
-# With Scoop:
-scoop install python scons git
-# Or with Chocolatey:
-# choco install python scons git
-
-# Verify Python version
-python --version   # Should be 3.8+
-
-# Clone and build Godot editor
+Windows (PowerShell):
+```powershell
 git clone https://github.com/Simplifine-gamedev/orca-engine.git
-cd orca-engine/godot
-scons platform=windows target=editor dev_build=yes -j%NUMBER_OF_PROCESSORS%
-
-# Setup AI backend
-cd backend
-python -m pip install -r requirements.txt
-
-# Create environment file
-copy .env.example .env   # Configure your API keys in a text editor
-
-# Start backend server (see backend/README.md for details)
-python app.py
-
-# In another terminal, run the editor
-cd ..
-bin\godot.windows.editor.dev.x86_64.exe
+cd orca-engine
+# If needed: scoop install python scons git   (or: choco install python scons git)
+scons platform=windows target=editor dev_build=yes -j $env:NUMBER_OF_PROCESSORS
+cd backend; python -m pip install -r requirements.txt; copy .env.example .env; python app.py
+# In a new terminal:
+cd orca-engine; .\bin\godot.windows.editor.dev.x86_64.exe
 ```
 
-#### Linux (Ubuntu/Debian) — Simple Setup
-
-- Backend server (run in its own terminal):
+Linux (Ubuntu/Debian):
 ```bash
-cd orca-engine/backend
-python3 -m pip install -r requirements.txt
-cp .env.example .env   # add your API keys
-python3 app.py         # keep this terminal running
-```
-
-- Godot editor (build and run):
-```bash
+git clone https://github.com/Simplifine-gamedev/orca-engine.git
+cd orca-engine
 sudo apt update
-sudo apt install -y build-essential scons pkg-config libx11-dev libxcursor-dev \
-  libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev libasound2-dev \
-  libpulse-dev libudev-dev libxi-dev libxrandr-dev python3 python3-pip
-
-cd orca-engine/godot
-scons platform=linuxbsd target=editor dev_build=yes -j$(nproc)
-./bin/godot.linuxbsd.editor.dev.x86_64
-```
-
-#### Linux Setup (Arch/Manjaro)
-
-```bash
-# Install build dependencies
-sudo pacman -S base-devel scons pkgconf libx11 libxcursor libxinerama \
-    mesa glu alsa-lib pulseaudio systemd libxi libxrandr python python-pip
-
-# Follow the same build steps as Ubuntu above
+sudo apt install -y build-essential scons pkg-config libx11-dev libxcursor-dev libxinerama-dev \
+  libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libxi-dev libxrandr-dev \
+  python3 python3-pip git
+scons platform=linuxbsd target=editor dev_build=yes -j"$(nproc)"
+# you can skip this if you would like to use our cloud hosted server completely, and skip to last line and just run ./bin/godot.linuxbsd.editor.dev.x86_64
+cd backend && python3 -m pip install -r requirements.txt && cp .env.example .env && python3 app.py
+# In a new terminal:
+cd orca-engine && ./bin/godot.linuxbsd.editor.dev.x86_64
 ```
 
 #### Environment Configuration
@@ -229,22 +168,7 @@ To index and query the official Godot documentation corpus used by the `search_a
 
 - [Godot Docs Search: Indexing and Querying](./godot_doc_search.md)
 
-#### Quick Start Commands
-
-After setup, use these commands to run Orca Engine:
-
-```bash
-# Terminal 1: Start AI backend (with enhanced vector search)
-cd backend && python3 app.py
-
-# Terminal 2: Start Orca Engine editor
-# Use the appropriate binary for your platform:
-# macOS: ./bin/godot.macos.editor.dev.arm64
-# Windows: bin\godot.windows.editor.dev.x86_64.exe  
-# Linux: ./bin/godot.linuxbsd.editor.dev.x86_64
-```
-
-> 💡 **First time setup?** Configure your API keys in `backend/.env` - see **[Backend Setup Guide](backend/README.md)** for details
+> 💡 **First time setup?** Configure your API keys in `backend/.env` — see **[Backend Setup Guide](backend/README.md)** for details
 
 #### Troubleshooting
 
