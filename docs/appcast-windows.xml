@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Orca Engine Updates (Windows)</title>
+    <link>https://simplifine-gamedev.github.io/orca-engine/appcast-windows.xml</link>
+    <description>Windows update feed for Orca Engine</description>
+    <language>en</language>
+    <!-- Placeholder. The GitHub Actions workflow will update this file on each Release with a .exe/.msi asset. -->
+  </channel>
+</rss>
+
+

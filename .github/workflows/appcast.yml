@@ -18,9 +18,11 @@ jobs:
           brew install sparkle gh
 
       - name: Setup private key (optional)
-        if: ${{ secrets.SPARKLE_ED25519_PRIV_PEM != '' }}
+        env:
+          SPARKLE_ED25519_PRIV_PEM: ${{ secrets.SPARKLE_ED25519_PRIV_PEM }}
+        if: env.SPARKLE_ED25519_PRIV_PEM != ''
         run: |
-          echo "${{ secrets.SPARKLE_ED25519_PRIV_PEM }}" > /tmp/ed25519_priv.pem
+          echo "$SPARKLE_ED25519_PRIV_PEM" > /tmp/ed25519_priv.pem
           chmod 600 /tmp/ed25519_priv.pem
 
       - name: Download release assets
@@ -30,7 +32,7 @@ jobs:
           mkdir -p dist
           gh release download "$GITHUB_REF_NAME" --dir dist || true
 
-      - name: Generate appcast
+      - name: Generate appcast (macOS)
         env:
           REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
@@ -72,11 +74,45 @@ jobs:
             echo '</rss>'
           } > docs/appcast.xml
 
-      - name: Commit appcast
+      - name: Generate appcast (Windows)
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          VERSION="${TAG#v}"
+          ASSET=$(ls dist/*.exe dist/*.msi 2>/dev/null | head -n1 || true)
+          if [ -z "$ASSET" ]; then
+            echo "No .exe or .msi asset found in release; skipping Windows appcast."
+            exit 0
+          fi
+          SIZE=$(stat -f%z "$ASSET" 2>/dev/null || wc -c < "$ASSET")
+          BASENAME=$(basename "$ASSET")
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${BASENAME}"
+          mkdir -p docs
+          {
+            echo '<?xml version="1.0" encoding="utf-8"?>'
+            echo '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">'
+            echo '  <channel>'
+            echo '    <title>Orca Engine Updates (Windows)</title>'
+            echo "    <link>https://${REPO%%/*}.github.io/${REPO##*/}/appcast-windows.xml</link>"
+            echo '    <description>Windows update feed for Orca Engine</description>'
+            echo '    <language>en</language>'
+            echo '    <item>'
+            echo "      <title>Version ${VERSION}</title>"
+            echo "      <sparkle:releaseNotesLink>https://github.com/${REPO}/releases/tag/${TAG}</sparkle:releaseNotesLink>"
+            echo "      <pubDate>$(date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>"
+            echo "      <enclosure url=\"${URL}\" sparkle:version=\"${VERSION}\" sparkle:os=\"windows\" length=\"${SIZE}\" type=\"application/octet-stream\"/>"
+            echo '    </item>'
+            echo '  </channel>'
+            echo '</rss>'
+          } > docs/appcast-windows.xml
+
+      - name: Commit appcasts
         run: |
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
-          git add docs/appcast.xml
+          git add docs/appcast.xml docs/appcast-windows.xml || true
           git commit -m "appcast ${TAG}" || exit 0
           git push
 
