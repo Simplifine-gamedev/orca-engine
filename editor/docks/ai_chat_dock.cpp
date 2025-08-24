@@ -376,7 +376,7 @@ void AIChatDock::_notification(int p_notification) {
 			
 			input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-			input_field->set_placeholder("Ask me anything about Godot...");
+			input_field->set_placeholder("Ask me anything about Orca...");
 			input_field->set_custom_minimum_size(Size2(0, 100)); // Minimum height for the input box
 			input_field->connect("text_changed", callable_mp(this, &AIChatDock::_on_input_text_changed));
 			input_field->connect("gui_input", callable_mp(this, &AIChatDock::_on_input_field_gui_input));
@@ -759,7 +759,6 @@ void AIChatDock::_on_edit_message_pressed(int p_message_index) {
 
     call_deferred("_scroll_to_bottom");
 }
-
 void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_message, int p_message_index) {
 	if (chat_container == nullptr) {
 		return;
@@ -1559,7 +1558,6 @@ void AIChatDock::_finalize_conversations_save() {
 	// Clear the chunked array to free memory
 	_chunked_conversations_array.clear();
 }
-
 void AIChatDock::_queue_delayed_save() {
 	// If a save is already scheduled, do nothing
 	if (save_pending) {
@@ -2353,7 +2351,6 @@ bool AIChatDock::can_drop_data(const Point2 &p_point, const Variant &p_data) con
 	
 	return false;
 }
-
 void AIChatDock::drop_data(const Point2 &p_point, const Variant &p_data) {
 	if (!can_drop_data(p_point, p_data)) {
 		return;
@@ -3032,7 +3029,6 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 	_add_message_to_chat("assistant", "");
 	return current_assistant_message_label; // _add_message_to_chat sets this.
 }
-
 void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     // Ensure counter is sane at the start of a batch
     if (pending_tool_tasks < 0) pending_tool_tasks = 0;
@@ -3757,7 +3753,6 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 
     // Single spacing strategy handled before each message; avoid adding an extra trailing spacer per message.
 }
-
 void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const AIChatDock::ChatMessage &p_message, int p_message_index) {
 	if (p_message_panel == nullptr) {
 		return;
@@ -4893,7 +4888,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				error_vbox->add_child(error_label);
 			}
 		}
-
 	} else if (p_tool_name == "image_operation" && p_success) {
 		// Special handling for image generation results
 		String base64_data = p_result.get("image_data", "");
@@ -6382,7 +6376,6 @@ void AIChatDock::_load_layout_from_config(Ref<ConfigFile> p_layout, const String
 		model = p_layout->get_value(p_section, "model");
 	}
 }
-
 // Conversation management methods
 void AIChatDock::_load_conversations() {
     // Recover from temp file if present and final missing
@@ -7104,7 +7097,6 @@ void AIChatDock::_handle_generated_image(const String &p_base64_data, const Stri
 	print_line("AI Chat: _handle_generated_image - calling deferred _display_generated_image_deferred");
 	call_deferred("_display_generated_image_deferred", p_base64_data, p_id);
 }
-
 void AIChatDock::_display_generated_image_deferred(const String &p_base64_data, const String &p_id) {
 	// Decode base64 to image
 	Vector<uint8_t> image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_base64_data);
@@ -7898,7 +7890,6 @@ void AIChatDock::_populate_scene_tree_recursive(Node *p_node, TreeItem *p_parent
 		}
 	}
 }
-
 String AIChatDock::_get_node_info_string(Node *p_node) {
 	if (!p_node) {
 		return "";
@@ -8689,7 +8680,6 @@ void AIChatDock::_connect_script_editor_signals() {
 		get_tree()->create_timer(0.5)->connect("timeout", callable_mp(this, &AIChatDock::_connect_script_editor_signals), CONNECT_ONE_SHOT);
 	}
 }
-
 void AIChatDock::_show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified) {
 	// Ensure signals are connected before showing diff
 	_connect_script_editor_signals();
