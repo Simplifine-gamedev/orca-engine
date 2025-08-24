@@ -5,11 +5,14 @@ concurrency:
   group: ${{ github.workflow }}|${{ github.ref_name }}
   cancel-in-progress: true
 
+env:
+  DISABLE_ORCA_CI: ${{ vars.DISABLE_ORCA_CI }}
+
 jobs:
   # First stage: Only static checks, fast and prevent expensive builds from running.
 
   static-checks:
-    if: ${{ vars.DISABLE_ORCA_CI != 'true' || github.run_attempt > 1 }}
+    if: ${{ env.DISABLE_ORCA_CI != 'true' || github.run_attempt > 1 }}
     name: 📊 Static checks
     uses: ./.github/workflows/static_checks.yml
     secrets: inherit
