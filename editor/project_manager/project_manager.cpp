@@ -140,18 +140,12 @@ void ProjectManager::_notification(int p_what) {
 // Utility data.
 
 Ref<Texture2D> ProjectManager::_file_dialog_get_icon(const String &p_path) {
-	if (p_path.get_extension().to_lower() == "godot") {
-		return singleton->icon_type_cache["GodotMonochrome"];
-	}
-
+	// Avoid using Godot-specific icons; fall back to a generic icon
 	return singleton->icon_type_cache["Object"];
 }
 
 Ref<Texture2D> ProjectManager::_file_dialog_get_thumbnail(const String &p_path) {
-	if (p_path.get_extension().to_lower() == "godot") {
-		return singleton->icon_type_cache["GodotFile"];
-	}
-
+	// Do not use Godot-specific thumbnails
 	return Ref<Texture2D>();
 }
 
@@ -234,7 +228,8 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SNAME("Background"), EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SceneStringName(panel), SNAME("TabContainer")));
 
-		title_bar_logo->set_button_icon(get_editor_theme_icon(SNAME("TitleBarLogo")));
+		// Avoid using the Godot title bar logo; show text instead
+		title_bar_logo->set_text(TTRC("Orca"));
 
 		_set_main_view_icon(MAIN_VIEW_PROJECTS, get_editor_theme_icon(SNAME("ProjectList")));
 		_set_main_view_icon(MAIN_VIEW_ASSETLIB, get_editor_theme_icon(SNAME("AssetLib")));
