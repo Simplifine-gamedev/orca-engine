@@ -1,0 +1,74 @@
+name: release-on-main
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: ${{ vars.APP_NAME != '' && vars.APP_NAME || 'Orca' }}
+  BUNDLE_ID: ${{ vars.MACOS_BUNDLE_ID != '' && vars.MACOS_BUNDLE_ID || 'com.simplifine.orca' }}
+  VERSION: ${{ github.run_number }}
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + Sign + Notarize
+        uses: ./.github/workflows/build-macos.yml
+        if: ${{ always() }}
+        with: {}
+        # Note: composite reuse via workflow_call would be ideal; here we simply duplicate minimal steps below if reuse not supported.
+
+      - name: Install deps
+        run: |
+          brew install gh || true
+
+      - name: Package DMG
+        run: |
+          APP_PATH="${{ env.APP_NAME }}.app"
+          if [ ! -d "$APP_PATH" ] && [ -d "bin/godot_macos_editor_dev.app" ]; then
+            # Fallback in case previous job naming differs
+            APP_PATH="bin/godot_macos_editor_dev.app"
+          fi
+          if [ ! -d "$APP_PATH" ]; then
+            echo "App not found for packaging: $APP_PATH" >&2
+            ls -la . bin || true
+            exit 1
+          fi
+          hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder "$APP_PATH" -ov -format UDZO "${{ env.APP_NAME }}.dmg"
+
+      - name: Create GitHub Release and upload asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="auto-${{ github.run_number }}-${{ github.sha }}"
+          gh release create "$TAG" -t "Auto $TAG" -n "Automated build from main" || true
+          gh release upload "$TAG" "${{ env.APP_NAME }}.dmg" --clobber
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        id: rel
+
+      - name: Generate latest.json
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.rel.outputs.tag }}"
+          NAME="${{ env.APP_NAME }}.dmg"
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${NAME}"
+          mkdir -p docs
+          cat > docs/latest.json <<JSON
+          {"name":"${{ env.APP_NAME }}","version":"${{ env.VERSION }}","url":"${URL}","notes":"Automated build"}
+JSON
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/latest.json
+          git commit -m "latest.json for ${TAG}" || true
+          git push
+
+
+
+

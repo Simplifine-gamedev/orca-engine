@@ -169,6 +169,381 @@
 #include "editor/translations/packed_scene_translation_parser_plugin.h"
 #include "editor/version_control/version_control_editor_plugin.h"
 
+#include "editor/editor_node.h"
+#include "core/io/http_client_tcp.h"
+#include "core/io/json.h"
+#include "scene/gui/dialogs.h"
+#include "scene/main/http_request.h"
+void EditorNode::_orca_check_for_updates() {
+    // Check for local test file first (for testing) - using absolute path for easier testing
+    String test_file = "/tmp/orca_test_update.json";
+    Ref<FileAccess> file = FileAccess::open(test_file, FileAccess::READ);
+    if (file.is_valid()) {
+        String text = file->get_as_text();
+        file->close();
+        print_line("Orca Update: Found test file, processing...");
+        _orca_process_update_manifest(text);
+        return;
+    } else {
+        print_line("Orca Update: No test file found at " + test_file + ", trying HTTP...");
+    }
+
+    // Fallback to hardcoded test URL for now
+    String manifest = "http://127.0.0.1:8000/latest.json";
+
+    // Very minimal synchronous fetch with HTTPClientTCP.
+    Ref<HTTPClientTCP> client;
+    client.instantiate();
+    String host = "127.0.0.1";
+    String path = "/latest.json";
+    
+    if (client->connect_to_host(host, 8000) != OK) return;
+    while (client->get_status() == HTTPClient::STATUS_CONNECTING || client->get_status() == HTTPClient::STATUS_RESOLVING) {
+        client->poll();
+        OS::get_singleton()->delay_usec(10000);
+    }
+    if (client->get_status() != HTTPClient::STATUS_CONNECTED) return;
+    Vector<String> headers;
+    headers.push_back("User-Agent: Orca-Updater");
+    Vector<uint8_t> empty_body;
+    client->request(HTTPClient::METHOD_GET, path, headers, empty_body.ptr(), 0);
+    while (client->get_status() == HTTPClient::STATUS_REQUESTING) {
+        client->poll();
+        OS::get_singleton()->delay_usec(10000);
+    }
+    if (client->get_status() != HTTPClient::STATUS_BODY && client->get_status() != HTTPClient::STATUS_CONNECTED) return;
+    PackedByteArray body;
+    while (client->get_status() == HTTPClient::STATUS_BODY) {
+        client->poll();
+        PackedByteArray chunk = client->read_response_body_chunk();
+        if (chunk.size() > 0) body.append_array(chunk);
+        OS::get_singleton()->delay_usec(10000);
+    }
+    String text = String::utf8((const char *)body.ptr(), body.size());
+    if (text.is_empty()) return;
+    _orca_process_update_manifest(text);
+}
+
+void EditorNode::_orca_process_update_manifest(const String &p_text) {
+    print_line("Orca Update: Processing manifest: " + p_text);
+    JSON json;
+    Error parse_err = json.parse(p_text);
+    if (parse_err != OK) {
+        print_line("Orca Update: JSON parse failed");
+        return;
+    }
+    Variant jsonv = json.get_data();
+    if (jsonv.get_type() != Variant::DICTIONARY) {
+        print_line("Orca Update: JSON is not a dictionary");
+        return;
+    }
+    Dictionary d = jsonv;
+    String remote_version = d.get("version", "");
+    String url = d.get("url", "");
+    if (remote_version.is_empty() || url.is_empty()) {
+        print_line("Orca Update: Missing version or URL");
+        return;
+    }
+    String local_version = String::num_int64(VERSION_TIMESTAMP);
+    print_line("Orca Update: Remote version: " + remote_version + ", Local version: " + local_version);
+    if (remote_version != local_version) {
+        AcceptDialog *dlg = memnew(AcceptDialog);
+        dlg->set_title(TTR("Update Available"));
+        dlg->set_text(TTR("A new version of Orca is available."));
+        dlg->add_button(TTR("Later"), false, "later");
+        dlg->set_ok_button_text(TTR("Download"));
+        dlg->connect("confirmed", callable_mp(this, &EditorNode::_orca_start_download).bind(url));
+        get_gui_base()->add_child(dlg);
+        dlg->popup_centered();
+    }
+}
+
+void EditorNode::_orca_open_url(const String &p_url) {
+    if (!p_url.is_empty()) {
+        OS::get_singleton()->shell_open(p_url);
+    }
+}
+
+void EditorNode::_orca_show_error(const String &p_message) {
+    AcceptDialog *dlg = memnew(AcceptDialog);
+    dlg->set_title(TTR("Update Error"));
+    dlg->set_text(p_message);
+    get_gui_base()->add_child(dlg);
+    dlg->popup_centered();
+}
+
+bool EditorNode::_orca_safety_checks() {
+    // 🚨 CRITICAL SAFETY CHECK: Prevent accidental deletion of development environment
+    String current_app_path = OS::get_singleton()->get_executable_path();
+    String app_bundle_path = current_app_path.get_base_dir().get_base_dir(); // Go up to .app bundle
+    
+    print_line("Orca Update: Performing safety checks...");
+    print_line("Orca Update: Current executable: " + current_app_path);
+    print_line("Orca Update: App bundle path: " + app_bundle_path);
+    
+    // 1. Check if we're running from a development build (not a .app bundle)
+    if (!current_app_path.ends_with(".app/Contents/MacOS/Orca")) {
+        _orca_show_error("SAFETY ABORT: Auto-update only works with packaged .app bundles, not development builds!");
+        print_line("🚨 SAFETY ABORT: Current path: " + current_app_path);
+        print_line("🚨 Expected pattern: *.app/Contents/MacOS/Orca");
+        return false;
+    }
+    
+    // 2. Check if app bundle path contains development indicators
+    if (app_bundle_path.find("Desktop") != -1 || app_bundle_path.find("godot") != -1 || 
+        app_bundle_path.find("src") != -1 || app_bundle_path.find("dev") != -1 ||
+        app_bundle_path.find("build") != -1 || app_bundle_path.find("bin") != -1) {
+        _orca_show_error("SAFETY ABORT: App bundle path looks like development environment!");
+        print_line("🚨 SAFETY ABORT: Suspicious app bundle path: " + app_bundle_path);
+        return false;
+    }
+    
+    // 3. Check if the app bundle actually exists and is a proper .app
+    if (!app_bundle_path.ends_with(".app")) {
+        _orca_show_error("SAFETY ABORT: Target is not a proper .app bundle!");
+        print_line("🚨 SAFETY ABORT: Invalid app bundle: " + app_bundle_path);
+        return false;
+    }
+    
+    // 4. Check if we're in a git repository (another dev indicator)
+    Ref<DirAccess> dir = DirAccess::open(app_bundle_path.get_base_dir());
+    if (dir.is_valid() && dir->file_exists(".git")) {
+        _orca_show_error("SAFETY ABORT: Cannot auto-update from within a git repository!");
+        print_line("🚨 SAFETY ABORT: Git repository detected in parent directory");
+        return false;
+    }
+    
+    // 5. Final confirmation - app must be in /Applications or ~/Applications
+    String parent_dir = app_bundle_path.get_base_dir();
+    if (!parent_dir.ends_with("/Applications") && !parent_dir.ends_with("Applications")) {
+        _orca_show_error("SAFETY ABORT: App must be in /Applications or ~/Applications for auto-update!");
+        print_line("🚨 SAFETY ABORT: App not in Applications folder: " + parent_dir);
+        return false;
+    }
+    
+    print_line("✅ SAFETY CHECKS PASSED: Safe to proceed with auto-update");
+    print_line("✅ Target app bundle: " + app_bundle_path);
+    return true;
+}
+
+void EditorNode::_orca_start_download(const String &p_url) {
+    print_line("Orca Update: Starting download from: " + p_url);
+    
+    // First run safety checks
+    if (!_orca_safety_checks()) {
+        return;
+    }
+    
+    // Show download progress dialog
+    AcceptDialog *dlg = memnew(AcceptDialog);
+    dlg->set_title(TTR("Downloading Update"));
+    dlg->set_text(TTR("Downloading update... Please wait."));
+    dlg->set_exclusive(true);
+    dlg->get_ok_button()->hide();
+    get_gui_base()->add_child(dlg);
+    dlg->popup_centered();
+    
+    // For now, just simulate the download process
+    // In a real implementation, we'd use HTTPRequest or similar
+    call_deferred("_orca_download_update", p_url);
+}
+
+void EditorNode::_orca_download_update(const String &p_url) {
+    print_line("Orca Update: Downloading from: " + p_url);
+    
+    // Create download directory
+    String download_dir = OS::get_singleton()->get_user_data_dir().path_join("updates");
+    Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+    if (dir.is_valid()) {
+        dir->make_dir_recursive(download_dir);
+    }
+    
+    // Extract filename from URL
+    String filename = p_url.get_file();
+    if (filename.is_empty()) {
+        filename = "Orca-update.dmg";
+    }
+    String download_path = download_dir.path_join(filename);
+    
+    // Create HTTPRequest node for downloading
+    HTTPRequest *request = memnew(HTTPRequest);
+    request->set_name("OrcaUpdateDownload");
+    add_child(request);
+    request->set_download_file(download_path);
+    request->set_use_threads(true);
+    
+    // Create progress dialog
+    AcceptDialog *progress = memnew(AcceptDialog);
+    progress->set_title(TTR("Downloading Update"));
+    progress->set_text(TTR("Downloading update... 0%"));
+    progress->set_exclusive(true);
+    progress->get_ok_button()->hide();
+    get_gui_base()->add_child(progress);
+    progress->popup_centered(Size2(400, 100));
+    
+    // Store progress dialog reference for updates
+    request->set_meta("progress_dialog", progress);
+    request->set_meta("download_path", download_path);
+    
+    // Connect signals
+    request->connect("request_completed", callable_mp(this, &EditorNode::_orca_download_completed));
+    request->connect("download_progress", callable_mp(this, &EditorNode::_orca_download_progress));
+    
+    // Start download
+    Error err = request->request(p_url);
+    if (err != OK) {
+        memdelete(progress);
+        memdelete(request);
+        _orca_show_error("Failed to start download: " + itos(err));
+    }
+}
+
+void EditorNode::_orca_download_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+    // Get HTTPRequest node and metadata
+    HTTPRequest *request = Object::cast_to<HTTPRequest>(get_node_or_null(NodePath("OrcaUpdateDownload")));
+    if (!request) {
+        return;
+    }
+    
+    // Get stored metadata
+    AcceptDialog *progress = Object::cast_to<AcceptDialog>(request->get_meta("progress_dialog", Variant()));
+    String p_dmg_path = request->get_meta("download_path", "");
+    
+    // Clean up progress dialog
+    if (progress) {
+        progress->queue_free();
+    }
+    
+    // Clean up HTTPRequest node
+    request->queue_free();
+    
+    if (p_result != HTTPRequest::RESULT_SUCCESS) {
+        _orca_show_error("Download failed: " + itos(p_result));
+        return;
+    }
+    
+    if (p_code != 200) {
+        _orca_show_error("Download failed with HTTP code: " + itos(p_code));
+        return;
+    }
+    
+    print_line("Orca Update: Download completed successfully to: " + p_dmg_path);
+    
+    // Verify the download exists
+    Ref<FileAccess> file = FileAccess::open(p_dmg_path, FileAccess::READ);
+    if (!file.is_valid()) {
+        _orca_show_error("Downloaded file not found!");
+        return;
+    }
+    file->close();
+    
+    // Proceed with installation
+    _orca_install_update(p_dmg_path);
+}
+
+void EditorNode::_orca_download_progress(int p_downloaded, int p_total) {
+    // Get HTTPRequest node
+    HTTPRequest *request = Object::cast_to<HTTPRequest>(get_node_or_null(NodePath("OrcaUpdateDownload")));
+    if (!request) {
+        return;
+    }
+    
+    // Get progress dialog from metadata
+    AcceptDialog *progress = Object::cast_to<AcceptDialog>(request->get_meta("progress_dialog", Variant()));
+    if (!progress || p_total <= 0) {
+        return;
+    }
+    
+    float percent = (float(p_downloaded) / float(p_total)) * 100.0;
+    
+    // Update dialog text with download progress
+    String text = vformat(TTR("Downloading update... %.0f%%\n%.1f MB / %.1f MB"), 
+        percent,
+        p_downloaded / 1048576.0, 
+        p_total / 1048576.0);
+    progress->set_text(text);
+}
+
+void EditorNode::_orca_install_update(const String &p_dmg_path) {
+    print_line("Orca Update: Installing from: " + p_dmg_path);
+    
+    // Double-check safety before any file operations
+    if (!_orca_safety_checks()) {
+        return;
+    }
+    
+    // Get current app bundle path
+    String current_app_path = OS::get_singleton()->get_executable_path();
+    String app_bundle_path = current_app_path.get_base_dir().get_base_dir();
+    
+    // Show installation dialog
+    AcceptDialog *dlg = memnew(AcceptDialog);
+    dlg->set_title(TTR("Installing Update"));
+    dlg->set_text(TTR("Installing update... The application will restart when complete."));
+    dlg->set_exclusive(true);
+    dlg->get_ok_button()->hide();
+    get_gui_base()->add_child(dlg);
+    dlg->popup_centered();
+    
+    // Create update script
+    String script_path = OS::get_singleton()->get_user_data_dir().path_join("update.sh");
+    String script_content = "#!/bin/bash\n"
+        "set -e\n"
+        "echo 'Orca Update: Starting installation...'\n"
+        "\n"
+        "# Wait for the app to fully exit\n"
+        "sleep 2\n"
+        "\n"
+        "# Mount the DMG\n"
+        "echo 'Mounting DMG...'\n"
+        "hdiutil attach -nobrowse -noautoopen \"" + p_dmg_path + "\"\n"
+        "MOUNT_POINT=$(hdiutil info | grep \"" + p_dmg_path + "\" | awk '{print $1}' | xargs hdiutil info -plist | plutil -extract 'images.0.system-entities.0.mount-point' raw -)\n"
+        "\n"
+        "# Backup current app\n"
+        "echo 'Backing up current app...'\n"
+        "if [ -d \"" + app_bundle_path + ".backup\" ]; then\n"
+        "    rm -rf \"" + app_bundle_path + ".backup\"\n"
+        "fi\n"
+        "mv \"" + app_bundle_path + "\" \"" + app_bundle_path + ".backup\"\n"
+        "\n"
+        "# Copy new app\n"
+        "echo 'Installing new version...'\n"
+        "cp -R \"$MOUNT_POINT/Orca.app\" \"" + app_bundle_path + "\"\n"
+        "\n"
+        "# Unmount DMG\n"
+        "echo 'Cleaning up...'\n"
+        "hdiutil detach \"$MOUNT_POINT\"\n"
+        "\n"
+        "# Remove backup if successful\n"
+        "rm -rf \"" + app_bundle_path + ".backup\"\n"
+        "\n"
+        "# Restart the app\n"
+        "echo 'Restarting Orca...'\n"
+        "open \"" + app_bundle_path + "\"\n"
+        "\n"
+        "# Clean up\n"
+        "rm -f \"" + p_dmg_path + "\"\n"
+        "rm -f \"" + script_path + "\"\n";
+    
+    // Write update script
+    Ref<FileAccess> script = FileAccess::open(script_path, FileAccess::WRITE);
+    if (!script.is_valid()) {
+        dlg->queue_free();
+        _orca_show_error("Failed to create update script!");
+        return;
+    }
+    script->store_string(script_content);
+    script->close();
+    
+    // Make script executable and run it
+    OS::get_singleton()->execute("chmod", { "+x", script_path });
+    OS::get_singleton()->create_process("/bin/bash", { script_path });
+    
+    // Exit the current app
+    OS::get_singleton()->set_exit_code(0);
+    get_tree()->quit();
+}
+
 #ifdef VULKAN_ENABLED
 #include "editor/shader/shader_baker/shader_baker_export_plugin_platform_vulkan.h"
 #endif
@@ -7246,6 +7621,14 @@ void EditorNode::_bind_methods() {
 
 	ClassDB::bind_method("stop_child_process", &EditorNode::stop_child_process);
 
+	// Orca: bind update check methods
+	ClassDB::bind_method(D_METHOD("_orca_check_for_updates"), &EditorNode::_orca_check_for_updates);
+	ClassDB::bind_method(D_METHOD("_orca_start_download", "url"), &EditorNode::_orca_start_download);
+	ClassDB::bind_method(D_METHOD("_orca_download_update", "url"), &EditorNode::_orca_download_update);
+	ClassDB::bind_method(D_METHOD("_orca_download_completed", "result", "response_code", "headers", "body"), &EditorNode::_orca_download_completed);
+	ClassDB::bind_method(D_METHOD("_orca_download_progress", "downloaded", "total"), &EditorNode::_orca_download_progress);
+	ClassDB::bind_method(D_METHOD("_orca_install_update", "dmg_path"), &EditorNode::_orca_install_update);
+
 	ADD_SIGNAL(MethodInfo("request_help_search"));
 	ADD_SIGNAL(MethodInfo("script_add_function_request", PropertyInfo(Variant::OBJECT, "obj"), PropertyInfo(Variant::STRING, "function"), PropertyInfo(Variant::PACKED_STRING_ARRAY, "args")));
 	ADD_SIGNAL(MethodInfo("resource_saved", PropertyInfo(Variant::OBJECT, "obj")));
@@ -8866,6 +9249,9 @@ EditorNode::EditorNode() {
 	add_child(system_theme_timer);
 	system_theme_timer->set_owner(get_owner());
 	system_theme_timer->set_autostart(true);
+
+	// Orca: schedule update check after editor UI is up.
+	call_deferred("_orca_check_for_updates");
 }
 
 EditorNode::~EditorNode() {
@@ -8915,6 +9301,8 @@ void EditorPluginList::make_visible(bool p_visible) {
 	for (int i = 0; i < plugins_list.size(); i++) {
 		plugins_list[i]->make_visible(p_visible);
 	}
+
+
 }
 
 void EditorPluginList::edit(Object *p_object) {

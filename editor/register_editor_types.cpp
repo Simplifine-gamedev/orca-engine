@@ -297,6 +297,9 @@ void register_editor_types() {
 	GLOBAL_DEF("editor/version_control/plugin_name", "");
 	GLOBAL_DEF("editor/version_control/autoload_on_startup", false);
 
+	// Orca: update checker manifest URL (project setting)
+	GLOBAL_DEF(PropertyInfo(Variant::STRING, "orca/update_manifest_url", PROPERTY_HINT_PLACEHOLDER_TEXT, "https://example.com/latest.json"), "");
+
 	EditorInterface::create();
 	Engine::Singleton ei_singleton = Engine::Singleton("EditorInterface", EditorInterface::get_singleton());
 	ei_singleton.editor_only = true;

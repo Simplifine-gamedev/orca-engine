@@ -739,6 +739,18 @@ public:
 
 	static EditorNode *get_singleton() { return singleton; }
 
+	// Orca: update check hook
+	void _orca_check_for_updates();
+	void _orca_process_update_manifest(const String &p_text);
+	void _orca_open_url(const String &p_url);
+	void _orca_start_download(const String &p_url);
+	void _orca_download_update(const String &p_url);
+	void _orca_download_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _orca_download_progress(int p_downloaded, int p_total);
+	void _orca_install_update(const String &p_dmg_path);
+	void _orca_show_error(const String &p_message);
+	bool _orca_safety_checks();
+
 	static EditorLog *get_log() { return singleton->log; }
 	static EditorData &get_editor_data() { return singleton->editor_data; }
 	static EditorFolding &get_editor_folding() { return singleton->editor_folding; }
