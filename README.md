@@ -77,9 +77,9 @@ Orca Engine features a **best-in-class Godot indexing system** that understands 
 
 > 📚 **[Technical Deep Dive: Advanced Indexing](backend/indexing.md)** | **[Backend Setup Guide](backend/README.md)**
 
-### Quick Start (Install, Build, Run)
+### Quick Start (Editor Only)
 
-Follow the commands for your platform. They clone the repo, build the editor, start the backend, and run Orca.
+Build and run the editor. The AI features connect to our cloud backend by default. No local backend setup is required.
 
 macOS:
 ```bash
@@ -87,9 +87,6 @@ git clone https://github.com/Simplifine-gamedev/orca-engine.git
 cd orca-engine
 brew install scons pkg-config python3 git
 scons platform=macos target=editor dev_build=yes -j"$(sysctl -n hw.ncpu)"
-# you can skip this if you would like to use our cloud hosted server completely, and skip to last line and just run ./bin/godot.linuxbsd.editor.dev.x86_64
-cd backend && python3 -m pip install -r requirements.txt && cp .env.example .env && python3 app.py
-# In a new terminal:
 cd orca-engine && ./bin/godot.macos.editor.dev.arm64
 ```
 
@@ -99,8 +96,6 @@ git clone https://github.com/Simplifine-gamedev/orca-engine.git
 cd orca-engine
 # If needed: scoop install python scons git   (or: choco install python scons git)
 scons platform=windows target=editor dev_build=yes -j $env:NUMBER_OF_PROCESSORS
-cd backend; python -m pip install -r requirements.txt; copy .env.example .env; python app.py
-# In a new terminal:
 cd orca-engine; .\bin\godot.windows.editor.dev.x86_64.exe
 ```
 
@@ -113,11 +108,17 @@ sudo apt install -y build-essential scons pkg-config libx11-dev libxcursor-dev l
   libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libxi-dev libxrandr-dev \
   python3 python3-pip git
 scons platform=linuxbsd target=editor dev_build=yes -j"$(nproc)"
-# you can skip this if you would like to use our cloud hosted server completely, and skip to last line and just run ./bin/godot.linuxbsd.editor.dev.x86_64
-cd backend && python3 -m pip install -r requirements.txt && cp .env.example .env && python3 app.py
-# In a new terminal:
 cd orca-engine && ./bin/godot.linuxbsd.editor.dev.x86_64
 ```
+
+Notes:
+- No Vulkan SDK required. The editor uses the platform default renderer (Metal on macOS, D3D12 on Windows, GLES3 on Linux). Vulkan is optional and not needed to build or run the editor.
+- To point the editor to a self-hosted backend instead of cloud, see the backend section below.
+
+### Backend (Optional Local / Cloud Deploy)
+
+- For local development or self-hosting, follow the **[Backend Setup Guide](backend/README.md)**. It covers environment variables, running locally, and deploying to Google Cloud Run via `backend/deploy.sh`.
+- For advanced indexing details (function-level chunks, dependency graphs), see **[backend/indexing.md](backend/indexing.md)**.
 
 #### Environment Configuration
 
@@ -164,11 +165,7 @@ Notes:
 
 ### Godot Docs Search (RAG)
 
-To index and query the official Godot documentation corpus used by the `search_across_godot_docs` tool, see:
-
-- [Godot Docs Search: Indexing and Querying](./godot_doc_search.md)
-
-> 💡 **First time setup?** Configure your API keys in `backend/.env` — see **[Backend Setup Guide](backend/README.md)** for details
+See **[Godot Docs Search: Indexing and Querying](./godot_doc_search.md)**.
 
 #### Troubleshooting
 
