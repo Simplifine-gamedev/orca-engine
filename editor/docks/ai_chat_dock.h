@@ -230,6 +230,10 @@ private:
 
 	RichTextLabel *current_assistant_message_label = nullptr;
 	String response_buffer;
+
+	// Auto-scroll state management
+	bool auto_scroll_at_bottom = true;
+
 	Array _chunked_messages; // For processing large conversations in chunks
 	Array _chunked_conversations_array; // For async saving
 	int _chunked_save_index = 0;
@@ -333,6 +337,11 @@ private:
 	void _clear_attachments();
 	String _get_timestamp();
 	void _scroll_to_bottom();
+	void _perform_scroll();
+	bool _is_at_bottom() const;
+	void _on_chat_scroll_changed(float p_value);
+	void _on_chat_content_min_size_changed();
+	void _scroll_to_bottom_smooth();
 
 	// Helper to truncate overly large text before sending to the model
 	String _truncate_text_for_context(const String &p_text, int p_max_chars = MAX_TEXT_ATTACHMENT_PREVIEW_CHARS);

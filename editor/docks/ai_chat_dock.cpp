@@ -86,6 +86,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_index_button_pressed"), &AIChatDock::_on_index_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_output_toggled"), &AIChatDock::_on_tool_output_toggled);
 	ClassDB::bind_method(D_METHOD("_on_tool_file_link_pressed", "path"), &AIChatDock::_on_tool_file_link_pressed);
+	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed", "value"), &AIChatDock::_on_chat_scroll_changed);
 
 	ClassDB::bind_method(D_METHOD("_on_attachment_menu_item_pressed"), &AIChatDock::_on_attachment_menu_item_pressed);
 	ClassDB::bind_method(D_METHOD("_on_attach_files_pressed"), &AIChatDock::_on_attach_files_pressed);
@@ -125,6 +126,15 @@ void AIChatDock::_bind_methods() {
     ClassDB::bind_method(D_METHOD("_perform_filesystem_scan_changes"), &AIChatDock::_perform_filesystem_scan_changes);
 	ClassDB::bind_method(D_METHOD("_on_embedding_status_tick"), &AIChatDock::_on_embedding_status_tick);
 	ClassDB::bind_method(D_METHOD("_show_diff_in_script_editor_deferred"), &AIChatDock::_show_diff_in_script_editor_deferred);
+
+	ClassDB::bind_method(D_METHOD("_scroll_to_bottom"), &AIChatDock::_scroll_to_bottom);
+	ClassDB::bind_method(D_METHOD("_perform_scroll"), &AIChatDock::_perform_scroll);
+	ClassDB::bind_method(D_METHOD("_is_at_bottom"), &AIChatDock::_is_at_bottom);
+	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed"), &AIChatDock::_on_chat_scroll_changed);
+	ClassDB::bind_method(D_METHOD("_on_chat_content_min_size_changed"), &AIChatDock::_on_chat_content_min_size_changed);
+	ClassDB::bind_method(D_METHOD("_scroll_to_bottom_smooth"), &AIChatDock::_scroll_to_bottom_smooth);
+
+	ADD_SIGNAL(MethodInfo("chat_gui_input", PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent")));
 }
 
 void AIChatDock::attach_external_file(const String &p_file_path) {
@@ -296,10 +306,16 @@ void AIChatDock::_notification(int p_notification) {
 			chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 			chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
 			add_child(chat_scroll);
+			
+			// Connect scroll change event
+			chat_scroll->get_v_scroll_bar()->connect("value_changed", callable_mp(this, &AIChatDock::_on_chat_scroll_changed), CONNECT_DEFERRED);
+			// Connect content size changes to auto-scroll when near bottom
+			// We connect after creating chat_container below
 
 			chat_container = memnew(VBoxContainer);
 			chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			chat_scroll->add_child(chat_container);
+			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
 			// Add a container for attachments just above the input field
 			VBoxContainer *bottom_panel = memnew(VBoxContainer);
@@ -597,7 +613,6 @@ void AIChatDock::_notification(int p_notification) {
 		} break;
 	}
 }
-
 void AIChatDock::_on_send_button_pressed() {
 	String message = input_field->get_text().strip_edges();
 	if (message.is_empty() || is_waiting_for_response) {
@@ -615,6 +630,9 @@ void AIChatDock::_on_send_button_pressed() {
 	is_waiting_for_response = true;
 	_update_ui_state();
 	
+	// Force auto-scroll to re-engage when user sends a message.
+	auto_scroll_at_bottom = true;
+
 	// Create message with attached files (lightweight operation)
 	AIChatDock::ChatMessage msg;
 	msg.role = "user";
@@ -625,7 +643,8 @@ void AIChatDock::_on_send_button_pressed() {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
 	_create_message_bubble(msg, chat_history.size() - 1);
-	
+	call_deferred("_scroll_to_bottom");
+
 	// Clear attachments immediately for instant feedback
 	_clear_attachments();
 	
@@ -636,7 +655,6 @@ void AIChatDock::_on_send_button_pressed() {
 	call_deferred("_process_send_request_async");
 	input_field->grab_focus();
 }
-
 void AIChatDock::_on_stop_button_pressed() {
 	print_line("AI Chat: Stop button pressed! is_waiting_for_response=" + String(is_waiting_for_response ? "true" : "false") + ", current_request_id='" + current_request_id + "'");
 
@@ -759,7 +777,6 @@ void AIChatDock::_on_edit_message_pressed(int p_message_index) {
 
     call_deferred("_scroll_to_bottom");
 }
-
 void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_message, int p_message_index) {
 	if (chat_container == nullptr) {
 		return;
@@ -1036,8 +1053,6 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 			_rebuild_conversation_ui(chat_history);
 		}
 	}
-	
-	call_deferred("_scroll_to_bottom");
 }
 
 // Embedding system code moved to ai_chat_dock_embeddings.cpp
@@ -1250,7 +1265,6 @@ void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const Pack
 		print_line("AI Chat: Authentication failed: " + String(response.get("error", "Unknown error")));
 	}
 }
-
 void AIChatDock::_update_user_status() {
 	if (_is_user_authenticated()) {
 		user_status_label->set_text(current_user_name);
@@ -1281,7 +1295,6 @@ void AIChatDock::_logout_user() {
 	_update_user_status();
 	print_line("AI Chat: User logged out - embedding system reset");
 }
-
 bool AIChatDock::_is_user_authenticated() const {
 	// Treat guest sessions as authenticated for indexing and chat.
 	if (current_user_id.begins_with("guest:")) {
@@ -1559,7 +1572,6 @@ void AIChatDock::_finalize_conversations_save() {
 	// Clear the chunked array to free memory
 	_chunked_conversations_array.clear();
 }
-
 void AIChatDock::_queue_delayed_save() {
 	// If a save is already scheduled, do nothing
 	if (save_pending) {
@@ -1879,7 +1891,6 @@ void AIChatDock::_populate_tree_recursive(EditorFileSystemDirectory *p_dir, Tree
 		}
 	}
 }
-
 void AIChatDock::_on_at_mention_item_selected() {
 	TreeItem *selected = at_mention_tree->get_selected();
 	if (!selected || selected->get_metadata(0).is_null()) {
@@ -1926,9 +1937,6 @@ void AIChatDock::_on_model_selected(int p_index) {
 		EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
 	}
 }
-
-
-
 void AIChatDock::_on_attachment_menu_item_pressed(int p_id) {
 	switch (p_id) {
 		case 0: // Files
@@ -2353,7 +2361,6 @@ bool AIChatDock::can_drop_data(const Point2 &p_point, const Variant &p_data) con
 	
 	return false;
 }
-
 void AIChatDock::drop_data(const Point2 &p_point, const Variant &p_data) {
 	if (!can_drop_data(p_point, p_data)) {
 		return;
@@ -2541,7 +2548,6 @@ void AIChatDock::_attach_dragged_nodes(const Array &p_nodes) {
 	
 	_update_attached_files_display();
 }
-
 String AIChatDock::_get_file_type_icon(const AttachedFile &p_file) {
 	// Check if this is a node attachment
 	if (p_file.is_node) {
@@ -2872,7 +2878,6 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 				// Saving happens when the message is complete or stopped
 			}
 		}
-		call_deferred("_scroll_to_bottom");
 	}
 
 	// This handles the final message of a stream.
@@ -2912,7 +2917,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 				}
 				
-				call_deferred("_scroll_to_bottom");
+				// CRITICAL: Save final assistant message content to prevent loss
+				_queue_delayed_save();
 				return;
 			}
 		}
@@ -3032,7 +3038,6 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 	_add_message_to_chat("assistant", "");
 	return current_assistant_message_label; // _add_message_to_chat sets this.
 }
-
 void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     // Ensure counter is sane at the start of a batch
     if (pending_tool_tasks < 0) pending_tool_tasks = 0;
@@ -3489,12 +3494,53 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 }
 
 void AIChatDock::_scroll_to_bottom() {
+	call_deferred("_perform_scroll");
+}
+
+void AIChatDock::_perform_scroll() {
 	if (chat_scroll) {
-		chat_scroll->ensure_control_visible(chat_container);
 		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
 		if (vbar) {
 			vbar->set_value(vbar->get_max());
 		}
+	}
+}
+
+bool AIChatDock::_is_at_bottom() const {
+	if (!chat_scroll) {
+		return true;
+	}
+	
+	VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+	if (!vbar) {
+		return true;
+	}
+	
+	// Consider user at bottom if within a small threshold of the end.
+	// End is when value + page >= max.
+	const float threshold = 20.0f;
+	const float value = vbar->get_value();
+	const float page = vbar->get_page();
+	const float max_value = vbar->get_max();
+	
+	return (max_value - (value + page)) <= threshold;
+}
+
+void AIChatDock::_on_chat_scroll_changed(float p_value) {
+	// Update auto-scroll state based on user's scroll position.
+	auto_scroll_at_bottom = _is_at_bottom();
+}
+
+void AIChatDock::_scroll_to_bottom_smooth() {
+	// For now, just use regular scroll_to_bottom
+	// TODO: Implement smooth scrolling animation
+	_scroll_to_bottom();
+}
+
+void AIChatDock::_on_chat_content_min_size_changed() {
+	// Only auto-scroll when the user is already at the bottom.
+	if (auto_scroll_at_bottom) {
+		call_deferred("_scroll_to_bottom");
 	}
 }
 
@@ -3561,7 +3607,6 @@ void AIChatDock::_on_tool_file_link_pressed(const String &p_path) {
     // Fallback: try generic load
     EditorNode::get_singleton()->load_scene(path);
 }
-
 void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message, int p_message_index) {
 	if (chat_container == nullptr) {
 		return;
@@ -3757,7 +3802,6 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 
     // Single spacing strategy handled before each message; avoid adding an extra trailing spacer per message.
 }
-
 void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const AIChatDock::ChatMessage &p_message, int p_message_index) {
 	if (p_message_panel == nullptr) {
 		return;
@@ -4749,7 +4793,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             }
             edit_vbox->add_child(errs);
         }
-
 	} else if (p_tool_name == "get_scene_tree_hierarchy" && p_success) {
 		VBoxContainer *hierarchy_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(hierarchy_vbox);
@@ -4893,7 +4936,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				error_vbox->add_child(error_label);
 			}
 		}
-
 	} else if (p_tool_name == "image_operation" && p_success) {
 		// Special handling for image generation results
 		String base64_data = p_result.get("image_data", "");
@@ -5306,7 +5348,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		}
 	}
 }
-
 void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_label_path) {
     if (p_path.is_empty()) {
         // Disable buttons in the corresponding tool bubble and keep content visible in view mode
@@ -5627,6 +5668,8 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 
 	// Create specific UI based on the tool that was called
 	_create_tool_specific_ui(content_vbox, p_tool_name, result, success, args);
+
+	tool_calls_ui_applied.insert(p_tool_call_id);
 }
 
 void AIChatDock::_on_tool_output_toggled(Control *p_content) {
@@ -6382,7 +6425,6 @@ void AIChatDock::_load_layout_from_config(Ref<ConfigFile> p_layout, const String
 		model = p_layout->get_value(p_section, "model");
 	}
 }
-
 // Conversation management methods
 void AIChatDock::_load_conversations() {
     // Recover from temp file if present and final missing
@@ -7017,7 +7059,6 @@ String AIChatDock::_get_mime_type_from_extension(const String &p_path) {
 	if (ext == "svg") return "image/svg+xml";
 	return "text/plain";
 }
-
 bool AIChatDock::_process_image_attachment(AttachedFile &p_file) {
 	Ref<Image> image = Image::load_from_file(p_file.path);
 	if (image.is_null() || image->is_empty()) {
@@ -7104,7 +7145,6 @@ void AIChatDock::_handle_generated_image(const String &p_base64_data, const Stri
 	print_line("AI Chat: _handle_generated_image - calling deferred _display_generated_image_deferred");
 	call_deferred("_display_generated_image_deferred", p_base64_data, p_id);
 }
-
 void AIChatDock::_display_generated_image_deferred(const String &p_base64_data, const String &p_id) {
 	// Decode base64 to image
 	Vector<uint8_t> image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_base64_data);
@@ -7898,7 +7938,6 @@ void AIChatDock::_populate_scene_tree_recursive(Node *p_node, TreeItem *p_parent
 		}
 	}
 }
-
 String AIChatDock::_get_node_info_string(Node *p_node) {
 	if (!p_node) {
 		return "";
@@ -8689,7 +8728,6 @@ void AIChatDock::_connect_script_editor_signals() {
 		get_tree()->create_timer(0.5)->connect("timeout", callable_mp(this, &AIChatDock::_connect_script_editor_signals), CONNECT_ONE_SHOT);
 	}
 }
-
 void AIChatDock::_show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified) {
 	// Ensure signals are connected before showing diff
 	_connect_script_editor_signals();
