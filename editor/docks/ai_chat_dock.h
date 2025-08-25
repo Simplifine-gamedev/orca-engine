@@ -343,6 +343,9 @@ private:
 	void _on_chat_content_min_size_changed();
 	void _scroll_to_bottom_smooth();
 
+	// Request completion helper
+	void _request_completed();
+
 	// Helper to truncate overly large text before sending to the model
 	String _truncate_text_for_context(const String &p_text, int p_max_chars = MAX_TEXT_ATTACHMENT_PREVIEW_CHARS);
 
