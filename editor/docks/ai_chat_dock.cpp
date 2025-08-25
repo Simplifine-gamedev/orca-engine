@@ -1200,7 +1200,6 @@ void AIChatDock::_check_authentication_status() {
 		print_line("AI Chat: Failed to check authentication status: " + String::num_int64(err));
 	}
 }
-
 void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
 	
@@ -1827,7 +1826,6 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 void AIChatDock::_on_input_text_changed() {
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
 }
-
 // --- At-Mention Implementation ---
 // This is actually not working rn! :/ 
 
@@ -2427,7 +2425,6 @@ void AIChatDock::_attach_dragged_files(const Vector<String> &p_files) {
 	// Use the existing attachment logic for internal project files
 	_on_files_selected(p_files);
 }
-
 void AIChatDock::_attach_external_files(const Vector<String> &p_files) {
 	for (int i = 0; i < p_files.size(); i++) {
 		String file_path = p_files[i];
@@ -2647,33 +2644,24 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		return;
 	}
 
-    if (data.has("status") && (data["status"] == "finished" || data["status"] == "completed")) {
-        stream_completed_successfully = true;
-        print_line("AI Chat: Server signaled end of stream");
+    if (data.has("status") && (data["status"] == "finished" || data["status"] == "completed" || data["status"] == "awaiting_frontend_action")) {
+        String status = data["status"];
+        print_line("AI Chat: Stream status: " + status);
 
-        // Finalize/save regardless of async state
-        if (current_conversation_index >= 0) {
-            conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
-            _queue_delayed_save();
+        if (status == "awaiting_frontend_action") {
+            // The backend has sent tool calls for us to execute.
+            // The stream is technically "done" from the backend's perspective for this request,
+            // but the overall operation is not complete. We keep the UI in a busy state.
+            http_status = STATUS_DONE;
+            // We don't call _request_completed() here because we are waiting for tool results.
+            // The UI should remain in a "streaming" state with the stop button visible.
+            print_line("AI Chat: Awaiting frontend tool execution.");
+            return; // Exit without calling _request_completed()
         }
 
-        // If async frontend tools (e.g., apply_edit) are still running, keep UI in waiting state
-        bool has_async_work = pending_tool_tasks > 0;
-        is_waiting_for_response = has_async_work ? true : false;
-        // Preserve the last valid request_id if async work is running so the Stop button stays enabled.
-        if (!has_async_work) {
-            stop_requested = false;
-            current_request_id = "";
-        }
-        _update_ui_state();
-        
-        // Ensure the HTTP connection is closed so the poll loop exits promptly.
-        if (http_client.is_valid()) {
-            http_client->close();
-        }
+        // For "completed" or "finished", we finalize the request.
+        _request_completed();
         http_status = STATUS_DONE;
-        current_assistant_message_label = nullptr;
-        set_process(false);
         return;
     }
 
@@ -6171,6 +6159,35 @@ void AIChatDock::_update_ui_state() {
 			new_conversation_button->set_disabled(false);
 		}
 	}
+}
+
+
+void AIChatDock::_request_completed() {
+	stream_completed_successfully = true;
+	print_line("AI Chat: Server signaled end of stream");
+
+	// Finalize/save regardless of async state
+	if (current_conversation_index >= 0) {
+		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+		_queue_delayed_save();
+	}
+
+	// If async frontend tools (e.g., apply_edit) are still running, keep UI in waiting state
+	bool has_async_work = pending_tool_tasks > 0;
+	is_waiting_for_response = has_async_work ? true : false;
+	// Preserve the last valid request_id if async work is running so the Stop button stays enabled.
+	if (!has_async_work) {
+		stop_requested = false;
+		current_request_id = "";
+	}
+	_update_ui_state();
+
+	// Ensure the HTTP connection is closed so the poll loop exits promptly.
+	if (http_client.is_valid()) {
+		http_client->close();
+	}
+	current_assistant_message_label = nullptr;
+	set_process(false);
 }
 
 String AIChatDock::_get_timestamp() {
