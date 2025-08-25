@@ -86,8 +86,8 @@ macOS:
 git clone https://github.com/Simplifine-gamedev/orca-engine.git
 cd orca-engine
 brew install scons pkg-config python3 git
-scons platform=macos target=editor dev_build=yes -j"$(sysctl -n hw.ncpu)"
-cd orca-engine && ./bin/godot.macos.editor.dev.arm64
+scons platform=macos target=editor dev_build=yes vulkan=no -j"$(sysctl -n hw.ncpu)"
+./bin/godot.macos.editor.dev.arm64
 ```
 
 Windows (PowerShell):
@@ -95,8 +95,8 @@ Windows (PowerShell):
 git clone https://github.com/Simplifine-gamedev/orca-engine.git
 cd orca-engine
 # If needed: scoop install python scons git   (or: choco install python scons git)
-scons platform=windows target=editor dev_build=yes -j $env:NUMBER_OF_PROCESSORS
-cd orca-engine; .\bin\godot.windows.editor.dev.x86_64.exe
+scons platform=windows target=editor dev_build=yes vulkan=no -j $env:NUMBER_OF_PROCESSORS
+.\bin\godot.windows.editor.dev.x86_64.exe
 ```
 
 Linux (Ubuntu/Debian):
@@ -107,8 +107,8 @@ sudo apt update
 sudo apt install -y build-essential scons pkg-config libx11-dev libxcursor-dev libxinerama-dev \
   libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libxi-dev libxrandr-dev \
   python3 python3-pip git
-scons platform=linuxbsd target=editor dev_build=yes -j"$(nproc)"
-cd orca-engine && ./bin/godot.linuxbsd.editor.dev.x86_64
+scons platform=linuxbsd target=editor dev_build=yes vulkan=no -j"$(nproc)"
+./bin/godot.linuxbsd.editor.dev.x86_64
 ```
 
 Notes:
