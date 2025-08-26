@@ -7861,6 +7861,7 @@ EditorNode::EditorNode() {
 	main_hsplit->add_child(center_vb);
 
 	center_vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	center_vb->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	center_split = memnew(DockSplitContainer);
 	center_split->set_name("DockVSplitCenter");

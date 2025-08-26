@@ -22,3 +22,4 @@ bin/*
 !bin/web_export/godot.editor.js
 !bin/web_export/godot.editor.wasm
 !bin/web_export/service.worker.js
+
