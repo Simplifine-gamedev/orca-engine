@@ -83,9 +83,12 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_at_mention_item_selected"), &AIChatDock::_on_at_mention_item_selected);
 	ClassDB::bind_method(D_METHOD("_on_input_field_gui_input"), &AIChatDock::_on_input_field_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_model_selected"), &AIChatDock::_on_model_selected);
+	ClassDB::bind_method(D_METHOD("_populate_cerebras_models"), &AIChatDock::_populate_cerebras_models);
+	ClassDB::bind_method(D_METHOD("_on_models_request_completed"), &AIChatDock::_on_models_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_index_button_pressed"), &AIChatDock::_on_index_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_output_toggled"), &AIChatDock::_on_tool_output_toggled);
 	ClassDB::bind_method(D_METHOD("_on_tool_file_link_pressed", "path"), &AIChatDock::_on_tool_file_link_pressed);
+	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed", "value"), &AIChatDock::_on_chat_scroll_changed);
 
 	ClassDB::bind_method(D_METHOD("_on_attachment_menu_item_pressed"), &AIChatDock::_on_attachment_menu_item_pressed);
 	ClassDB::bind_method(D_METHOD("_on_attach_files_pressed"), &AIChatDock::_on_attach_files_pressed);
@@ -118,6 +121,8 @@ void AIChatDock::_bind_methods() {
 	// Embedding system methods
 	ClassDB::bind_method(D_METHOD("_initialize_embedding_system"), &AIChatDock::_initialize_embedding_system);
 	ClassDB::bind_method(D_METHOD("_perform_initial_indexing"), &AIChatDock::_perform_initial_indexing);
+	ClassDB::bind_method(D_METHOD("_check_index_status_and_start_if_needed"), &AIChatDock::_check_index_status_and_start_if_needed);
+	ClassDB::bind_method(D_METHOD("_on_index_status_response"), &AIChatDock::_on_index_status_response);
 	ClassDB::bind_method(D_METHOD("_scan_and_index_project_files"), &AIChatDock::_scan_and_index_project_files);
 	ClassDB::bind_method(D_METHOD("_send_file_batch"), &AIChatDock::_send_file_batch);
 	ClassDB::bind_method(D_METHOD("_on_embedding_request_completed"), &AIChatDock::_on_embedding_request_completed);
@@ -125,6 +130,15 @@ void AIChatDock::_bind_methods() {
     ClassDB::bind_method(D_METHOD("_perform_filesystem_scan_changes"), &AIChatDock::_perform_filesystem_scan_changes);
 	ClassDB::bind_method(D_METHOD("_on_embedding_status_tick"), &AIChatDock::_on_embedding_status_tick);
 	ClassDB::bind_method(D_METHOD("_show_diff_in_script_editor_deferred"), &AIChatDock::_show_diff_in_script_editor_deferred);
+
+	ClassDB::bind_method(D_METHOD("_scroll_to_bottom"), &AIChatDock::_scroll_to_bottom);
+	ClassDB::bind_method(D_METHOD("_perform_scroll"), &AIChatDock::_perform_scroll);
+	ClassDB::bind_method(D_METHOD("_is_at_bottom"), &AIChatDock::_is_at_bottom);
+	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed"), &AIChatDock::_on_chat_scroll_changed);
+	ClassDB::bind_method(D_METHOD("_on_chat_content_min_size_changed"), &AIChatDock::_on_chat_content_min_size_changed);
+	ClassDB::bind_method(D_METHOD("_scroll_to_bottom_smooth"), &AIChatDock::_scroll_to_bottom_smooth);
+
+	ADD_SIGNAL(MethodInfo("chat_gui_input", PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent")));
 }
 
 void AIChatDock::attach_external_file(const String &p_file_path) {
@@ -176,6 +190,9 @@ void AIChatDock::_notification(int p_notification) {
 			model_dropdown->add_item("gpt-4o");
 			model_dropdown->add_item("claude-4");
 			model_dropdown->add_item("gemini-2.5");
+			// Add Cerebras models (high-speed inference) - will be populated dynamically
+			// Using [FAST] prefix to avoid emoji encoding issues
+			_populate_cerebras_models();
 			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
 			top_container->add_child(model_dropdown);
@@ -296,10 +313,16 @@ void AIChatDock::_notification(int p_notification) {
 			chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 			chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
 			add_child(chat_scroll);
+			
+			// Connect scroll change event
+			chat_scroll->get_v_scroll_bar()->connect("value_changed", callable_mp(this, &AIChatDock::_on_chat_scroll_changed), CONNECT_DEFERRED);
+			// Connect content size changes to auto-scroll when near bottom
+			// We connect after creating chat_container below
 
 			chat_container = memnew(VBoxContainer);
 			chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			chat_scroll->add_child(chat_container);
+			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
 			// Add a container for attachments just above the input field
 			VBoxContainer *bottom_panel = memnew(VBoxContainer);
@@ -432,15 +455,18 @@ void AIChatDock::_notification(int p_notification) {
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			if (EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
 				String saved_model = EditorSettings::get_singleton()->get_setting("ai_chat/model");
-				// Validate saved model against available models
-				if (saved_model != "gpt-5" && saved_model != "gpt-4o" && 
-					saved_model != "claude-4" && saved_model != "gemini-2.5") {
+				// Basic validation - allow base models and any [FAST] models
+				bool is_valid = (saved_model == "gpt-5" || saved_model == "gpt-4o" || 
+								saved_model == "claude-4" || saved_model == "gemini-2.5" ||
+								saved_model.begins_with("[FAST] "));
+				if (!is_valid) {
 					saved_model = "gpt-5"; // Fallback to default model
 				}
 				model = saved_model;
 				// Set the dropdown to the saved model
 				for (int i = 0; i < model_dropdown->get_item_count(); i++) {
-					if (model_dropdown->get_item_text(i) == saved_model) {
+					String dropdown_text = model_dropdown->get_item_text(i);
+					if (dropdown_text == saved_model) {
 						model_dropdown->select(i);
 						break;
 					}
@@ -597,7 +623,6 @@ void AIChatDock::_notification(int p_notification) {
 		} break;
 	}
 }
-
 void AIChatDock::_on_send_button_pressed() {
 	String message = input_field->get_text().strip_edges();
 	if (message.is_empty() || is_waiting_for_response) {
@@ -615,6 +640,9 @@ void AIChatDock::_on_send_button_pressed() {
 	is_waiting_for_response = true;
 	_update_ui_state();
 	
+	// Force auto-scroll to re-engage when user sends a message.
+	auto_scroll_at_bottom = true;
+
 	// Create message with attached files (lightweight operation)
 	AIChatDock::ChatMessage msg;
 	msg.role = "user";
@@ -625,7 +653,8 @@ void AIChatDock::_on_send_button_pressed() {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
 	_create_message_bubble(msg, chat_history.size() - 1);
-	
+	call_deferred("_scroll_to_bottom");
+
 	// Clear attachments immediately for instant feedback
 	_clear_attachments();
 	
@@ -636,7 +665,6 @@ void AIChatDock::_on_send_button_pressed() {
 	call_deferred("_process_send_request_async");
 	input_field->grab_focus();
 }
-
 void AIChatDock::_on_stop_button_pressed() {
 	print_line("AI Chat: Stop button pressed! is_waiting_for_response=" + String(is_waiting_for_response ? "true" : "false") + ", current_request_id='" + current_request_id + "'");
 
@@ -1035,8 +1063,6 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 			_rebuild_conversation_ui(chat_history);
 		}
 	}
-	
-	call_deferred("_scroll_to_bottom");
 }
 
 // Embedding system code moved to ai_chat_dock_embeddings.cpp
@@ -1184,7 +1210,6 @@ void AIChatDock::_check_authentication_status() {
 		print_line("AI Chat: Failed to check authentication status: " + String::num_int64(err));
 	}
 }
-
 void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
 	
@@ -1249,7 +1274,6 @@ void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const Pack
 		print_line("AI Chat: Authentication failed: " + String(response.get("error", "Unknown error")));
 	}
 }
-
 void AIChatDock::_update_user_status() {
 	if (_is_user_authenticated()) {
 		user_status_label->set_text(current_user_name);
@@ -1280,7 +1304,6 @@ void AIChatDock::_logout_user() {
 	_update_user_status();
 	print_line("AI Chat: User logged out - embedding system reset");
 }
-
 bool AIChatDock::_is_user_authenticated() const {
 	// Treat guest sessions as authenticated for indexing and chat.
 	if (current_user_id.begins_with("guest:")) {
@@ -1312,10 +1335,10 @@ void AIChatDock::_auto_verify_saved_credentials() {
 			// Verify with backend
 			_check_authentication_status();
 		} else {
-			print_line("AI Chat: ❌ Saved credentials found but incomplete");
+			print_line("AI Chat: Saved credentials found but incomplete");
 		}
 	} else {
-		print_line("AI Chat: ℹ️ No saved authentication credentials found");
+		print_line("AI Chat: No saved authentication credentials found");
 	}
 }
 
@@ -1382,15 +1405,13 @@ void AIChatDock::_ensure_project_indexing() {
 	if (!embedding_system_initialized) {
 		print_line("AI Chat: 📝 Initializing embedding system...");
 		_initialize_embedding_system();
+	} else if (!initial_indexing_done) {
+		print_line("AI Chat: 📝 Embedding system initialized but indexing not done. Checking index status...");
+		_check_index_status_and_start_if_needed();
 	} else {
-		print_line("AI Chat: 📝 Embedding system already initialized, forcing indexing...");
-		// Reset the flag to ensure fresh indexing
-		initial_indexing_done = false;
+		print_line("AI Chat: ✅ Embedding system already initialized and indexing complete. Skipping unnecessary re-index.");
+		return;
 	}
-	
-	print_line("AI Chat: ⏰ About to call deferred _perform_initial_indexing...");
-	// Start indexing immediately (deferred) regardless of init path
-	call_deferred("_perform_initial_indexing");
 }
 
 void AIChatDock::_process_send_request_async() {
@@ -1813,7 +1834,6 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 void AIChatDock::_on_input_text_changed() {
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
 }
-
 // --- At-Mention Implementation ---
 // This is actually not working rn! :/ 
 
@@ -1877,7 +1897,6 @@ void AIChatDock::_populate_tree_recursive(EditorFileSystemDirectory *p_dir, Tree
 		}
 	}
 }
-
 void AIChatDock::_on_at_mention_item_selected() {
 	TreeItem *selected = at_mention_tree->get_selected();
 	if (!selected || selected->get_metadata(0).is_null()) {
@@ -1919,14 +1938,13 @@ void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
 void AIChatDock::_on_model_selected(int p_index) {
 	if (model_dropdown) {
 		String selected_model = model_dropdown->get_item_text(p_index);
+		// Keep the full model name including [FAST] prefix for backend communication
 		model = selected_model;
+		print_line("AI Chat: Model selected: '" + selected_model + "' -> internal: '" + model + "'");
 		// Save the selected model to editor settings
 		EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
 	}
 }
-
-
-
 void AIChatDock::_on_attachment_menu_item_pressed(int p_id) {
 	switch (p_id) {
 		case 0: // Files
@@ -2115,6 +2133,84 @@ void AIChatDock::_on_reindex_response(int p_result, int p_response_code, const P
 	print_line("AI Chat: ▶️ Triggering _perform_initial_indexing directly...");
 	// Start fresh indexing directly
 	call_deferred("_perform_initial_indexing");
+}
+
+void AIChatDock::_check_index_status_and_start_if_needed() {
+	print_line("AI Chat: 🔍 Checking if project is already indexed...");
+	
+	// Construct server URL
+	String base_url = _get_embed_base_url();
+	
+	HTTPRequest *status_request = memnew(HTTPRequest);
+	get_parent()->add_child(status_request);
+	
+	// Set headers
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	headers.push_back("Authorization: Bearer " + auth_token);
+	headers.push_back("X-Machine-ID: " + get_machine_id());
+	headers.push_back("X-Project-Root: " + _get_project_root_path());
+	headers.push_back("X-User-ID: " + current_user_id);
+	
+	// Send request
+	Dictionary request_data;
+	request_data["project_root"] = _get_project_root_path();
+	
+	String json_string = JSON::stringify(request_data);
+	Error err = status_request->request(base_url + "/index_status", headers, HTTPClient::METHOD_POST, json_string);
+	
+	if (err != OK) {
+		print_line("AI Chat: ❌ Failed to check index status. Starting fresh indexing as fallback...");
+		status_request->queue_free();
+		call_deferred("_perform_initial_indexing");
+		return;
+	}
+	
+	// Connect response handler
+	status_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_index_status_response));
+}
+
+void AIChatDock::_on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	print_line("AI Chat: 📨 Index status response - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
+	
+	HTTPRequest *request_node = Object::cast_to<HTTPRequest>(get_children()[-1]);
+	if (request_node) {
+		request_node->queue_free();
+	}
+	
+	bool should_index = true; // Default to indexing if we can't determine status
+	
+	if (p_result == HTTPRequest::RESULT_SUCCESS && p_response_code == 200) {
+		String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+		
+		JSON json_parser;
+		Error parse_err = json_parser.parse(response_text);
+		
+		if (parse_err == OK) {
+			Dictionary response = json_parser.get_data();
+			bool indexed = response.get("indexed", false);
+			
+			if (indexed) {
+				Dictionary stats = response.get("stats", Dictionary());
+				int total_files = stats.get("total_files", 0);
+				print_line("AI Chat: ✅ Project already indexed with " + String::num_int64(total_files) + " files. Skipping re-index.");
+				
+				_set_embedding_status(String::num_int64(total_files) + " files already indexed", false);
+				initial_indexing_done = true;
+				should_index = false;
+			} else {
+				print_line("AI Chat: 📝 Project not indexed yet. Starting fresh indexing...");
+			}
+		} else {
+			print_line("AI Chat: ⚠️ Could not parse index status response. Starting indexing as fallback.");
+		}
+	} else {
+		print_line("AI Chat: ⚠️ Index status check failed. Starting indexing as fallback.");
+	}
+	
+	if (should_index) {
+		call_deferred("_perform_initial_indexing");
+	}
 }
 
 void AIChatDock::_on_scene_tree_node_selected() {
@@ -2417,7 +2513,6 @@ void AIChatDock::_attach_dragged_files(const Vector<String> &p_files) {
 	// Use the existing attachment logic for internal project files
 	_on_files_selected(p_files);
 }
-
 void AIChatDock::_attach_external_files(const Vector<String> &p_files) {
 	for (int i = 0; i < p_files.size(); i++) {
 		String file_path = p_files[i];
@@ -2538,7 +2633,6 @@ void AIChatDock::_attach_dragged_nodes(const Array &p_nodes) {
 	
 	_update_attached_files_display();
 }
-
 String AIChatDock::_get_file_type_icon(const AttachedFile &p_file) {
 	// Check if this is a node attachment
 	if (p_file.is_node) {
@@ -2638,33 +2732,24 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		return;
 	}
 
-    if (data.has("status") && (data["status"] == "finished" || data["status"] == "completed")) {
-        stream_completed_successfully = true;
-        print_line("AI Chat: Server signaled end of stream");
+    if (data.has("status") && (data["status"] == "finished" || data["status"] == "completed" || data["status"] == "awaiting_frontend_action")) {
+        String status = data["status"];
+        print_line("AI Chat: Stream status: " + status);
 
-        // Finalize/save regardless of async state
-        if (current_conversation_index >= 0) {
-            conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
-            _queue_delayed_save();
+        if (status == "awaiting_frontend_action") {
+            // The backend has sent tool calls for us to execute.
+            // The stream is technically "done" from the backend's perspective for this request,
+            // but the overall operation is not complete. We keep the UI in a busy state.
+            http_status = STATUS_DONE;
+            // We don't call _request_completed() here because we are waiting for tool results.
+            // The UI should remain in a "streaming" state with the stop button visible.
+            print_line("AI Chat: Awaiting frontend tool execution.");
+            return; // Exit without calling _request_completed()
         }
 
-        // If async frontend tools (e.g., apply_edit) are still running, keep UI in waiting state
-        bool has_async_work = pending_tool_tasks > 0;
-        is_waiting_for_response = has_async_work ? true : false;
-        // Preserve the last valid request_id if async work is running so the Stop button stays enabled.
-        if (!has_async_work) {
-            stop_requested = false;
-            current_request_id = "";
-        }
-        _update_ui_state();
-        
-        // Ensure the HTTP connection is closed so the poll loop exits promptly.
-        if (http_client.is_valid()) {
-            http_client->close();
-        }
+        // For "completed" or "finished", we finalize the request.
+        _request_completed();
         http_status = STATUS_DONE;
-        current_assistant_message_label = nullptr;
-        set_process(false);
         return;
     }
 
@@ -2869,7 +2954,6 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 				// Saving happens when the message is complete or stopped
 			}
 		}
-		call_deferred("_scroll_to_bottom");
 	}
 
 	// This handles the final message of a stream.
@@ -2909,7 +2993,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 				}
 				
-				call_deferred("_scroll_to_bottom");
+				// CRITICAL: Save final assistant message content to prevent loss
+				_queue_delayed_save();
 				return;
 			}
 		}
@@ -3485,12 +3570,53 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 }
 
 void AIChatDock::_scroll_to_bottom() {
+	call_deferred("_perform_scroll");
+}
+
+void AIChatDock::_perform_scroll() {
 	if (chat_scroll) {
-		chat_scroll->ensure_control_visible(chat_container);
 		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
 		if (vbar) {
 			vbar->set_value(vbar->get_max());
 		}
+	}
+}
+
+bool AIChatDock::_is_at_bottom() const {
+	if (!chat_scroll) {
+		return true;
+	}
+	
+	VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+	if (!vbar) {
+		return true;
+	}
+	
+	// Consider user at bottom if within a small threshold of the end.
+	// End is when value + page >= max.
+	const float threshold = 20.0f;
+	const float value = vbar->get_value();
+	const float page = vbar->get_page();
+	const float max_value = vbar->get_max();
+	
+	return (max_value - (value + page)) <= threshold;
+}
+
+void AIChatDock::_on_chat_scroll_changed(float p_value) {
+	// Update auto-scroll state based on user's scroll position.
+	auto_scroll_at_bottom = _is_at_bottom();
+}
+
+void AIChatDock::_scroll_to_bottom_smooth() {
+	// For now, just use regular scroll_to_bottom
+	// TODO: Implement smooth scrolling animation
+	_scroll_to_bottom();
+}
+
+void AIChatDock::_on_chat_content_min_size_changed() {
+	// Only auto-scroll when the user is already at the bottom.
+	if (auto_scroll_at_bottom) {
+		call_deferred("_scroll_to_bottom");
 	}
 }
 
@@ -3514,8 +3640,20 @@ String AIChatDock::_convert_to_godot_path(const String &p_path) {
         path = path.trim_suffix(".uid");
     }
     
+    // If not an engine path and not absolute, assume project-relative and prefix with res://
+    bool is_engine_path = path.begins_with("res://") || path.begins_with("user://");
+    bool is_windows_abs = (path.length() >= 2 && path[1] == ':');
+    bool is_absolute = path.begins_with("/") || path.begins_with("\\") || is_windows_abs;
+    if (!is_engine_path && !is_absolute) {
+        String normalized_rel = path.replace("\\", "/");
+        if (normalized_rel.begins_with("./")) {
+            normalized_rel = normalized_rel.substr(2);
+        }
+        path = String("res://") + normalized_rel;
+    }
+    
     // If path is absolute, try to convert to res:// when possible
-    if (path.begins_with("/") || path.begins_with("\\")) {
+    if (path.begins_with("/") || path.begins_with("\\") || is_windows_abs) {
         String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
         
         // Handle both forward and backward slashes
@@ -3557,7 +3695,6 @@ void AIChatDock::_on_tool_file_link_pressed(const String &p_path) {
     // Fallback: try generic load
     EditorNode::get_singleton()->load_scene(path);
 }
-
 void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message, int p_message_index) {
 	if (chat_container == nullptr) {
 		return;
@@ -4744,7 +4881,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             }
             edit_vbox->add_child(errs);
         }
-
 	} else if (p_tool_name == "get_scene_tree_hierarchy" && p_success) {
 		VBoxContainer *hierarchy_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(hierarchy_vbox);
@@ -4974,7 +5110,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                 // Extract a header line around chunk_start for readability
                 String node_hint;
                 if (file_path.ends_with(".tscn") || file_path.ends_with(".tres")) {
-                    String abs_path = ProjectSettings::get_singleton()->globalize_path(file_path);
+                    String fixed_path = _convert_to_godot_path(file_path);
+                    String abs_path = ProjectSettings::get_singleton()->globalize_path(fixed_path);
                     Ref<FileAccess> f = FileAccess::open(abs_path, FileAccess::READ);
                     if (f.is_valid()) {
                         // Read up to chunk_end, but only scan nearby lines for section header
@@ -5300,7 +5437,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		}
 	}
 }
-
 void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_label_path) {
     if (p_path.is_empty()) {
         // Disable buttons in the corresponding tool bubble and keep content visible in view mode
@@ -5621,6 +5757,8 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 
 	// Create specific UI based on the tool that was called
 	_create_tool_specific_ui(content_vbox, p_tool_name, result, success, args);
+
+	tool_calls_ui_applied.insert(p_tool_call_id);
 }
 
 void AIChatDock::_on_tool_output_toggled(Control *p_content) {
@@ -6122,6 +6260,35 @@ void AIChatDock::_update_ui_state() {
 			new_conversation_button->set_disabled(false);
 		}
 	}
+}
+
+
+void AIChatDock::_request_completed() {
+	stream_completed_successfully = true;
+	print_line("AI Chat: Server signaled end of stream");
+
+	// Finalize/save regardless of async state
+	if (current_conversation_index >= 0) {
+		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+		_queue_delayed_save();
+	}
+
+	// If async frontend tools (e.g., apply_edit) are still running, keep UI in waiting state
+	bool has_async_work = pending_tool_tasks > 0;
+	is_waiting_for_response = has_async_work ? true : false;
+	// Preserve the last valid request_id if async work is running so the Stop button stays enabled.
+	if (!has_async_work) {
+		stop_requested = false;
+		current_request_id = "";
+	}
+	_update_ui_state();
+
+	// Ensure the HTTP connection is closed so the poll loop exits promptly.
+	if (http_client.is_valid()) {
+		http_client->close();
+	}
+	current_assistant_message_label = nullptr;
+	set_process(false);
 }
 
 String AIChatDock::_get_timestamp() {
@@ -6875,6 +7042,11 @@ AIChatDock::AIChatDock() {
 	add_child(stop_http_request);
 	stop_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_stop_request_completed));
 
+	// HTTP request for models endpoint
+	models_http_request = memnew(HTTPRequest);
+	add_child(models_http_request);
+	models_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_models_request_completed));
+
 	diff_viewer = memnew(DiffViewer);
 	add_child(diff_viewer);
 	diff_viewer->connect("diff_accepted", callable_mp(this, &AIChatDock::_on_diff_accepted));
@@ -7010,7 +7182,6 @@ String AIChatDock::_get_mime_type_from_extension(const String &p_path) {
 	if (ext == "svg") return "image/svg+xml";
 	return "text/plain";
 }
-
 bool AIChatDock::_process_image_attachment(AttachedFile &p_file) {
 	Ref<Image> image = Image::load_from_file(p_file.path);
 	if (image.is_null() || image->is_empty()) {
@@ -8384,11 +8555,11 @@ void AIChatDock::_on_embedding_poll_tick() {
             return;
         }
     }
-    // If there were FS changes but nothing queued, scan and send files
+    // If there were FS changes but nothing queued, avoid aggressive full project scan
     if (pending_fs_changes) {
-        // Use cloud-ready approach: scan and send file content
-        _scan_and_index_project_files();
-        last_index_request_ms = OS::get_singleton()->get_ticks_msec();
+        print_line("AI Chat: 📁 FS changes detected but no specific files queued. Skipping full project scan to avoid unnecessary re-indexing.");
+        // Only clear the flag - don't trigger full project indexing for generic FS changes
+        // Real changes should be caught by the specific save handlers above
         pending_fs_changes = false;
     }
 }
@@ -8741,6 +8912,112 @@ void AIChatDock::_show_diff_in_script_editor_deferred(const String &p_path, cons
 	EditorInterface::get_singleton()->set_main_screen_editor("Script");
 	
 	print_line("AI Chat: Showing diff in script editor for " + p_path);
+}
+
+void AIChatDock::_populate_cerebras_models() {
+	// Fetch available models from backend
+	String base_url = _get_api_base_url();
+	String models_url = base_url + "/models";
+	
+	print_line("AI Chat: Fetching models from " + models_url);
+	
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	
+	Error err = models_http_request->request(models_url, headers, HTTPClient::METHOD_GET);
+	if (err != OK) {
+		print_line("AI Chat: Failed to request models: " + String::num_int64(err));
+	}
+}
+
+void AIChatDock::_on_models_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		print_line("AI Chat: Models request failed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
+		return;
+	}
+	
+	String response_text = String::utf8(reinterpret_cast<const char*>(p_body.ptr()), p_body.size());
+	
+	Ref<JSON> json;
+	json.instantiate();
+	Error parse_error = json->parse(response_text);
+	
+	if (parse_error != OK) {
+		print_line("AI Chat: Failed to parse models response: " + response_text);
+		return;
+	}
+	
+	Variant result = json->get_data();
+	if (result.get_type() != Variant::DICTIONARY) {
+		print_line("AI Chat: Invalid models response format");
+		return;
+	}
+	
+	Dictionary response = result;
+	if (!response.get("success", false)) {
+		print_line("AI Chat: Models request was not successful");
+		return;
+	}
+	
+	Array models = response.get("models", Array());
+	print_line("AI Chat: Received " + String::num_int64(models.size()) + " models from backend");
+	
+	// Clear existing Cerebras models from dropdown (keep base models)
+	int items_to_remove = 0;
+	for (int i = model_dropdown->get_item_count() - 1; i >= 0; i--) {
+		String item_text = model_dropdown->get_item_text(i);
+		if (item_text.begins_with("[FAST] ")) {
+			model_dropdown->remove_item(i);
+			items_to_remove++;
+		}
+	}
+	if (items_to_remove > 0) {
+		print_line("AI Chat: Removed " + String::num_int64(items_to_remove) + " old Cerebras models");
+	}
+	
+	// Add new models to dropdown
+	int added_models = 0;
+	for (int i = 0; i < models.size(); i++) {
+		Dictionary model_info = models[i];
+		String model_name = model_info.get("name", "");
+		String provider = model_info.get("provider", "");
+		
+		if (provider == "cerebras") {
+			model_dropdown->add_item(model_name);
+			added_models++;
+		}
+	}
+	
+	print_line("AI Chat: Added " + String::num_int64(added_models) + " Cerebras models to dropdown");
+}
+
+String AIChatDock::_get_api_base_url() {
+	String base_url;
+	String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+	if (is_dev.is_empty()) {
+		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
+	}
+	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+		base_url = "http://127.0.0.1:8000";
+	} else {
+		base_url = "https://gamechat.simplifine.com";
+	}
+	
+	// Allow override via editor settings or environment variable
+	if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+		String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+		if (!override_url.is_empty()) {
+			base_url = override_url;
+		}
+	} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+		base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+	}
+	
+	if (base_url.ends_with("/")) {
+		base_url = base_url.substr(0, base_url.length() - 1);
+	}
+	
+	return base_url;
 }
 
 AIChatDock::~AIChatDock() {
