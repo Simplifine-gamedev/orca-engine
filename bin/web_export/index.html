@@ -813,6 +813,38 @@ document.getElementById('startButton').onclick = function () {
 		startEditor(zip);
 	});
 };
+
+// AUTO-START ORCA ENGINE - Skip the launcher page
+window.addEventListener('load', function() {
+	console.log('Auto-starting Orca Engine...');
+	
+	// Update the UI to show loading state
+	var statusText = document.getElementById('status-notice');
+	if (statusText) {
+		statusText.innerHTML = 'Loading Orca Engine Editor...';
+	}
+	
+	// Hide unnecessary UI elements
+	var persistence = document.getElementById('persistence');
+	if (persistence) {
+		persistence.innerHTML = '<br><h2 style="color: #4fc3f7;">Orca Engine</h2><p>Initializing editor environment...</p>';
+	}
+	
+	// Auto-start the editor immediately
+	setTimeout(function() {
+		// Check if the button exists and is enabled
+		var startBtn = document.getElementById('startButton');
+		if (startBtn && !startBtn.disabled) {
+			startBtn.click();
+		} else {
+			// If button is disabled, show error
+			console.error('Cannot auto-start: Editor requirements not met');
+			if (persistence) {
+				persistence.innerHTML = '<br><h2 style="color: #ef4444;">Browser Compatibility Issue</h2><p>Your browser may not support SharedArrayBuffer or WebAssembly features required for Orca Engine.</p><p>Please use a modern browser like Chrome, Edge, or Firefox.</p>';
+			}
+		}
+	}, 100); // Start almost immediately
+});
 		</script>
 	</body>
 </html>
