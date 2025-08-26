@@ -4660,23 +4660,12 @@ int Main::start() {
 
 	if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON) && !has_icon && OS::get_singleton()->get_bundle_icon_path().is_empty()) {
 #if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED)
-		// Use transparent dock icon for macOS
-		Ref<Image> icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
-		if (icon.is_null() || icon->is_empty()) {
-			String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-			icon = Image::load_from_file(exe_dir.path_join("..").path_join("orcabranding/dock icon.png"));
-		}
-		
-		if (icon.is_null() || icon->is_empty()) {
-			// Fallback to embedded icon if dock icon can't be loaded
-			icon = memnew(Image(app_icon_png));
-		} else if (icon->get_width() != 256 || icon->get_height() != 256) {
-			icon->resize(256, 256, Image::INTERPOLATE_LANCZOS);
-		}
+		// Skip setting icon here for macOS tools build since we already set it earlier
+		// with transparent background in the boot splash section
 #else
 		Ref<Image> icon = memnew(Image(app_icon_png));
-#endif
 		DisplayServer::get_singleton()->set_icon(icon);
+#endif
 	}
 
 	if (movie_writer) {
