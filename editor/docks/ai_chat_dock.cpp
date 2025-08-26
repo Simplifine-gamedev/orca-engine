@@ -119,6 +119,8 @@ void AIChatDock::_bind_methods() {
 	// Embedding system methods
 	ClassDB::bind_method(D_METHOD("_initialize_embedding_system"), &AIChatDock::_initialize_embedding_system);
 	ClassDB::bind_method(D_METHOD("_perform_initial_indexing"), &AIChatDock::_perform_initial_indexing);
+	ClassDB::bind_method(D_METHOD("_check_index_status_and_start_if_needed"), &AIChatDock::_check_index_status_and_start_if_needed);
+	ClassDB::bind_method(D_METHOD("_on_index_status_response"), &AIChatDock::_on_index_status_response);
 	ClassDB::bind_method(D_METHOD("_scan_and_index_project_files"), &AIChatDock::_scan_and_index_project_files);
 	ClassDB::bind_method(D_METHOD("_send_file_batch"), &AIChatDock::_send_file_batch);
 	ClassDB::bind_method(D_METHOD("_on_embedding_request_completed"), &AIChatDock::_on_embedding_request_completed);
@@ -1325,10 +1327,10 @@ void AIChatDock::_auto_verify_saved_credentials() {
 			// Verify with backend
 			_check_authentication_status();
 		} else {
-			print_line("AI Chat: ❌ Saved credentials found but incomplete");
+			print_line("AI Chat: Saved credentials found but incomplete");
 		}
 	} else {
-		print_line("AI Chat: ℹ️ No saved authentication credentials found");
+		print_line("AI Chat: No saved authentication credentials found");
 	}
 }
 
@@ -1395,15 +1397,13 @@ void AIChatDock::_ensure_project_indexing() {
 	if (!embedding_system_initialized) {
 		print_line("AI Chat: 📝 Initializing embedding system...");
 		_initialize_embedding_system();
+	} else if (!initial_indexing_done) {
+		print_line("AI Chat: 📝 Embedding system initialized but indexing not done. Checking index status...");
+		_check_index_status_and_start_if_needed();
 	} else {
-		print_line("AI Chat: 📝 Embedding system already initialized, forcing indexing...");
-		// Reset the flag to ensure fresh indexing
-		initial_indexing_done = false;
+		print_line("AI Chat: ✅ Embedding system already initialized and indexing complete. Skipping unnecessary re-index.");
+		return;
 	}
-	
-	print_line("AI Chat: ⏰ About to call deferred _perform_initial_indexing...");
-	// Start indexing immediately (deferred) regardless of init path
-	call_deferred("_perform_initial_indexing");
 }
 
 void AIChatDock::_process_send_request_async() {
@@ -2123,6 +2123,84 @@ void AIChatDock::_on_reindex_response(int p_result, int p_response_code, const P
 	print_line("AI Chat: ▶️ Triggering _perform_initial_indexing directly...");
 	// Start fresh indexing directly
 	call_deferred("_perform_initial_indexing");
+}
+
+void AIChatDock::_check_index_status_and_start_if_needed() {
+	print_line("AI Chat: 🔍 Checking if project is already indexed...");
+	
+	// Construct server URL
+	String base_url = _get_embed_base_url();
+	
+	HTTPRequest *status_request = memnew(HTTPRequest);
+	get_parent()->add_child(status_request);
+	
+	// Set headers
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	headers.push_back("Authorization: Bearer " + auth_token);
+	headers.push_back("X-Machine-ID: " + get_machine_id());
+	headers.push_back("X-Project-Root: " + _get_project_root_path());
+	headers.push_back("X-User-ID: " + current_user_id);
+	
+	// Send request
+	Dictionary request_data;
+	request_data["project_root"] = _get_project_root_path();
+	
+	String json_string = JSON::stringify(request_data);
+	Error err = status_request->request(base_url + "/index_status", headers, HTTPClient::METHOD_POST, json_string);
+	
+	if (err != OK) {
+		print_line("AI Chat: ❌ Failed to check index status. Starting fresh indexing as fallback...");
+		status_request->queue_free();
+		call_deferred("_perform_initial_indexing");
+		return;
+	}
+	
+	// Connect response handler
+	status_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_index_status_response));
+}
+
+void AIChatDock::_on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	print_line("AI Chat: 📨 Index status response - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
+	
+	HTTPRequest *request_node = Object::cast_to<HTTPRequest>(get_children()[-1]);
+	if (request_node) {
+		request_node->queue_free();
+	}
+	
+	bool should_index = true; // Default to indexing if we can't determine status
+	
+	if (p_result == HTTPRequest::RESULT_SUCCESS && p_response_code == 200) {
+		String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+		
+		JSON json_parser;
+		Error parse_err = json_parser.parse(response_text);
+		
+		if (parse_err == OK) {
+			Dictionary response = json_parser.get_data();
+			bool indexed = response.get("indexed", false);
+			
+			if (indexed) {
+				Dictionary stats = response.get("stats", Dictionary());
+				int total_files = stats.get("total_files", 0);
+				print_line("AI Chat: ✅ Project already indexed with " + String::num_int64(total_files) + " files. Skipping re-index.");
+				
+				_set_embedding_status(String::num_int64(total_files) + " files already indexed", false);
+				initial_indexing_done = true;
+				should_index = false;
+			} else {
+				print_line("AI Chat: 📝 Project not indexed yet. Starting fresh indexing...");
+			}
+		} else {
+			print_line("AI Chat: ⚠️ Could not parse index status response. Starting indexing as fallback.");
+		}
+	} else {
+		print_line("AI Chat: ⚠️ Index status check failed. Starting indexing as fallback.");
+	}
+	
+	if (should_index) {
+		call_deferred("_perform_initial_indexing");
+	}
 }
 
 void AIChatDock::_on_scene_tree_node_selected() {
@@ -3552,8 +3630,20 @@ String AIChatDock::_convert_to_godot_path(const String &p_path) {
         path = path.trim_suffix(".uid");
     }
     
+    // If not an engine path and not absolute, assume project-relative and prefix with res://
+    bool is_engine_path = path.begins_with("res://") || path.begins_with("user://");
+    bool is_windows_abs = (path.length() >= 2 && path[1] == ':');
+    bool is_absolute = path.begins_with("/") || path.begins_with("\\") || is_windows_abs;
+    if (!is_engine_path && !is_absolute) {
+        String normalized_rel = path.replace("\\", "/");
+        if (normalized_rel.begins_with("./")) {
+            normalized_rel = normalized_rel.substr(2);
+        }
+        path = String("res://") + normalized_rel;
+    }
+    
     // If path is absolute, try to convert to res:// when possible
-    if (path.begins_with("/") || path.begins_with("\\")) {
+    if (path.begins_with("/") || path.begins_with("\\") || is_windows_abs) {
         String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
         
         // Handle both forward and backward slashes
@@ -5010,7 +5100,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                 // Extract a header line around chunk_start for readability
                 String node_hint;
                 if (file_path.ends_with(".tscn") || file_path.ends_with(".tres")) {
-                    String abs_path = ProjectSettings::get_singleton()->globalize_path(file_path);
+                    String fixed_path = _convert_to_godot_path(file_path);
+                    String abs_path = ProjectSettings::get_singleton()->globalize_path(fixed_path);
                     Ref<FileAccess> f = FileAccess::open(abs_path, FileAccess::READ);
                     if (f.is_valid()) {
                         // Read up to chunk_end, but only scan nearby lines for section header
@@ -8449,11 +8540,11 @@ void AIChatDock::_on_embedding_poll_tick() {
             return;
         }
     }
-    // If there were FS changes but nothing queued, scan and send files
+    // If there were FS changes but nothing queued, avoid aggressive full project scan
     if (pending_fs_changes) {
-        // Use cloud-ready approach: scan and send file content
-        _scan_and_index_project_files();
-        last_index_request_ms = OS::get_singleton()->get_ticks_msec();
+        print_line("AI Chat: 📁 FS changes detected but no specific files queued. Skipping full project scan to avoid unnecessary re-indexing.");
+        // Only clear the flag - don't trigger full project indexing for generic FS changes
+        // Real changes should be caught by the specific save handlers above
         pending_fs_changes = false;
     }
 }
