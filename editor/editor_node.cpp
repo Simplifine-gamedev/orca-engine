@@ -7816,6 +7816,7 @@ EditorNode::EditorNode() {
 	gui_base->add_child(base_vbox);
 #else
 	gui_base->add_child(main_vbox);
+	main_vbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	title_bar = memnew(EditorTitleBar);
 	main_vbox->add_child(title_bar);
