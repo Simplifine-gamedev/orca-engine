@@ -7824,6 +7824,7 @@ EditorNode::EditorNode() {
 
 	left_l_hsplit = memnew(DockSplitContainer);
 	left_l_hsplit->set_name("DockHSplitLeftL");
+	left_l_hsplit->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	main_vbox->add_child(left_l_hsplit);
 
 	left_l_vsplit = memnew(DockSplitContainer);
