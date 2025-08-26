@@ -31,7 +31,14 @@ misc/hooks/pre-commit-custom-*
 
 # Buildsystem
 bin
+!bin/web_export/
 *.gen.*
+
+# Security - NEVER commit private keys
+.sparkle_keys/
+*.pem
+*.key
+*.p12
 compile_commands.json
 platform/windows/godot_res.res
 

@@ -52,6 +52,10 @@
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
 #include "main/main.h"
+#include "scene/gui/texture_rect.h"
+#include "scene/resources/image_texture.h"
+#include "scene/resources/style_box_flat.h"
+#include "core/io/image.h"
 #include "scene/gui/check_box.h"
 #include "scene/gui/flow_container.h"
 #include "scene/gui/line_edit.h"
@@ -228,8 +232,12 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SNAME("Background"), EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SceneStringName(panel), SNAME("TabContainer")));
 
-		// Avoid using the Godot title bar logo; show text instead
-		title_bar_logo->set_text(TTRC("Orca"));
+		// We replaced the clickable button with a static panel. Ensure no theme overrides try to set its icon/text.
+		if (title_bar_logo) {
+			title_bar_logo->set_text("");
+			title_bar_logo->set_button_icon(Ref<Texture2D>());
+			title_bar_logo->add_theme_icon_override(SNAME("icon"), Ref<Texture2D>());
+		}
 
 		_set_main_view_icon(MAIN_VIEW_PROJECTS, get_editor_theme_icon(SNAME("ProjectList")));
 		_set_main_view_icon(MAIN_VIEW_ASSETLIB, get_editor_theme_icon(SNAME("AssetLib")));
@@ -1345,7 +1353,8 @@ ProjectManager::ProjectManager() {
 	root_container->add_child(main_vbox);
 
 	// Title bar.
-	bool can_expand = bool(EDITOR_GET("interface/editor/expand_to_title")) && DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_EXTEND_TO_TITLE);
+	// Force extend-to-title when supported so native title text/buttons don't clash with our header.
+	bool can_expand = DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_EXTEND_TO_TITLE);
 
 	{
 		title_bar = memnew(EditorTitleBar);
@@ -1364,11 +1373,102 @@ ProjectManager::ProjectManager() {
 		left_hbox->set_stretch_ratio(1.0);
 		title_bar->add_child(left_hbox);
 
-		title_bar_logo = memnew(Button);
-		title_bar_logo->set_flat(true);
-		title_bar_logo->set_tooltip_text(TTR("About Orca"));
-		left_hbox->add_child(title_bar_logo);
-		title_bar_logo->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_show_about));
+		// Replace clickable logo button with a non-interactive white panel containing icons.
+		PanelContainer *logo_panel = memnew(PanelContainer);
+		left_hbox->add_child(logo_panel);
+		Ref<StyleBoxFlat> sb_logo;
+		sb_logo.instantiate();
+		sb_logo->set_bg_color(Color(1, 1, 1));
+		sb_logo->set_draw_center(true);
+		logo_panel->add_theme_style_override(SNAME("panel"), sb_logo);
+		logo_panel->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+		logo_panel->set_custom_minimum_size(Size2(96, 24) * EDSCALE);
+
+		HBoxContainer *logo_hbox = memnew(HBoxContainer);
+		logo_hbox->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
+		logo_hbox->set_alignment(BoxContainer::ALIGNMENT_BEGIN);
+		logo_panel->add_child(logo_hbox);
+
+		auto load_texture = [](const Vector<String> &candidates) -> Ref<Texture2D> {
+			for (const String &p : candidates) {
+				Ref<Image> img = Image::load_from_file(p);
+				if (img.is_valid() && !img->is_empty()) {
+					return ImageTexture::create_from_image(img);
+				}
+			}
+			return Ref<Texture2D>();
+		};
+
+		String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+		Vector<String> dock_icon_candidates;
+		dock_icon_candidates.push_back("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
+		dock_icon_candidates.push_back(exe_dir.path_join("..").path_join("orcabranding/dock icon.png"));
+
+		Vector<String> text_icon_candidates;
+		text_icon_candidates.push_back("/Users/egekaanduman/orca/orca-engine/orcabranding/orca_black_transparent.png");
+		text_icon_candidates.push_back(exe_dir.path_join("..").path_join("orcabranding/orca_black_transparent.png"));
+
+		Ref<Texture2D> dock_tex = load_texture(dock_icon_candidates);
+		Ref<Texture2D> text_tex = load_texture(text_icon_candidates);
+
+		TextureRect *dock_tr = memnew(TextureRect);
+		dock_tr->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		dock_tr->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
+		dock_tr->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
+		dock_tr->set_texture(dock_tex);
+		logo_hbox->add_child(dock_tr);
+
+		TextureRect *text_tr = memnew(TextureRect);
+		text_tr->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+		text_tr->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
+		text_tr->set_custom_minimum_size(Size2(56, 18) * EDSCALE);
+		text_tr->set_texture(text_tex);
+		logo_hbox->add_child(text_tr);
+
+		// No clickable behavior: remove old button reference.
+		title_bar_logo = nullptr;
+
+		// Recursively remove any leftover buttons/labels that say GODOT (defensive against upstream changes).
+		{
+			List<Node *> queue;
+			queue.push_back(title_bar);
+			while (!queue.is_empty()) {
+				Node *n = queue.front()->get();
+				queue.pop_front();
+				for (int i = 0; i < n->get_child_count(); i++) {
+					Node *c = n->get_child(i);
+					if (Button *b = Object::cast_to<Button>(c)) {
+						String t = b->get_text();
+						if (!t.is_empty() && t.findn("GODOT") != -1) {
+							b->queue_free();
+							continue;
+						}
+						String tt = b->get_tooltip_text();
+						if (!tt.is_empty() && tt.findn("Godot") != -1) {
+							b->queue_free();
+							continue;
+						}
+					}
+					queue.push_back(c);
+				}
+			}
+		}
+
+		// Safety: hide any leftover Godot-branded button if present in the title bar.
+		// Extra hard remove: delete any button with GODOT text to be safe.
+		Vector<Node *> to_delete;
+		for (int i = 0; i < title_bar->get_child_count(); i++) {
+			Button *btn = Object::cast_to<Button>(title_bar->get_child(i));
+			if (!btn) { continue; }
+			String t = btn->get_text();
+			if (!t.is_empty() && t.findn("GODOT") != -1) {
+				to_delete.push_back(btn);
+			}
+		}
+		for (Node *n : to_delete) {
+			title_bar->remove_child(n);
+			n->queue_free();
+		}
 
 		if (can_expand) {
 			// Spacer to center main toggles.
