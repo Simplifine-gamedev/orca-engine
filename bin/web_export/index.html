@@ -20,11 +20,15 @@
 		<meta property="og:image" name="twitter:image" content="https://orcaengine.ai/themes/godotengine/assets/og_image.png">
 		<meta property="og:type" content="website">
 		<meta name="twitter:card" content="summary">
-		<link id="-gd-engine-icon" rel="icon" type="image/png" href="favicon.png">
-		<link rel="apple-touch-icon" type="image/png" href="favicon.png">
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="orca_icon.png">
+		<link rel="apple-touch-icon" type="image/png" href="orca_icon.png">
 		<link rel="manifest" href="manifest.json">
-		<title>Orca Engine Web Editor (4.5.beta.custom_build)</title>
+		<title>Orca Engine</title>
 		<style>
+/* Hide launcher UI by default when auto-starting */
+body.auto-start #container {
+	display: none !important;
+}
 *:focus {
 	/* More visible outline for better keyboard navigation. */
 	outline: 0.125rem solid hsl(220, 100%, 62.5%);
@@ -291,12 +295,11 @@ a:active {
 			<div id="tab-loader">
 				<div style="color: #e0e0e0;" id="persistence">
 					<br >
-					<img src="logo.svg" alt="Orca Engine logo" width="1024" height="414" style="width: auto; height: auto; max-width: min(85%, 50vh); max-height: 250px">
+					<img src="orca_icon.png" alt="Orca Engine logo" style="width: auto; height: auto; max-width: min(85%, 30vh); max-height: 200px">
 					<br >
-					4.5.beta.custom_build
-					<br >
-					<a href="releases/">Need an old version?</a>
-					<br >
+					<h2 style="color: #e0e0e0; margin: 20px 0;">Orca Engine</h2>
+					<p style="color: #888; font-size: 14px;">Launching editor...</p>
+
 					<br >
 					<br >
 					<label for="videoMode" style="margin-right: 1rem">Video driver:</label>
@@ -769,13 +772,30 @@ document.getElementById('startButton').onclick = function () {
 	});
 };
 
-// Auto-start the editor after page load
+// Auto-start the editor immediately - skip launcher entirely
+// Try multiple times to ensure it starts
+var autoStartAttempts = 0;
+var autoStart = function() {
+	var startBtn = document.getElementById('startButton');
+	if (startBtn && startBtn.style.display !== 'none') {
+		console.log('Auto-starting Orca Engine...');
+		startBtn.click();
+	} else if (autoStartAttempts < 10) {
+		autoStartAttempts++;
+		setTimeout(autoStart, 200);
+	}
+};
+
+// Start trying immediately when DOM is ready
+if (document.readyState === 'loading') {
+	document.addEventListener('DOMContentLoaded', autoStart);
+} else {
+	autoStart();
+}
+
+// Also try on window load as backup
 window.addEventListener('load', function() {
-	setTimeout(function() {
-		if (!missing.length) {
-			document.getElementById('startButton').click();
-		}
-	}, 500); // Small delay to ensure everything is loaded
+	setTimeout(autoStart, 100);
 });
 		</script>
 	</body>
