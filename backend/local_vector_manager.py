@@ -79,6 +79,26 @@ class LocalVectorManager:
                 failed += 1
         return {"total": indexed + skipped + failed, "indexed": indexed, "skipped": skipped, "failed": failed}
 
+    def get_project_stats(self, user_id: str, project_id: str) -> Dict[str, int]:
+        """Get statistics about indexed files for a project"""
+        prefix = f"{user_id}:{project_id}:"
+        unique_files = set()
+        total_entries = 0
+        
+        for key in self.index.keys():
+            if key.startswith(prefix):
+                total_entries += 1
+                # Extract file path from key
+                file_path = key[len(prefix):]
+                unique_files.add(file_path)
+        
+        return {
+            "total_files": len(unique_files),
+            "total_chunks": total_entries,
+            "user_id": user_id,
+            "project_id": project_id
+        }
+
     def search(self, query: str, user_id: str, project_id: str, max_results: int = 10) -> List[Dict]:
         results: List[Dict] = []
         q = query.lower()

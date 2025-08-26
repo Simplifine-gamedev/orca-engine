@@ -65,12 +65,60 @@ else:
     raise ValueError("FLASK_SECRET_KEY must be set in production")
 
 # Multi-provider model configuration using LiteLLM
-MODEL_MAP = {
+# Base models (always available)
+BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
     "claude-4": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514"),
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
+
+# Dynamic model map that includes base + cerebras models
+MODEL_MAP = BASE_MODEL_MAP.copy()
+
+def fetch_cerebras_models():
+    """Fetch available models from Cerebras API"""
+    cerebras_api_key = os.getenv('CEREBRAS_API_KEY')
+    if not cerebras_api_key:
+        print("WARNING: CEREBRAS_API_KEY not set - Cerebras models will not be available")
+        return {}
+    
+    try:
+        import requests
+        response = requests.get(
+            'https://api.cerebras.ai/v1/models',
+            headers={'Authorization': f'Bearer {cerebras_api_key}'},
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        cerebras_models = {}
+        for model in data.get('data', []):
+            model_id = model.get('id', '')
+            if model_id:
+                # Use simple display name for frontend
+                display_name = f"[FAST] {model_id}"
+                cerebras_models[display_name] = f"cerebras/{model_id}"
+        
+        print(f"CEREBRAS_MODELS: Loaded {len(cerebras_models)} models from API")
+        return cerebras_models
+    except Exception as e:
+        print(f"WARNING: Failed to fetch Cerebras models: {e}")
+        return {}
+
+# Load Cerebras models at startup
+cerebras_models = fetch_cerebras_models()
+MODEL_MAP.update(cerebras_models)
+
+# Ensure LiteLLM has access to Cerebras API key
+cerebras_api_key = os.getenv('CEREBRAS_API_KEY')
+if cerebras_api_key:
+    # Make sure LiteLLM can access the Cerebras API key
+    os.environ['CEREBRAS_API_KEY'] = cerebras_api_key
+    print(f"CEREBRAS_SETUP: API key configured for LiteLLM")
+else:
+    print("WARNING: CEREBRAS_API_KEY not found in environment - Cerebras models will fail")
 
 # Default model and allowed models
 DEFAULT_MODEL = "gpt-5"
@@ -90,7 +138,8 @@ def get_validated_chat_model(requested: str | None) -> str:
     """
     try:
         if requested and requested in ALLOWED_CHAT_MODELS:
-            return MODEL_MAP[requested]
+            result = MODEL_MAP[requested]
+            return result
     except Exception:
         pass
     return MODEL_MAP[DEFAULT_MODEL]
@@ -100,6 +149,9 @@ def get_model_friendly_name(model_id: str) -> str:
     for friendly, real_id in MODEL_MAP.items():
         if real_id == model_id:
             return friendly
+    # If not found in MODEL_MAP, check if it's a Cerebras model directly
+    if model_id.startswith("cerebras/"):
+        return f"[FAST] {model_id.replace('cerebras/', '')}"
     return model_id
 
 # Initialize Authentication Manager
@@ -1991,7 +2043,8 @@ def chat():
         return jsonify({"error": "Invalid request body"}), 400
 
     messages = data.get('messages', [])
-    model = get_validated_chat_model(data.get('model'))  # Restrict to allowed models
+    requested_model = data.get('model')
+    model = get_validated_chat_model(requested_model)  # Restrict to allowed models
 
     if not messages:
         # Return a minimal NDJSON-friendly error envelope so the frontend doesn't try to parse HTML.
@@ -2645,9 +2698,9 @@ def chat():
                         }
                     }
                     yield json.dumps(frontend_response) + '\n'
-                    # Signal graceful end of this stream so the frontend doesn't treat the disconnect as an error.
-                    yield json.dumps({"status": "completed"}) + '\n'
-                    print(f"FRONTEND_PROCESSING: Tool calls sent, closing stream awaiting frontend tool execution")
+                    # Signal that the stream is ending but the overall task is waiting on the frontend.
+                    yield json.dumps({"status": "awaiting_frontend_action"}) + '\n'
+                    print(f"FRONTEND_PROCESSING: Tool calls sent, stream closing. Awaiting frontend tool execution in next request.")
                     break  # Exit loop after sending tools to frontend
 
                 # If no tools, it's a final text response. Append and break.
@@ -3159,6 +3212,58 @@ def auth_logout():
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
 
+@app.route('/index_status', methods=['POST'])
+def check_index_status():
+    """Check if project is already indexed and up-to-date"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    try:
+        # Verify authentication
+        user, error_response, status_code = verify_authentication()
+        if error_response:
+            return jsonify(error_response), status_code
+            
+        data = request.json or {}
+        project_root = data.get('project_root')
+        
+        # Fallback to header if not provided in body
+        if not project_root:
+            project_root = request.headers.get('X-Project-Root')
+        
+        if not project_root:
+            return jsonify({"error": "project_root required"}), 400
+        
+        project_id = hashlib.md5(project_root.encode()).hexdigest()
+        
+        if not cloud_vector_manager:
+            return jsonify({"indexed": False, "error": "Vector search unavailable"}), 501
+        
+        # Check if project has any indexed files
+        try:
+            stats = cloud_vector_manager.get_project_stats(user['id'], project_id)
+            indexed_files = stats.get('total_files', 0)
+            
+            return jsonify({
+                "success": True,
+                "indexed": indexed_files > 0,
+                "stats": stats,
+                "project_id": project_id
+            })
+        except AttributeError:
+            # Fallback for managers that don't have get_project_stats
+            return jsonify({
+                "success": True, 
+                "indexed": False,  # Conservative: assume not indexed if we can't check
+                "message": "Index status check not supported by current vector manager",
+                "project_id": project_id
+            })
+        
+    except Exception as e:
+        print(f"INDEX_STATUS ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/reindex_project', methods=['POST'])
 def reindex_project():
     """Re-index entire project (clear + fresh index)"""
@@ -3520,6 +3625,16 @@ def search_project():
 def get_available_models():
     """Get list of available models"""
     try:
+        # Refresh Cerebras models in case they changed
+        global MODEL_MAP
+        fresh_cerebras = fetch_cerebras_models()
+        MODEL_MAP = BASE_MODEL_MAP.copy()
+        MODEL_MAP.update(fresh_cerebras)
+        
+        # Update allowed models
+        global ALLOWED_CHAT_MODELS
+        ALLOWED_CHAT_MODELS = set(MODEL_MAP.keys())
+        
         models = []
         for friendly_name, model_id in MODEL_MAP.items():
             models.append({
