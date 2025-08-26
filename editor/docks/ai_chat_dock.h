@@ -450,6 +450,8 @@ private:
 	// Embedding system for project indexing
 	void _initialize_embedding_system();
 	void _perform_initial_indexing();
+	void _check_index_status_and_start_if_needed();
+	void _on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_filesystem_changed();
 	void _on_sources_changed(bool p_exist);
 	void _update_file_embedding(const String &p_file_path);

@@ -3159,6 +3159,58 @@ def auth_logout():
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
 
+@app.route('/index_status', methods=['POST'])
+def check_index_status():
+    """Check if project is already indexed and up-to-date"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    try:
+        # Verify authentication
+        user, error_response, status_code = verify_authentication()
+        if error_response:
+            return jsonify(error_response), status_code
+            
+        data = request.json or {}
+        project_root = data.get('project_root')
+        
+        # Fallback to header if not provided in body
+        if not project_root:
+            project_root = request.headers.get('X-Project-Root')
+        
+        if not project_root:
+            return jsonify({"error": "project_root required"}), 400
+        
+        project_id = hashlib.md5(project_root.encode()).hexdigest()
+        
+        if not cloud_vector_manager:
+            return jsonify({"indexed": False, "error": "Vector search unavailable"}), 501
+        
+        # Check if project has any indexed files
+        try:
+            stats = cloud_vector_manager.get_project_stats(user['id'], project_id)
+            indexed_files = stats.get('total_files', 0)
+            
+            return jsonify({
+                "success": True,
+                "indexed": indexed_files > 0,
+                "stats": stats,
+                "project_id": project_id
+            })
+        except AttributeError:
+            # Fallback for managers that don't have get_project_stats
+            return jsonify({
+                "success": True, 
+                "indexed": False,  # Conservative: assume not indexed if we can't check
+                "message": "Index status check not supported by current vector manager",
+                "project_id": project_id
+            })
+        
+    except Exception as e:
+        print(f"INDEX_STATUS ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/reindex_project', methods=['POST'])
 def reindex_project():
     """Re-index entire project (clear + fresh index)"""

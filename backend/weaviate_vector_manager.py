@@ -1442,6 +1442,42 @@ class WeaviateVectorManager:
             print(f"WeaviateVector: Hash check disabled due to API incompatibility: {e}")
             return False  # If we can't check, assume it changed (safer for correctness)
     
+    def get_project_stats(self, user_id: str, project_id: str) -> Dict[str, Any]:
+        """Get statistics about indexed files for a project"""
+        try:
+            collection = self.client.collections.get("ProjectEmbedding")
+            
+            # Count unique files in the project
+            try:
+                results = collection.query.fetch_objects(
+                    limit=1000,  # Get a large number to count files
+                    return_properties=["file_path"],
+                    where=Filter.by_property("user_id").equal(user_id) & 
+                          Filter.by_property("project_id").equal(project_id)
+                )
+                
+                # Count unique files
+                unique_files = set()
+                for obj in results.objects:
+                    file_path = obj.properties.get('file_path', '')
+                    if file_path:
+                        unique_files.add(file_path)
+                
+                return {
+                    "total_files": len(unique_files),
+                    "total_chunks": len(results.objects),
+                    "user_id": user_id,
+                    "project_id": project_id
+                }
+                
+            except Exception as e:
+                print(f"WeaviateVector: Stats query failed: {e}")
+                return {"total_files": 0, "total_chunks": 0, "error": str(e)}
+                
+        except Exception as e:
+            print(f"WeaviateVector: get_project_stats error: {e}")
+            return {"total_files": 0, "total_chunks": 0, "error": str(e)}
+    
     def index_project(self, project_root: str, user_id: str, project_id: str, 
                      force_reindex: bool = False, max_workers: Optional[int] = None) -> Dict[str, Any]:
         """Index all files in a project directory
