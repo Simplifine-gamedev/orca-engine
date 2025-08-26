@@ -54,6 +54,7 @@
 #include "scene/gui/split_container.h"
 #include "editor/gui/editor_file_dialog.h"
 #include "scene/resources/style_box_flat.h"
+#include "core/os/time.h"
 
 // dtl diff library
 #include "dtl.hpp"
@@ -2618,6 +2619,10 @@ void ScriptTextEditor::_enable_code_editor() {
 	code_editor->get_text_editor()->connect("gutter_clicked", callable_mp(this, &ScriptTextEditor::_gutter_clicked));
 
 	code_editor->get_text_editor()->connect(SceneStringName(gui_input), callable_mp(this, &ScriptTextEditor::_text_edit_gui_input));
+
+	// Orca analytics: count manual script line edits via TextEdit::lines_edited_from
+	// Disable analytics connection to avoid build issues in this branch.
+	// code_editor->get_text_editor()->connect("lines_edited_from", callable_mp(this, &ScriptTextEditor::_on_lines_edited_from));
 	code_editor->show_toggle_files_button();
 	_update_gutter_indexes();
 

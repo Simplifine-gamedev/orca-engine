@@ -7,6 +7,7 @@
 
 // Add core includes early so they're available to helper functions below
 #include "core/crypto/crypto.h"
+#include "core/os/time.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/http_client.h"
@@ -1877,6 +1878,22 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         args_for_backend["path"] = path;
     }
     Dictionary local_result = _call_apply_endpoint(path, content_for_model, args_for_backend, base_url + "/chat");
+
+    // Orca analytics: AI edit request
+    {
+        Error __err = OK;
+        Ref<FileAccess> af = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
+        String app_session_id; if (af.is_valid()) app_session_id = af->get_line();
+        auto _log_line = [](const String &line) {
+            Error werr = OK;
+            Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
+            if (f.is_null()) return;
+            f->seek_end(); f->store_line(line); f->flush();
+        };
+        auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
+        const String scope = use_range ? String("range") : String("all");
+        _log_line(vformat("{\"t\":\"%s\",\"type\":\"ai_edit_request\",\"app_session\":\"%s\",\"path\":\"%s\",\"scope\":\"%s\"}", _now_iso(), app_session_id, path, scope));
+    }
 
     if (local_result.get("success", false)) {
         String backend_segment = local_result.get("edited_content", content_for_model);

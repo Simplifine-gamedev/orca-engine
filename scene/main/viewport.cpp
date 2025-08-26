@@ -50,6 +50,28 @@
 #include "servers/audio_server.h"
 #include "servers/rendering/rendering_server_globals.h"
 
+// Minimal local analytics helper: append JSON lines to user://analytics.log
+#include "core/io/file_access.h"
+#include "core/os/time.h"
+
+static void _orca_analytics_log_line(const String &p_json_line) {
+    Error err = OK;
+    Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &err);
+    if (f.is_null()) {
+        return;
+    }
+    f->seek_end();
+    f->store_line(p_json_line);
+    f->flush();
+}
+
+static String _orca_now_iso8601() {
+    // Use system datetime; format YYYY-MM-DDTHH:MM:SSZ
+    String dt = Time::get_singleton()->get_datetime_string_from_system(true);
+    // get_datetime_string_from_system(true) returns UTC ISO-like already
+    return dt;
+}
+
 #ifndef _3D_DISABLED
 #include "scene/3d/audio_listener_3d.h"
 #include "scene/3d/camera_3d.h"
@@ -1892,6 +1914,27 @@ bool Viewport::_gui_drop(Control *p_at_control, Point2 p_at_pos, bool p_just_che
 void Viewport::_gui_input_event(Ref<InputEvent> p_event) {
 	ERR_FAIL_COND(p_event.is_null());
 
+	// Basic analytics for root viewport: mouse button and simple motion events.
+	if (get_tree() && get_tree()->get_root() == this) {
+		Ref<InputEventMouseButton> _mb = p_event;
+		if (_mb.is_valid()) {
+			const Vector2 p = _mb->get_position();
+			const String json = vformat(
+					"{\"t\":\"%s\",\"type\":\"mouse_button\",\"btn\":%d,\"pressed\":%s,\"x\":%s,\"y\":%s}",
+					_orca_now_iso8601(), (int)_mb->get_button_index(), _mb->is_pressed() ? "true" : "false", rtos(p.x), rtos(p.y));
+			_orca_analytics_log_line(json);
+		} else {
+			Ref<InputEventMouseMotion> _mm = p_event;
+			if (_mm.is_valid() && _mm->get_button_mask().is_empty()) {
+				const Vector2 p = _mm->get_position();
+				const String json = vformat(
+						"{\"t\":\"%s\",\"type\":\"mouse_move\",\"x\":%s,\"y\":%s}",
+						_orca_now_iso8601(), rtos(p.x), rtos(p.y));
+				_orca_analytics_log_line(json);
+			}
+		}
+	}
+
 	Ref<InputEventMouseButton> mb = p_event;
 	if (mb.is_valid()) {
 		Point2 mpos = mb->get_position();
@@ -3470,6 +3513,17 @@ void Viewport::push_unhandled_input(const Ref<InputEvent> &p_event, bool p_local
 #endif // DISABLE_DEPRECATED
 
 void Viewport::_push_unhandled_input_internal(const Ref<InputEvent> &p_event) {
+	// Basic analytics: key events at root after shortcut stage.
+	if (get_tree() && get_tree()->get_root() == this) {
+		Ref<InputEventKey> _k = p_event;
+		if (_k.is_valid() && !_k->is_echo()) {
+			const String json = vformat(
+					"{\"t\":\"%s\",\"type\":\"key\",\"pressed\":%s,\"keycode\":%d,\"unicode\":%d}",
+					_orca_now_iso8601(), _k->is_pressed() ? "true" : "false", (int)_k->get_keycode(), (int)_k->get_unicode());
+			_orca_analytics_log_line(json);
+		}
+	}
+
 	// Shortcut Input.
 	if (Object::cast_to<InputEventKey>(*p_event) != nullptr || Object::cast_to<InputEventShortcut>(*p_event) != nullptr || Object::cast_to<InputEventJoypadButton>(*p_event) != nullptr) {
 		ERR_FAIL_COND(!is_inside_tree());

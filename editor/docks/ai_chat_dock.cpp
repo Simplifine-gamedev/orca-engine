@@ -629,6 +629,27 @@ void AIChatDock::_on_send_button_pressed() {
 		return;
 	}
 
+	// Orca analytics: chat prompt sent
+	{
+		Error __err = OK;
+		Ref<FileAccess> rf = FileAccess::open("user://chat_session_id.txt", FileAccess::READ, &__err);
+		String chat_session_id;
+		if (rf.is_valid()) chat_session_id = rf->get_line();
+		Ref<FileAccess> af = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
+		String app_session_id;
+		if (af.is_valid()) app_session_id = af->get_line();
+		auto _log_line = [](const String &line) {
+			Error werr = OK;
+			Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
+			if (f.is_null()) return;
+			f->seek_end();
+			f->store_line(line);
+			f->flush();
+		};
+		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
+		_log_line(vformat("{\"t\":\"%s\",\"type\":\"chat_prompt\",\"app_session\":\"%s\",\"chat_session\":\"%s\"}", _now_iso(), app_session_id, chat_session_id));
+	}
+
 	// Auto-suggest relevant files based on message content
 	if (embedding_system_initialized && initial_indexing_done) {
 		_auto_attach_relevant_context();
@@ -6928,6 +6949,28 @@ void AIChatDock::_on_new_conversation_pressed() {
 	// Use delayed save to avoid UI blocking
 	_queue_delayed_save();
 	_execute_delayed_save(); // start background save immediately
+
+	// Orca analytics: chat session start
+	{
+		Error __err = OK;
+		Ref<FileAccess> rf = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
+		String app_session_id;
+		if (rf.is_valid()) app_session_id = rf->get_line();
+		auto _log_line = [](const String &line) {
+			Error werr = OK;
+			Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
+			if (f.is_null()) return;
+			f->seek_end();
+			f->store_line(line);
+			f->flush();
+		};
+		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
+		String user_id = OS::get_singleton()->get_unique_id();
+		String chat_session_id = String::num_uint64(Time::get_singleton()->get_ticks_usec()) + String("_") + user_id;
+		Ref<FileAccess> wf = FileAccess::open("user://chat_session_id.txt", FileAccess::WRITE, &__err);
+		if (wf.is_valid()) { wf->store_line(chat_session_id); wf->flush(); }
+		_log_line(vformat("{\"t\":\"%s\",\"type\":\"chat_session_start\",\"app_session\":\"%s\",\"chat_session\":\"%s\"}", _now_iso(), app_session_id, chat_session_id));
+	}
 }
 void AIChatDock::_build_hierarchy_tree_item(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_node_data) {
 	if (p_node_data.is_empty()) {

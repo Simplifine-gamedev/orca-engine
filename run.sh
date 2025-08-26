@@ -5,4 +5,4 @@ scons platform=macos target=editor dev_build=yes vulkan=no
 ln -sf ./godot.macos.editor.dev.arm64 ./bin/Orca
 
 # run
-./bin/Orca
+open -n ./bin/Orca.app

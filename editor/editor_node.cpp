@@ -2282,7 +2282,7 @@ void EditorNode::_save_all_scenes() {
 	save_default_environment();
 
 	if (!scenes_to_save_as.is_empty()) {
-		_proceed_saveasing_scene_tabs();
+		_proceed_save_asing_scene_tabs();
 	}
 }
 
@@ -2380,7 +2380,7 @@ void EditorNode::_dialog_action(String p_file) {
 			}
 
 			if (current_menu_option == SCENE_MULTI_SAVE_AS_SCENE) {
-				_proceed_saveasing_scene_tabs();
+				_proceed_save_asing_scene_tabs();
 			}
 
 		} break;
