@@ -83,6 +83,8 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_at_mention_item_selected"), &AIChatDock::_on_at_mention_item_selected);
 	ClassDB::bind_method(D_METHOD("_on_input_field_gui_input"), &AIChatDock::_on_input_field_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_model_selected"), &AIChatDock::_on_model_selected);
+	ClassDB::bind_method(D_METHOD("_populate_cerebras_models"), &AIChatDock::_populate_cerebras_models);
+	ClassDB::bind_method(D_METHOD("_on_models_request_completed"), &AIChatDock::_on_models_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_index_button_pressed"), &AIChatDock::_on_index_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_output_toggled"), &AIChatDock::_on_tool_output_toggled);
 	ClassDB::bind_method(D_METHOD("_on_tool_file_link_pressed", "path"), &AIChatDock::_on_tool_file_link_pressed);
@@ -188,6 +190,9 @@ void AIChatDock::_notification(int p_notification) {
 			model_dropdown->add_item("gpt-4o");
 			model_dropdown->add_item("claude-4");
 			model_dropdown->add_item("gemini-2.5");
+			// Add Cerebras models (high-speed inference) - will be populated dynamically
+			// Using [FAST] prefix to avoid emoji encoding issues
+			_populate_cerebras_models();
 			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
 			top_container->add_child(model_dropdown);
@@ -450,15 +455,18 @@ void AIChatDock::_notification(int p_notification) {
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			if (EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
 				String saved_model = EditorSettings::get_singleton()->get_setting("ai_chat/model");
-				// Validate saved model against available models
-				if (saved_model != "gpt-5" && saved_model != "gpt-4o" && 
-					saved_model != "claude-4" && saved_model != "gemini-2.5") {
+				// Basic validation - allow base models and any [FAST] models
+				bool is_valid = (saved_model == "gpt-5" || saved_model == "gpt-4o" || 
+								saved_model == "claude-4" || saved_model == "gemini-2.5" ||
+								saved_model.begins_with("[FAST] "));
+				if (!is_valid) {
 					saved_model = "gpt-5"; // Fallback to default model
 				}
 				model = saved_model;
 				// Set the dropdown to the saved model
 				for (int i = 0; i < model_dropdown->get_item_count(); i++) {
-					if (model_dropdown->get_item_text(i) == saved_model) {
+					String dropdown_text = model_dropdown->get_item_text(i);
+					if (dropdown_text == saved_model) {
 						model_dropdown->select(i);
 						break;
 					}
@@ -1930,7 +1938,9 @@ void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
 void AIChatDock::_on_model_selected(int p_index) {
 	if (model_dropdown) {
 		String selected_model = model_dropdown->get_item_text(p_index);
+		// Keep the full model name including [FAST] prefix for backend communication
 		model = selected_model;
+		print_line("AI Chat: Model selected: '" + selected_model + "' -> internal: '" + model + "'");
 		// Save the selected model to editor settings
 		EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
 	}
@@ -7032,6 +7042,11 @@ AIChatDock::AIChatDock() {
 	add_child(stop_http_request);
 	stop_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_stop_request_completed));
 
+	// HTTP request for models endpoint
+	models_http_request = memnew(HTTPRequest);
+	add_child(models_http_request);
+	models_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_models_request_completed));
+
 	diff_viewer = memnew(DiffViewer);
 	add_child(diff_viewer);
 	diff_viewer->connect("diff_accepted", callable_mp(this, &AIChatDock::_on_diff_accepted));
@@ -8897,6 +8912,112 @@ void AIChatDock::_show_diff_in_script_editor_deferred(const String &p_path, cons
 	EditorInterface::get_singleton()->set_main_screen_editor("Script");
 	
 	print_line("AI Chat: Showing diff in script editor for " + p_path);
+}
+
+void AIChatDock::_populate_cerebras_models() {
+	// Fetch available models from backend
+	String base_url = _get_api_base_url();
+	String models_url = base_url + "/models";
+	
+	print_line("AI Chat: Fetching models from " + models_url);
+	
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	
+	Error err = models_http_request->request(models_url, headers, HTTPClient::METHOD_GET);
+	if (err != OK) {
+		print_line("AI Chat: Failed to request models: " + String::num_int64(err));
+	}
+}
+
+void AIChatDock::_on_models_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		print_line("AI Chat: Models request failed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
+		return;
+	}
+	
+	String response_text = String::utf8(reinterpret_cast<const char*>(p_body.ptr()), p_body.size());
+	
+	Ref<JSON> json;
+	json.instantiate();
+	Error parse_error = json->parse(response_text);
+	
+	if (parse_error != OK) {
+		print_line("AI Chat: Failed to parse models response: " + response_text);
+		return;
+	}
+	
+	Variant result = json->get_data();
+	if (result.get_type() != Variant::DICTIONARY) {
+		print_line("AI Chat: Invalid models response format");
+		return;
+	}
+	
+	Dictionary response = result;
+	if (!response.get("success", false)) {
+		print_line("AI Chat: Models request was not successful");
+		return;
+	}
+	
+	Array models = response.get("models", Array());
+	print_line("AI Chat: Received " + String::num_int64(models.size()) + " models from backend");
+	
+	// Clear existing Cerebras models from dropdown (keep base models)
+	int items_to_remove = 0;
+	for (int i = model_dropdown->get_item_count() - 1; i >= 0; i--) {
+		String item_text = model_dropdown->get_item_text(i);
+		if (item_text.begins_with("[FAST] ")) {
+			model_dropdown->remove_item(i);
+			items_to_remove++;
+		}
+	}
+	if (items_to_remove > 0) {
+		print_line("AI Chat: Removed " + String::num_int64(items_to_remove) + " old Cerebras models");
+	}
+	
+	// Add new models to dropdown
+	int added_models = 0;
+	for (int i = 0; i < models.size(); i++) {
+		Dictionary model_info = models[i];
+		String model_name = model_info.get("name", "");
+		String provider = model_info.get("provider", "");
+		
+		if (provider == "cerebras") {
+			model_dropdown->add_item(model_name);
+			added_models++;
+		}
+	}
+	
+	print_line("AI Chat: Added " + String::num_int64(added_models) + " Cerebras models to dropdown");
+}
+
+String AIChatDock::_get_api_base_url() {
+	String base_url;
+	String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+	if (is_dev.is_empty()) {
+		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
+	}
+	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+		base_url = "http://127.0.0.1:8000";
+	} else {
+		base_url = "https://gamechat.simplifine.com";
+	}
+	
+	// Allow override via editor settings or environment variable
+	if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+		String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+		if (!override_url.is_empty()) {
+			base_url = override_url;
+		}
+	} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+		base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+	}
+	
+	if (base_url.ends_with("/")) {
+		base_url = base_url.substr(0, base_url.length() - 1);
+	}
+	
+	return base_url;
 }
 
 AIChatDock::~AIChatDock() {

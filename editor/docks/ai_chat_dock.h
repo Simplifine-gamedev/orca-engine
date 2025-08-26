@@ -216,6 +216,7 @@ private:
 	Ref<HTTPClient> http_client;
 	// Separate HTTP request for stop requests (non-streaming)
 	HTTPRequest *stop_http_request = nullptr;
+	HTTPRequest *models_http_request = nullptr;
 	enum HTTPStatus {
 		STATUS_IDLE,
 		STATUS_CONNECTING,
@@ -282,6 +283,9 @@ private:
 	void _populate_tree_recursive(EditorFileSystemDirectory *p_dir, TreeItem *p_parent, const String &p_filter);
 	void _on_at_mention_item_selected();
 	void _on_model_selected(int p_index);
+	void _populate_cerebras_models();
+	void _on_models_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	String _get_api_base_url();
 	void _on_index_button_pressed();
     void _on_editor_resource_saved(Object *p_res);
     void _on_editor_scene_saved(const String &p_path);
