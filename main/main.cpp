@@ -3868,7 +3868,8 @@ int Main::start() {
 	
 #ifdef MACOS_ENABLED
 	// Set the application name to "Orca" for macOS menu bar and window title
-	OS::get_singleton()->set_name("Orca");
+	// NOTE: set_name() method doesn't exist in OS class - app name is set via Info.plist
+	// OS::get_singleton()->set_name("Orca");
 #endif
 
 	// Orca minimal analytics: install + app session start
