@@ -420,3 +420,4 @@ backend/.auth_sessions.pkl
 
 backend/.auth_sessions.pkl
 releases/
+.vercel

@@ -23,11 +23,11 @@
 		<link id="-gd-engine-icon" rel="icon" type="image/png" href="favicon.png">
 		<link rel="apple-touch-icon" type="image/png" href="favicon.png">
 		<link rel="manifest" href="manifest.json">
-		<title>Orca Engine - Web Editor</title>
+		<title>Orca Engine Web Editor (4.5.beta.custom_build)</title>
 		<style>
 *:focus {
 	/* More visible outline for better keyboard navigation. */
-	outline: 0.125rem solid #4fc3f7;
+	outline: 0.125rem solid hsl(220, 100%, 62.5%);
 	/* Make the outline always appear above other elements. */
 	/* Otherwise, one of its sides can be hidden by tabs in the Download and More layouts. */
 	position: relative;
@@ -40,13 +40,13 @@ body {
 	border: 0 none;
 	padding: 0;
 	text-align: center;
-	background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
+	background-color: #333b4f;
 	overflow: hidden;
 }
 
 a {
-	color: #4fc3f7;
-	text-decoration-color: rgba(79, 195, 247, 0.3);
+	color: hsl(205, 100%, 75%);
+	text-decoration-color: hsla(205, 100%, 75%, 0.3);
 	text-decoration-thickness: 0.125rem;
 }
 
@@ -76,7 +76,7 @@ a:active {
 }
 
 .welcome-modal-content {
-	background: linear-gradient(135deg, #1a1f2e 0%, #16213e 100%);
+	background-color: #333b4f;
 	box-shadow: 0 0.25rem 0.25rem hsla(0, 0%, 0%, 0.5);
 	line-height: 1.5;
 	max-width: 38rem;
@@ -88,8 +88,7 @@ a:active {
 
 #tabs-buttons {
 	/* Match the default background color of the editor window for a seamless appearance. */
-	background: linear-gradient(to right, #0f1419 0%, #1a1f2e 100%);
-	border-bottom: 2px solid #4fc3f7;
+	background-color: #202531;
 }
 
 #tab-game {
@@ -115,38 +114,30 @@ a:active {
 }
 
 .godot {
-	color: #f0f0f0;
-	background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-	border: 1px solid #334155;
-	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-	border-radius: 12px;
+	color: #e0e0e0;
+	background-color: #3b3943;
+	background-image: linear-gradient(to bottom, #403e48, #35333c);
+	border: 1px solid #45434e;
+	box-shadow: 0 0 1px 1px #2f2d35;
 }
 
 .btn {
 	appearance: none;
 	color: #e0e0e0;
-	background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
-	border: 1px solid #3b82f6;
-	border-radius: 8px;
+	background-color: #262c3b;
+	border: 1px solid #202531;
 	padding: 0.5rem 1rem;
 	margin: 0 0.5rem;
-	transition: all 0.3s ease;
-	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .btn:not(:disabled):hover {
-	color: #ffffff;
-	border-color: #60a5fa;
-	background: linear-gradient(135deg, #2563eb 0%, #60a5fa 100%);
-	box-shadow: 0 4px 8px rgba(37, 99, 235, 0.3);
-	transform: translateY(-1px);
+	color: #e0e1e5;
+	border-color: #666c7b;
 }
 
 .btn:active {
-	border-color: #4fc3f7;
-	color: #ffffff;
-	background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
-	transform: scale(0.98);
+	border-color: #699ce8;
+	color: #699ce8;
 }
 
 .btn:disabled {
@@ -181,9 +172,8 @@ a:active {
 
 #status-progress {
 	width: 366px;
-	height: 8px;
-	background: linear-gradient(90deg, #1e293b 0%, #334155 100%);
-	border-radius: 4px;
+	height: 7px;
+	background-color: #38363A;
 	border: 1px solid #444246;
 	padding: 1px;
 	box-shadow: 0 0 2px 1px #1B1C22;
@@ -201,11 +191,11 @@ a:active {
 	height: 100%;
 	width: 0;
 	box-sizing: border-box;
-	transition: width 0.5s ease;
-	background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #4fc3f7 100%);
-	border-radius: 4px;
-	box-shadow: 0 0 10px rgba(79, 195, 247, 0.5);
-	animation: pulse 2s infinite;
+	transition: width 0.5s linear;
+	background-color: #202020;
+	border: 1px solid #222223;
+	box-shadow: 0 0 1px 1px #27282E;
+	border-radius: 3px;
 }
 
 #status-indeterminate {
@@ -238,42 +228,7 @@ a:active {
 	visibility: visible;
 	padding: 4px 6px;
 }
-			/* Orca Engine Enhanced Styles */
-	.btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	
-	/* Animated gradient background */
-	@keyframes gradientShift {
-		0% { background-position: 0% 50%; }
-		50% { background-position: 100% 50%; }
-		100% { background-position: 0% 50%; }
-	}
-	
-	body {
-		background-size: 200% 200%;
-		animation: gradientShift 15s ease infinite;
-	}
-	
-	/* Logo animation */
-	#persistence img {
-		animation: float 6s ease-in-out infinite;
-	}
-	
-	@keyframes float {
-		0% { transform: translateY(0px); }
-		50% { transform: translateY(-10px); }
-		100% { transform: translateY(0px); }
-	}
-	
-	/* Progress bar pulse */
-	@keyframes pulse {
-		0% { opacity: 1; }
-		50% { opacity: 0.8; }
-		100% { opacity: 1; }
-	}
-</style>
+		</style>
 	</head>
 	<body>
 		<div
@@ -336,9 +291,9 @@ a:active {
 			<div id="tab-loader">
 				<div style="color: #e0e0e0;" id="persistence">
 					<br >
-					<img src="logo.png" alt="Orca Engine logo" width="1024" height="414" style="width: auto; height: auto; max-width: min(85%, 50vh); max-height: 200px">
+					<img src="logo.svg" alt="Orca Engine logo" width="1024" height="414" style="width: auto; height: auto; max-width: min(85%, 50vh); max-height: 250px">
 					<br >
-					Orca Engine v1.0
+					4.5.beta.custom_build
 					<br >
 					<a href="releases/">Need an old version?</a>
 					<br >
@@ -357,9 +312,9 @@ a:active {
 					<a href="demo.zip">(Try this for example)</a>
 					<br >
 					<br >
-					<button id="startButton" class="btn" style="margin-bottom: 4rem; font-weight: 700; background: linear-gradient(135deg, #059669 0%, #10b981 100%); border-color: #10b981; font-size: 1.1rem; padding: 0.75rem 2rem; text-transform: uppercase; letter-spacing: 0.5px;">Start Orca Editor</button>
+					<button id="startButton" class="btn" style="margin-bottom: 4rem; font-weight: 700">Start Orca editor</button>
 					<br >
-					<button class="btn" onclick="clearPersistence()" style="margin-bottom: 1.5rem; background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%); border-color: #ef4444;">Clear Persistent Data</button>
+					<button class="btn" onclick="clearPersistence()" style="margin-bottom: 1.5rem">Clear persistent data</button>
 					<br >
 					<a href="https://docs.orcaengine.ai/en/latest/tutorials/editor/using_the_web_editor.html">Web editor documentation</a>
 				</div>
@@ -814,36 +769,13 @@ document.getElementById('startButton').onclick = function () {
 	});
 };
 
-// AUTO-START ORCA ENGINE - Skip the launcher page
+// Auto-start the editor after page load
 window.addEventListener('load', function() {
-	console.log('Auto-starting Orca Engine...');
-	
-	// Update the UI to show loading state
-	var statusText = document.getElementById('status-notice');
-	if (statusText) {
-		statusText.innerHTML = 'Loading Orca Engine Editor...';
-	}
-	
-	// Hide unnecessary UI elements
-	var persistence = document.getElementById('persistence');
-	if (persistence) {
-		persistence.innerHTML = '<br><h2 style="color: #4fc3f7;">Orca Engine</h2><p>Initializing editor environment...</p>';
-	}
-	
-	// Auto-start the editor immediately
 	setTimeout(function() {
-		// Check if the button exists and is enabled
-		var startBtn = document.getElementById('startButton');
-		if (startBtn && !startBtn.disabled) {
-			startBtn.click();
-		} else {
-			// If button is disabled, show error
-			console.error('Cannot auto-start: Editor requirements not met');
-			if (persistence) {
-				persistence.innerHTML = '<br><h2 style="color: #ef4444;">Browser Compatibility Issue</h2><p>Your browser may not support SharedArrayBuffer or WebAssembly features required for Orca Engine.</p><p>Please use a modern browser like Chrome, Edge, or Firefox.</p>';
-			}
+		if (!missing.length) {
+			document.getElementById('startButton').click();
 		}
-	}, 100); // Start almost immediately
+	}, 500); // Small delay to ensure everything is loaded
 });
 		</script>
 	</body>
