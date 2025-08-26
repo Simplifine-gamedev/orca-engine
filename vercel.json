@@ -1,7 +1,7 @@
 {
-  "installCommand": "echo 'Skipping install'",
-  "buildCommand": "echo 'Using prebuilt files from bin/web_export'",
+  "buildCommand": "echo 'Using prebuilt files'",
   "outputDirectory": "bin/web_export",
+  "framework": null,
   "headers": [
     {
       "source": "/(.*)",
