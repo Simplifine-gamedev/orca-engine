@@ -2925,6 +2925,8 @@ Error _parse_resource_dummy(void *p_data, VariantParser::Stream *p_stream, Ref<R
 
 Error Main::setup2(bool p_show_boot_logo) {
 	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Setup2");
+	
+	bool has_icon = false;  // Track if an icon has been set to prevent overwriting
 
 	Thread::make_main_thread(); // Make whatever thread call this the main thread.
 	set_current_thread_safe_for_nodes(true);
@@ -3831,11 +3833,13 @@ void Main::setup_boot_logo() {
 				
 				// Set icon directly without adding background - preserves transparency
 				DisplayServer::get_singleton()->set_icon(icon);
+				has_icon = true; // Mark that we've set the icon to prevent fallback overwrite
 			} else {
 				// Last resort fallback
 				Ref<Image> fallback = Ref<Image>(memnew(Image(app_icon_png)));
 				fallback->resize(256, 256, Image::INTERPOLATE_LANCZOS);
 				DisplayServer::get_singleton()->set_icon(fallback);
+				has_icon = true; // Mark that we've set the icon
 			}
 		}
 #endif
@@ -3891,7 +3895,6 @@ int Main::start() {
 		_log_line(vformat("{\"t\":\"%s\",\"type\":\"app_start\",\"session\":\"%s\",\"user_id\":\"%s\"}", _now_iso(), session_id, user_id));
 	}
 
-	bool has_icon = false;
 	String positional_arg;
 	String game_path;
 	String script;
