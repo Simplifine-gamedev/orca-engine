@@ -5347,6 +5347,7 @@ CanvasItemEditor::CanvasItemEditor() {
 	bottom_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	// Collapse bottom panel by default when no plugins add controls
 	bottom_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN_COLLAPSED);
+	bottom_split->set_collapsed(true);
 
 	left_panel_split = memnew(HSplitContainer);
 	bottom_split->add_child(left_panel_split);

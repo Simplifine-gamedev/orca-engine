@@ -139,7 +139,8 @@ void EditorPlugin::add_control_to_container(CustomControlContainer p_location, C
 			case CONTAINER_CANVAS_EDITOR_BOTTOM: {
 		VSplitContainer *bottom_split = CanvasItemEditor::get_singleton()->get_bottom_split();
 		bottom_split->add_child(p_control);
-		// Show the dragger when a bottom panel is added
+		// Show the dragger and uncollapse when a bottom panel is added
+		bottom_split->set_collapsed(false);
 		bottom_split->set_dragger_visibility(SplitContainer::DRAGGER_VISIBLE);
 
 	} break;
@@ -194,8 +195,9 @@ void EditorPlugin::remove_control_from_container(CustomControlContainer p_locati
 			case CONTAINER_CANVAS_EDITOR_BOTTOM: {
 		VSplitContainer *bottom_split = CanvasItemEditor::get_singleton()->get_bottom_split();
 		bottom_split->remove_child(p_control);
-		// Hide the dragger if no more bottom panels exist
+		// Collapse and hide the dragger if no more bottom panels exist
 		if (bottom_split->get_child_count() == 1) {
+			bottom_split->set_collapsed(true);
 			bottom_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN_COLLAPSED);
 		}
 
