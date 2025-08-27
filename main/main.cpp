@@ -3816,7 +3816,7 @@ void Main::setup_boot_logo() {
 
 #if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED)
 		if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON)) {
-			// Force use dock icon.png with white background
+			// Use dock icon with transparency preserved
 			Ref<Image> icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
 			if (icon.is_null() || icon->is_empty()) {
 				String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
@@ -3824,20 +3824,13 @@ void Main::setup_boot_logo() {
 			}
 			
 			if (icon.is_valid() && !icon->is_empty()) {
-				// Create white background and composite the icon
-				Ref<Image> white_bg;
-				white_bg.instantiate();
-				white_bg->initialize_data(256, 256, false, Image::FORMAT_RGBA8);
-				white_bg->fill(Color(1, 1, 1, 1));
-				
-				// Resize icon to fit
+				// Resize icon to standard size if needed, preserving transparency
 				if (icon->get_width() != 256 || icon->get_height() != 256) {
 					icon->resize(256, 256, Image::INTERPOLATE_LANCZOS);
 				}
 				
-				// Composite icon over white background
-				white_bg->blend_rect(icon, Rect2i(Point2i(0, 0), icon->get_size()), Point2i(0, 0));
-				DisplayServer::get_singleton()->set_icon(white_bg);
+				// Set icon directly without adding background - preserves transparency
+				DisplayServer::get_singleton()->set_icon(icon);
 			} else {
 				// Last resort fallback
 				Ref<Image> fallback = Ref<Image>(memnew(Image(app_icon_png)));
