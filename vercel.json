@@ -1,4 +1,7 @@
 {
+  "buildCommand": "echo 'Using prebuilt files'",
+  "outputDirectory": ".",
+  "framework": null,
   "headers": [
     {
       "source": "/(.*)",
