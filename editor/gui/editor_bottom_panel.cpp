@@ -139,9 +139,9 @@ void EditorBottomPanel::_switch_to_item(bool p_visible, int p_idx, bool p_ignore
 		add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SNAME("BottomPanel"), EditorStringName(EditorStyles)));
 		items[p_idx].button->set_pressed_no_signal(false);
 		items[p_idx].control->set_visible(false);
-		center_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN);
-		center_split->set_collapsed(false);  // Keep split expanded so viewport uses full height
-		// Set a very large offset to give viewport maximum space (will be clamped to actual size)
+		center_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN_COLLAPSED);
+		// Force the split to give all space to the viewport
+		center_split->set_collapsed(false);
 		center_split->set_split_offset(10000);
 		pin_button->hide();
 

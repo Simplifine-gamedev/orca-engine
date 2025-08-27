@@ -323,8 +323,8 @@ typedef void (*GLADpostcallback)(void *ret, const char *name, GLADapiproc apipro
 #define EGL_WINDOW_BIT 0x0004
 
 
-#include <KHR/khrplatform.h>
-#include <EGL/eglplatform.h>
+#include "../KHR/khrplatform.h"
+#include "../EGL/eglplatform.h"
 
 
 

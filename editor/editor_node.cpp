@@ -7816,6 +7816,7 @@ EditorNode::EditorNode() {
 	gui_base->add_child(base_vbox);
 #else
 	gui_base->add_child(main_vbox);
+	main_vbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	title_bar = memnew(EditorTitleBar);
 	main_vbox->add_child(title_bar);
@@ -7823,6 +7824,7 @@ EditorNode::EditorNode() {
 
 	left_l_hsplit = memnew(DockSplitContainer);
 	left_l_hsplit->set_name("DockHSplitLeftL");
+	left_l_hsplit->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	main_vbox->add_child(left_l_hsplit);
 
 	left_l_vsplit = memnew(DockSplitContainer);
@@ -7859,6 +7861,7 @@ EditorNode::EditorNode() {
 	main_hsplit->add_child(center_vb);
 
 	center_vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	center_vb->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	center_split = memnew(DockSplitContainer);
 	center_split->set_name("DockVSplitCenter");
