@@ -42,6 +42,7 @@
 #include "editor/script/script_editor_plugin.h"
 #include "editor/gui/editor_toaster.h"
 #include "editor/ai/editor_tools.h"
+#include "editor/docks/ai_chat_dock.h"
 #include "core/variant/typed_array.h"
 #include "editor/inspector/editor_context_menu_plugin.h"
 #include "editor/settings/editor_command_palette.h"
@@ -2045,6 +2046,10 @@ void ScriptTextEditor::_change_syntax_highlighter(int p_idx) {
 	set_syntax_highlighter(highlighters[highlighter_menu->get_item_text(p_idx)]);
 }
 
+void ScriptTextEditor::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("clear_diff"), &ScriptTextEditor::clear_diff);
+}
+
 void ScriptTextEditor::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
@@ -3226,6 +3231,21 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 		te->set_text(original_content);
 		// Save the revert so on re-open it matches the old version
 		apply_code();
+		
+		// Clear the preview overlay since we've rejected the changes
+		if (script.is_valid()) {
+			String path = script->get_path();
+			EditorTools::clear_preview_overlay(path);
+			
+			// Use AI chat dock singleton to notify it
+			AIChatDock *ai_chat = AIChatDock::get_singleton();
+			if (ai_chat) {
+				print_line("ScriptTextEditor: Found AI Chat dock singleton, calling _handle_apply_edit_rejected");
+				ai_chat->_handle_apply_edit_rejected(path);
+			} else {
+				print_line("ScriptTextEditor: AI Chat dock singleton not available");
+			}
+		}
 	}
 	
 	// CRITICAL: Clear GDScript cache and force save to disk
@@ -3257,24 +3277,13 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 			// Clear the preview overlay since we've accepted the changes
 			EditorTools::clear_preview_overlay(path);
 			
-			// Find the AI chat dock directly and notify it
-			Node *editor_node = EditorNode::get_singleton();
-			if (editor_node) {
-				// Try to find AI Chat dock
-				Node *ai_chat = nullptr;
-				
-				// First try the common dock container paths
-				TypedArray<Node> docks = editor_node->find_children("AI Chat", "Control", true, false);
-				if (docks.size() > 0) {
-					ai_chat = Object::cast_to<Node>(docks[0]);
-				}
-				
-				if (ai_chat && ai_chat->has_method("_on_script_editor_save")) {
-					print_line("ScriptTextEditor: Found AI Chat dock, calling _on_script_editor_save directly");
-					ai_chat->call("_on_script_editor_save", path);
-				} else {
-					print_line("ScriptTextEditor: Could not find AI Chat dock or method");
-				}
+			// Use AI chat dock singleton to notify it
+			AIChatDock *ai_chat = AIChatDock::get_singleton();
+			if (ai_chat) {
+				print_line("ScriptTextEditor: Found AI Chat dock singleton, calling _handle_apply_edit_accepted");
+				ai_chat->_handle_apply_edit_accepted(path, te->get_text());
+			} else {
+				print_line("ScriptTextEditor: AI Chat dock singleton not available");
 			}
 			
 			// Also emit the signal for future compatibility
@@ -3318,6 +3327,10 @@ void ScriptTextEditor::_clear_diff_data() {
 		}
 	}
 	_hide_diff_toolbar();
+}
+
+void ScriptTextEditor::clear_diff() {
+	_clear_diff_data();
 }
 
 void ScriptTextEditor::_create_diff_toolbar() {

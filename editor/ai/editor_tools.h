@@ -48,6 +48,7 @@ public:
     // Pending preview overlay management (in-memory edited content before save)
     static void set_preview_overlay(const String &p_path, const String &p_content);
     static void clear_preview_overlay(const String &p_path);
+    static void clear_all_preview_overlays();
     static bool has_preview_overlay(const String &p_path);
     static String get_preview_overlay(const String &p_path);
 
@@ -86,6 +87,10 @@ public:
 
 	// New Debugging Tools
 	static Dictionary run_scene(const Dictionary &p_args);
+	static Dictionary stop_game(const Dictionary &p_args);
+	static Dictionary get_game_status(const Dictionary &p_args);
+	static Dictionary get_runtime_errors_summary(const Dictionary &p_args);
+	static Dictionary get_runtime_errors_detailed(const Dictionary &p_args);
 	static Dictionary get_scene_tree_hierarchy(const Dictionary &p_args);
 	static Dictionary inspect_physics_body(const Dictionary &p_args);
 	static Dictionary get_camera_info(const Dictionary &p_args);

@@ -22,6 +22,8 @@
 #include "editor/editor_interface.h"
 #include "editor/editor_string_names.h"
 #include "editor/settings/editor_settings.h"
+#include "editor/docks/filesystem_dock.h"
+#include "editor/settings/project_settings_editor.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/script/script_text_editor.h"
 #include "modules/gdscript/gdscript.h"
@@ -43,6 +45,10 @@
 #include "scene/gui/text_edit.h"
 #include "scene/gui/tree.h"
 #include "scene/main/scene_tree.h"
+
+// Initialize static singleton
+AIChatDock *AIChatDock::singleton = nullptr;
+
 void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results) {
     if (tool_calls_ui_applied.has(p_tool_call_id)) {
         return;
@@ -68,6 +74,7 @@ void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, con
 void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_send_button_pressed"), &AIChatDock::_on_send_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_stop_button_pressed"), &AIChatDock::_on_stop_button_pressed);
+	ClassDB::bind_method(D_METHOD("_reset_connection_error_flag"), &AIChatDock::_reset_connection_error_flag);
 	ClassDB::bind_method(D_METHOD("_on_stop_request_completed"), &AIChatDock::_on_stop_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_edit_message_pressed"), &AIChatDock::_on_edit_message_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_message_send_pressed"), &AIChatDock::_on_edit_message_send_pressed);
@@ -118,6 +125,16 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_display_generated_image_deferred", "base64_data", "id"), &AIChatDock::_display_generated_image_deferred);
     ClassDB::bind_method(D_METHOD("_on_apply_edit_thread_done"), &AIChatDock::_on_apply_edit_thread_done);
 	
+	// Tool call button handlers
+	ClassDB::bind_method(D_METHOD("_on_tool_call_accept_pressed", "tool_call_id", "file_path", "content"), &AIChatDock::_on_tool_call_accept_pressed);
+	ClassDB::bind_method(D_METHOD("_on_tool_call_reject_pressed", "tool_call_id", "file_path"), &AIChatDock::_on_tool_call_reject_pressed);
+	ClassDB::bind_method(D_METHOD("_on_tool_result_accept_pressed", "tool_call_id", "file_path", "content", "btns_path", "status_path"), &AIChatDock::_on_tool_result_accept_pressed);
+	ClassDB::bind_method(D_METHOD("_on_tool_result_reject_pressed", "tool_call_id", "file_path", "btns_path", "status_path"), &AIChatDock::_on_tool_result_reject_pressed);
+	
+	// Legacy fallback handlers for tool results without tool_call_id
+	ClassDB::bind_method(D_METHOD("_on_apply_preview_to_editor", "path", "content", "btns_path", "status_label_path"), &AIChatDock::_on_apply_preview_to_editor);
+	ClassDB::bind_method(D_METHOD("_on_discard_preview", "path", "btns_path", "status_label_path"), &AIChatDock::_on_discard_preview);
+	
 	// Embedding system methods
 	ClassDB::bind_method(D_METHOD("_initialize_embedding_system"), &AIChatDock::_initialize_embedding_system);
 	ClassDB::bind_method(D_METHOD("_perform_initial_indexing"), &AIChatDock::_perform_initial_indexing);
@@ -134,7 +151,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_scroll_to_bottom"), &AIChatDock::_scroll_to_bottom);
 	ClassDB::bind_method(D_METHOD("_perform_scroll"), &AIChatDock::_perform_scroll);
 	ClassDB::bind_method(D_METHOD("_is_at_bottom"), &AIChatDock::_is_at_bottom);
-	ClassDB::bind_method(D_METHOD("_on_chat_scroll_changed"), &AIChatDock::_on_chat_scroll_changed);
+	// _on_chat_scroll_changed already bound above with parameter
 	ClassDB::bind_method(D_METHOD("_on_chat_content_min_size_changed"), &AIChatDock::_on_chat_content_min_size_changed);
 	ClassDB::bind_method(D_METHOD("_scroll_to_bottom_smooth"), &AIChatDock::_scroll_to_bottom_smooth);
 
@@ -322,6 +339,49 @@ void AIChatDock::_notification(int p_notification) {
 			chat_container = memnew(VBoxContainer);
 			chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			chat_scroll->add_child(chat_container);
+			
+			// Create pending edits banner at the top of chat
+			pending_edits_banner = memnew(PanelContainer);
+			pending_edits_banner->set_visible(false); // Hidden by default
+			pending_edits_banner->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			chat_container->add_child(pending_edits_banner);
+			
+			// Style the banner
+			Ref<StyleBoxFlat> banner_style = memnew(StyleBoxFlat);
+			banner_style->set_bg_color(Color(0.2, 0.4, 0.8, 0.15)); // Light blue background
+			banner_style->set_border_width_all(1);
+			banner_style->set_border_color(Color(0.2, 0.4, 0.8, 0.4)); // Blue border
+			banner_style->set_corner_radius_all(6);
+			banner_style->set_content_margin_all(8);
+			pending_edits_banner->add_theme_style_override("panel", banner_style);
+			
+			// Banner content
+			HBoxContainer *banner_content = memnew(HBoxContainer);
+			pending_edits_banner->add_child(banner_content);
+			
+			// Icon
+			TextureRect *banner_icon = memnew(TextureRect);
+			banner_icon->set_texture(get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
+			banner_icon->set_custom_minimum_size(Size2(16, 16));
+			banner_content->add_child(banner_icon);
+			
+			// Label
+			pending_edits_label = memnew(Label);
+			pending_edits_label->set_text("0 files pending review");
+			pending_edits_label->add_theme_color_override("font_color", Color(0.2, 0.4, 0.8, 0.9));
+			pending_edits_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			banner_content->add_child(pending_edits_label);
+			
+			// Details button
+			pending_edits_details_btn = memnew(Button);
+			pending_edits_details_btn->set_text("Details");
+			pending_edits_details_btn->set_flat(true);
+			pending_edits_details_btn->add_theme_color_override("font_color", Color(0.2, 0.4, 0.8, 0.9));
+			pending_edits_details_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("GuiVisibilityVisible"), SNAME("EditorIcons")));
+			pending_edits_details_btn->set_custom_minimum_size(Size2(70, 0));
+			pending_edits_details_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_banner_clicked));
+			banner_content->add_child(pending_edits_details_btn);
+			
 			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
 			// Add a container for attachments just above the input field
@@ -517,8 +577,8 @@ void AIChatDock::_notification(int p_notification) {
 				_queue_delayed_save();
 				_execute_delayed_save(); // start background save immediately
             } else {
-				// Switch to the most recent conversation
-				_switch_to_conversation(conversations.size() - 1);
+				// Switch to the most recent conversation with a small delay to ensure UI is ready
+				call_deferred("_switch_to_conversation", conversations.size() - 1);
 			}
 			
 			_update_conversation_dropdown();
@@ -549,19 +609,32 @@ void AIChatDock::_notification(int p_notification) {
 				}
 
                 if (client_status == HTTPClient::STATUS_DISCONNECTED || client_status == HTTPClient::STATUS_CONNECTION_ERROR || client_status == HTTPClient::STATUS_CANT_CONNECT) {
+                    bool has_async_work = pending_tool_tasks > 0;
+                    
                     if (stream_completed_successfully) {
                         print_line("AI Chat: Stream completed successfully, server closed connection");
+                    } else if (has_async_work) {
+                        // Don't show connection errors when tools are running - this is normal behavior
+                        print_line("AI Chat: Main stream disconnected, but " + String::num_int64(pending_tool_tasks) + " tool(s) still running");
                     } else {
                         print_line("AI Chat: HTTP connection failed with status: " + String::num_int64(client_status));
-                        _add_message_to_chat("system", "Connection lost or failed (Status: " + String::num_int64(client_status) + ") - Try again please.");
+                        // Only show error notification once - prevent spam
+                        if (!connection_error_shown) {
+                            _show_connection_status_notification("Connection lost or failed", "Status: " + String::num_int64(client_status) + " - AI is still working in background");
+                            connection_error_shown = true;
+                            // Reset flag after a delay to allow new error notifications for future failures
+                            call_deferred("_reset_connection_error_flag");
+                        }
                     }
 
-                    // If we still have async tool tasks running (e.g., apply_edit), keep the UI in 'waiting' state
-                    bool has_async_work = pending_tool_tasks > 0;
+                    // If we still have async tool tasks running (e.g., apply_edit), keep the UI in 'waiting' state  
                     is_waiting_for_response = has_async_work ? true : false;
-                    // Clean up stop mechanism state
-                    stop_requested = false;
-                    current_request_id = "";
+                    
+                    // CRITICAL FIX: Don't clear request_id if we still have async work - keeps stop button functional
+                    if (!has_async_work) {
+                        stop_requested = false;
+                        current_request_id = "";
+                    }
                     _update_ui_state();
                     http_status = STATUS_DONE;
                     current_assistant_message_label = nullptr;
@@ -594,6 +667,9 @@ void AIChatDock::_notification(int p_notification) {
     }
 		} break;
 			case NOTIFICATION_READY: {
+			// Clear any lingering preview overlays from previous sessions
+			EditorTools::clear_all_preview_overlays();
+			
 			// Auto-verify saved authentication when everything is fully ready
 			_auto_verify_saved_credentials();
 			// Debug: Log environment mode and resolved endpoint
@@ -684,7 +760,9 @@ void AIChatDock::_on_send_button_pressed() {
 	
 	// Defer heavy processing to next frame to keep UI responsive
 	call_deferred("_process_send_request_async");
-	input_field->grab_focus();
+	if (input_field && input_field->is_inside_tree()) {
+		input_field->grab_focus();
+	}
 }
 void AIChatDock::_on_stop_button_pressed() {
 	print_line("AI Chat: Stop button pressed! is_waiting_for_response=" + String(is_waiting_for_response ? "true" : "false") + ", current_request_id='" + current_request_id + "'");
@@ -716,6 +794,12 @@ void AIChatDock::_on_stop_button_pressed() {
 	// Reflect immediately in UI.
 	is_waiting_for_response = false;
 	_update_ui_state();
+}
+
+void AIChatDock::_reset_connection_error_flag() {
+	// Reset the connection error flag to allow new error messages for future connection failures
+	connection_error_shown = false;
+	print_line("AI Chat: Connection error flag reset - new error messages allowed");
 }
 void AIChatDock::_send_stop_request() {
 	if (current_request_id.is_empty()) {
@@ -876,7 +960,9 @@ void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_me
 	button_container->add_child(cancel_button);
 	
 	// Focus the edit field
-	edit_field->grab_focus();
+	if (edit_field && edit_field->is_inside_tree()) {
+		edit_field->grab_focus();
+	}
 }
 PanelContainer *AIChatDock::_build_edit_message_panel(const AIChatDock::ChatMessage &p_message, int p_message_index) {
     PanelContainer *message_panel = memnew(PanelContainer);
@@ -926,7 +1012,9 @@ PanelContainer *AIChatDock::_build_edit_message_panel(const AIChatDock::ChatMess
     cancel_button->connect("pressed", callable_mp(this, &AIChatDock::_on_edit_message_cancel_pressed).bind(p_message_index));
     button_container->add_child(cancel_button);
 
-    edit_field->grab_focus();
+    if (edit_field && edit_field->is_inside_tree()) {
+        edit_field->grab_focus();
+    }
     return message_panel;
 }
 
@@ -1716,6 +1804,17 @@ void AIChatDock::_background_save(void *p_data_ptr) {
 			messages_array.push_back(msg_dict);
 		}
 		conv_dict["messages"] = messages_array;
+		
+		// Save pending edits for this conversation
+		Array pending_edits_array;
+		for (const KeyValue<String, String> &pending_edit : conv.pending_apply_edits) {
+			Dictionary pending_edit_dict;
+			pending_edit_dict["tool_call_id"] = pending_edit.key;
+			pending_edit_dict["file_path"] = pending_edit.value;
+			pending_edits_array.push_back(pending_edit_dict);
+		}
+		conv_dict["pending_edits"] = pending_edits_array;
+		
 		conv_array.push_back(conv_dict);
 	}
 	data["conversations"] = conv_array;
@@ -2742,14 +2841,14 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 	json.instantiate();
 	Error err = json->parse(p_line);
 	if (err != OK) {
-		_add_message_to_chat("system", "Error parsing streaming response: " + p_line);
+		_show_connection_status_notification("Error parsing streaming response", p_line);
 		return;
 	}
 
 	Dictionary data = json->get_data();
 
 	if (data.has("error")) {
-		_add_message_to_chat("system", "Backend error: " + String(data["error"]));
+		_show_connection_status_notification("Backend error", String(data["error"]));
 		return;
 	}
 
@@ -2778,6 +2877,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 	if (data.has("request_id") && data.has("status") && data["status"] == "started") {
 		current_request_id = data["request_id"];
 		print_line("AI Chat: Received request ID: " + current_request_id);
+		// Reset connection error flag for new request
+		connection_error_shown = false;
 		// Update UI state to enable the stop button now that we have a request ID
 		_update_ui_state();
 		return;
@@ -2800,6 +2901,45 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		stop_requested = false;
 		current_request_id = "";
 		_update_ui_state();
+		return;
+	}
+	
+	// Handle rate limit hit status
+	if (data.has("status") && data["status"] == "rate_limit_hit") {
+		String provider = data.get("provider", "Unknown provider");
+		String message = data.get("message", "Rate limit exceeded, retrying...");
+		int attempt = data.get("attempt", 0);
+		int max_attempts = data.get("max_attempts", 5);
+		
+		print_line("AI Chat: Rate limit hit on " + provider + " - attempt " + String::num_int64(attempt) + "/" + String::num_int64(max_attempts));
+		
+		// Show status notification
+		_show_rate_limit_notification(provider, message + " (Attempt " + String::num_int64(attempt) + "/" + String::num_int64(max_attempts) + ")");
+		return;
+	}
+	
+	// Handle provider switched status  
+	if (data.has("status") && data["status"] == "provider_switched") {
+		String from_provider = data.get("from_provider", "Unknown");
+		String to_provider = data.get("to_provider", "Unknown");
+		String reason = data.get("reason", "Provider unavailable");
+		String full_message = data.get("message", "Switching providers");
+		
+		print_line("AI Chat: " + full_message);
+		
+		// Show status notification
+		_show_model_switch_notification(from_provider, to_provider, reason);
+		return;
+	}
+	
+	// Handle generic retrying_provider status (for non-rate-limit retries)
+	if (data.has("status") && data["status"] == "retrying_provider") {
+		String provider = data.get("provider", "Unknown provider");
+		int attempt = data.get("attempt", 0);
+		int max_attempts = data.get("max_attempts", 5);
+		
+		print_line("AI Chat: Retrying " + provider + " - attempt " + String::num_int64(attempt) + "/" + String::num_int64(max_attempts));
+		// No popup for generic retries, just log
 		return;
 	}
 
@@ -2888,24 +3028,46 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
         String tool_call_id = data.get("tool_call_id", "");
 
-        // Ensure conversation history contains the required assistant message with tool_calls
-        // so that subsequent API requests won't fail schema validation.
+        // Check if we already have an assistant message with this tool_call_id
+        // Don't create duplicates as they break the conversation format
+        Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
+        bool assistant_tool_call_exists = false;
+        
         if (!tool_call_id.is_empty()) {
-            AIChatDock::ChatMessage assistant_tool_call_msg;
-            assistant_tool_call_msg.role = "assistant";
-            assistant_tool_call_msg.content = String();
-            Array tool_calls_arr;
-            Dictionary tool_call_dict;
-            tool_call_dict["id"] = tool_call_id;
-            tool_call_dict["type"] = "function";
-            Dictionary function_dict;
-            function_dict["name"] = tool_executed;
-            function_dict["arguments"] = "{}"; // Minimal placeholder; backend already executed the real args
-            tool_call_dict["function"] = function_dict;
-            tool_calls_arr.push_back(tool_call_dict);
-            assistant_tool_call_msg.tool_calls = tool_calls_arr;
-            Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
-            history.push_back(assistant_tool_call_msg);
+            for (int i = history.size() - 1; i >= 0; i--) {
+                const ChatMessage &msg = history[i];
+                if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+                    for (int j = 0; j < msg.tool_calls.size(); j++) {
+                        Dictionary tool_call = msg.tool_calls[j];
+                        String existing_id = tool_call.get("id", "");
+                        if (existing_id == tool_call_id) {
+                            assistant_tool_call_exists = true;
+                            print_line("AI Chat: Found existing assistant tool call for ID: " + tool_call_id);
+                            break;
+                        }
+                    }
+                    if (assistant_tool_call_exists) break;
+                }
+            }
+            
+            if (!assistant_tool_call_exists) {
+                print_line("AI Chat: WARNING - No existing assistant message found for tool_call_id: " + tool_call_id + ". This should not happen!");
+                // Only create if it's truly missing (shouldn't happen in normal flow)
+                AIChatDock::ChatMessage assistant_tool_call_msg;
+                assistant_tool_call_msg.role = "assistant";
+                assistant_tool_call_msg.content = String();
+                Array tool_calls_arr;
+                Dictionary tool_call_dict;
+                tool_call_dict["id"] = tool_call_id;
+                tool_call_dict["type"] = "function";
+                Dictionary function_dict;
+                function_dict["name"] = tool_executed;
+                function_dict["arguments"] = "{}";
+                tool_call_dict["function"] = function_dict;
+                tool_calls_arr.push_back(tool_call_dict);
+                assistant_tool_call_msg.tool_calls = tool_calls_arr;
+                history.push_back(assistant_tool_call_msg);
+            }
         }
 
         // Special-case for image results when no tool_call_id is present (backend not providing it)
@@ -3161,6 +3323,10 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 
 		Dictionary result;
 
+		// Capture runtime errors before and after tool execution
+		Dictionary pre_execution_errors = EditorTools::get_runtime_errors(Dictionary());
+		int pre_error_count = pre_execution_errors.get("count", 0);
+
 		// Execute the tool
 		if (function_name == "get_scene_info") {
 			result = EditorTools::get_scene_info(args);
@@ -3321,9 +3487,70 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
             } else {
                 result["message"] = error_msg;
             }
+        } else if (function_name == "run_scene" || function_name == "start_game") {
+            // Start the game/scene for testing
+            result = EditorTools::run_scene(args);
+        } else if (function_name == "stop_game" || function_name == "stop_scene") {
+            // Stop the running game
+            result = EditorTools::stop_game(args);
+        } else if (function_name == "get_game_status") {
+            // Check if game is running
+            result = EditorTools::get_game_status(args);
+        } else if (function_name == "get_runtime_errors_summary") {
+            // Get smart error summary with deduplication
+            result = EditorTools::get_runtime_errors_summary(args);
+        } else if (function_name == "get_runtime_errors_detailed") {
+            // Get detailed error information with filtering
+            result = EditorTools::get_runtime_errors_detailed(args);
         } else {
             result["success"] = false;
             result["message"] = "Unknown tool: " + function_name;
+        }
+
+        // Capture any new runtime errors that occurred during tool execution
+        Dictionary post_execution_errors = EditorTools::get_runtime_errors(Dictionary());
+        int post_error_count = post_execution_errors.get("count", 0);
+        int new_error_count = post_error_count - pre_error_count;
+        
+        if (new_error_count > 0) {
+            print_line("AI Chat: Tool execution generated " + String::num_int64(new_error_count) + " new error(s)");
+            
+            // Get the new errors
+            Array all_post_errors = post_execution_errors.get("errors", Array());
+            Array new_errors;
+            
+            // Extract only the new errors (most recent ones)
+            for (int i = 0; i < new_error_count && i < all_post_errors.size(); i++) {
+                new_errors.push_back(all_post_errors[i]);
+            }
+            
+            // Include error details in the result for AI visibility
+            if (result.get("success", false)) {
+                // If tool reported success but we have new errors, mark as partial success
+                result["success"] = false;
+                result["partial_success"] = true;
+                result["message"] = String(result.get("message", "")) + " (But " + String::num_int64(new_error_count) + " error(s) occurred during execution)";
+            } else {
+                // Tool already failed, add error details
+                String existing_message = result.get("message", "");
+                result["message"] = existing_message + " (Additional " + String::num_int64(new_error_count) + " error(s) occurred)";
+            }
+            
+            // Add error details for AI debugging
+            result["runtime_errors"] = new_errors;
+            result["error_count"] = new_error_count;
+            
+            // Include first few error messages directly in the result
+            String error_summary = "";
+            for (int i = 0; i < new_errors.size() && i < 3; i++) {
+                Dictionary error = new_errors[i];
+                String error_msg = error.get("message", "Unknown error");
+                error_summary += "\n- " + error_msg;
+            }
+            if (new_errors.size() > 3) {
+                error_summary += "\n- ... and " + String::num_int64(new_errors.size() - 3) + " more error(s)";
+            }
+            result["error_details"] = error_summary;
         }
 
         // Add a proper, separate tool bubble for the output.
@@ -3502,6 +3729,8 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
+	
+	print_line("AI Chat: Added tool response - ID: " + p_tool_call_id + ", Name: " + p_name + ", History size: " + String::num_int64(chat_history.size()));
 
 	// Find the placeholder for this tool and replace its content.
 	if (chat_container == nullptr) {
@@ -3539,7 +3768,19 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	bool success = data.get("success", false);
 	String message = data.get("message", "");
 	String status_text = success ? "SUCCESS" : "ERROR";
-	toggle_button->set_text(status_text + " - " + p_name + ": " + message);
+	
+	// Special formatting for apply_edit to highlight the file name
+	if (p_name == "apply_edit" && success) {
+		String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
+		if (!file_path.is_empty()) {
+			String display_path = _convert_to_godot_path(file_path);
+			toggle_button->set_text(status_text + " - Edit applied to: " + display_path);
+		} else {
+			toggle_button->set_text(status_text + " - " + p_name + ": " + message);
+		}
+	} else {
+		toggle_button->set_text(status_text + " - " + p_name + ": " + message);
+	}
 	
 	toggle_button->set_flat(false);
 	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -3552,6 +3793,11 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	tool_container->add_child(toggle_button);
+
+	// Add accept/reject buttons for apply_edit tools after the main toggle button
+	if (p_name == "apply_edit" && success) {
+		_add_apply_edit_buttons_to_tool_container(tool_container, p_tool_call_id, p_args, data);
+	}
 
 				PanelContainer *content_panel = memnew(PanelContainer);
 	content_panel->set_visible(false); // Collapsed by default.
@@ -3585,6 +3831,8 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 
 	// Use the shared tool-specific UI creation function
 	_create_tool_specific_ui(content_vbox, p_name, p_result, success, p_args);
+
+	// Accept/reject buttons are now added directly in the final UI rebuild
 
 	tool_calls_ui_applied.insert(p_tool_call_id);
 	call_deferred("_scroll_to_bottom");
@@ -4137,13 +4385,20 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		placeholder_style->set_corner_radius_all(5);
 		placeholder->add_theme_style_override("panel", placeholder_style);
 
+		VBoxContainer *tool_vbox = memnew(VBoxContainer);
+		placeholder->add_child(tool_vbox);
+
 		HBoxContainer *tool_hbox = memnew(HBoxContainer);
-		placeholder->add_child(tool_hbox);
+		tool_vbox->add_child(tool_hbox);
 
         Label *tool_label = memnew(Label);
         tool_label->set_text("🔧 " + func_name + "...");
 		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		tool_hbox->add_child(tool_label);
+
+		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
+		// They will be added in the final UI rebuild instead
 	}
 }
 
@@ -4196,7 +4451,24 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 	bool success = result.get("success", false);
 	String message = result.get("message", "");
 	String status_text = success ? "SUCCESS" : "ERROR";
-	toggle_button->set_text(status_text + " - " + p_tool_message.name + ": " + message);
+	
+	// Special formatting for apply_edit to highlight the file name
+	if (p_tool_message.name == "apply_edit" && success) {
+		// Extract arguments if they were stored
+		Dictionary args;
+		if (p_tool_message.tool_results.size() > 1) {
+			args = p_tool_message.tool_results[1]; // Args are stored as second element
+		}
+		String file_path = args.has("path") ? args.get("path", "") : args.get("file_path", "");
+		if (!file_path.is_empty()) {
+			String display_path = _convert_to_godot_path(file_path);
+			toggle_button->set_text(status_text + " - Edit applied to: " + display_path);
+		} else {
+			toggle_button->set_text(status_text + " - " + p_tool_message.name + ": " + message);
+		}
+	} else {
+		toggle_button->set_text(status_text + " - " + p_tool_message.name + ": " + message);
+	}
 	
     toggle_button->set_flat(false);
 	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -4794,16 +5066,31 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		}
 
     } else if (p_tool_name == "apply_edit" && p_success) {
-        // Inline Accept/Reject diff preview directly in the chat tool result (self-contained)
+        // Simplified and highlighted file edit display
         String file_path = p_args.has("path") ? p_args.get("path", "Unknown") : p_args.get("file_path", "Unknown");
         String original_content = p_result.get("original_content", "");
         String edited_content = p_result.get("edited_content", "");
         Dictionary structured_edits = p_result.get("structured_edits", Dictionary());
         Array comp_errors = p_result.get("compilation_errors", Array());
         bool has_errors = p_result.get("has_errors", false);
+        
+        // Get the tool call ID for proper tracking
+        String tool_call_id;
+        for (const KeyValue<String, String> &entry : pending_apply_edits) {
+            if (entry.value == file_path) {
+                tool_call_id = entry.key;
+                break;
+            }
+        }
 
+        // Only show previews and diffs for truly pending edits
+        bool is_truly_pending = false;
+        if (!tool_call_id.is_empty() && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+            is_truly_pending = conversations[current_conversation_index].pending_apply_edits.has(tool_call_id);
+        }
+        
         // Make edited content visible to subsequent read_file calls before user accepts
-        if (!file_path.is_empty()) {
+        if (!file_path.is_empty() && is_truly_pending) {
             EditorTools::set_preview_overlay(file_path, edited_content);
             
             // For script files, also show diff in script editor
@@ -4814,12 +5101,35 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             }
         }
 
-        // Also render a compact status in the chat bubble
+        // Create a prominent file name display
         VBoxContainer *edit_vbox = memnew(VBoxContainer);
+        edit_vbox->add_theme_constant_override("separation", 8);
         p_content_vbox->add_child(edit_vbox);
-        Label *status = memnew(Label);
+        
+        // File name with icon - make it stand out
+        HBoxContainer *file_hbox = memnew(HBoxContainer);
+        file_hbox->add_theme_constant_override("separation", 8);
+        edit_vbox->add_child(file_hbox);
+        
+        // File icon
+        TextureRect *file_icon = memnew(TextureRect);
+        file_icon->set_texture(get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+        file_icon->set_custom_minimum_size(Size2(24, 24));
+        file_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+        file_hbox->add_child(file_icon);
+        
+        // File path label - bold and larger
+        Label *file_label = memnew(Label);
         String display_path = _convert_to_godot_path(file_path);
-        String status_text = "Edited: " + display_path;
+        file_label->set_text(display_path);
+        file_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+        file_label->add_theme_font_size_override("font_size", 14);
+        file_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+        file_hbox->add_child(file_label);
+        
+        // Status message
+        Label *status = memnew(Label);
+        String status_text = "Edit applied to file";
         // Show line range if it was a partial edit
         int start_line = p_args.get("start_line", 0);
         int end_line = p_args.get("end_line", 0);
@@ -4830,11 +5140,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             status_text += " — Errors detected (" + String::num_int64(comp_errors.size()) + ")";
         }
         status->set_text(status_text);
-        status->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.8));
+        status->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
         edit_vbox->add_child(status);
 
-        // Provide explicit controls to apply or discard the preview (all files) and show an inline diff
-        if (!file_path.is_empty()) {
+        // Only show Apply/Discard buttons for truly pending edits (consistent with tool call buttons)
+        if (!file_path.is_empty() && is_truly_pending) {
             HBoxContainer *btns = memnew(HBoxContainer);
             btns->set_name("apply_discard_buttons");
             edit_vbox->add_child(btns);
@@ -4847,36 +5157,62 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             apply_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
             btns->add_child(apply_btn);
             // Pass stable NodePaths for this bubble's buttons and status label so we can update reliably
-            NodePath btns_path = NodePath(btns->get_path());
+            NodePath btns_path = get_path_to(btns);
             Label *status_label = status; // created just above
-            NodePath status_path = NodePath(status_label ? status_label->get_path() : NodePath());
-            apply_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_apply_preview_to_editor).bind(file_path, edited_content, btns_path, status_path));
+            NodePath status_path = status_label ? get_path_to(status_label) : NodePath();
+            // Connect to unified handlers if we have a tool call ID
+            if (!tool_call_id.is_empty()) {
+                apply_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_result_accept_pressed).bind(tool_call_id, file_path, edited_content, btns_path, status_path));
+            } else {
+                apply_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_apply_preview_to_editor).bind(file_path, edited_content, btns_path, status_path));
+            }
 
             Button *discard_btn = memnew(Button);
             discard_btn->set_name("discard_button");
             discard_btn->set_text("Discard Preview");
             discard_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Remove"), SNAME("EditorIcons")));
             btns->add_child(discard_btn);
-            discard_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_discard_preview).bind(file_path, btns_path, status_path));
+            
+            if (!tool_call_id.is_empty()) {
+                discard_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_result_reject_pressed).bind(tool_call_id, file_path, btns_path, status_path));
+            } else {
+                discard_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_discard_preview).bind(file_path, btns_path, status_path));
+            }
+        } else if (!file_path.is_empty() && !is_truly_pending) {
+            // Show status for previously processed edits
+            Label *processed_label = memnew(Label);
+            processed_label->set_text("Previously Processed");
+            processed_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+            processed_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+            edit_vbox->add_child(processed_label);
+        }
 
-            // Register this pending edit for tracking
-            _register_pending_edit(file_path, btns_path, status_path);
-
-            // Inline diff block (simple textual diff view for all files)
-            RichTextLabel *diff_view = memnew(RichTextLabel);
-            diff_view->set_selection_enabled(true);
-            diff_view->set_fit_content(true);
-            diff_view->push_mono();
-            // Very simple unified-like diff
-            diff_view->add_text("--- original\n");
-            diff_view->add_text("+++ edited\n");
-            // For large files, avoid flooding UI
-            const int kMaxShow = 40000;
-            String preview_original = original_content.substr(0, kMaxShow);
-            String preview_edited = edited_content.substr(0, kMaxShow);
-            diff_view->add_text("\n[Original]\n" + preview_original + "\n\n[Edited]\n" + preview_edited);
-            diff_view->pop();
-            edit_vbox->add_child(diff_view);
+        // Note: Pending edit tracking now handled by the new banner system in _add_apply_edit_buttons_to_tool_container
+        
+        if (!file_path.is_empty() && is_truly_pending) {
+            // Add a compact summary instead of full diff
+            HSeparator *sep = memnew(HSeparator);
+            edit_vbox->add_child(sep);
+            
+            // Changes summary
+            Label *summary_label = memnew(Label);
+            int lines_changed = 0;
+            if (structured_edits.has("hunks")) {
+                Array hunks = structured_edits["hunks"];
+                for (int i = 0; i < hunks.size(); i++) {
+                    Dictionary hunk = hunks[i];
+                    Array removed = hunk.get("removed_lines", Array());
+                    Array added = hunk.get("added_lines", Array());
+                    lines_changed += removed.size() + added.size();
+                }
+            }
+            String summary_text = "Changes: " + String::num_int64(lines_changed) + " lines modified";
+            summary_label->set_text(summary_text);
+            summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+            summary_label->add_theme_font_size_override("font_size", 12);
+            edit_vbox->add_child(summary_label);
+            
+            // Skip the large diff display - it's shown in the script editor already
         }
 
         // After Accept/Discard, collapse to view-only mode by clearing the overlay and disabling buttons.
@@ -5417,6 +5753,317 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			search_vbox->add_child(summary_label);
 		}
 		
+	} else if (p_tool_name == "search_godot_assets" && p_success) {
+		// Display Godot Asset Library search results
+		VBoxContainer *assets_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(assets_vbox);
+
+		String query = p_result.get("query", "");
+		Array assets = p_result.get("assets", Array());
+		int total_found = p_result.get("total_found", 0);
+		String category = p_result.get("category", "");
+		
+		// Header with query info
+		Label *query_label = memnew(Label);
+		String header_text = "🔍 Asset Library Search: \"" + query + "\"";
+		if (!category.is_empty()) {
+			header_text += " (Category: " + category + ")";
+		}
+		query_label->set_text(header_text);
+		query_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		query_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+		assets_vbox->add_child(query_label);
+		
+		if (total_found > 0) {
+			Label *count_label = memnew(Label);
+			count_label->set_text("Found " + String::num_int64(total_found) + " assets");
+			count_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+			assets_vbox->add_child(count_label);
+		}
+		
+		assets_vbox->add_child(memnew(HSeparator));
+		
+		// Assets list
+		if (assets.size() > 0) {
+			for (int i = 0; i < assets.size(); i++) {
+				Dictionary asset = assets[i];
+				String title = asset.get("title", "Unknown Asset");
+				String author = asset.get("author", "Unknown");
+				String version = asset.get("version", "1.0");
+				String description = asset.get("description", "");
+				String asset_id = asset.get("id", "");
+				String category_name = asset.get("category", "");
+				String godot_version = asset.get("godot_version", "");
+				int rating = asset.get("rating", 0);
+				String cost = asset.get("cost", "Free");
+				String browse_url = asset.get("browse_url", "");
+				String icon_url = asset.get("icon_url", "");
+				
+				// Asset container
+				PanelContainer *asset_panel = memnew(PanelContainer);
+				asset_panel->add_theme_style_override("panel", get_theme_stylebox(SNAME("panel"), SNAME("TooltipPanel")));
+				assets_vbox->add_child(asset_panel);
+				
+				VBoxContainer *asset_vbox = memnew(VBoxContainer);
+				asset_panel->add_child(asset_vbox);
+				
+				// Title and author row
+				HBoxContainer *title_hbox = memnew(HBoxContainer);
+				asset_vbox->add_child(title_hbox);
+				
+				Label *title_label = memnew(Label);
+				title_label->set_text("📦 " + title);
+				title_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+				title_hbox->add_child(title_label);
+				
+				title_hbox->add_child(memnew(Control)); // Spacer
+				
+				Label *version_label = memnew(Label);
+				version_label->set_text("v" + version);
+				version_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+				title_hbox->add_child(version_label);
+				
+				// Author and metadata row
+				HBoxContainer *meta_hbox = memnew(HBoxContainer);
+				asset_vbox->add_child(meta_hbox);
+				
+				Label *author_label = memnew(Label);
+				author_label->set_text("👤 " + author);
+				author_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+				meta_hbox->add_child(author_label);
+				
+				if (!category_name.is_empty()) {
+					Label *category_label = memnew(Label);
+					category_label->set_text("📂 " + category_name);
+					category_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+					meta_hbox->add_child(category_label);
+				}
+				
+				if (!godot_version.is_empty()) {
+					Label *godot_label = memnew(Label);
+					godot_label->set_text("🎮 Godot " + godot_version);
+					godot_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+					meta_hbox->add_child(godot_label);
+				}
+				
+				// Cost and rating
+				if (cost != "Free" || rating > 0) {
+					HBoxContainer *info_hbox = memnew(HBoxContainer);
+					asset_vbox->add_child(info_hbox);
+					
+					if (cost != "Free") {
+						Label *cost_label = memnew(Label);
+						cost_label->set_text("💰 " + cost);
+						cost_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+						info_hbox->add_child(cost_label);
+					}
+					
+					if (rating > 0) {
+						Label *rating_label = memnew(Label);
+						rating_label->set_text("⭐ " + String::num_int64(rating));
+						rating_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+						info_hbox->add_child(rating_label);
+					}
+				}
+				
+				// Description (truncated)
+				if (!description.is_empty()) {
+					String desc = description.length() > 150 ? description.substr(0, 150) + "..." : description;
+					Label *desc_label = memnew(Label);
+					desc_label->set_text(desc);
+					desc_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+					desc_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
+					asset_vbox->add_child(desc_label);
+				}
+				
+				// Action buttons
+				HBoxContainer *button_hbox = memnew(HBoxContainer);
+				asset_vbox->add_child(button_hbox);
+				
+				// Install button
+				Button *install_btn = memnew(Button);
+				install_btn->set_text("Install Asset");
+				install_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("AssetLib"), SNAME("EditorIcons")));
+				install_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_install_requested).bind(asset_id, title));
+				button_hbox->add_child(install_btn);
+				
+				// Browse button (if URL available)
+				if (!browse_url.is_empty()) {
+					Button *browse_btn = memnew(Button);
+					browse_btn->set_text("View on Asset Library");
+					browse_btn->set_flat(true);
+					browse_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ExternalLink"), SNAME("EditorIcons")));
+					browse_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_browse_requested).bind(browse_url));
+					button_hbox->add_child(browse_btn);
+				}
+				
+				if (i < assets.size() - 1) {
+					assets_vbox->add_child(memnew(HSeparator));
+				}
+			}
+		} else {
+			Label *no_results = memnew(Label);
+			no_results->set_text("No assets found for this search.");
+			no_results->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			assets_vbox->add_child(no_results);
+		}
+
+	} else if (p_tool_name == "install_godot_asset" && p_success) {
+		// Display asset installation results
+		VBoxContainer *install_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(install_vbox);
+
+		Dictionary installation_info = p_result.get("installation_info", Dictionary());
+		String message = p_result.get("message", "Asset installed successfully");
+		String asset_name = installation_info.get("asset_name", "Unknown Asset");
+		bool is_cloud_mode = p_result.get("cloud_mode", false);
+		String installed_to = installation_info.get("installed_to", "");
+		int files_extracted = installation_info.get("files_extracted", 0);
+		bool is_plugin = installation_info.get("is_plugin", false);
+		String version = installation_info.get("version", "");
+		String author = installation_info.get("author", "");
+		String description = installation_info.get("description", "");
+		String backup_created = installation_info.get("backup_created", "");
+		
+		// Success header (different messaging for cloud vs local mode)
+		Label *success_label = memnew(Label);
+		if (is_cloud_mode) {
+			success_label->set_text("☁️ " + message);
+			success_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			success_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+		} else {
+			success_label->set_text("✅ " + message);
+			success_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			success_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		}
+		install_vbox->add_child(success_label);
+		
+		// Asset info panel
+		PanelContainer *info_panel = memnew(PanelContainer);
+		info_panel->add_theme_style_override("panel", get_theme_stylebox(SNAME("panel"), SNAME("TooltipPanel")));
+		install_vbox->add_child(info_panel);
+		
+		VBoxContainer *info_vbox = memnew(VBoxContainer);
+		info_panel->add_child(info_vbox);
+		
+		// Asset name and version
+		HBoxContainer *name_hbox = memnew(HBoxContainer);
+		info_vbox->add_child(name_hbox);
+		
+		Label *name_label = memnew(Label);
+		name_label->set_text("📦 " + asset_name);
+		name_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		name_hbox->add_child(name_label);
+		
+		if (!version.is_empty()) {
+			Label *ver_label = memnew(Label);
+			ver_label->set_text("v" + version);
+			ver_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			name_hbox->add_child(ver_label);
+		}
+		
+		// Author
+		if (!author.is_empty()) {
+			Label *author_label = memnew(Label);
+			author_label->set_text("👤 " + author);
+			author_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+			info_vbox->add_child(author_label);
+		}
+		
+		// Installation details (different for cloud vs local mode)
+		info_vbox->add_child(memnew(HSeparator));
+		
+		if (is_cloud_mode) {
+			Label *cloud_label = memnew(Label);
+			cloud_label->set_text("☁️ Asset downloaded from cloud backend");
+			cloud_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+			info_vbox->add_child(cloud_label);
+			
+			Label *ready_label = memnew(Label);
+			String intended_path = installation_info.get("intended_path", installed_to);
+			ready_label->set_text("📁 Ready to install to: " + _convert_to_godot_path(intended_path));
+			info_vbox->add_child(ready_label);
+			
+			Label *action_needed_label = memnew(Label);
+			action_needed_label->set_text("⚠️ Click 'Install to Project' below to complete installation");
+			action_needed_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			info_vbox->add_child(action_needed_label);
+		} else {
+			Label *location_label = memnew(Label);
+			location_label->set_text("📁 Installed to: " + _convert_to_godot_path(installed_to));
+			info_vbox->add_child(location_label);
+			
+			Label *files_label = memnew(Label);
+			files_label->set_text("📄 Files extracted: " + String::num_int64(files_extracted));
+			info_vbox->add_child(files_label);
+		}
+		
+		if (is_plugin) {
+			Label *plugin_label = memnew(Label);
+			plugin_label->set_text("🔌 This is a plugin - you may need to enable it in Project Settings");
+			plugin_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			info_vbox->add_child(plugin_label);
+		}
+		
+		if (!backup_created.is_empty()) {
+			Label *backup_label = memnew(Label);
+			backup_label->set_text("💾 Backup created at: " + backup_created.get_file());
+			backup_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			info_vbox->add_child(backup_label);
+		}
+		
+		// Description if available
+		if (!description.is_empty()) {
+			info_vbox->add_child(memnew(HSeparator));
+			Label *desc_label = memnew(Label);
+			desc_label->set_text(description);
+			desc_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			desc_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
+			info_vbox->add_child(desc_label);
+		}
+		
+		// Action buttons (different for cloud vs local mode)
+		HBoxContainer *action_hbox = memnew(HBoxContainer);
+		install_vbox->add_child(action_hbox);
+		
+		if (is_cloud_mode) {
+			// Cloud mode: Show "Install to Project" button
+			Button *install_locally_btn = memnew(Button);
+			install_locally_btn->set_text("Install to Project");
+			install_locally_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("AssetLib"), SNAME("EditorIcons")));
+			String asset_data = p_result.get("asset_data", "");
+			String intended_path = installation_info.get("intended_path", "");
+			install_locally_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_cloud_asset_install_requested).bind(asset_data, intended_path, asset_name));
+			action_hbox->add_child(install_locally_btn);
+			
+			// Also show a manual download option
+			Button *manual_btn = memnew(Button);
+			manual_btn->set_text("Manual Download");
+			manual_btn->set_flat(true);
+			manual_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("FileList"), SNAME("EditorIcons")));
+			manual_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_cloud_asset_manual_download).bind(asset_data, asset_name));
+			action_hbox->add_child(manual_btn);
+		} else {
+			// Local mode: Show normal folder and plugin buttons
+			// Open folder button
+			if (!installed_to.is_empty()) {
+				Button *open_folder_btn = memnew(Button);
+				open_folder_btn->set_text("Open in FileSystem");
+				open_folder_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Folder"), SNAME("EditorIcons")));
+				open_folder_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_folder_open_requested).bind(installed_to));
+				action_hbox->add_child(open_folder_btn);
+			}
+			
+			// Plugin settings button (if it's a plugin)
+			if (is_plugin) {
+				Button *plugin_btn = memnew(Button);
+				plugin_btn->set_text("Open Plugin Settings");
+				plugin_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
+				plugin_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_plugin_settings_requested));
+				action_hbox->add_child(plugin_btn);
+			}
+		}
+
 	} else {
 		// Default case - show formatted JSON output with better styling
 		VBoxContainer *json_container = memnew(VBoxContainer);
@@ -5575,6 +6222,22 @@ void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String 
     }
     // Clear from pending edits tracking
     _clear_pending_edit(p_path);
+    
+    // Find tool call ID and use unified handler
+    String tool_call_id;
+    for (const KeyValue<String, String> &entry : pending_apply_edits) {
+        if (entry.value == p_path) {
+            tool_call_id = entry.key;
+            break;
+        }
+    }
+    
+    if (!tool_call_id.is_empty()) {
+        // Update tool call button status
+        _update_tool_call_button_status(tool_call_id, "Accepted");
+        // Remove from pending edits
+        _remove_pending_edit(tool_call_id);
+    }
 }
 
 void AIChatDock::_on_discard_preview(const String &p_path, const NodePath &p_btns_path, const NodePath &p_status_label_path) {
@@ -5596,6 +6259,22 @@ void AIChatDock::_on_discard_preview(const String &p_path, const NodePath &p_btn
     }
     // Clear from pending edits tracking
     _clear_pending_edit(p_path);
+    
+    // Find tool call ID and use unified handler
+    String tool_call_id;
+    for (const KeyValue<String, String> &entry : pending_apply_edits) {
+        if (entry.value == p_path) {
+            tool_call_id = entry.key;
+            break;
+        }
+    }
+    
+    if (!tool_call_id.is_empty()) {
+        // Update tool call button status
+        _update_tool_call_button_status(tool_call_id, "Rejected");
+        // Remove from pending edits
+        _remove_pending_edit(tool_call_id);
+    }
 }
 
 void AIChatDock::_toggle_expand_label(RichTextLabel *p_label, Button *p_button, const String &p_full_text, const String &p_snippet_text) {
@@ -5665,12 +6344,16 @@ void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages)
 		}
 	}
 	
-	// Second pass: Apply tool results to their corresponding placeholders
+	// Second pass: Apply tool results to their corresponding placeholders with a delay
+	// Use a timer to ensure UI is fully built before applying tool results
+	float delay = 0.1f;
 	for (int i = 0; i < p_messages.size(); i++) {
 		const ChatMessage &msg = p_messages[i];
 		if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
-			// Use a small delay to ensure the UI has been updated from the first pass
-			call_deferred("_apply_tool_result_deferred", msg.tool_call_id, msg.name, msg.content, msg.tool_results);
+			// Stagger the tool result applications to avoid race conditions
+			Ref<SceneTreeTimer> timer = get_tree()->create_timer(delay, true);
+			timer->connect("timeout", callable_mp(this, &AIChatDock::_apply_tool_result_deferred).bind(msg.tool_call_id, msg.name, msg.content, msg.tool_results), CONNECT_ONE_SHOT);
+			delay += 0.05f; // Add small delay between each tool result
 		}
 	}
 }
@@ -5735,7 +6418,19 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	bool success = result.get("success", false);
 	String message = result.get("message", "");
 	String status_text = success ? "SUCCESS" : "ERROR";
-	toggle_button->set_text(status_text + " - " + p_tool_name + ": " + message);
+	
+	// Special formatting for apply_edit to highlight the file name
+	if (p_tool_name == "apply_edit" && success) {
+		String file_path = args.has("path") ? args.get("path", "") : args.get("file_path", "");
+		if (!file_path.is_empty()) {
+			String display_path = _convert_to_godot_path(file_path);
+			toggle_button->set_text(status_text + " - Edit applied to: " + display_path);
+		} else {
+			toggle_button->set_text(status_text + " - " + p_tool_name + ": " + message);
+		}
+	} else {
+		toggle_button->set_text(status_text + " - " + p_tool_name + ": " + message);
+	}
 	
 	toggle_button->set_flat(false);
 	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -5748,6 +6443,25 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	tool_container->add_child(toggle_button);
+
+	// Add accept/reject buttons for apply_edit tools after the main toggle button
+	if (p_tool_name == "apply_edit" && success) {
+		// Check if this edit is truly still pending (for UI rebuilds from saved conversations)
+		bool is_truly_pending = false;
+		if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			is_truly_pending = conversations[current_conversation_index].pending_apply_edits.has(p_tool_call_id);
+		} else {
+			// For new conversations, always add as pending
+			is_truly_pending = true;
+		}
+		
+		if (is_truly_pending) {
+			_add_apply_edit_buttons_to_tool_container(tool_container, p_tool_call_id, args, result);
+		} else {
+			// Tool was previously accepted/rejected, show status
+			_update_tool_call_button_status_in_container(tool_container, p_tool_call_id, "Previously Processed");
+		}
+	}
 
 	PanelContainer *content_panel = memnew(PanelContainer);
 	content_panel->set_visible(false); // Collapsed by default
@@ -5787,6 +6501,8 @@ void AIChatDock::_on_tool_output_toggled(Control *p_content) {
 }
 void AIChatDock::_send_chat_request() {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	
+	print_line("AI Chat: Sending chat request with " + String::num_int64(chat_history.size()) + " messages");
 	
 	// For large conversation histories, process in chunks to prevent UI blocking
 	if (chat_history.size() > 50) {
@@ -5986,9 +6702,7 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 		Dictionary api_msg = _build_api_message(msg);
 		_chunked_messages[i] = api_msg;
 	}
-	
-	print_line("AI Chat: Processed message chunk " + String::num_int64(p_start_index) + "-" + String::num_int64(end_index-1) + " of " + String::num_int64(chat_history.size()));
-	
+		
 	// If more chunks to process, defer the next chunk
 	if (end_index < chat_history.size()) {
 		call_deferred("_send_chat_request_chunked", end_index);
@@ -6001,6 +6715,19 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 	Dictionary api_msg;
 	api_msg["role"] = p_msg.role;
+	
+	// Debug log for conversation structure
+	String debug_msg = "Building API msg - Role: " + p_msg.role;
+	if (p_msg.role == "assistant" && !p_msg.tool_calls.is_empty()) {
+		debug_msg += ", Tool calls: " + String::num_int64(p_msg.tool_calls.size());
+		for (int i = 0; i < p_msg.tool_calls.size(); i++) {
+			Dictionary tc = p_msg.tool_calls[i];
+			debug_msg += String(" [") + String(tc.get("id", "")) + String("]");
+		}
+	} else if (p_msg.role == "tool") {
+		debug_msg += String(", Tool ID: ") + p_msg.tool_call_id + String(", Name: ") + p_msg.name;
+	}
+	print_line("AI Chat: " + debug_msg);
 	
 	// For user messages with attached files, handle images and text differently
 	if (p_msg.role == "user" && !p_msg.attached_files.is_empty()) {
@@ -6176,6 +6903,63 @@ void AIChatDock::_finalize_chat_request() {
 	request_data["messages"] = _chunked_messages;
 	request_data["model"] = model;
 
+	// Debug summary of conversation structure for tool debugging
+	int assistant_tool_count = 0;
+	int tool_response_count = 0;
+	for (int i = 0; i < _chunked_messages.size(); i++) {
+		Dictionary msg = _chunked_messages[i];
+		String role = msg.get("role", "");
+		if (role == "assistant" && msg.has("tool_calls")) {
+			assistant_tool_count++;
+		} else if (role == "tool") {
+			tool_response_count++;
+		}
+	}
+	print_line("AI Chat: Final conversation - " + String::num_int64(_chunked_messages.size()) + " messages, " + 
+			  String::num_int64(assistant_tool_count) + " assistant tool calls, " + 
+			  String::num_int64(tool_response_count) + " tool responses");
+	
+	// Validate that all tool calls have corresponding tool responses
+	if (assistant_tool_count > 0) {
+		Array unmatched_tool_calls;
+		for (int i = 0; i < _chunked_messages.size(); i++) {
+			Dictionary msg = _chunked_messages[i];
+			if (msg.get("role", "") == "assistant" && msg.has("tool_calls")) {
+				Array tool_calls = msg.get("tool_calls", Array());
+				for (int j = 0; j < tool_calls.size(); j++) {
+					Dictionary tool_call = tool_calls[j];
+					String tool_id = tool_call.get("id", "");
+					
+					// Look for matching tool response
+					bool found_response = false;
+					for (int k = 0; k < _chunked_messages.size(); k++) {
+						Dictionary response_msg = _chunked_messages[k];
+						if (response_msg.get("role", "") == "tool" && 
+							response_msg.get("tool_call_id", "") == tool_id) {
+							found_response = true;
+							break;
+						}
+					}
+					
+					if (!found_response) {
+						unmatched_tool_calls.push_back(tool_id);
+					}
+				}
+			}
+		}
+		
+		if (unmatched_tool_calls.size() > 0) {
+			String unmatched_ids = "";
+			for (int i = 0; i < unmatched_tool_calls.size(); i++) {
+				if (i > 0) unmatched_ids += ", ";
+				unmatched_ids += String(unmatched_tool_calls[i]);
+			}
+			print_line("AI Chat: ERROR - Unmatched tool call IDs: " + unmatched_ids);
+		} else {
+			print_line("AI Chat: All tool calls have matching responses ✓");
+		}
+	}
+
 	// Debug logs for OpenAI messages have been quieted to reduce console noise.
 
 	Ref<JSON> json;
@@ -6310,6 +7094,11 @@ void AIChatDock::_request_completed() {
 	}
 	current_assistant_message_label = nullptr;
 	set_process(false);
+
+	// Now that streaming is complete, check if we need to summarize the conversation
+	// This prevents interrupting ongoing streaming responses
+	print_line("AI Chat: Checking conversation length after stream completion");
+	_check_and_trigger_summarization();
 }
 
 String AIChatDock::_get_timestamp() {
@@ -6476,11 +7265,16 @@ void AIChatDock::clear_chat_history() {
 	_queue_delayed_save();
 	_update_conversation_dropdown();
 
-	// Clear UI
+	// Clear pending edits
+	pending_apply_edits.clear();
+	file_to_tool_ids.clear();
+	_update_pending_edits_banner();
+
+	// Clear UI (preserve pending edits banner)
 	if (chat_container != nullptr) {
 		for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
 			Node *child = chat_container->get_child(i);
-			if (child != nullptr) {
+			if (child != nullptr && child != pending_edits_banner) {
 				child->queue_free();
 			}
 		}
@@ -6496,11 +7290,15 @@ void AIChatDock::clear_current_conversation() {
 		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 		_queue_delayed_save();
 
-		// Clear UI
+		// Clear pending edits
+		pending_edits.clear();
+		_update_pending_edits_banner();
+
+		// Clear UI (preserve pending edits banner)
 		if (chat_container != nullptr) {
 			for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
 				Node *child = chat_container->get_child(i);
-				if (child != nullptr) {
+				if (child != nullptr && child != pending_edits_banner) {
 					child->queue_free();
 				}
 			}
@@ -6702,6 +7500,18 @@ void AIChatDock::_load_conversations() {
 
             conv.messages.push_back(msg);
         }
+        
+        // Load pending edits for this conversation
+        Array pending_edits_array = conv_dict.get("pending_edits", Array());
+        for (int k = 0; k < pending_edits_array.size(); k++) {
+            Dictionary pending_edit_dict = pending_edits_array[k];
+            String tool_call_id = pending_edit_dict.get("tool_call_id", "");
+            String file_path = pending_edit_dict.get("file_path", "");
+            if (!tool_call_id.is_empty() && !file_path.is_empty()) {
+                conv.pending_apply_edits[tool_call_id] = file_path;
+            }
+        }
+        
         conversations.push_back(conv);
     }
     print_line("AI Chat: Loaded conversations: " + itos(conversations.size()) + " from: " + final_path);
@@ -6767,6 +7577,17 @@ void AIChatDock::_save_conversations() {
             messages_array.push_back(msg_dict);
         }
         conv_dict["messages"] = messages_array;
+        
+        // Save pending edits for this conversation
+        Array pending_edits_array;
+        for (const KeyValue<String, String> &pending_edit : conv.pending_apply_edits) {
+            Dictionary pending_edit_dict;
+            pending_edit_dict["tool_call_id"] = pending_edit.key;
+            pending_edit_dict["file_path"] = pending_edit.value;
+            pending_edits_array.push_back(pending_edit_dict);
+        }
+        conv_dict["pending_edits"] = pending_edits_array;
+        
         conversations_array.push_back(conv_dict);
     }
 
@@ -6824,16 +7645,22 @@ void AIChatDock::_create_new_conversation() {
 	new_conv.title = "New Conversation";
 	new_conv.created_timestamp = _get_timestamp();
 	new_conv.last_modified_timestamp = _get_timestamp();
+	new_conv.pending_apply_edits.clear(); // Initialize empty pending edits
 	
 	conversations.push_back(new_conv);
 	current_conversation_index = conversations.size() - 1;
 	// Don't save immediately - defer for better UI responsiveness
 	
-	// Clear UI for new conversation
+	// Clear pending edits
+	pending_apply_edits.clear();
+	file_to_tool_ids.clear();
+	_update_pending_edits_banner();
+	
+	// Clear UI for new conversation (preserve pending edits banner)
 	if (chat_container != nullptr) {
 		for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
 			Node *child = chat_container->get_child(i);
-			if (child != nullptr) {
+			if (child != nullptr && child != pending_edits_banner) {
 				child->queue_free();
 			}
 		}
@@ -6847,16 +7674,22 @@ void AIChatDock::_create_new_conversation_instant() {
 	new_conv.title = "New Conversation";
 	new_conv.created_timestamp = _get_timestamp();
 	new_conv.last_modified_timestamp = _get_timestamp();
+	new_conv.pending_apply_edits.clear(); // Initialize empty pending edits
 	
 	conversations.push_back(new_conv);
 	current_conversation_index = conversations.size() - 1;
 	// Note: Save is deferred in caller
 	
-	// Clear UI for new conversation
+	// Clear pending edits
+	pending_apply_edits.clear();
+	file_to_tool_ids.clear();
+	_update_pending_edits_banner();
+	
+	// Clear UI for new conversation (preserve pending edits banner)
 	if (chat_container != nullptr) {
 		for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
 			Node *child = chat_container->get_child(i);
-			if (child != nullptr) {
+			if (child != nullptr && child != pending_edits_banner) {
 				child->queue_free();
 			}
 		}
@@ -6868,13 +7701,59 @@ void AIChatDock::_switch_to_conversation(int p_index) {
 		return;
 	}
 	
+	// Save current conversation's pending edits before switching
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		conversations.write[current_conversation_index].pending_apply_edits = pending_apply_edits;
+	}
+	
+	// Clear any active preview overlays before switching
+	EditorTools::clear_all_preview_overlays();
+	
+	// Clear any diff view in script editor
+	ScriptEditor *script_editor = ScriptEditor::get_singleton();
+	if (script_editor) {
+		ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
+		if (ste && ste->has_method("clear_diff")) {
+			ste->call("clear_diff");
+		}
+	}
+	
+	// Clear tool call tracking
+	tool_calls_ui_applied.clear();
+	tool_result_retry_counts.clear();
+	
 	current_conversation_index = p_index;
 	
-	// Clear current UI
+	// Clear current UI pending edits
+	pending_apply_edits.clear();
+	file_to_tool_ids.clear();
+	
+	// Restore pending edits from the conversation we're switching to
+	const Conversation &target_conv = conversations[p_index];
+	pending_apply_edits = target_conv.pending_apply_edits;
+	
+	// Rebuild file_to_tool_ids mapping from restored pending edits
+	for (const KeyValue<String, String> &entry : pending_apply_edits) {
+		String tool_call_id = entry.key;
+		String file_path = entry.value;
+		
+		if (!file_to_tool_ids.has(file_path)) {
+			file_to_tool_ids[file_path] = Array();
+		}
+		Array tool_ids = file_to_tool_ids[file_path];
+		tool_ids.push_back(tool_call_id);
+		file_to_tool_ids[file_path] = tool_ids;
+	}
+	
+	_update_pending_edits_banner();
+	
+	print_line("AI Chat: Restored " + String::num_int64(pending_apply_edits.size()) + " pending edits for conversation: " + target_conv.title);
+	
+	// Clear current UI (preserve pending edits banner)
 	if (chat_container != nullptr) {
 		for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
 			Node *child = chat_container->get_child(i);
-			if (child != nullptr) {
+			if (child != nullptr && child != pending_edits_banner) {
 				child->queue_free();
 			}
 		}
@@ -7063,6 +7942,9 @@ void AIChatDock::_show_related_graph(const Dictionary &p_graph) {
 	}
 }
 AIChatDock::AIChatDock() {
+	// Set singleton instance
+	singleton = this;
+	
 	set_name("AI Chat");
 	
 	// Enable drag and drop for the dock
@@ -7089,6 +7971,34 @@ AIChatDock::AIChatDock() {
 	models_http_request = memnew(HTTPRequest);
 	add_child(models_http_request);
 	models_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_models_request_completed));
+
+	// HTTP request for summarization endpoint
+	summarization_http_request = memnew(HTTPRequest);
+	add_child(summarization_http_request);
+	summarization_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_summarization_request_completed));
+	
+	// Initialize rate limit popup
+	rate_limit_popup = memnew(AcceptDialog);
+	add_child(rate_limit_popup);
+	rate_limit_popup->set_title("⚠️ Rate Limit Notice");
+	rate_limit_popup->set_flag(Window::FLAG_RESIZE_DISABLED, true);
+	
+	// Initialize status notification system
+	status_notification_panel = memnew(PanelContainer);
+	add_child(status_notification_panel);
+	status_notification_panel->set_visible(false);
+	status_notification_panel->set_anchors_and_offsets_preset(Control::PRESET_TOP_WIDE);
+	status_notification_panel->set_offset(Side::SIDE_TOP, 10);
+	status_notification_panel->set_offset(Side::SIDE_BOTTOM, 60);
+	status_notification_panel->set_offset(Side::SIDE_LEFT, 10);
+	status_notification_panel->set_offset(Side::SIDE_RIGHT, -10);
+	
+	// Status notification timer
+	status_notification_timer = memnew(Timer);
+	add_child(status_notification_timer);
+	status_notification_timer->set_wait_time(3.0);
+	status_notification_timer->set_one_shot(true);
+	status_notification_timer->connect("timeout", callable_mp(this, &AIChatDock::_on_status_notification_timer_timeout));
 
 	diff_viewer = memnew(DiffViewer);
 	add_child(diff_viewer);
@@ -7202,7 +8112,9 @@ void AIChatDock::send_error_message(const String &p_error_text) {
 	set_visible(true);
 	
 	// Focus on the AI Chat dock to bring user's attention
-	input_field->grab_focus();
+	if (input_field && input_field->is_inside_tree()) {
+		input_field->grab_focus();
+	}
 	
 	// Automatically send the message
 	call_deferred("_on_send_button_pressed");
@@ -7893,6 +8805,251 @@ void AIChatDock::_on_save_image_location_selected(const String &p_file_path) {
 	// Clear pending data
 	pending_save_image_data = "";
 	pending_save_image_format = "";
+}
+
+// Asset Library callback implementations
+
+void AIChatDock::_on_asset_install_requested(const String &p_asset_id, const String &p_asset_name) {
+	print_line("AI Chat: Installing asset " + p_asset_name + " (ID: " + p_asset_id + ")");
+	
+	// Create a follow-up message to trigger asset installation
+	String install_message = "Install asset with ID " + p_asset_id + " to my current project";
+	
+	// Add the user message to history
+	ChatMessage user_msg;
+	user_msg.role = "user";
+	user_msg.content = install_message;
+	Dictionary time_dict = Time::get_singleton()->get_datetime_dict_from_system();
+	user_msg.timestamp = String::num_int64(time_dict["year"]) + "-" + String::num_int64(time_dict["month"]).pad_zeros(2) + "-" + String::num_int64(time_dict["day"]).pad_zeros(2) + " " + String::num_int64(time_dict["hour"]).pad_zeros(2) + ":" + String::num_int64(time_dict["minute"]).pad_zeros(2) + ":" + String::num_int64(time_dict["second"]).pad_zeros(2);
+	
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		conversations.write[current_conversation_index].messages.push_back(user_msg);
+		
+		// Update UI with user message
+		_create_message_bubble(user_msg, conversations[current_conversation_index].messages.size() - 1);
+		
+		// Send the installation request
+		_send_chat_request();
+		
+		// Auto-scroll to show the new message
+		call_deferred("_scroll_to_bottom_smooth");
+	}
+}
+
+void AIChatDock::_on_asset_browse_requested(const String &p_url) {
+	if (p_url.is_empty()) {
+		return;
+	}
+	
+	print_line("AI Chat: Opening asset library URL: " + p_url);
+	
+	// Open the URL in the default browser
+	OS::get_singleton()->shell_open(p_url);
+}
+
+void AIChatDock::_on_asset_folder_open_requested(const String &p_path) {
+	if (p_path.is_empty()) {
+		return;
+	}
+	
+	print_line("AI Chat: Opening asset folder: " + p_path);
+	
+	// Convert to Godot path format and navigate to it in FileSystem dock
+	String godot_path = _convert_to_godot_path(p_path);
+	
+	// Try to select the folder in the FileSystem dock
+	EditorInterface *editor = EditorInterface::get_singleton();
+	if (editor) {
+		EditorSelection *selection = editor->get_selection();
+		if (selection) {
+			// Clear current selection
+			selection->clear();
+		}
+		
+		// Get the FileSystem dock and try to navigate to the folder
+		FileSystemDock *fs_dock = FileSystemDock::get_singleton();
+		if (fs_dock) {
+			fs_dock->navigate_to_path(godot_path);
+		}
+	}
+	
+	// Also show a brief success message in the UI
+	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+	if (current_label) {
+		current_label->add_text("\n\n📁 Opened " + godot_path + " in FileSystem dock");
+	}
+}
+
+void AIChatDock::_on_asset_plugin_settings_requested() {
+	print_line("AI Chat: Opening plugin settings");
+	
+	// Try to open project settings dialog
+	ProjectSettingsEditor *settings_editor = ProjectSettingsEditor::get_singleton();
+	if (settings_editor) {
+		settings_editor->popup_project_settings();
+	}
+	
+	// Show feedback in the chat
+	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+	if (current_label) {
+		current_label->add_text("\n\n🔌 Opened Project Settings. Navigate to the Plugins tab to enable your installed plugins.");
+	}
+}
+
+// Cloud mode asset installation callbacks
+
+void AIChatDock::_on_cloud_asset_install_requested(const String &p_asset_data, const String &p_install_path, const String &p_asset_name) {
+	print_line("AI Chat: Installing cloud-downloaded asset " + p_asset_name + " to " + p_install_path);
+	
+	if (p_asset_data.is_empty()) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: No asset data available for installation");
+		}
+		return;
+	}
+	
+	// Decode base64 asset data
+	Vector<uint8_t> zip_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_asset_data);
+	if (zip_data.size() == 0) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: Failed to decode asset data");
+		}
+		return;
+	}
+	
+	// Convert Godot path to absolute path
+	String absolute_install_path = ProjectSettings::get_singleton()->globalize_path(p_install_path);
+	
+	// Create installation directory
+	Ref<DirAccess> dir = DirAccess::open(absolute_install_path.get_base_dir());
+	if (dir.is_null()) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: Cannot access installation directory");
+		}
+		return;
+	}
+	
+	if (!dir->dir_exists(absolute_install_path)) {
+		dir->make_dir_recursive(absolute_install_path);
+	}
+	
+	// For now, save ZIP file directly and let user extract manually
+	// TODO: Implement proper ZIP extraction when Godot ZIP classes are available
+	String zip_save_path = absolute_install_path + "/downloaded_asset.zip";
+	
+	Ref<FileAccess> zip_file = FileAccess::open(zip_save_path, FileAccess::WRITE);
+	if (zip_file.is_null()) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: Cannot save asset ZIP file");
+		}
+		return;
+	}
+	
+	zip_file->store_buffer(zip_data);
+	zip_file->close();
+	
+	// ZIP file saved successfully
+	
+	// Update filesystem dock
+	EditorInterface *editor = EditorInterface::get_singleton();
+	if (editor) {
+		// Refresh the filesystem through EditorFileSystem instead
+		EditorFileSystem *fs = EditorFileSystem::get_singleton();
+		if (fs) {
+			fs->scan();
+		}
+	}
+	
+	// Show success message
+	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+	if (current_label) {
+		current_label->add_text(vformat("\n\n✅ Downloaded %s ZIP file to %s\n💡 Please extract the ZIP manually to complete installation", p_asset_name, p_install_path));
+	}
+	
+	print_line("AI Chat: Successfully downloaded " + p_asset_name + " ZIP file");
+}
+
+void AIChatDock::_on_cloud_asset_manual_download(const String &p_asset_data, const String &p_asset_name) {
+	print_line("AI Chat: Manual download requested for " + p_asset_name);
+	
+	if (p_asset_data.is_empty()) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: No asset data available for download");
+		}
+		return;
+	}
+	
+	// Decode base64 asset data
+	Vector<uint8_t> zip_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_asset_data);
+	if (zip_data.size() == 0) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: Failed to decode asset data");
+		}
+		return;
+	}
+	
+	// Show save dialog
+	if (!save_image_dialog) {
+		save_image_dialog = memnew(EditorFileDialog);
+		save_image_dialog->set_file_mode(EditorFileDialog::FILE_MODE_SAVE_FILE);
+		save_image_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+		add_child(save_image_dialog);
+		save_image_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_manual_asset_save_location_selected));
+	}
+	
+	// Store asset data for saving
+	pending_save_image_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(zip_data);
+	pending_save_image_format = "zip";
+	
+	String safe_name = p_asset_name.replace(" ", "_").replace("/", "_");
+	save_image_dialog->set_current_file(safe_name + ".zip");
+	save_image_dialog->add_filter("*.zip", "ZIP Archives");
+	save_image_dialog->popup_centered(Size2(800, 600));
+	
+	// Show feedback
+	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+	if (current_label) {
+		current_label->add_text("\n\n💾 Choose where to save " + p_asset_name + ".zip");
+	}
+}
+
+void AIChatDock::_on_manual_asset_save_location_selected(const String &p_file_path) {
+	if (p_file_path.is_empty() || pending_save_image_data.is_empty()) {
+		return;
+	}
+	
+	// Decode and save asset data
+	Vector<uint8_t> zip_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(pending_save_image_data);
+	
+	Ref<FileAccess> file = FileAccess::open(p_file_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n❌ Error: Cannot save asset to " + p_file_path);
+		}
+		return;
+	}
+	
+	file->store_buffer(zip_data);
+	file->close();
+	
+	// Clear pending data
+	pending_save_image_data = "";
+	pending_save_image_format = "";
+	
+	// Show success
+	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+	if (current_label) {
+		current_label->add_text("\n\n✅ Asset saved to " + p_file_path);
+	}
+	
+	print_line("AI Chat: Asset manually saved to " + p_file_path);
 }
 
 void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const String &p_tool_name, const String &p_status) {
@@ -8803,16 +9960,7 @@ void AIChatDock::_clear_pending_edit(const String &p_path) {
 void AIChatDock::_on_script_editor_save(const String &p_path) {
 	print_line("AI Chat: _on_script_editor_save called for: " + p_path);
 	
-	// List all pending edits for debugging
-	print_line("AI Chat: Current pending edits:");
-	Array keys = pending_edits.keys();
-	for (int i = 0; i < keys.size(); i++) {
-		print_line("  - " + String(keys[i]));
-	}
-	
-	// Called when a file is saved in the script editor (including diff acceptance)
-	// Check if this file has a pending edit in the chat
-	// Try both the path as-is and with project:// prefix
+	// Normalize the path
 	String normalized_path = p_path;
 	if (p_path.begins_with("res://")) {
 		// Path is already relative to project
@@ -8824,36 +9972,46 @@ void AIChatDock::_on_script_editor_save(const String &p_path) {
 		}
 	}
 	
-	if (!pending_edits.has(normalized_path) && !pending_edits.has(p_path)) {
-		print_line("AI Chat: No pending edit found for: " + p_path + " or " + normalized_path);
-		return;
-	}
-	
-	// Use whichever path matched
-	String matched_path = pending_edits.has(normalized_path) ? normalized_path : p_path;
-	
-	Dictionary info = pending_edits[matched_path];
-	NodePath btns_path = info.get("btns_path", NodePath());
-	NodePath status_path = info.get("status_path", NodePath());
-	
-	// Update the chat bubble UI to show it was accepted
-	if (!btns_path.is_empty() && has_node(btns_path)) {
-		if (Control *btns = Object::cast_to<Control>(get_node(btns_path))) {
-			btns->set_visible(false);
+	// Check both paths in our new system
+	String matched_path = normalized_path;
+	if (!file_to_tool_ids.has(normalized_path)) {
+		matched_path = p_path;
+		if (!file_to_tool_ids.has(p_path)) {
+			print_line("AI Chat: No pending edits found for: " + p_path + " or " + normalized_path);
+			return;
 		}
 	}
 	
-	if (!status_path.is_empty() && has_node(status_path)) {
-		if (Label *status = Object::cast_to<Label>(get_node(status_path))) {
-			String text = status->get_text();
-			if (!text.ends_with(" — Accepted") && !text.ends_with(" — Accepted (via Script Editor)")) {
-				status->set_text(text + " — Accepted (via Script Editor)");
+	print_line("AI Chat: Found pending edits for: " + matched_path);
+	
+	// Get all tool call IDs for this file
+	Array tool_ids = file_to_tool_ids[matched_path];
+	for (int i = 0; i < tool_ids.size(); i++) {
+		String tool_id = tool_ids[i];
+		print_line("AI Chat: Auto-accepting edit via Script Editor - ID: " + tool_id);
+		
+		// Update the button status to show it was accepted via script editor
+		// Find the buttons container for this tool call
+		HBoxContainer *buttons_container = Object::cast_to<HBoxContainer>(chat_container->find_child("tool_call_buttons_" + tool_id, true, false));
+		if (buttons_container) {
+			// Clear existing buttons
+			for (int j = 0; j < buttons_container->get_child_count(); j++) {
+				Node *child = buttons_container->get_child(j);
+				child->queue_free();
 			}
+			
+			// Add status label showing it was accepted via script editor
+			Label *status_label = memnew(Label);
+			status_label->set_text("Accepted (via Script Editor)");
+			status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusSuccess"), SNAME("EditorIcons")));
+			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			buttons_container->add_child(status_label);
 		}
 	}
 	
-	// Clear the pending edit
-	_clear_pending_edit(matched_path);
+	// Remove all pending edits for this file
+	_remove_pending_edits_for_file(matched_path);
 	
 	// Clear any preview overlay since the file was saved
 	EditorTools::clear_preview_overlay(matched_path);
@@ -9063,7 +10221,854 @@ String AIChatDock::_get_api_base_url() {
 	return base_url;
 }
 
+int AIChatDock::_estimate_token_count(const String &p_text) const {
+	// Rough estimation: ~4 characters per token (works for most models)
+	return p_text.length() / 4;
+}
+
+int AIChatDock::_calculate_conversation_tokens(const Vector<ChatMessage> &p_messages) const {
+	int total_tokens = 0;
+	
+	for (int i = 0; i < p_messages.size(); i++) {
+		const ChatMessage &msg = p_messages[i];
+		int msg_tokens = _estimate_token_count(msg.content);
+		total_tokens += msg_tokens;
+		
+		// Add tokens for attached files
+		for (int j = 0; j < msg.attached_files.size(); j++) {
+			const AttachedFile &file = msg.attached_files[j];
+			if (!file.is_image) {
+				total_tokens += _estimate_token_count(file.content);
+			}
+		}
+		
+		print_line("AI Chat: Message " + String::num_int64(i) + " (" + msg.role + "): " + 
+				  String::num_int64(msg.content.length()) + " chars = " + String::num_int64(msg_tokens) + " tokens");
+	}
+	
+	print_line("AI Chat: Total conversation tokens: " + String::num_int64(total_tokens));
+	return total_tokens;
+}
+
+int AIChatDock::_get_model_token_limit(const String &p_model) const {
+	// Token limits with safety margins (same as backend)
+	if (p_model == "claude-4" || p_model.begins_with("anthropic/claude-sonnet-4")) {
+		// return 180000; // 200k - 20k margin
+		return 180000;
+	} else if (p_model == "gpt-5" || p_model == "gpt-4o" || p_model.begins_with("openai/gpt-")) {
+		return 120000; // 128k - 8k margin
+	} else if (p_model == "gemini-2.5" || p_model.begins_with("gemini/")) {
+		return 1800000; // 2M - 200k margin
+	} else if (p_model.begins_with("[FAST] ") || p_model.begins_with("cerebras/")) {
+		if (p_model.find("gpt-oss-120b") != -1) {
+			return 110000; // 8k - 1k margin
+		} else if (p_model.find("qwen") != -1) {
+			return 30000; // 32k - 2k margin
+		}
+		print_line("AI Chat: Token limit for " + p_model + " is 7000");
+		return 120000; // Conservative default for Cerebras
+	}
+	
+	return 100000; // Conservative default
+}
+
+void AIChatDock::_check_and_trigger_summarization() {
+	print_line("AI Chat: _check_and_trigger_summarization() called");
+	
+	if (current_conversation_index < 0 || conversations.is_empty()) {
+		print_line("AI Chat: No active conversation, skipping summarization check");
+		return;
+	}
+	
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	if (chat_history.size() < 5) {
+		print_line("AI Chat: Conversation too short (" + String::num_int64(chat_history.size()) + " messages), skipping summarization");
+		return; // Too short to summarize
+	}
+	
+	int current_tokens = _calculate_conversation_tokens(chat_history);
+	int token_limit = _get_model_token_limit(model);
+	int trigger_threshold = token_limit * 0.8; // 80% threshold
+	
+	print_line("AI Chat: Token check - Current: " + String::num_int64(current_tokens) + 
+			  ", Limit: " + String::num_int64(token_limit) + 
+			  ", Threshold (80%): " + String::num_int64(trigger_threshold) + 
+			  ", Model: " + model);
+	
+	if (current_tokens >= trigger_threshold) {
+		print_line("AI Chat: Token usage (" + String::num_int64(current_tokens) + "/" + String::num_int64(token_limit) + 
+				  ") exceeded 80% threshold, triggering automatic summarization");
+		
+		// Build messages array for summarization request
+		Array messages_for_api;
+		for (int i = 0; i < chat_history.size(); i++) {
+			Dictionary api_msg = _build_api_message(chat_history[i]);
+			messages_for_api.push_back(api_msg);
+		}
+		
+		// Send summarization request
+		Dictionary request_data;
+		request_data["messages"] = messages_for_api;
+		
+		Ref<JSON> json;
+		json.instantiate();
+		String request_body = json->stringify(request_data);
+		
+		PackedStringArray headers;
+		headers.push_back("Content-Type: application/json");
+		headers.push_back("X-Machine-ID: " + get_machine_id());
+		headers.push_back("X-Allow-Guest: true");
+		
+		if (!auth_token.is_empty()) {
+			headers.push_back("Authorization: Bearer " + auth_token);
+		}
+		
+		String summarization_url = _get_api_base_url() + "/summarize_conversation";
+		summarization_http_request->request(summarization_url, headers, HTTPClient::METHOD_POST, request_body);
+		
+		print_line("AI Chat: Sent summarization request to backend");
+	}
+}
+
+void AIChatDock::_on_summarization_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		print_line("AI Chat: Summarization request failed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
+		return;
+	}
+	
+	String response_text = String::utf8(reinterpret_cast<const char*>(p_body.ptr()), p_body.size());
+	
+	Ref<JSON> json;
+	json.instantiate();
+	Error parse_error = json->parse(response_text);
+	
+	if (parse_error != OK) {
+		print_line("AI Chat: Failed to parse summarization response: " + response_text);
+		return;
+	}
+	
+	Variant result = json->get_data();
+	if (result.get_type() != Variant::DICTIONARY) {
+		print_line("AI Chat: Invalid summarization response format");
+		return;
+	}
+	
+	Dictionary response = result;
+	if (!response.get("success", false)) {
+		String error_msg = response.get("error", "Unknown error");
+		print_line("AI Chat: Summarization failed: " + error_msg);
+		return;
+	}
+	
+	String summary = response.get("summary", "");
+	int original_count = response.get("original_message_count", 0);
+	int summary_tokens = response.get("summary_tokens", 0);
+	
+		print_line("AI Chat: Summarization completed - Condensed " + String::num_int64(original_count) + 
+			  " messages into " + String::num_int64(summary_tokens) + " token summary");
+	
+	// Show user notification
+	_show_summarization_notification(original_count, summary_tokens);
+}
+
+void AIChatDock::_show_rate_limit_popup(const String &p_provider, const String &p_message) {
+	if (!rate_limit_popup) return;
+	
+	String popup_text = "⚠️ Rate Limit Reached\n\n";
+	popup_text += "Provider: " + p_provider + "\n";
+	popup_text += "Status: " + p_message + "\n\n";
+	popup_text += "The system will automatically retry and may switch to a different AI provider if needed.\n";
+	popup_text += "This popup will close automatically in 5 seconds.";
+	
+	rate_limit_popup->set_text(popup_text);
+	rate_limit_popup->popup_centered_ratio(0.4);
+	
+	// Auto-close after 5 seconds
+	call_deferred("_hide_popup_after_delay", 5.0);
+}
+
+void AIChatDock::_show_provider_switch_popup(const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
+	if (!rate_limit_popup) return;
+	
+	String popup_text = "🔄 AI Provider Switched\n\n";
+	popup_text += "From: " + p_from_provider + "\n";
+	popup_text += "To: " + p_to_provider + "\n";
+	popup_text += "Reason: " + p_reason + "\n\n";
+	popup_text += "Your conversation will continue seamlessly with the new provider.\n";
+	popup_text += "This popup will close automatically in 4 seconds.";
+	
+	rate_limit_popup->set_text(popup_text);
+	rate_limit_popup->popup_centered_ratio(0.4);
+	
+	// Auto-close after 4 seconds
+	call_deferred("_hide_popup_after_delay", 4.0);
+}
+
+void AIChatDock::_hide_popup_after_delay(float p_delay_seconds) {
+	if (!rate_limit_popup || !rate_limit_popup->is_visible()) return;
+	
+	// Use a timer to hide the popup after delay
+	SceneTree *tree = get_tree();
+	if (tree) {
+		Ref<SceneTreeTimer> timer = tree->create_timer(p_delay_seconds);
+		timer->connect("timeout", callable_mp(this, &AIChatDock::_hide_rate_limit_popup));
+	}
+}
+
+void AIChatDock::_hide_rate_limit_popup() {
+	if (rate_limit_popup && rate_limit_popup->is_visible()) {
+		rate_limit_popup->hide();
+	}
+}
+
+void AIChatDock::_show_status_notification(const String &p_type, const String &p_message, const String &p_icon, float p_duration) {
+	if (!status_notification_panel) return;
+	
+	// Clear any existing content
+	for (int i = 0; i < status_notification_panel->get_child_count(); i++) {
+		Node *child = status_notification_panel->get_child(i);
+		child->queue_free();
+	}
+	
+	// Style the panel based on notification type
+	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
+	panel_style->set_content_margin_all(12);
+	panel_style->set_corner_radius_all(6);
+	panel_style->set_border_width_all(1);
+	
+	Color bg_color;
+	Color border_color;
+	Color text_color;
+	
+	if (p_type == "summarization") {
+		bg_color = get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
+	} else if (p_type == "rate_limit") {
+		bg_color = get_theme_color(SNAME("warning_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("warning_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("warning_color"), SNAME("Editor"));
+	} else if (p_type == "connection_error") {
+		bg_color = get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("error_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("error_color"), SNAME("Editor"));
+	} else if (p_type == "model_switch") {
+		bg_color = get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
+	} else {
+		// Default info style
+		bg_color = get_theme_color(SNAME("base_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("contrast_color_1"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("font_color"), SNAME("Editor"));
+	}
+	
+	panel_style->set_bg_color(bg_color);
+	panel_style->set_border_color(border_color);
+	status_notification_panel->add_theme_style_override("panel", panel_style);
+	
+	// Create content
+	HBoxContainer *content_container = memnew(HBoxContainer);
+	status_notification_panel->add_child(content_container);
+	
+	// Icon
+	Label *icon_label = memnew(Label);
+	String icon_text = p_icon;
+	if (icon_text.is_empty()) {
+		if (p_type == "summarization") {
+			icon_text = "🧠";
+		} else if (p_type == "rate_limit") {
+			icon_text = "⚠️";
+		} else if (p_type == "connection_error") {
+			icon_text = "❌";
+		} else if (p_type == "model_switch") {
+			icon_text = "🔄";
+		} else {
+			icon_text = "ℹ️";
+		}
+	}
+	icon_label->set_text(icon_text);
+	icon_label->add_theme_font_size_override("font_size", 16);
+	content_container->add_child(icon_label);
+	
+	// Add some spacing
+	Control *spacer = memnew(Control);
+	spacer->set_custom_minimum_size(Size2(10, 0));
+	content_container->add_child(spacer);
+	
+	// Message text
+	Label *message_label = memnew(Label);
+	message_label->set_text(p_message);
+	message_label->add_theme_color_override("font_color", text_color);
+	message_label->add_theme_font_override("font", get_theme_font(SNAME("main"), SNAME("EditorFonts")));
+	message_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	message_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	content_container->add_child(message_label);
+	
+	// Close button
+	Button *close_button = memnew(Button);
+	close_button->set_text("×");
+	close_button->add_theme_font_size_override("font_size", 18);
+	close_button->add_theme_color_override("font_color", text_color);
+	close_button->set_custom_minimum_size(Size2(24, 24));
+	close_button->set_flat(true);
+	close_button->connect("pressed", callable_mp(this, &AIChatDock::_hide_status_notification));
+	content_container->add_child(close_button);
+	
+	// Show the notification
+	status_notification_panel->set_visible(true);
+	
+	// Set timer duration and start it
+	status_notification_timer->set_wait_time(p_duration);
+	status_notification_timer->start();
+}
+
+void AIChatDock::_show_summarization_notification(int p_original_count, int p_summary_tokens) {
+	Array format_args;
+	format_args.push_back(p_original_count);
+	format_args.push_back(p_summary_tokens);
+	String message = String("Conversation automatically summarized to manage context window ({0} messages → {1} tokens)").format(format_args);
+	_show_status_notification("summarization", message, "🧠", 4.0);
+}
+
+void AIChatDock::_show_connection_status_notification(const String &p_status, const String &p_message) {
+	String display_message = p_message.is_empty() ? p_status : p_message;
+	_show_status_notification("connection_error", display_message, "❌", 5.0);
+}
+
+void AIChatDock::_show_rate_limit_notification(const String &p_provider, const String &p_message) {
+	Array format_args;
+	format_args.push_back(p_provider);
+	format_args.push_back(p_message);
+	String message = String("Rate limit reached for {0}. {1}").format(format_args);
+	_show_status_notification("rate_limit", message, "⚠️", 5.0);
+}
+
+void AIChatDock::_show_model_switch_notification(const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
+	Array format_args;
+	format_args.push_back(p_from_provider);
+	format_args.push_back(p_to_provider);
+	format_args.push_back(p_reason);
+	String message = String("Switched from {0} to {1}. Reason: {2}").format(format_args);
+	_show_status_notification("model_switch", message, "🔄", 4.0);
+}
+
+void AIChatDock::_hide_status_notification() {
+	if (status_notification_panel) {
+		status_notification_panel->set_visible(false);
+	}
+	if (status_notification_timer) {
+		status_notification_timer->stop();
+	}
+}
+
+void AIChatDock::_on_status_notification_timer_timeout() {
+	_hide_status_notification();
+}
+
+void AIChatDock::_on_tool_call_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content) {
+	print_line("AI Chat: Accept pressed for tool call " + p_tool_call_id + ", file: " + p_file_path);
+	
+	// Find the tool result for this call to get the content
+	String content_to_apply = p_content;
+	if (p_content.is_empty()) {
+		// Look for the tool result in the conversation history
+		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+		
+		for (int i = 0; i < chat_history.size(); i++) {
+			const ChatMessage &msg = chat_history[i];
+			if (msg.role == "tool" && msg.tool_call_id == p_tool_call_id) {
+				// Parse the tool result to get edited content
+				Ref<JSON> json;
+				json.instantiate();
+				Error parse_err = json->parse(msg.content);
+				if (parse_err == OK) {
+					Variant result = json->get_data();
+					if (result.get_type() == Variant::DICTIONARY) {
+						Dictionary data = result;
+						content_to_apply = data.get("edited_content", "");
+						break;
+					}
+				}
+			}
+		}
+	}
+	
+	// Update tool call button status first
+	_update_tool_call_button_status(p_tool_call_id, "Accepted");
+	
+	// Remove from pending edits
+	_remove_pending_edit(p_tool_call_id);
+	
+	// Use unified handler
+	_handle_apply_edit_accepted(p_file_path, content_to_apply);
+}
+
+void AIChatDock::_on_tool_call_reject_pressed(const String &p_tool_call_id, const String &p_file_path) {
+	print_line("AI Chat: Reject pressed for tool call " + p_tool_call_id + ", file: " + p_file_path);
+	
+	// Update tool call button status first
+	_update_tool_call_button_status(p_tool_call_id, "Rejected");
+	
+	// Remove from pending edits
+	_remove_pending_edit(p_tool_call_id);
+	
+	// Use unified handler
+	_handle_apply_edit_rejected(p_file_path);
+}
+
+void AIChatDock::_on_tool_result_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_path) {
+	print_line("AI Chat: Tool result accept pressed for tool call " + p_tool_call_id + ", file: " + p_file_path);
+	
+	// Hide the buttons in tool result
+	if (!p_btns_path.is_empty() && has_node(p_btns_path)) {
+		if (HBoxContainer *btns = Object::cast_to<HBoxContainer>(get_node(p_btns_path))) {
+			btns->set_visible(false);
+		}
+	}
+	
+	// Update status label
+	if (!p_status_path.is_empty() && has_node(p_status_path)) {
+		if (Label *lbl = Object::cast_to<Label>(get_node(p_status_path))) {
+			String t = lbl->get_text();
+			if (!t.ends_with(" — Accepted")) {
+				lbl->set_text(t + " — Accepted");
+			}
+		}
+	}
+	
+	// Call the unified tool call accept handler
+	_on_tool_call_accept_pressed(p_tool_call_id, p_file_path, p_content);
+}
+
+void AIChatDock::_on_tool_result_reject_pressed(const String &p_tool_call_id, const String &p_file_path, const NodePath &p_btns_path, const NodePath &p_status_path) {
+	print_line("AI Chat: Tool result reject pressed for tool call " + p_tool_call_id + ", file: " + p_file_path);
+	
+	// Hide the buttons in tool result
+	if (!p_btns_path.is_empty() && has_node(p_btns_path)) {
+		if (HBoxContainer *btns = Object::cast_to<HBoxContainer>(get_node(p_btns_path))) {
+			btns->set_visible(false);
+		}
+	}
+	
+	// Update status label
+	if (!p_status_path.is_empty() && has_node(p_status_path)) {
+		if (Label *lbl = Object::cast_to<Label>(get_node(p_status_path))) {
+			String t = lbl->get_text();
+			if (!t.ends_with(" — Discarded")) {
+				lbl->set_text(t + " — Discarded");
+			}
+		}
+	}
+	
+	// Call the unified tool call reject handler
+	_on_tool_call_reject_pressed(p_tool_call_id, p_file_path);
+}
+
+void AIChatDock::_update_tool_call_button_status(const String &p_tool_call_id, const String &p_status) {
+	if (!chat_container) return;
+	
+	// Find the buttons container for this tool call (now in the main tool container, not placeholder)
+	HBoxContainer *buttons_container = Object::cast_to<HBoxContainer>(chat_container->find_child("tool_call_buttons_" + p_tool_call_id, true, false));
+	if (!buttons_container) return;
+	
+	// Clear existing buttons
+	for (int i = 0; i < buttons_container->get_child_count(); i++) {
+		Node *child = buttons_container->get_child(i);
+		child->queue_free();
+	}
+	
+	// Add status label
+	Label *status_label = memnew(Label);
+	status_label->set_text(p_status);
+	if (p_status == "Accepted") {
+		status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusSuccess"), SNAME("EditorIcons")));
+		status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+	} else {
+		status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusError"), SNAME("EditorIcons")));
+		status_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	}
+	status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+	buttons_container->add_child(status_label);
+}
+
+void AIChatDock::_update_tool_call_button_status_in_container(VBoxContainer *p_container, const String &p_tool_call_id, const String &p_status) {
+	if (!p_container) return;
+	
+	// Create buttons container for the status
+	HBoxContainer *buttons_container = memnew(HBoxContainer);
+	buttons_container->set_name("tool_call_buttons_" + p_tool_call_id);
+	buttons_container->add_theme_constant_override("separation", 8);
+	p_container->add_child(buttons_container);
+	
+	// Add status label
+	Label *status_label = memnew(Label);
+	status_label->set_text(p_status);
+	if (p_status == "Accepted") {
+		status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusSuccess"), SNAME("EditorIcons")));
+		status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+	} else if (p_status == "Rejected") {
+		status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusError"), SNAME("EditorIcons")));
+		status_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	} else {
+		// Previously Processed or other status
+		status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusWarning"), SNAME("EditorIcons")));
+		status_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+	}
+	status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+	buttons_container->add_child(status_label);
+}
+
+void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_container, const String &p_tool_call_id, const Dictionary &p_args, const Dictionary &p_result) {
+	if (!p_container) return;
+	
+	// Create buttons container
+	HBoxContainer *buttons_container = memnew(HBoxContainer);
+	buttons_container->set_name("tool_call_buttons_" + p_tool_call_id);
+	buttons_container->add_theme_constant_override("separation", 8);
+	p_container->add_child(buttons_container);
+
+	// Accept button
+	Button *accept_btn = memnew(Button);
+	accept_btn->set_name("accept_button");
+	accept_btn->set_text("Accept");
+	accept_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ImportCheck"), SNAME("EditorIcons")));
+	accept_btn->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+	accept_btn->set_custom_minimum_size(Size2(80, 28));
+	buttons_container->add_child(accept_btn);
+
+	// Reject button
+	Button *reject_btn = memnew(Button);
+	reject_btn->set_name("reject_button");
+	reject_btn->set_text("Reject");
+	reject_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ImportFail"), SNAME("EditorIcons")));
+	reject_btn->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	reject_btn->set_custom_minimum_size(Size2(80, 28));
+	buttons_container->add_child(reject_btn);
+
+	// Get file path and content
+	String file_path = p_args.get("path", "");
+	if (file_path.is_empty()) {
+		file_path = p_args.get("file_path", "");
+	}
+	String edited_content = p_result.get("edited_content", "");
+	
+	// Connect buttons with the content
+	accept_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_call_accept_pressed).bind(p_tool_call_id, file_path, edited_content));
+	reject_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_call_reject_pressed).bind(p_tool_call_id, file_path));
+
+	// Apply preview overlay for instant feedback
+	if (!file_path.is_empty() && !edited_content.is_empty()) {
+		EditorTools::set_preview_overlay(file_path, edited_content);
+		
+		// Show diff in script editor for script files
+		String ext = file_path.get_extension().to_lower();
+		bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
+		if (is_script_like) {
+			String original_content = p_result.get("original_content", "");
+			_show_diff_in_script_editor(file_path, original_content, edited_content);
+		}
+	}
+	
+	// Add to pending edits tracking (this is always a fresh tool execution)
+	if (!file_path.is_empty()) {
+		_add_pending_edit(p_tool_call_id, file_path);
+	}
+	
+	print_line("AI Chat: Added accept/reject buttons for tool call " + p_tool_call_id);
+}
+
+void AIChatDock::_add_pending_edit(const String &p_tool_call_id, const String &p_file_path) {
+	// Remove any existing edits for the same file first (consolidation)
+	_remove_pending_edits_for_file(p_file_path);
+	
+	// Add the new edit
+	pending_apply_edits[p_tool_call_id] = p_file_path;
+	
+	// Also save to current conversation for persistence
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		conversations.write[current_conversation_index].pending_apply_edits[p_tool_call_id] = p_file_path;
+	}
+	
+	// Update file-to-tool-ids mapping
+	if (!file_to_tool_ids.has(p_file_path)) {
+		file_to_tool_ids[p_file_path] = Array();
+	}
+	Array tool_ids = file_to_tool_ids[p_file_path];
+	tool_ids.push_back(p_tool_call_id);
+	file_to_tool_ids[p_file_path] = tool_ids;
+	
+	_update_pending_edits_banner();
+	_queue_delayed_save(); // Save conversation with updated pending edits
+	print_line("AI Chat: Added pending edit for " + p_file_path + " (ID: " + p_tool_call_id + ") - consolidated");
+}
+
+void AIChatDock::_remove_pending_edit(const String &p_tool_call_id) {
+	if (!pending_apply_edits.has(p_tool_call_id)) return;
+	
+	String file_path = pending_apply_edits[p_tool_call_id];
+	pending_apply_edits.erase(p_tool_call_id);
+	
+	// Also remove from current conversation
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		conversations.write[current_conversation_index].pending_apply_edits.erase(p_tool_call_id);
+	}
+	
+	// Update file-to-tool-ids mapping
+	if (file_to_tool_ids.has(file_path)) {
+		Array tool_ids = file_to_tool_ids[file_path];
+		int index = tool_ids.find(p_tool_call_id);
+		if (index >= 0) {
+			tool_ids.remove_at(index);
+		}
+		
+		if (tool_ids.is_empty()) {
+			file_to_tool_ids.erase(file_path);
+		} else {
+			file_to_tool_ids[file_path] = tool_ids;
+		}
+	}
+	
+	_update_pending_edits_banner();
+	_queue_delayed_save(); // Save conversation with updated pending edits
+	print_line("AI Chat: Removed pending edit for " + file_path + " (ID: " + p_tool_call_id + ")");
+}
+
+void AIChatDock::_remove_pending_edits_for_file(const String &p_file_path) {
+	if (!file_to_tool_ids.has(p_file_path)) return;
+	
+	// Remove all tool call entries for this file
+	Array tool_ids = file_to_tool_ids[p_file_path];
+	for (int i = 0; i < tool_ids.size(); i++) {
+		String tool_id = tool_ids[i];
+		if (pending_apply_edits.has(tool_id)) {
+			pending_apply_edits.erase(tool_id);
+			print_line("AI Chat: Removed old pending edit for " + p_file_path + " (ID: " + tool_id + ") - consolidating");
+		}
+		
+		// Also remove from current conversation
+		if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			conversations.write[current_conversation_index].pending_apply_edits.erase(tool_id);
+		}
+	}
+	
+	// Clear the file mapping
+	file_to_tool_ids.erase(p_file_path);
+}
+
+void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const String &p_content) {
+	print_line("AI Chat: Unified accept handler for file: " + p_file_path);
+	
+	// Apply the edit to the file
+	if (!p_file_path.is_empty() && !p_content.is_empty()) {
+		// For script files, handle through script editor
+		String ext = p_file_path.get_extension().to_lower();
+		if (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl") {
+			// Handle through diff accepted
+			_on_diff_accepted(p_file_path, p_content);
+			
+			// Close any diff UI in script editor
+			ScriptEditor *script_editor = ScriptEditor::get_singleton();
+			if (script_editor) {
+				ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
+				if (ste && ste->has_method("clear_diff")) {
+					ste->call("clear_diff");
+				}
+			}
+		} else {
+			// Non-script files
+			_apply_file_edit_immediate(p_file_path, p_content);
+		}
+	}
+	
+	// Clear preview overlay
+	EditorTools::clear_preview_overlay(p_file_path);
+	
+	// Clear old pending edit tracking
+	_clear_pending_edit(p_file_path);
+	
+	// Hide ALL UI elements for this file in tool results
+	if (chat_container) {
+		// Find all "Apply to Editor" buttons for this file and hide them
+		TypedArray<Node> apply_buttons = chat_container->find_children("apply_button", "Button", true, false);
+		for (int i = 0; i < apply_buttons.size(); i++) {
+			Button *btn = Object::cast_to<Button>(apply_buttons[i]);
+			if (btn && btn->is_visible()) {
+				// Check if this button is for our file by looking at its parent's children
+				Node *parent = btn->get_parent();
+				if (parent && parent->get_name() == "apply_discard_buttons") {
+					// Hide the entire button container
+					if (Control *ctrl = Object::cast_to<Control>(parent)) {
+						ctrl->set_visible(false);
+					}
+					
+					// Update status label if exists (look for sibling)
+					Node *grandparent = parent->get_parent();
+					if (grandparent) {
+						for (int j = 0; j < grandparent->get_child_count(); j++) {
+							Label *lbl = Object::cast_to<Label>(grandparent->get_child(j));
+							if (lbl && lbl->get_text().contains(_convert_to_godot_path(p_file_path))) {
+								String t = lbl->get_text();
+								if (!t.ends_with(" — Accepted")) {
+									lbl->set_text(t + " — Accepted");
+								}
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
+	print_line("AI Chat: Unified reject handler for file: " + p_file_path);
+	
+	// Clear preview overlay
+	EditorTools::clear_preview_overlay(p_file_path);
+	
+	// Clear old pending edit tracking
+	_clear_pending_edit(p_file_path);
+	
+	// Close any diff UI in script editor
+	ScriptEditor *script_editor = ScriptEditor::get_singleton();
+	if (script_editor) {
+		ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
+		if (ste && ste->has_method("clear_diff")) {
+			ste->call("clear_diff");
+		}
+	}
+	
+	// Hide ALL UI elements for this file in tool results
+	if (chat_container) {
+		// Find all "Discard Preview" buttons for this file and hide them
+		TypedArray<Node> discard_buttons = chat_container->find_children("discard_button", "Button", true, false);
+		for (int i = 0; i < discard_buttons.size(); i++) {
+			Button *btn = Object::cast_to<Button>(discard_buttons[i]);
+			if (btn && btn->is_visible()) {
+				// Check if this button is for our file by looking at its parent's children
+				Node *parent = btn->get_parent();
+				if (parent && parent->get_name() == "apply_discard_buttons") {
+					// Hide the entire button container
+					if (Control *ctrl = Object::cast_to<Control>(parent)) {
+						ctrl->set_visible(false);
+					}
+					
+					// Update status label if exists (look for sibling)
+					Node *grandparent = parent->get_parent();
+					if (grandparent) {
+						for (int j = 0; j < grandparent->get_child_count(); j++) {
+							Label *lbl = Object::cast_to<Label>(grandparent->get_child(j));
+							if (lbl && lbl->get_text().contains(_convert_to_godot_path(p_file_path))) {
+								String t = lbl->get_text();
+								if (!t.ends_with(" — Discarded")) {
+									lbl->set_text(t + " — Discarded");
+								}
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void AIChatDock::_update_pending_edits_banner() {
+	if (!pending_edits_banner || !pending_edits_label) return;
+	
+	int unique_files = file_to_tool_ids.size();
+	int total_edits = pending_apply_edits.size();
+	
+	if (unique_files == 0) {
+		pending_edits_banner->set_visible(false);
+	} else {
+		pending_edits_banner->set_visible(true);
+		String text;
+		if (unique_files == 1) {
+			text = "1 file pending review";
+		} else {
+			text = String::num_int64(unique_files) + " files pending review";
+		}
+		
+		if (total_edits > unique_files) {
+			text += " (" + String::num_int64(total_edits) + " edits)";
+		}
+		
+		pending_edits_label->set_text(text);
+	}
+}
+
+void AIChatDock::_on_banner_clicked() {
+	if (file_to_tool_ids.is_empty()) return;
+	
+	// Create a simple popup showing pending files
+	AcceptDialog *details_popup = memnew(AcceptDialog);
+	details_popup->set_title("📝 Pending File Edits");
+	details_popup->set_min_size(Size2(400, 300));
+	
+	VBoxContainer *content = memnew(VBoxContainer);
+	details_popup->add_child(content);
+	
+	Label *header = memnew(Label);
+	header->set_text("Files awaiting accept/reject:");
+	header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+	content->add_child(header);
+	
+	content->add_child(memnew(HSeparator));
+	
+	// List each file with its edit count
+	for (const KeyValue<String, Array> &entry : file_to_tool_ids) {
+		String file_path = entry.key;
+		Array tool_ids = entry.value;
+		
+		HBoxContainer *file_row = memnew(HBoxContainer);
+		content->add_child(file_row);
+		
+		// File icon
+		TextureRect *file_icon = memnew(TextureRect);
+		file_icon->set_texture(get_theme_icon(SNAME("GDScript"), SNAME("EditorIcons")));
+		file_icon->set_custom_minimum_size(Size2(16, 16));
+		file_row->add_child(file_icon);
+		
+		// File name
+		Label *file_label = memnew(Label);
+		file_label->set_text(file_path.get_file());
+		file_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		file_row->add_child(file_label);
+		
+		// Edit count
+		Label *count_label = memnew(Label);
+		if (tool_ids.size() > 1) {
+			count_label->set_text("(" + String::num_int64(tool_ids.size()) + " edits)");
+			count_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+		} else {
+			count_label->set_text("(1 edit)");
+			count_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		}
+		file_row->add_child(count_label);
+	}
+	
+	add_child(details_popup);
+	details_popup->popup_centered();
+	
+	// Auto-cleanup popup after it's closed - use timer for cleanup
+	details_popup->connect("popup_hide", callable_mp(this, &AIChatDock::_cleanup_popup).bind(details_popup));
+}
+
+void AIChatDock::_cleanup_popup(AcceptDialog *p_popup) {
+	if (p_popup) {
+		p_popup->queue_free();
+	}
+}
+
 AIChatDock::~AIChatDock() {
+	// Clear singleton instance
+	if (singleton == this) {
+		singleton = nullptr;
+	}
+	
 	// Wait for any background save to complete
 	if (save_thread_busy && save_thread) {
 		save_thread->wait_to_finish();

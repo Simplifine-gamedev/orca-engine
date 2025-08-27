@@ -8,6 +8,7 @@
 #include "core/io/json.h"
 #include "core/string/string_builder.h"
 #include "core/config/project_settings.h"
+#include "core/version.h"
 
 void AIToolServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("listen", "port"), &AIToolServer::listen, DEFVAL(8001));
@@ -179,6 +180,22 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		}
 		print_line("AI Tool Server: search_across_godot_docs invoking");
 		result = EditorTools::search_across_godot_docs(args);
+	} else if (function_name == "search_godot_assets") {
+		// Inject current Godot version if not specified
+		if (!args.has("godot_version")) {
+			String version_string = GODOT_VERSION_FULL_CONFIG;
+			// Extract major.minor version (e.g., "4.3" from "4.3.0.stable")
+			PackedStringArray version_parts = version_string.split(".");
+			if (version_parts.size() >= 2) {
+				args["godot_version"] = version_parts[0] + "." + version_parts[1];
+			} else {
+				args["godot_version"] = "4.3"; // Fallback to current stable
+			}
+		}
+		print_line("AI Tool Server: search_godot_assets invoking with version=" + String(args.get("godot_version", "unknown")));
+		// This will be forwarded to backend via normal tool execution path
+		result["success"] = true;
+		result["forwarded_to_backend"] = true;
 	} else if (function_name == "editor_introspect") {
 		result = EditorTools::editor_introspect(args);
 	} else if (function_name == "slice_spritesheet") {

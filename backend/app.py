@@ -3,7 +3,7 @@
 Personal Non‑Commercial License applies. Commercial use requires a separate license from Simplifine.
 See LICENSES/COMPANY-NONCOMMERCIAL.md.
 """
-from flask import Flask, request, Response, jsonify, redirect, session, stream_with_context
+from flask import Flask, request, Response, jsonify, redirect, session, stream_with_context, g
 import openai
 from litellm import completion
 import litellm
@@ -49,6 +49,63 @@ def cleanup_old_requests():
                 to_remove.append(req_id)
         for req_id in to_remove:
             del ACTIVE_REQUESTS[req_id]
+
+def _estimate_token_count(text: str) -> int:
+    """Rough estimation of token count (approximately 4 characters per token)"""
+    return len(text) // 4
+
+def _manage_conversation_length_fallback(messages: list, model: str) -> list:
+    """Manage conversation length to prevent token limit exceeded errors"""
+    # Model-specific token limits (leaving safety margin)
+    TOKEN_LIMITS = {
+        "anthropic/claude-sonnet-4-20250514": 180000,  # 200k limit - 20k safety margin
+        "openai/gpt-5": 120000,  # 128k limit - 8k safety margin  
+        "openai/gpt-4o": 120000,  # 128k limit - 8k safety margin
+        "openai/gpt-4-turbo": 120000,  # 128k limit - 8k safety margin
+        "anthropic/claude-3-5-sonnet-20241022": 180000,  # 200k limit - 20k safety margin
+    }
+    
+    limit = TOKEN_LIMITS.get(model, 100000)  # Default conservative limit
+    
+    # Calculate current token usage
+    total_tokens = 0
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = str(msg.get('content', ''))
+            total_tokens += _estimate_token_count(content)
+    
+    if total_tokens <= limit:
+        return messages  # No pruning needed
+    
+    print(f"CONVERSATION_PRUNE: Token count {total_tokens} exceeds limit {limit}, pruning conversation")
+    
+    # Keep system message (first) and recent messages, prune middle
+    if len(messages) <= 3:
+        return messages  # Too short to prune meaningfully
+    
+    system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
+    recent_count = min(10, len(messages) // 2)  # Keep last 10 messages or half, whichever is smaller
+    recent_messages = messages[-recent_count:]
+    
+    # Create pruned conversation with summary
+    pruned_messages = []
+    if system_msg:
+        pruned_messages.append(system_msg)
+    
+    # Add context summary
+    pruned_messages.append({
+        "role": "assistant",
+        "content": f"[Previous conversation context was automatically pruned due to length. Continuing from recent messages. Total messages pruned: {len(messages) - len(recent_messages) - (1 if system_msg else 0)}]"
+    })
+    
+    # Add recent messages
+    pruned_messages.extend(recent_messages)
+    
+    # Verify we're under the limit
+    pruned_tokens = sum(_estimate_token_count(str(msg.get('content', ''))) for msg in pruned_messages)
+    print(f"CONVERSATION_PRUNE: Reduced from {total_tokens} to {pruned_tokens} tokens ({len(messages)} to {len(pruned_messages)} messages)")
+    
+    return pruned_messages
 
 app = Flask(__name__)
 # Secret must be stable across restarts in production. Require env in production, random only in DEV_MODE.
@@ -180,6 +237,20 @@ if cloud_vector_manager is None:
             print(f"VECTOR_INDEX ERROR: Failed to init LocalVectorManager: {e}")
     else:
         print("VECTOR_INDEX: LocalVectorManager unavailable or OpenAI client missing; semantic indexing disabled")
+
+# Initialize Conversation Memory Manager with Weaviate
+conversation_memory = None
+try:
+    from conversation_memory import ConversationMemoryManager
+    conversation_memory = ConversationMemoryManager(weaviate_manager=cloud_vector_manager)
+    if conversation_memory.enabled and cloud_vector_manager:
+        print("CONVERSATION_MEMORY: Initialized with Weaviate backend")
+    elif conversation_memory.enabled:
+        print("CONVERSATION_MEMORY: Enabled but no Weaviate backend available")
+    else:
+        print("CONVERSATION_MEMORY: Disabled via configuration")
+except Exception as e:
+    print(f"CONVERSATION_MEMORY: Failed to initialize: {e}")
 
 # Load system prompt from file (once at startup)
 SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
@@ -1354,6 +1425,60 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         print(f"SEARCH_PROJECT_INTERNAL_ERROR: {e}")
         return {"success": False, "error": f"Search failed: {str(e)}"}
 
+# --- Game Testing and Error Analysis Tools ---
+
+def start_game_internal(arguments: dict) -> dict:
+    """Start the game for testing - frontend only operation"""
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": "Game control is only available from the Godot editor frontend. Use the 'run_scene' tool in the editor.",
+        "suggested_tool": "run_scene",
+        "arguments_to_forward": arguments
+    }
+
+def stop_game_internal(arguments: dict) -> dict:
+    """Stop the running game - frontend only operation"""
+    return {
+        "success": False, 
+        "frontend_only": True,
+        "message": "Game control is only available from the Godot editor frontend. Use the 'stop_game' tool in the editor.",
+        "suggested_tool": "stop_game",
+        "arguments_to_forward": arguments
+    }
+
+def get_game_status_internal(arguments: dict) -> dict:
+    """Get game status - frontend only operation"""
+    return {
+        "success": False,
+        "frontend_only": True, 
+        "message": "Game status is only available from the Godot editor frontend. Use the 'get_game_status' tool in the editor.",
+        "suggested_tool": "get_game_status",
+        "arguments_to_forward": arguments
+    }
+
+def get_runtime_errors_summary_internal(arguments: dict) -> dict:
+    """Get runtime errors summary - frontend only operation"""
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": "Runtime error analysis is only available from the Godot editor frontend. Use the 'get_runtime_errors_summary' tool in the editor.",
+        "suggested_tool": "get_runtime_errors_summary", 
+        "arguments_to_forward": arguments,
+        "note": "This tool provides smart error deduplication showing total counts, unique error types, and frequency analysis."
+    }
+
+def get_runtime_errors_detailed_internal(arguments: dict) -> dict:
+    """Get detailed runtime errors - frontend only operation"""
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": "Detailed runtime error analysis is only available from the Godot editor frontend. Use the 'get_runtime_errors_detailed' tool in the editor.",
+        "suggested_tool": "get_runtime_errors_detailed",
+        "arguments_to_forward": arguments,
+        "note": "This tool provides filtered error details with options for grouping duplicates and searching by message content."
+    }
+
 # --- Note: Script generation now handled by dedicated /generate_script endpoint ---
 
 # --- Tool Execution Function ---
@@ -1367,6 +1492,11 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return search_across_project_internal(arguments)
     elif function_name == "search_across_godot_docs":
         return search_across_godot_docs_internal(arguments)
+    elif function_name == "search_godot_assets":
+        return search_godot_assets_internal(arguments)
+    elif function_name == "install_godot_asset":
+        return install_godot_asset_internal(arguments)
+    # Note: Game testing tools (start_game, stop_game, etc.) are frontend-only and not executed in backend
     else:
         # This shouldn't happen if we filter correctly
         print(f"WARNING: Unknown backend tool called: {function_name}")
@@ -1986,6 +2116,204 @@ godot_tools = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_godot_assets",
+            "description": "Search the Godot Asset Library for plugins, templates, demos, and other assets",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search terms for assets (e.g., 'dialogue system', 'platformer', 'inventory')"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["2d_tools", "3d_tools", "shaders", "materials", "tools", "scripts", "misc", "templates", "demos", "plugins"],
+                        "description": "Filter by asset category"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Maximum number of results to return (1-100)"
+                    },
+                    "support_level": {
+                        "type": "string",
+                        "enum": ["all", "official", "featured", "community", "testing"],
+                        "default": "all",
+                        "description": "Filter by support level - official, featured, community, or testing assets"
+                    },
+                    "godot_version": {
+                        "type": "string",
+                        "default": "4.3",
+                        "description": "Godot engine version to filter assets for (e.g., '4.3', '4.2', '4.1', '3.5'). Defaults to current stable version."
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["rating", "updated", "name", "cost"],
+                        "default": "rating",
+                        "description": "Sort results by rating, last updated date, name (alphabetical), or cost"
+                    },
+                    "sort_reverse": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Reverse the sort order (e.g., highest to lowest rating, newest to oldest)"
+                    },
+                    "asset_type": {
+                        "type": "string",
+                        "enum": ["any", "addon", "project"],
+                        "default": "any",
+                        "description": "Filter by asset type - any, addon (plugins/tools), or project (templates/demos)"
+                    },
+                    "cost_filter": {
+                        "type": "string",
+                        "enum": ["all", "free", "paid"],
+                        "default": "all",
+                        "description": "Filter by cost - show all, only free assets, or only paid assets"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_godot_asset",
+            "description": "Download and install an asset from the Godot Asset Library into the current project",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_id": {
+                        "type": "string",
+                        "description": "The asset ID from search results"
+                    },
+                    "project_path": {
+                        "type": "string", 
+                        "description": "Path to the Godot project (e.g., 'res://' or absolute path)"
+                    },
+                    "install_location": {
+                        "type": "string",
+                        "default": "addons/",
+                        "description": "Where to install the asset (addons/, scripts/, scenes/, etc.)"
+                    },
+                    "create_backup": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Create a backup before installation in case of conflicts"
+                    }
+                },
+                "required": ["asset_id", "project_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_game",
+            "description": "Start the game/scene for testing and debugging. Clears error log by default for clean testing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scene_path": {
+                        "type": "string",
+                        "description": "Path to the scene to run (optional, uses current scene if not provided)"
+                    },
+                    "clear_errors": {
+                        "type": "boolean", 
+                        "default": True,
+                        "description": "Whether to clear previous errors before starting for clean testing"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function", 
+        "function": {
+            "name": "stop_game",
+            "description": "Stop the currently running game/scene",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_game_status", 
+            "description": "Check if a game is currently running and which scene",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_runtime_errors_summary",
+            "description": "Get a smart summary of runtime errors with deduplication. Shows total error counts, unique error types, and most frequent errors. Perfect for getting an overview without being overwhelmed by hundreds of duplicate errors.",
+            "parameters": {
+                "type": "object", 
+                "properties": {
+                    "include_warnings": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include warnings in addition to errors"
+                    },
+                    "file_filter": {
+                        "type": "string",
+                        "description": "Only show errors from a specific file (optional)"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_runtime_errors_detailed",
+            "description": "Get detailed runtime error information with smart filtering and grouping. Use this after get_runtime_errors_summary to investigate specific error types.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_warnings": {
+                        "type": "boolean",
+                        "default": True, 
+                        "description": "Include warnings in addition to errors"
+                    },
+                    "max_count": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum number of errors to return"
+                    },
+                    "file_filter": {
+                        "type": "string",
+                        "description": "Only show errors from a specific file (optional)"
+                    },
+                    "message_contains": {
+                        "type": "string",
+                        "description": "Only show errors containing this text (optional)"
+                    },
+                    "group_duplicates": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Group identical errors and show frequency counts vs individual instances"
+                    }
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -2007,6 +2335,188 @@ def stop_chat():
         else:
             print(f"STOP_REQUEST: Request {request_id} not found in active requests")
             return jsonify({"success": False, "message": "Request not found or already completed"}), 404
+
+@app.route('/clear_conversation', methods=['POST'])
+def clear_conversation():
+    """Clear conversation history for a user (frontend handles the actual clearing)"""
+    # This endpoint exists mainly for potential future server-side conversation management
+    # Currently, conversation clearing is handled by the frontend
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+        
+    print(f"CONVERSATION_CLEAR: Clear conversation request from user {user.get('id', 'unknown')}")
+    return jsonify({
+        "success": True, 
+        "message": "Conversation clear signal received",
+        "note": "Conversation clearing is handled by the frontend"
+    })
+
+@app.route('/memory_stats', methods=['GET'])
+def get_memory_stats():
+    """Get conversation memory management statistics"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        if conversation_memory:
+            stats = conversation_memory.get_stats()
+            return jsonify({
+                "success": True,
+                "stats": stats,
+                "message": "Memory statistics retrieved successfully"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Conversation memory not initialized",
+                "stats": {"enabled": False, "weaviate_connected": False}
+            })
+    except Exception as e:
+        print(f"MEMORY_STATS_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/memory_cleanup', methods=['POST'])
+def cleanup_memory():
+    """Clean up old conversation summaries"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        if not conversation_memory:
+            return jsonify({"success": False, "error": "Conversation memory not initialized"}), 500
+            
+        data = request.get_json() or {}
+        days_old = data.get('days_old')  # Use None to trigger config default
+        
+        from memory_config import MemoryConfig
+        actual_days = days_old if days_old is not None else MemoryConfig.CLEANUP_DAYS_DEFAULT
+        conversation_memory.cleanup_old_summaries(days_old)
+        return jsonify({
+            "success": True,
+            "message": f"Cleaned up summaries older than {actual_days} days"
+        })
+    except Exception as e:
+        print(f"MEMORY_CLEANUP_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/summarize_conversation', methods=['POST'])
+def summarize_conversation():
+    """Summarize a chunk of conversation messages using AI"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        if not conversation_memory:
+            return jsonify({"success": False, "error": "Conversation memory not initialized"}), 500
+        
+        if not conversation_memory.enabled:
+            return jsonify({"success": False, "error": "Conversation summarization disabled"}), 400
+            
+        data = request.get_json() or {}
+        messages = data.get('messages', [])
+        
+        if not messages:
+            return jsonify({"success": False, "error": "No messages provided"}), 400
+            
+        user_id = user.get('id', 'unknown') if user else 'unknown'
+        
+        # Create summary using AI models
+        import asyncio
+        summary = asyncio.run(conversation_memory.summarize_conversation_chunk(messages, user_id))
+        
+        return jsonify({
+            "success": True,
+            "summary": summary,
+            "original_message_count": len(messages),
+            "summary_tokens": conversation_memory.estimate_tokens(summary),
+            "message": "Conversation summarized successfully"
+        })
+        
+    except Exception as e:
+        print(f"SUMMARIZE_CONVERSATION_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/update_conversation_summary', methods=['POST'])
+def update_conversation_summary():
+    """Update summary when messages are edited"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        if not conversation_memory:
+            return jsonify({"success": False, "error": "Conversation memory not initialized"}), 500
+        
+        if not conversation_memory.enabled:
+            return jsonify({"success": False, "error": "Conversation summarization disabled"}), 400
+            
+        data = request.get_json() or {}
+        messages = data.get('messages', [])
+        
+        if not messages:
+            return jsonify({"success": False, "error": "No messages provided"}), 400
+            
+        user_id = user.get('id', 'unknown') if user else 'unknown'
+        
+        # Update summary for edited messages
+        import asyncio
+        result = asyncio.run(conversation_memory.update_summary_for_edited_messages(messages, user_id))
+        
+        if result["success"]:
+            return jsonify({
+                "success": True,
+                "summary": result["summary"],
+                "was_updated": result["was_updated"],
+                "previous_summary_found": result["previous_summary_found"],
+                "original_message_count": len(messages),
+                "summary_tokens": conversation_memory.estimate_tokens(result["summary"]),
+                "message": result["message"]
+            })
+        else:
+            return jsonify(result), 500
+        
+    except Exception as e:
+        print(f"UPDATE_CONVERSATION_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/search_conversation_history', methods=['POST']) 
+def search_conversation_history():
+    """Search for similar conversations in history"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        if not conversation_memory:
+            return jsonify({"success": False, "error": "Conversation memory not initialized"}), 500
+            
+        data = request.get_json() or {}
+        query = data.get('query', '')
+        max_results = min(data.get('max_results', 5), 20)  # Cap at 20
+        
+        if not query:
+            return jsonify({"success": False, "error": "Query is required"}), 400
+            
+        user_id = user.get('id', 'unknown') if user else 'unknown'
+        
+        # Search for similar conversations
+        similar_conversations = conversation_memory.search_similar_conversations(query, user_id, max_results)
+        
+        return jsonify({
+            "success": True,
+            "similar_conversations": similar_conversations,
+            "query": query,
+            "total_found": len(similar_conversations),
+            "message": "Conversation search completed successfully"
+        })
+        
+    except Exception as e:
+        print(f"SEARCH_CONVERSATION_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -2087,6 +2597,10 @@ def chat():
             try:
                 prj_hdr = request.headers.get('X-Project-Root')
                 print(f"CHAT_HEADERS: X-Project-Root={prj_hdr} X-User-ID={request.headers.get('X-User-ID')} X-Machine-ID={request.headers.get('X-Machine-ID')}")
+                
+                # Store project root in Flask g for access by internal functions
+                if prj_hdr:
+                    g.project_root = prj_hdr
             except Exception:
                 pass
 
@@ -2132,6 +2646,26 @@ def chat():
                     print(f"STOP_DETECTED: Request {request_id} stopped before OpenAI call")
                     yield json.dumps({"status": "stopped", "message": "Request stopped"}) + '\n'
                     return
+                
+                # Check and manage conversation length before making API call
+                # Note: With frontend-managed conversations, we use a simpler fallback approach
+                # Frontend can call /summarize_conversation endpoint for intelligent summarization
+                if conversation_memory and conversation_memory.enabled:
+                    user_id = user.get('id', 'unknown') if user else 'unknown'
+                    try:
+                        import asyncio
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        conversation_messages = loop.run_until_complete(
+                            conversation_memory.manage_conversation_length(conversation_messages, model, user_id)
+                        )
+                        loop.close()
+                    except Exception as e:
+                        print(f"CONVERSATION_MANAGE_ERROR: Failed intelligent management, using fallback: {e}")
+                        conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
+                else:
+                    # Use simple fallback when conversation memory is not available
+                    conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
                 
                 print(f"CONVERSATION_LOOP: Starting OpenAI call with {len(conversation_messages)} messages")
                 if conversation_messages:
@@ -2307,21 +2841,46 @@ def chat():
                             yield json.dumps({"status": "stopped", "message": "Request stopped"}) + '\n'
                             return
                         
+                        # Special handling for rate limit errors
+                        is_rate_limit = "RateLimitError" in err_name and ("limit exceeded" in str(e) or "too many tokens" in str(e) or "rate limit" in str(e).lower())
+                        
                         if transient and attempts < max_attempts:
                             attempts += 1
-                            yield json.dumps({
-                                "status": "retrying_provider",
-                                "provider": get_model_friendly_name(model_try),
-                                "attempt": attempts,
-                                "max_attempts": max_attempts,
-                                "error": str(e)[:100]  # Show error snippet
-                            }) + '\n'
+                            
+                            if is_rate_limit:
+                                yield json.dumps({
+                                    "status": "rate_limit_hit",
+                                    "provider": get_model_friendly_name(model_try), 
+                                    "attempt": attempts,
+                                    "max_attempts": max_attempts,
+                                    "error": str(e)[:100],
+                                    "message": "Rate limit exceeded, retrying..."
+                                }) + '\n'
+                            else:
+                                yield json.dumps({
+                                    "status": "retrying_provider",
+                                    "provider": get_model_friendly_name(model_try),
+                                    "attempt": attempts,
+                                    "max_attempts": max_attempts,
+                                    "error": str(e)[:100]  # Show error snippet
+                                }) + '\n'
+                            
                             print(f"RETRY: Attempt {attempts}/{max_attempts} after error: {e}")
                             time.sleep(1.0)  # Fixed 1 second delay as requested
                             continue
 
                         # After 5 retries, fallback to GPT-5 if not already tried
                         providers_tried.add(model_try)
+                        
+                        # Notify about model switching if it's due to rate limits
+                        if is_rate_limit and model_try != 'openai/gpt-5':
+                            yield json.dumps({
+                                "status": "provider_switched",
+                                "from_provider": get_model_friendly_name(model_try),
+                                "to_provider": "OpenAI GPT-5",
+                                "reason": "Rate limit exceeded",
+                                "message": f"Switching from {get_model_friendly_name(model_try)} to OpenAI GPT-5 due to rate limits"
+                            }) + '\n'
                         
                         # Always try GPT-5 after retries exhausted
                         if MODEL_MAP.get("gpt-5") not in providers_tried:
@@ -2351,6 +2910,9 @@ def chat():
                         "search_across_project",
                         "search_across_godot_docs",
                         "slice_spritesheet",
+                        "search_godot_assets",
+                        "install_godot_asset",
+                        # Note: Game testing tools are frontend-only, not backend
                     ]
                 ]
                 print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
@@ -2361,6 +2923,9 @@ def chat():
                         "search_across_project",
                         "search_across_godot_docs",
                         "slice_spritesheet",
+                        "search_godot_assets",
+                        "install_godot_asset",
+                        # Note: Game testing tools are frontend-only, not backend
                     ]
                     for func in tool_call_aggregator.values()
                 ):
@@ -2597,8 +3162,37 @@ def chat():
                                     "frames_count": len(slice_result.get("frames", []))
                                 }),
                             })
+                        
+                        elif func["name"] == "search_godot_assets":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
                             
-                            # Check for stop after tool execution
+                            yield json.dumps({"tool_starting": "search_godot_assets", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                            except Exception:
+                                arguments = {}
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_asset_search():
+                                try:
+                                    _tool_result_holder["result"] = search_godot_assets_internal(arguments)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_asset_search, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during search_godot_assets")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            
+                            asset_search_result = _tool_result_holder["result"] or {"success": False, "error": "search_godot_assets returned no result"}
+                            
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
@@ -2606,30 +3200,101 @@ def chat():
                             
                             # Yield result to frontend immediately
                             yield json.dumps({
-                                "tool_executed": "search_across_godot_docs",
-                                "tool_result": docs_result,
+                                "tool_executed": "search_godot_assets",
+                                "tool_result": asset_search_result,
                                 "tool_call_id": tool_id,
                                 "status": "tool_completed"
                             }) + '\n'
                             
-                            # Prepare tool result for conversation history (trim results for token efficiency)
-                            slim = {
-                                "success": docs_result.get("success"),
-                                "query": docs_result.get("query"),
-                                "file_count": docs_result.get("file_count", 0),
-                                "results": [
-                                    {
-                                        "title": it.get("title"),
-                                        "similarity": it.get("similarity"),
-                                    }
-                                    for it in (docs_result.get("results") or [])[:3]
-                                ],
+                            # Prepare result for conversation history (limit assets to avoid token bloat)
+                            assets_summary = {
+                                "success": asset_search_result.get("success"),
+                                "query": asset_search_result.get("query"),
+                                "total_found": asset_search_result.get("total_found", 0),
+                                "assets": asset_search_result.get("assets", [])[:5]  # Limit to 5 for history
                             }
+                            
                             tool_results_for_history.append({
                                 "tool_call_id": tool_id,
                                 "role": "tool",
-                                "name": "search_across_godot_docs",
-                                "content": json.dumps(slim),
+                                "name": "search_godot_assets",
+                                "content": json.dumps(assets_summary)
+                            })
+                        
+                        elif func["name"] == "install_godot_asset":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "install_godot_asset", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                            except Exception:
+                                arguments = {}
+                            
+                            # Ensure project_path is provided (get from Flask context before threading)
+                            # Handle both missing project_path and res:// paths
+                            project_path_arg = arguments.get('project_path', '')
+                            if not project_path_arg or project_path_arg == 'res://':
+                                if hasattr(g, 'project_root') and g.project_root:
+                                    arguments['project_path'] = g.project_root
+                                    print(f"ASSET_INSTALL_PREP: Injected project_root from Flask context: {g.project_root} (was: {project_path_arg})")
+                                else:
+                                    print(f"ASSET_INSTALL_ERROR: Cannot resolve project path. Flask g.project_root not available")
+                            elif project_path_arg.startswith('res://'):
+                                # Handle res://subdirectory paths  
+                                if hasattr(g, 'project_root') and g.project_root:
+                                    relative_path = project_path_arg[6:]  # Remove 'res://'
+                                    resolved_path = os.path.join(g.project_root, relative_path) if relative_path else g.project_root
+                                    arguments['project_path'] = resolved_path
+                                    print(f"ASSET_INSTALL_PREP: Converted res:// path '{project_path_arg}' to '{resolved_path}'")
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_asset_install():
+                                try:
+                                    _tool_result_holder["result"] = install_godot_asset_internal(arguments)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_asset_install, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during install_godot_asset")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.1)  # Slightly longer delay for install operations
+                            
+                            install_result = _tool_result_holder["result"] or {"success": False, "error": "install_godot_asset returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            # Yield result to frontend immediately
+                            yield json.dumps({
+                                "tool_executed": "install_godot_asset",
+                                "tool_result": install_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Prepare result for conversation history
+                            install_summary = {
+                                "success": install_result.get("success"),
+                                "message": install_result.get("message"),
+                                "asset_name": install_result.get("installation_info", {}).get("asset_name") if install_result.get("installation_info") else None,
+                                "installed_to": install_result.get("installation_info", {}).get("installed_to") if install_result.get("installation_info") else None,
+                                "is_plugin": install_result.get("installation_info", {}).get("is_plugin") if install_result.get("installation_info") else False
+                            }
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool", 
+                                "name": "install_godot_asset",
+                                "content": json.dumps(install_summary)
                             })
                 
                     # Add the assistant's decision to call the tool to history
@@ -3715,6 +4380,280 @@ def search_across_godot_docs_internal(arguments: dict) -> dict:
         print(f"DOCS_SEARCH_ERROR: {e}")
         return {"success": False, "error": f"Docs search failed: {str(e)}"}
 
+# --- Asset Library Functions ---
+
+def search_godot_assets_internal(arguments: dict) -> dict:
+    """Search the Godot Asset Library for plugins, templates, and other assets"""
+    try:
+        query = arguments.get('query', '')
+        if not query:
+            return {"success": False, "error": "Query parameter is required"}
+        
+        category = arguments.get('category')
+        max_results = arguments.get('max_results', 10)
+        support_level = arguments.get('support_level', 'all')  # official, featured, community, testing, all
+        godot_version = arguments.get('godot_version', '4.3')  # Default to current stable version
+        sort_by = arguments.get('sort_by', 'rating')
+        sort_reverse = arguments.get('sort_reverse', False)
+        asset_type = arguments.get('asset_type', 'any')
+        cost_filter = arguments.get('cost_filter', 'all')
+        
+        print(f"ASSET_SEARCH: Searching for '{query}' in Godot Asset Library (version: {godot_version}, sort: {sort_by}, type: {asset_type}, support: {support_level})")
+        
+        # Godot Asset Library API endpoint
+        base_url = "https://godotengine.org/asset-library/api/asset"
+        params = {
+            'filter': query,
+            'max_results': min(max_results, 100),  # Cap at 100 for better search flexibility
+            'godot_version': godot_version,  # Filter by Godot version to get relevant results
+            'sort': sort_by,
+            'reverse': str(sort_reverse).lower()  # Convert boolean to lowercase string
+        }
+        
+        # Category mapping (Godot Asset Library category IDs)
+        category_map = {
+            '2d_tools': '1',
+            '3d_tools': '2', 
+            'shaders': '3',
+            'materials': '4',
+            'tools': '5',
+            'scripts': '6',
+            'misc': '7',
+            'templates': '8',
+            'demos': '9',
+            'plugins': '10'
+        }
+        
+        if category and category.lower() in category_map:
+            params['category'] = category_map[category.lower()]
+        
+        # Asset type filtering
+        if asset_type != 'any':
+            params['type'] = asset_type
+        
+        # Support level filtering (map to API values)
+        support_level_map = {
+            'official': 'official',
+            'featured': 'featured', 
+            'community': 'community',
+            'testing': 'testing'
+        }
+        if support_level != 'all' and support_level in support_level_map:
+            params['support'] = support_level_map[support_level]
+        
+        # Cost filtering
+        if cost_filter == 'free':
+            params['cost'] = 'MIT'  # Free assets typically use MIT license
+        elif cost_filter == 'paid':
+            params['cost'] = 'Non-free'  # Paid/commercial assets
+        
+        response = requests.get(base_url, params=params, timeout=30)
+        response.raise_for_status()
+        results = response.json()
+        
+        # Format results for better readability
+        formatted_assets = []
+        for asset in results.get('result', []):
+            formatted_asset = {
+                'id': str(asset.get('asset_id', '')),
+                'title': asset.get('title', 'Unknown'),
+                'description': asset.get('description', ''),
+                'category': asset.get('category', 'Unknown'),
+                'author': asset.get('author', 'Unknown'),
+                'version': asset.get('version', '1.0'),
+                'godot_version': asset.get('godot_version', 'Unknown'),
+                'rating': asset.get('rating', 0),
+                'cost': asset.get('cost', 'Free'),
+                'download_url': asset.get('download_url', ''),
+                'browse_url': asset.get('browse_url', ''),
+                'icon_url': asset.get('icon_url', '')
+            }
+            formatted_assets.append(formatted_asset)
+        
+        print(f"ASSET_SEARCH: Found {len(formatted_assets)} assets")
+        
+        return {
+            "success": True,
+            "query": query,
+            "assets": formatted_assets,
+            "total_found": len(formatted_assets),
+            "search_params": {
+                "category": category,
+                "godot_version": godot_version,
+                "sort_by": sort_by,
+                "sort_reverse": sort_reverse,
+                "asset_type": asset_type,
+                "support_level": support_level,
+                "cost_filter": cost_filter,
+                "max_results": max_results
+            }
+        }
+        
+    except Exception as e:
+        print(f"ASSET_SEARCH_ERROR: {e}")
+        return {"success": False, "error": f"Asset search failed: {str(e)}"}
+
+def install_godot_asset_internal(arguments: dict) -> dict:
+    """Download and install an asset from the Godot Asset Library"""
+    try:
+        asset_id = arguments.get('asset_id')
+        project_path = arguments.get('project_path', '')
+        install_location = arguments.get('install_location', 'addons/')
+        create_backup = arguments.get('create_backup', True)
+        
+        if not asset_id:
+            return {"success": False, "error": "asset_id is required"}
+        
+        if not project_path:
+            return {"success": False, "error": "project_path is required"}
+        
+        # Validate that we have a real filesystem path
+        if project_path.startswith('res://'):
+            return {"success": False, "error": f"Invalid project_path '{project_path}' - res:// paths should have been resolved to real filesystem paths before calling this function"}
+        
+        if project_path == 'res://':
+            return {"success": False, "error": "project_path cannot be 'res://' - a real filesystem path is required"}
+        
+        # Check if we're running in cloud mode (project path won't exist on cloud server)
+        is_cloud_mode = not os.path.exists(project_path)
+        
+        if is_cloud_mode:
+            print(f"ASSET_INSTALL: Cloud mode detected - project path {project_path} not accessible from server")
+        else:
+            print(f"ASSET_INSTALL: Local mode detected - project path {project_path} exists")
+        
+        print(f"ASSET_INSTALL: Installing asset {asset_id} to {project_path}")
+        
+        # Get asset details from API
+        asset_url = f"https://godotengine.org/asset-library/api/asset/{asset_id}"
+        asset_response = requests.get(asset_url, timeout=30)
+        asset_response.raise_for_status()
+        asset_data = asset_response.json()
+        
+        if not asset_data:
+            return {"success": False, "error": f"Asset {asset_id} not found"}
+        
+        asset_name = asset_data.get('title', f'asset_{asset_id}')
+        download_url = asset_data.get('download_url')
+        
+        if not download_url:
+            return {"success": False, "error": f"No download URL found for asset {asset_name}"}
+        
+        print(f"ASSET_INSTALL: Downloading {asset_name} from {download_url}")
+        
+        # Download the asset ZIP (allow redirects for GitHub repo renames)
+        zip_response = requests.get(download_url, timeout=120, allow_redirects=True)  # Longer timeout for downloads
+        zip_response.raise_for_status()
+        
+        if len(zip_response.content) == 0:
+            return {"success": False, "error": f"Downloaded file for {asset_name} is empty"}
+        
+        # Cloud Mode: Return asset data for client-side installation
+        if is_cloud_mode:
+            import base64
+            asset_b64 = base64.b64encode(zip_response.content).decode('utf-8')
+            
+            installation_info = {
+                "asset_id": asset_id,
+                "asset_name": asset_name,
+                "version": asset_data.get('version', '1.0'),
+                "author": asset_data.get('author', 'Unknown'),
+                "intended_path": os.path.join(project_path, install_location.strip('/')),
+                "install_location": install_location,
+                "is_plugin": False,  # Will be determined client-side
+                "godot_version": asset_data.get('godot_version', 'Unknown'),
+                "description": asset_data.get('description', '')[:200] + '...' if len(asset_data.get('description', '')) > 200 else asset_data.get('description', ''),
+                "cloud_mode": True
+            }
+            
+            print(f"ASSET_INSTALL: Cloud mode - returning asset data for client-side installation")
+            
+            return {
+                "success": True,
+                "message": f"Downloaded {asset_name} - ready for client installation",
+                "installation_info": installation_info,
+                "asset_data": asset_b64,
+                "cloud_mode": True
+            }
+        
+        # Local Mode: Direct installation (existing logic)
+        # Prepare installation directory
+        install_path = os.path.join(project_path, install_location.strip('/'))
+        print(f"ASSET_INSTALL: Creating installation directory: {install_path}")
+        
+        try:
+            os.makedirs(install_path, exist_ok=True)
+            print(f"ASSET_INSTALL: Directory created/verified: {install_path}")
+        except Exception as dir_error:
+            print(f"ASSET_INSTALL: Failed to create directory {install_path}: {dir_error}")
+            return {"success": False, "error": f"Failed to create installation directory: {str(dir_error)}"}
+        
+        # Create backup if requested and directory exists
+        backup_path = None
+        if create_backup and os.path.exists(install_path) and os.listdir(install_path):
+            backup_dir = os.path.join(project_path, '.asset_backups')
+            os.makedirs(backup_dir, exist_ok=True)
+            backup_path = os.path.join(backup_dir, f"{asset_name}_{int(time.time())}")
+            import shutil
+            shutil.copytree(install_path, backup_path)
+            print(f"ASSET_INSTALL: Created backup at {backup_path}")
+        
+        # Extract ZIP file
+        import zipfile
+        
+        extracted_files = []
+        with zipfile.ZipFile(io.BytesIO(zip_response.content)) as zip_file:
+            # List all files that will be extracted
+            file_list = zip_file.namelist()
+            print(f"ASSET_INSTALL: Extracting {len(file_list)} files")
+            
+            for file_info in zip_file.infolist():
+                # Skip directories and hidden files
+                if file_info.is_dir() or file_info.filename.startswith('.'):
+                    continue
+                    
+                # Extract file
+                extracted_path = zip_file.extract(file_info, install_path)
+                extracted_files.append(extracted_path)
+            
+        # Verify installation
+        if not extracted_files:
+            return {"success": False, "error": f"No files were extracted from {asset_name}"}
+        
+        # Check for plugin.cfg if this looks like a plugin
+        plugin_cfg_path = None
+        for file_path in extracted_files:
+            if file_path.endswith('plugin.cfg'):
+                plugin_cfg_path = file_path
+                break
+        
+        installation_info = {
+            "asset_id": asset_id,
+            "asset_name": asset_name,
+            "version": asset_data.get('version', '1.0'),
+            "author": asset_data.get('author', 'Unknown'),
+            "installed_to": install_path,
+            "files_extracted": len(extracted_files),
+            "is_plugin": plugin_cfg_path is not None,
+            "plugin_config": plugin_cfg_path,
+            "backup_created": backup_path,
+            "godot_version": asset_data.get('godot_version', 'Unknown'),
+            "description": asset_data.get('description', '')[:200] + '...' if len(asset_data.get('description', '')) > 200 else asset_data.get('description', '')
+        }
+        
+        print(f"ASSET_INSTALL: Successfully installed {asset_name}")
+        
+        return {
+            "success": True,
+            "message": f"Successfully installed {asset_name}",
+            "installation_info": installation_info
+        }
+        
+    except Exception as e:
+        import traceback
+        print(f"ASSET_INSTALL_ERROR: {e}")
+        print(f"ASSET_INSTALL_TRACEBACK: {traceback.format_exc()}")
+        return {"success": False, "error": f"Asset installation failed: {str(e)}"}
 
 
 @app.route('/search_docs', methods=['POST'])

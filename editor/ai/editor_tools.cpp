@@ -55,6 +55,10 @@ void EditorTools::clear_preview_overlay(const String &p_path) {
 	}
 }
 
+void EditorTools::clear_all_preview_overlays() {
+	s_preview_overlays.clear();
+}
+
 bool EditorTools::has_preview_overlay(const String &p_path) {
 	return !p_path.is_empty() && s_preview_overlays.has(p_path);
 }
@@ -72,6 +76,7 @@ Dictionary EditorTools::batch_set_node_properties(const Dictionary &p_args) {
     bool save_after = p_args.get("save_after", false);
     int applied = 0;
     Array failures;
+    
     for (int i = 0; i < ops.size(); i++) {
         Dictionary op = ops[i];
         Dictionary r = set_node_property(op);
@@ -90,7 +95,21 @@ Dictionary EditorTools::batch_set_node_properties(const Dictionary &p_args) {
     result["success"] = failures.is_empty();
     result["applied"] = applied;
     result["failed"] = failures.size();
-    if (!failures.is_empty()) result["failures"] = failures;
+    if (!failures.is_empty()) {
+        result["failures"] = failures;
+        // Include detailed error messages for debugging
+        String error_summary = "Batch operation encountered " + String::num_int64(failures.size()) + " error(s): ";
+        for (int i = 0; i < failures.size() && i < 3; i++) { // Show first 3 errors
+            Dictionary failure = failures[i];
+            error_summary += "\n- " + String(failure.get("message", "Unknown error"));
+        }
+        if (failures.size() > 3) {
+            error_summary += "\n- ... and " + String::num_int64(failures.size() - 3) + " more error(s)";
+        }
+        result["message"] = error_summary;
+    } else {
+        result["message"] = "Successfully applied " + String::num_int64(applied) + " property change(s)";
+    }
     return result;
 }
 
@@ -126,6 +145,152 @@ Dictionary EditorTools::get_runtime_errors(const Dictionary &p_args) {
     result["success"] = true;
     result["errors"] = out;
     result["count"] = out.size();
+    return result;
+}
+
+Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
+    Dictionary result;
+    bool include_warnings = p_args.get("include_warnings", true);
+    String file_filter = p_args.get("file", "");
+    
+    // Track unique error messages and their counts
+    HashMap<String, int> error_counts;
+    HashMap<String, Dictionary> error_examples; // Store first example of each error type
+    int total_errors = 0;
+    int total_warnings = 0;
+    
+    // Process all errors from newest to oldest
+    for (int i = s_runtime_errors.size() - 1; i >= 0; i--) {
+        Dictionary e = s_runtime_errors[i];
+        bool is_warning = e.get("is_warning", false);
+        String message = e.get("message", "Unknown error");
+        
+        if (!include_warnings && is_warning) {
+            continue;
+        }
+        if (!file_filter.is_empty() && String(e.get("file", "")) != file_filter) {
+            continue;
+        }
+        
+        // Count errors vs warnings
+        if (is_warning) {
+            total_warnings++;
+        } else {
+            total_errors++;
+        }
+        
+        // Deduplicate by message
+        if (error_counts.has(message)) {
+            error_counts[message]++;
+        } else {
+            error_counts[message] = 1;
+            error_examples[message] = e; // Store first example
+        }
+    }
+    
+    // Build summary array sorted by frequency
+    Array unique_errors;
+    for (const KeyValue<String, int> &kv : error_counts) {
+        Dictionary summary;
+        summary["message"] = kv.key;
+        summary["count"] = kv.value;
+        summary["example"] = error_examples[kv.key];
+        unique_errors.push_back(summary);
+    }
+    
+    // Sort by count (most frequent first)
+    // Note: Manual sorting since we can't use lambdas easily here
+    for (int i = 0; i < unique_errors.size() - 1; i++) {
+        for (int j = i + 1; j < unique_errors.size(); j++) {
+            Dictionary a = unique_errors[i];
+            Dictionary b = unique_errors[j];
+            if ((int)a.get("count", 0) < (int)b.get("count", 0)) {
+                // Swap
+                unique_errors[i] = b;
+                unique_errors[j] = a;
+            }
+        }
+    }
+    
+    result["success"] = true;
+    result["total_errors"] = total_errors;
+    result["total_warnings"] = total_warnings;
+    result["total_messages"] = total_errors + total_warnings;
+    result["unique_error_types"] = unique_errors.size();
+    result["unique_errors"] = unique_errors;
+    result["summary"] = String("Found ") + String::num_int64(total_errors + total_warnings) + 
+                       " total messages (" + String::num_int64(total_errors) + " errors, " + 
+                       String::num_int64(total_warnings) + " warnings) with " + 
+                       String::num_int64(unique_errors.size()) + " unique types";
+    
+    return result;
+}
+
+Dictionary EditorTools::get_runtime_errors_detailed(const Dictionary &p_args) {
+    Dictionary result;
+    bool include_warnings = p_args.get("include_warnings", true);
+    int max_count = p_args.get("max_count", 20);
+    String file_filter = p_args.get("file", "");
+    String message_filter = p_args.get("message_contains", "");
+    bool group_duplicates = p_args.get("group_duplicates", true);
+    
+    if (group_duplicates) {
+        // Get summary and return detailed info for top error types
+        Dictionary summary = get_runtime_errors_summary(p_args);
+        Array unique_errors = summary.get("unique_errors", Array());
+        
+        Array detailed_errors;
+        int shown = 0;
+        
+        for (int i = 0; i < unique_errors.size() && shown < max_count; i++) {
+            Dictionary error_type = unique_errors[i];
+            String message = error_type.get("message", "");
+            
+            if (!message_filter.is_empty() && !message.containsn(message_filter)) {
+                continue;
+            }
+            
+            detailed_errors.push_back(error_type);
+            shown++;
+        }
+        
+        result["success"] = true;
+        result["errors"] = detailed_errors;
+        result["count"] = detailed_errors.size();
+        result["grouped"] = true;
+        result["total_errors"] = summary.get("total_errors", 0);
+        result["total_warnings"] = summary.get("total_warnings", 0);
+        result["message"] = "Showing " + String::num_int64(detailed_errors.size()) + 
+                           " most frequent error types (grouped)";
+    } else {
+        // Return individual error instances
+        Array out;
+        
+        for (int i = s_runtime_errors.size() - 1; i >= 0 && out.size() < max_count; i--) {
+            Dictionary e = s_runtime_errors[i];
+            bool is_warning = e.get("is_warning", false);
+            String message = e.get("message", "");
+            
+            if (!include_warnings && is_warning) {
+                continue;
+            }
+            if (!file_filter.is_empty() && String(e.get("file", "")) != file_filter) {
+                continue;
+            }
+            if (!message_filter.is_empty() && !message.containsn(message_filter)) {
+                continue;
+            }
+            
+            out.push_back(e);
+        }
+        
+        result["success"] = true;
+        result["errors"] = out;
+        result["count"] = out.size();
+        result["grouped"] = false;
+        result["message"] = "Showing " + String::num_int64(out.size()) + " individual error instances";
+    }
+    
     return result;
 }
 
@@ -235,7 +400,11 @@ Dictionary EditorTools::_get_node_info(Node *p_node) {
 		node_info["path"] = scene_root->get_path_to(p_node);
 	} else {
 		// Fallback to absolute path if not in scene tree
-		node_info["path"] = p_node->get_path();
+		if (p_node->is_inside_tree()) {
+			node_info["path"] = p_node->get_path();
+		} else {
+			node_info["path"] = NodePath(); // Empty path for detached nodes
+		}
 	}
 	
 	node_info["owner"] = p_node->get_owner() ? String(p_node->get_owner()->get_name()) : String();
@@ -484,6 +653,12 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 		if (!parent) {
 			return result;
 		}
+		// Validate parent is in a valid state
+		if (!parent->is_inside_tree()) {
+			result["success"] = false;
+			result["message"] = "Parent node is not in the scene tree.";
+			return result;
+		}
 	} else {
 		parent = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
 		if (!parent) {
@@ -527,7 +702,7 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 	}
 
 	result["success"] = true;
-	result["node_path"] = new_node->get_path();
+	result["node_path"] = new_node->is_inside_tree() ? new_node->get_path() : NodePath();
 	result["message"] = "Node created successfully.";
 	
 	// Check for configuration warnings
@@ -556,9 +731,34 @@ Dictionary EditorTools::delete_node(const Dictionary &p_args) {
 	if (!node) {
 		return result;
 	}
+	
+	// Safety checks before deletion
+	if (!node->is_inside_tree()) {
+		result["success"] = false;
+		result["message"] = "Node is not in the scene tree and cannot be safely deleted.";
+		return result;
+	}
+	
+	// Don't delete the scene root
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	if (node == scene_root) {
+		result["success"] = false;
+		result["message"] = "Cannot delete the scene root node.";
+		return result;
+	}
+	
+	// Store node info before deletion for logging
+	String node_name = node->get_name();
+	String node_path = String(node->get_path());
+	
+	// Queue for deletion (safer than immediate removal)
 	node->queue_free();
+	
+	// Scene tree will automatically update when the node is actually freed
+	
 	result["success"] = true;
-	result["message"] = "Node deleted successfully.";
+	result["message"] = "Node '" + node_name + "' queued for deletion.";
+	result["deleted_path"] = node_path;
 	return result;
 }
 
@@ -576,43 +776,93 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
     StringName prop = p_args["property"];
     Variant value = p_args["value"];
 	
-    // Special handling for Vector2-like properties from flexible inputs
+    // Special handling for Vector2/Vector3 position-like properties from flexible inputs
     if ((prop == StringName("position") || prop == StringName("global_position") || prop == StringName("scale"))) {
-        // Accept [x, y], {x, y}, or "x,y"/"x y" strings
+        // Check if this is a 2D or 3D node
+        bool is_3d_node = node->is_class("Node3D") || node->get_class().contains("3D");
+        
+
+        
+        // Accept [x, y, z], {x, y, z}, or "x,y,z" strings
+        Vector3 vec3_value;
         Vector2 vec2_value;
-        bool has_vec2 = false;
 
         if (value.get_type() == Variant::ARRAY) {
             Array arr = value;
             if (arr.size() >= 2 && arr[0].get_type() != Variant::NIL && arr[1].get_type() != Variant::NIL) {
-                vec2_value = Vector2(arr[0], arr[1]);
-                has_vec2 = true;
+                if (is_3d_node && arr.size() >= 3 && arr[2].get_type() != Variant::NIL) {
+                    vec3_value = Vector3(arr[0], arr[1], arr[2]);
+                    value = vec3_value;
+                } else if (is_3d_node) {
+                    // Default Z to 0 for 3D nodes when only X,Y provided
+                    vec3_value = Vector3(arr[0], arr[1], 0.0f);
+                    value = vec3_value;
+                } else {
+                    vec2_value = Vector2(arr[0], arr[1]);
+                    value = vec2_value;
+                }
             }
         } else if (value.get_type() == Variant::DICTIONARY) {
             Dictionary d = value;
             if ((d.has("x") || d.has("X")) && (d.has("y") || d.has("Y"))) {
                 Variant vx = d.has("x") ? d["x"] : d["X"];
                 Variant vy = d.has("y") ? d["y"] : d["Y"];
-                vec2_value = Vector2((double)vx, (double)vy);
-                has_vec2 = true;
+                if (is_3d_node) {
+                    double vz = 0.0;
+                    if (d.has("z")) {
+                        vz = (double)d["z"];
+                    } else if (d.has("Z")) {
+                        vz = (double)d["Z"];
+                    }
+                    vec3_value = Vector3((double)vx, (double)vy, vz);
+                    value = vec3_value;
+                } else {
+                    vec2_value = Vector2((double)vx, (double)vy);
+                    value = vec2_value;
+                }
             }
         } else if (value.get_type() == Variant::STRING) {
             String s = (String)value;
-            // Allow formats like "x,y" or "x y"
             s = s.strip_edges();
-            PackedStringArray parts = s.split(",");
-            if (parts.size() < 2) {
-                parts = s.split(" ");
-            }
-            if (parts.size() >= 2) {
-                vec2_value = Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float());
-                has_vec2 = true;
+            
+            // Handle Vector3() and Vector2() constructor syntax
+            if (s.begins_with("Vector3(") && s.ends_with(")")) {
+                String coords = s.substr(8, s.length() - 9).strip_edges(); // Extract coordinates from "Vector3(x, y, z)"
+                PackedStringArray parts = coords.split(",");
+                if (parts.size() >= 3) {
+                    vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), parts[2].strip_edges().to_float());
+                    value = vec3_value;
+                } else if (parts.size() == 2) {
+                    // Vector3 with only x,y provided - default z to 0
+                    vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), 0.0f);
+                    value = vec3_value;
+                }
+            } else if (s.begins_with("Vector2(") && s.ends_with(")")) {
+                String coords = s.substr(8, s.length() - 9).strip_edges(); // Extract coordinates from "Vector2(x, y)"
+                PackedStringArray parts = coords.split(",");
+                if (parts.size() >= 2) {
+                    vec2_value = Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float());
+                    value = vec2_value;
+                }
+            } else {
+                // Fallback: Allow formats like "x,y,z" or "x y z"
+                PackedStringArray parts = s.split(",");
+                if (parts.size() < 2) {
+                    parts = s.split(" ");
+                }
+                if (parts.size() >= 2) {
+                    if (is_3d_node) {
+                        float z = parts.size() >= 3 ? parts[2].strip_edges().to_float() : 0.0f;
+                        vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), z);
+                        value = vec3_value;
+                    } else {
+                        vec2_value = Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float());
+                        value = vec2_value;
+                    }
+                }
             }
         }
 
-        if (has_vec2) {
-            value = vec2_value;
-        }
     }
 
     // If value is a path string, load via ResourceLoader only; do NOT embed raw Image data.
@@ -716,9 +966,73 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
         String setter = String("set_") + prop_name;
         if (node->has_method(setter)) {
             Array args; args.push_back(value);
-            node->callv(setter, args);
-            result["success"] = true;
-            result["message"] = "Applied via setter method: " + setter;
+            
+            // Validate argument types before calling to provide better error messages
+            bool type_valid = true;
+            String expected_type = "";
+            String actual_type = Variant::get_type_name(value.get_type());
+            
+            // Special validation for common 3D/2D property mismatches
+            if ((prop_name == "position" || prop_name == "global_position" || prop_name == "scale")) {
+                bool is_3d_node = node->is_class("Node3D") || node->get_class().contains("3D");
+                if (is_3d_node && value.get_type() == Variant::VECTOR2) {
+                    type_valid = false;
+                    expected_type = "Vector3";
+                    actual_type = "Vector2";
+                } else if (!is_3d_node && value.get_type() == Variant::VECTOR3) {
+                    type_valid = false;
+                    expected_type = "Vector2";
+                    actual_type = "Vector3";
+                }
+            }
+            
+            if (!type_valid) {
+                result["success"] = false;
+                result["error_code"] = "TYPE_CONVERSION_ERROR";
+                result["message"] = "Cannot convert argument 1 from " + actual_type + " to " + expected_type + " for " + node->get_class() + "::" + setter;
+                return result;
+            }
+            
+            // Call the setter method with error capture
+            Variant old_value = node->get(prop);
+            Dictionary error_before;
+            error_before["count"] = get_runtime_errors(Dictionary()).get("count", 0);
+            
+            Variant call_result = node->callv(setter, args);
+            
+            // Check for new runtime errors that occurred during the call
+            Dictionary error_after;
+            error_after = get_runtime_errors(Dictionary());
+            int new_error_count = (int)error_after.get("count", 0) - (int)error_before.get("count", 0);
+            
+            bool setter_success = true;
+            String error_message = "";
+            
+            // If new errors occurred, capture them
+            if (new_error_count > 0) {
+                setter_success = false;
+                Array all_errors = error_after.get("errors", Array());
+                if (all_errors.size() > 0) {
+                    Dictionary latest_error = all_errors[0];
+                    error_message = latest_error.get("message", "Unknown error occurred during setter call");
+                }
+            } else {
+                // Check if the property actually changed as expected
+                Variant new_value = node->get(prop);
+                setter_success = (new_value != old_value);
+            }
+            
+            result["success"] = setter_success;
+            if (setter_success) {
+                result["message"] = "Applied via setter method: " + setter;
+            } else {
+                if (!error_message.is_empty()) {
+                    result["message"] = "Setter method '" + setter + "' failed: " + error_message;
+                    result["error_details"] = error_message;
+                } else {
+                    result["message"] = "Setter method '" + setter + "' may have failed - property value unchanged";
+                }
+            }
             return result;
         }
         result["success"] = false;
@@ -800,13 +1114,40 @@ Dictionary EditorTools::call_node_method(const Dictionary &p_args) {
 		return result;
 	}
 
+	// Capture errors before and after the method call
+	Dictionary error_before;
+	error_before["count"] = get_runtime_errors(Dictionary()).get("count", 0);
+	
 	Variant ret = node->callv(method, args);
+	
+	// Check for new runtime errors that occurred during the call
+	Dictionary error_after = get_runtime_errors(Dictionary());
+	int new_error_count = (int)error_after.get("count", 0) - (int)error_before.get("count", 0);
+	
+	bool call_success = true;
+	String error_message = "";
+	
+	// If new errors occurred, capture them
+	if (new_error_count > 0) {
+		call_success = false;
+		Array all_errors = error_after.get("errors", Array());
+		if (all_errors.size() > 0) {
+			Dictionary latest_error = all_errors[0];
+			error_message = latest_error.get("message", "Unknown error occurred during method call");
+		}
+	}
 
-	result["success"] = true;
+	result["success"] = call_success;
 	result["return_value"] = ret;
 	result["node_path"] = String(node->get_path());
 	result["node_class"] = String(node->get_class());
 	result["method"] = String(method);
+	
+	if (!call_success && !error_message.is_empty()) {
+		result["message"] = "Method call failed: " + error_message;
+		result["error_details"] = error_message;
+		result["error_count"] = new_error_count;
+	}
 
 	return result;
 }
@@ -900,7 +1241,7 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 			
 			// Properly set the scene root using EditorNode's method
 			EditorNode::get_singleton()->set_edited_scene(root_node);
-			root_node->set_owner(root_node);
+			// Scene root doesn't need an owner (it's the top level)
 		}
 		
 		if (root_node) {
@@ -2660,7 +3001,7 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 Dictionary EditorTools::run_scene(const Dictionary &p_args) {
 	Dictionary result;
 	String scene_path = p_args.get("scene_path", "");
-	int duration = p_args.get("duration", 5);
+	bool clear_errors = p_args.get("clear_errors", true);
 	
 	// Get the current scene if no path specified
 	if (scene_path.is_empty()) {
@@ -2676,13 +3017,56 @@ Dictionary EditorTools::run_scene(const Dictionary &p_args) {
 		return result;
 	}
 	
+	// Clear previous errors if requested for clean testing
+	if (clear_errors) {
+		s_runtime_errors.clear();
+	}
+	
 	// Start the scene
 	EditorRunBar::get_singleton()->play_custom_scene(scene_path);
 	
 	result["success"] = true;
-	result["message"] = "Scene started: " + scene_path;
+	result["message"] = "Game started: " + scene_path;
 	result["scene_path"] = scene_path;
-	result["duration"] = duration;
+	result["is_playing"] = true;
+	result["clear_errors"] = clear_errors;
+	return result;
+}
+
+Dictionary EditorTools::stop_game(const Dictionary &p_args) {
+	Dictionary result;
+	
+	if (!EditorRunBar::get_singleton()->is_playing()) {
+		result["success"] = false;
+		result["message"] = "No game is currently running";
+		result["is_playing"] = false;
+		return result;
+	}
+	
+	String playing_scene = EditorRunBar::get_singleton()->get_playing_scene();
+	EditorRunBar::get_singleton()->stop_playing();
+	
+	result["success"] = true;
+	result["message"] = "Game stopped";
+	result["was_playing_scene"] = playing_scene;
+	result["is_playing"] = false;
+	return result;
+}
+
+Dictionary EditorTools::get_game_status(const Dictionary &p_args) {
+	Dictionary result;
+	
+	bool is_playing = EditorRunBar::get_singleton()->is_playing();
+	String playing_scene = "";
+	
+	if (is_playing) {
+		playing_scene = EditorRunBar::get_singleton()->get_playing_scene();
+	}
+	
+	result["success"] = true;
+	result["is_playing"] = is_playing;
+	result["playing_scene"] = playing_scene;
+	result["message"] = is_playing ? ("Game running: " + playing_scene) : "No game running";
 	return result;
 }
 

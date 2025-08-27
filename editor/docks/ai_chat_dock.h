@@ -67,6 +67,11 @@ class HFlowContainer;
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
 
+public:
+	// Static singleton-like access for script editor integration
+	static AIChatDock *singleton;
+	static AIChatDock *get_singleton() { return singleton; }
+
 private:
 	DiffViewer *diff_viewer;
 	Ref<AIToolServer> tool_server;
@@ -128,6 +133,8 @@ private:
 		String created_timestamp;
 		String last_modified_timestamp;
 		Vector<ChatMessage> messages;
+		// Persistent pending edits - only for edits that haven't been accepted/rejected
+		HashMap<String, String> pending_apply_edits; // tool_call_id -> file_path
 	};
 
 	// Attachment safety limits to protect model context
@@ -217,6 +224,7 @@ private:
 	// Separate HTTP request for stop requests (non-streaming)
 	HTTPRequest *stop_http_request = nullptr;
 	HTTPRequest *models_http_request = nullptr;
+	HTTPRequest *summarization_http_request = nullptr;
 	enum HTTPStatus {
 		STATUS_IDLE,
 		STATUS_CONNECTING,
@@ -234,6 +242,9 @@ private:
 
 	// Auto-scroll state management
 	bool auto_scroll_at_bottom = true;
+	
+	// Connection error handling
+	bool connection_error_shown = false;
 
 	Array _chunked_messages; // For processing large conversations in chunks
 	Array _chunked_conversations_array; // For async saving
@@ -263,6 +274,7 @@ private:
 	void _on_send_button_pressed();
 	void _on_stop_button_pressed();
 	void _on_show_project_graph_pressed();
+	void _reset_connection_error_flag();
 	void _process_send_request_async();
 	void _send_stop_request();
 	void _on_stop_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -498,6 +510,75 @@ private:
 	void _update_user_status();
 	void _logout_user();
 	bool _is_user_authenticated() const;
+
+	// Asset Library callbacks
+	void _on_asset_install_requested(const String &p_asset_id, const String &p_asset_name);
+	void _on_asset_browse_requested(const String &p_url);
+	void _on_asset_folder_open_requested(const String &p_path);
+	void _on_asset_plugin_settings_requested();
+	
+	// Cloud mode asset callbacks
+	void _on_cloud_asset_install_requested(const String &p_asset_data, const String &p_install_path, const String &p_asset_name);
+	void _on_cloud_asset_manual_download(const String &p_asset_data, const String &p_asset_name);
+	void _on_manual_asset_save_location_selected(const String &p_file_path);
+	
+	// Automatic conversation memory management
+	int _estimate_token_count(const String &p_text) const;
+	int _calculate_conversation_tokens(const Vector<ChatMessage> &p_messages) const;
+	int _get_model_token_limit(const String &p_model) const;
+	void _check_and_trigger_summarization();
+	void _on_summarization_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	
+	// Rate limit notification system
+	void _show_rate_limit_popup(const String &p_provider, const String &p_message);
+	void _show_provider_switch_popup(const String &p_from_provider, const String &p_to_provider, const String &p_reason);
+	void _hide_popup_after_delay(float p_delay_seconds);
+	void _hide_rate_limit_popup();
+	AcceptDialog *rate_limit_popup = nullptr;
+	
+	// Status notification system
+	void _show_status_notification(const String &p_type, const String &p_message, const String &p_icon = "", float p_duration = 3.0);
+	void _show_summarization_notification(int p_original_count, int p_summary_tokens);
+	void _show_connection_status_notification(const String &p_status, const String &p_message = "");
+	void _show_rate_limit_notification(const String &p_provider, const String &p_message);
+	void _show_model_switch_notification(const String &p_from_provider, const String &p_to_provider, const String &p_reason);
+	void _hide_status_notification();
+	void _on_status_notification_timer_timeout();
+	PanelContainer *status_notification_panel = nullptr;
+	Timer *status_notification_timer = nullptr;
+	
+	// Apply edit tool call button handling
+	void _on_tool_call_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content);
+	void _on_tool_call_reject_pressed(const String &p_tool_call_id, const String &p_file_path);
+	void _update_tool_call_button_status(const String &p_tool_call_id, const String &p_status);
+	void _update_tool_call_button_status_in_container(VBoxContainer *p_container, const String &p_tool_call_id, const String &p_status);
+	void _add_apply_edit_buttons_to_tool_container(VBoxContainer *p_container, const String &p_tool_call_id, const Dictionary &p_args, const Dictionary &p_result);
+	
+	// Tool result button handlers that bridge to unified system
+	void _on_tool_result_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_path);
+	void _on_tool_result_reject_pressed(const String &p_tool_call_id, const String &p_file_path, const NodePath &p_btns_path, const NodePath &p_status_path);
+	
+public:
+	// Unified accept/reject system for all sources (tool call, diff editor, script save)
+	void _handle_apply_edit_accepted(const String &p_file_path, const String &p_content);
+	void _handle_apply_edit_rejected(const String &p_file_path);
+	
+private:
+	
+	// Pending edits banner - consolidated system
+	void _update_pending_edits_banner();
+	void _add_pending_edit(const String &p_tool_call_id, const String &p_file_path);
+	void _remove_pending_edit(const String &p_tool_call_id);
+	void _remove_pending_edits_for_file(const String &p_file_path); // Remove all edits for same file
+	void _on_banner_clicked(); // Show detailed pending edits
+	void _cleanup_popup(AcceptDialog *p_popup); // Cleanup helper for popups
+	PanelContainer *pending_edits_banner = nullptr;
+	Label *pending_edits_label = nullptr;
+	Button *pending_edits_details_btn = nullptr;
+	HashMap<String, String> pending_apply_edits; // tool_call_id -> file_path
+	
+	// Consolidated pending edits (replaces old system)
+	HashMap<String, Array> file_to_tool_ids; // file_path -> [tool_call_ids] for same file consolidation
 
 protected:
 	void _notification(int p_notification);
