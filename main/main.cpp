@@ -50,7 +50,6 @@
 #include "core/object/script_language.h"
 #include "core/os/os.h"
 #include "core/os/time.h"
-#include "core/io/file_access.h"
 #include "core/register_core_types.h"
 #include "core/string/translation_server.h"
 #include "core/version.h"
@@ -2806,26 +2805,6 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #endif
 
 	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Setup");
-	// Orca minimal analytics: app session end
-	{
-		Error __err = OK;
-		Ref<FileAccess> rf = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
-		String session_id;
-		if (rf.is_valid()) {
-			session_id = rf->get_line();
-		}
-		auto _log_line = [](const String &line) {
-			Error werr = OK;
-			Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
-			if (f.is_null()) return;
-			f->seek_end();
-			f->store_line(line);
-			f->flush();
-		};
-		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
-		String user_id = OS::get_singleton()->get_unique_id();
-		_log_line(vformat("{\"t\":\"%s\",\"type\":\"app_end\",\"session\":\"%s\",\"user_id\":\"%s\"}", _now_iso(), session_id, user_id));
-	}
 
 	if (p_second_phase) {
 		exit_err = setup2();
@@ -3805,38 +3784,25 @@ void Main::setup_boot_logo() {
 			RenderingServer::get_singleton()->set_boot_image(boot_logo, boot_bg_color, boot_logo_scale, boot_logo_filter);
 
 		} else {
-			// Orca: Avoid default Godot logo; set a transparent image instead.
-			Ref<Image> splash;
-			splash.instantiate();
-			splash->initialize_data(1, 1, false, Image::FORMAT_RGBA8);
-			splash->set_pixel(0, 0, Color(0, 0, 0, 0));
+#ifndef NO_DEFAULT_BOOT_LOGO
+			MAIN_PRINT("Main: Create bootsplash");
+#if defined(TOOLS_ENABLED) && !defined(NO_EDITOR_SPLASH)
+			Ref<Image> splash = (editor || project_manager) ? memnew(Image(boot_splash_editor_png)) : memnew(Image(boot_splash_png));
+#else
+			Ref<Image> splash = memnew(Image(boot_splash_png));
+#endif
+
+			MAIN_PRINT("Main: ClearColor");
 			RenderingServer::get_singleton()->set_default_clear_color(boot_bg_color);
+			MAIN_PRINT("Main: Image");
 			RenderingServer::get_singleton()->set_boot_image(splash, boot_bg_color, false);
+#endif
 		}
 
 #if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED)
-		if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON)) {
-			// Use transparent icon for dock
-			String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-			Ref<Image> icon = Image::load_from_file(exe_dir.path_join("..").path_join("icon_outlined.png"));
-			
-			if (icon.is_null() || icon->is_empty()) {
-				// Try alternative path
-				icon = Image::load_from_file("res://icon_outlined.png");
-			}
-			
-			if (icon.is_valid() && !icon->is_empty()) {
-				// Use icon directly with transparency
-				if (icon->get_width() != 256 || icon->get_height() != 256) {
-					icon->resize(256, 256, Image::INTERPOLATE_LANCZOS);
-				}
-				DisplayServer::get_singleton()->set_icon(icon);
-			} else {
-				// Fallback to default icon
-				Ref<Image> fallback = Ref<Image>(memnew(Image(app_icon_png)));
-				fallback->resize(256, 256, Image::INTERPOLATE_LANCZOS);
-				DisplayServer::get_singleton()->set_icon(fallback);
-			}
+		if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON) && OS::get_singleton()->get_bundle_icon_path().is_empty()) {
+			Ref<Image> icon = memnew(Image(app_icon_png));
+			DisplayServer::get_singleton()->set_icon(icon);
 		}
 #endif
 	}
@@ -3858,38 +3824,6 @@ int Main::start() {
 	OS::get_singleton()->benchmark_begin_measure("Startup", "Main::Start");
 
 	ERR_FAIL_COND_V(!_start_success, EXIT_FAILURE);
-	
-#ifdef MACOS_ENABLED
-	// Set the application name to "Orca" for macOS menu bar and window title
-	// NOTE: set_name() method doesn't exist in OS class - app name is set via Info.plist
-	// OS::get_singleton()->set_name("Orca");
-#endif
-
-	// Orca minimal analytics: install + app session start
-	{
-		Error __err = OK;
-		auto _log_line = [](const String &line) {
-			Error werr = OK;
-			Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
-			if (f.is_null()) return;
-			f->seek_end();
-			f->store_line(line);
-			f->flush();
-		};
-		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
-		String user_id = OS::get_singleton()->get_unique_id();
-		if (!FileAccess::exists("user://.installed")) {
-			Ref<FileAccess> mf = FileAccess::open("user://.installed", FileAccess::WRITE, &__err);
-			if (mf.is_valid()) { mf->store_line(_now_iso()); mf->flush(); }
-			_log_line(vformat("{\"t\":\"%s\",\"type\":\"install\",\"user_id\":\"%s\"}", _now_iso(), user_id));
-		}
-		String session_id = String::num_uint64(Time::get_singleton()->get_ticks_usec()) + String("_") + user_id;
-		{
-			Ref<FileAccess> sf = FileAccess::open("user://app_session_id.txt", FileAccess::WRITE, &__err);
-			if (sf.is_valid()) { sf->store_line(session_id); sf->flush(); }
-		}
-		_log_line(vformat("{\"t\":\"%s\",\"type\":\"app_start\",\"session\":\"%s\",\"user_id\":\"%s\"}", _now_iso(), session_id, user_id));
-	}
 
 	bool has_icon = false;
 	String positional_arg;
