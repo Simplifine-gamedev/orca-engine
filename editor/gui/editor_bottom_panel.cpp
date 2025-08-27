@@ -200,6 +200,11 @@ void EditorBottomPanel::load_layout_from_config(Ref<ConfigFile> p_config_file, c
 	if (!has_active_tab) {
 		items[0].control->show(); // _switch_to_item() can collapse only visible tabs.
 		_switch_to_item(false, 0);
+		// Ensure viewport gets full height by setting large split offset after initialization
+		SplitContainer *center_split = Object::cast_to<SplitContainer>(get_parent());
+		if (center_split) {
+			center_split->set_split_offset(10000);
+		}
 	}
 }
 
