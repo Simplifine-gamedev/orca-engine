@@ -1,7 +1,4 @@
 {
-  "buildCommand": "echo 'Using prebuilt files'",
-  "outputDirectory": "bin/web_export",
-  "framework": null,
   "headers": [
     {
       "source": "/(.*)",

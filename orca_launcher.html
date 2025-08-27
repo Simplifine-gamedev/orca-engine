@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orca Engine</title>
+    <style>
+        body {
+            background-color: #202328;
+            color: #e0e0e0;
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #loading {
+            text-align: center;
+        }
+        #canvas {
+            display: none;
+            width: 100vw;
+            height: 100vh;
+        }
+        .logo {
+            width: 200px;
+            height: 200px;
+            margin-bottom: 20px;
+        }
+        #progress-bar {
+            width: 300px;
+            height: 10px;
+            background: #333;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 20px auto;
+        }
+        #progress {
+            height: 100%;
+            background: #4a9eff;
+            width: 0;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <img src="orca_icon.png" class="logo" alt="Orca Engine">
+        <h1>Orca Engine</h1>
+        <p>Loading editor...</p>
+        <div id="progress-bar">
+            <div id="progress"></div>
+        </div>
+    </div>
+    <canvas id="canvas"></canvas>
+    
+    <script>
+        const GODOT_CONFIG = {
+            "args": ["--editor"],
+            "canvasResizePolicy": 2,
+            "executable": "godot.editor",
+            "experimentalVK": false,
+            "focusCanvas": true,
+            "gdextensionLibs": []
+        };
+        
+        const engine = new Engine(GODOT_CONFIG);
+        const canvas = document.getElementById('canvas');
+        const loading = document.getElementById('loading');
+        const progress = document.getElementById('progress');
+        
+        function setProgress(current, total) {
+            if (total > 0) {
+                progress.style.width = (current / total * 100) + '%';
+            }
+        }
+        
+        // Start the editor immediately
+        window.addEventListener('load', function() {
+            engine.startGame({
+                'onProgress': setProgress,
+                'canvas': canvas
+            }).then(() => {
+                loading.style.display = 'none';
+                canvas.style.display = 'block';
+                canvas.focus();
+            }).catch((err) => {
+                console.error('Failed to start Orca Engine:', err);
+                loading.innerHTML = '<h1>Error</h1><p>Failed to start Orca Engine. Check console for details.</p>';
+            });
+        });
+    </script>
+    <script src="godot.editor.js"></script>
+</body>
+</html>
