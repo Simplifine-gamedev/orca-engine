@@ -137,7 +137,7 @@ void EditorPlugin::add_control_to_container(CustomControlContainer p_location, C
 			CanvasItemEditor::get_singleton()->add_control_to_right_panel(p_control);
 		} break;
 		case CONTAINER_CANVAS_EDITOR_BOTTOM: {
-			CanvasItemEditor::get_singleton()->add_control_to_bottom_panel(p_control);
+			CanvasItemEditor::get_singleton()->get_bottom_split()->add_child(p_control);
 
 		} break;
 		case CONTAINER_INSPECTOR_BOTTOM: {
@@ -189,7 +189,7 @@ void EditorPlugin::remove_control_from_container(CustomControlContainer p_locati
 			CanvasItemEditor::get_singleton()->remove_control_from_right_panel(p_control);
 		} break;
 		case CONTAINER_CANVAS_EDITOR_BOTTOM: {
-			CanvasItemEditor::get_singleton()->remove_control_from_bottom_panel(p_control);
+			CanvasItemEditor::get_singleton()->get_bottom_split()->remove_child(p_control);
 
 		} break;
 		case CONTAINER_INSPECTOR_BOTTOM: {
