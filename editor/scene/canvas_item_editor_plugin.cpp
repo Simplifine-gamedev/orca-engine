@@ -5299,6 +5299,41 @@ void CanvasItemEditor::remove_control_from_right_panel(Control *p_control) {
 	right_panel_split->remove_child(p_control);
 }
 
+void CanvasItemEditor::add_control_to_bottom_panel(Control *p_control) {
+	// Create the bottom_split if it doesn't exist yet
+	if (bottom_split == nullptr) {
+		bottom_split = memnew(VSplitContainer);
+		// Remove left_panel_split from this
+		remove_child(left_panel_split);
+		// Add bottom_split to this
+		add_child(bottom_split);
+		bottom_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		// Add left_panel_split to bottom_split as first child
+		bottom_split->add_child(left_panel_split);
+	}
+	
+	bottom_split->add_child(p_control);
+}
+
+void CanvasItemEditor::remove_control_from_bottom_panel(Control *p_control) {
+	if (bottom_split) {
+		bottom_split->remove_child(p_control);
+		
+		// If only left_panel_split remains, remove the bottom_split
+		if (bottom_split->get_child_count() == 1) {
+			// Remove left_panel_split from bottom_split
+			bottom_split->remove_child(left_panel_split);
+			// Remove bottom_split from this
+			remove_child(bottom_split);
+			// Add left_panel_split directly to this
+			add_child(left_panel_split);
+			// Delete bottom_split
+			memdelete(bottom_split);
+			bottom_split = nullptr;
+		}
+	}
+}
+
 VSplitContainer *CanvasItemEditor::get_bottom_split() {
 	return bottom_split;
 }
@@ -5342,15 +5377,11 @@ CanvasItemEditor::CanvasItemEditor() {
 	main_menu_hbox->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	main_flow->add_child(main_menu_hbox);
 
-	bottom_split = memnew(VSplitContainer);
-	add_child(bottom_split);
-	bottom_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	// Collapse bottom panel by default when no plugins add controls
-	bottom_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN_COLLAPSED);
-	bottom_split->set_collapsed(true);
+	// Don't create bottom_split initially - it will be created when needed
+	bottom_split = nullptr;
 
 	left_panel_split = memnew(HSplitContainer);
-	bottom_split->add_child(left_panel_split);
+	add_child(left_panel_split);
 	left_panel_split->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	right_panel_split = memnew(HSplitContainer);

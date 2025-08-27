@@ -569,6 +569,9 @@ public:
 	void add_control_to_right_panel(Control *p_control);
 	void remove_control_from_right_panel(Control *p_control);
 
+	void add_control_to_bottom_panel(Control *p_control);
+	void remove_control_from_bottom_panel(Control *p_control);
+	
 	VSplitContainer *get_bottom_split();
 
 	Control *get_viewport_control() { return viewport; }
