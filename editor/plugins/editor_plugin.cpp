@@ -136,10 +136,13 @@ void EditorPlugin::add_control_to_container(CustomControlContainer p_location, C
 		case CONTAINER_CANVAS_EDITOR_SIDE_RIGHT: {
 			CanvasItemEditor::get_singleton()->add_control_to_right_panel(p_control);
 		} break;
-		case CONTAINER_CANVAS_EDITOR_BOTTOM: {
-			CanvasItemEditor::get_singleton()->get_bottom_split()->add_child(p_control);
+			case CONTAINER_CANVAS_EDITOR_BOTTOM: {
+		VSplitContainer *bottom_split = CanvasItemEditor::get_singleton()->get_bottom_split();
+		bottom_split->add_child(p_control);
+		// Show the dragger when a bottom panel is added
+		bottom_split->set_dragger_visibility(SplitContainer::DRAGGER_VISIBLE);
 
-		} break;
+	} break;
 		case CONTAINER_INSPECTOR_BOTTOM: {
 			InspectorDock::get_singleton()->get_addon_area()->add_child(p_control);
 
@@ -188,10 +191,15 @@ void EditorPlugin::remove_control_from_container(CustomControlContainer p_locati
 		case CONTAINER_CANVAS_EDITOR_SIDE_RIGHT: {
 			CanvasItemEditor::get_singleton()->remove_control_from_right_panel(p_control);
 		} break;
-		case CONTAINER_CANVAS_EDITOR_BOTTOM: {
-			CanvasItemEditor::get_singleton()->get_bottom_split()->remove_child(p_control);
+			case CONTAINER_CANVAS_EDITOR_BOTTOM: {
+		VSplitContainer *bottom_split = CanvasItemEditor::get_singleton()->get_bottom_split();
+		bottom_split->remove_child(p_control);
+		// Hide the dragger if no more bottom panels exist
+		if (bottom_split->get_child_count() == 1) {
+			bottom_split->set_dragger_visibility(SplitContainer::DRAGGER_HIDDEN_COLLAPSED);
+		}
 
-		} break;
+	} break;
 		case CONTAINER_INSPECTOR_BOTTOM: {
 			InspectorDock::get_singleton()->get_addon_area()->remove_child(p_control);
 
