@@ -15,13 +15,16 @@ def get_name():
 
 
 def can_build():
-    if os.name != "posix" or sys.platform == "darwin":
+    # Allow cross-compilation from macOS for cloud deployment
+    if os.name != "posix":
         return False
 
-    pkgconf_error = os.system("pkg-config --version > /dev/null")
-    if pkgconf_error:
-        print_error("pkg-config not found. Aborting.")
-        return False
+    # Skip pkg-config check on macOS when cross-compiling
+    if sys.platform != "darwin":
+        pkgconf_error = os.system("pkg-config --version > /dev/null")
+        if pkgconf_error:
+            print_error("pkg-config not found. Aborting.")
+            return False
 
     return True
 

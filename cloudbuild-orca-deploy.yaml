@@ -1,0 +1,48 @@
+timeout: 1800s  # 30 minutes
+steps:
+  # Build the final Orca VNC image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'build'
+      - '-f'
+      - 'docker/Dockerfile.orca-real-vnc'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
+      - '.'
+    timeout: 900s
+
+  # Push the image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'orca-real'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '6080'
+      - '--memory'
+      - '8Gi'
+      - '--cpu'
+      - '4'
+      - '--timeout'
+      - '3600'
+      - '--max-instances'
+      - '10'
+      - '--concurrency'
+      - '1'
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'

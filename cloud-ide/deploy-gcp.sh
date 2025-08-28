@@ -2,8 +2,8 @@
 
 # Deploy Orca Cloud IDE to Google Cloud Platform
 
-PROJECT_ID="new-website-85890"
-REGION="us-central1"
+PROJECT_ID="${PROJECT_ID:-your-project-id}"
+REGION="${REGION:-us-central1}"
 IMAGE_NAME="orca-cloud"
 SERVICE_NAME="orca-cloud-backend"
 

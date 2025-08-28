@@ -1,0 +1,55 @@
+# Real Orca Engine Cloud IDE with VNC Streaming
+FROM ubuntu:22.04
+
+# Environment setup
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Los_Angeles
+ENV DISPLAY=:99
+ENV RESOLUTION=1920x1080x24
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    # Build tools (if needed)
+    build-essential scons pkg-config \
+    # Graphics libraries
+    libx11-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev \
+    libgl1-mesa-dev libglu1-mesa-dev \
+    # Audio
+    libasound2-dev libpulse-dev \
+    # Other Godot deps
+    libudev-dev libfreetype6-dev libssl-dev \
+    # Virtual display
+    xvfb x11vnc \
+    # VNC web access
+    websockify novnc \
+    # Utils
+    supervisor curl wget unzip \
+    # Window manager for better UX
+    fluxbox \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR /workspace
+
+# Copy the Linux Orca binary (will be built by scons)
+COPY bin/orca.linuxbsd.editor.x86_64 /usr/local/bin/orca
+
+# Make it executable
+RUN chmod +x /usr/local/bin/orca
+
+# Setup noVNC
+RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
+
+# Create supervisor config
+RUN mkdir -p /var/log/supervisor
+COPY docker/supervisord-real.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create startup script
+COPY docker/start-real.sh /start.sh
+RUN chmod +x /start.sh
+
+# Expose ports
+EXPOSE 6080 5900
+
+# Start services
+CMD ["/start.sh"]

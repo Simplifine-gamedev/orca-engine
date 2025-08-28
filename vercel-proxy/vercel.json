@@ -1,0 +1,19 @@
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "https://orca-frontend-454971656629.us-central1.run.app/$1"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        }
+      ]
+    }
+  ]
+}

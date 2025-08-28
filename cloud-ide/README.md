@@ -23,7 +23,7 @@ Full cloud-based IDE for Orca Engine - no WebAssembly, everything runs on the se
 ```bash
 # Make sure you're authenticated
 gcloud auth login
-gcloud config set project new-website-85890
+gcloud config set project YOUR_PROJECT_ID
 
 # Deploy everything
 ./cloud-ide/deploy-gcp.sh

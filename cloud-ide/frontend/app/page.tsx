@@ -89,7 +89,8 @@ export default function OrcaCloudIDE() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
+      <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white">
+        <img src="/logo-light.png" alt="Orca" className="h-16 w-auto mb-4 animate-pulse" />
         <div className="text-2xl">Starting Orca Engine...</div>
       </div>
     )
@@ -125,6 +126,7 @@ export default function OrcaCloudIDE() {
       <div className="flex-1 flex flex-col">
         {/* Toolbar */}
         <div className="bg-gray-800 border-b border-gray-700 p-2 flex items-center gap-2">
+          <img src="/logo-light.png" alt="Orca" className="h-6 w-auto mr-2" />
           <button 
             className="bg-green-600 hover:bg-green-700 px-4 py-1 rounded text-sm"
             onClick={handleRunProject}

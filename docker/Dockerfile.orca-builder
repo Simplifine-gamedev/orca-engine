@@ -1,0 +1,52 @@
+# Builder image for compiling Orca Engine for Linux
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    scons \
+    pkg-config \
+    libx11-dev \
+    libxcursor-dev \
+    libxinerama-dev \
+    libxi-dev \
+    libxrandr-dev \
+    libxrender-dev \
+    libxext-dev \
+    libxfixes-dev \
+    libgl1-mesa-dev \
+    libglu1-mesa-dev \
+    libasound2-dev \
+    libpulse-dev \
+    libfreetype6-dev \
+    libfontconfig1-dev \
+    libudev-dev \
+    libdbus-1-dev \
+    libspeechd-dev \
+    libssl-dev \
+    libmbedtls-dev \
+    git \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create build directory
+WORKDIR /build
+
+# Copy Orca source code
+COPY . /build/
+
+# Build Orca Engine for Linux (optimized for speed)
+RUN scons platform=linuxbsd target=editor arch=x86_64 \
+    production=no \
+    use_lto=no \
+    debug_symbols=no \
+    optimize=speed \
+    disable_3d=no \
+    module_mono_enabled=no \
+    -j$(nproc)
+
+# The binary will be at bin/godot.linuxbsd.editor.x86_64
+CMD ["ls", "-la", "bin/"]

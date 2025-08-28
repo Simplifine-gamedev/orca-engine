@@ -1,0 +1,62 @@
+# Stage 1: Get the compiled Orca binary from builder
+FROM us-central1-docker.pkg.dev/new-website-85890/orca-cloud/orca-builder:latest AS builder
+
+# Stage 2: Create the VNC runtime environment
+FROM ubuntu:22.04
+
+# Install necessary packages for VNC and GUI
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    xvfb \
+    x11vnc \
+    fluxbox \
+    wget \
+    curl \
+    supervisor \
+    net-tools \
+    python3 \
+    python3-numpy \
+    libssl3 \
+    libxcursor1 \
+    libxinerama1 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libgl1 \
+    libasound2 \
+    libpulse0 \
+    libfontconfig1 \
+    libdbus-1-3 \
+    libxkbcommon-x11-0 \
+    libspeechd2 \
+    xdg-utils \
+    zenity \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install noVNC
+RUN mkdir -p /opt/novnc/utils/websockify && \
+    wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz | tar xz --strip-components=1 -C /opt/novnc/ && \
+    wget -qO- https://github.com/novnc/websockify/archive/refs/tags/v0.11.0.tar.gz | tar xz --strip-components=1 -C /opt/novnc/utils/websockify/
+
+# Copy the compiled Orca binary from builder
+COPY --from=builder /build/bin/godot.linuxbsd.editor.x86_64 /usr/local/bin/orca
+RUN chmod +x /usr/local/bin/orca
+
+# Create workspace directory
+RUN mkdir -p /workspace && chmod 777 /workspace
+
+# Setup VNC password (optional, but recommended for security)
+RUN mkdir -p /root/.vnc && \
+    x11vnc -storepasswd orcaengine /root/.vnc/passwd
+
+# Create supervisor config
+COPY supervisord-real.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create a simple noVNC index
+RUN echo '<!DOCTYPE html><html><head><title>Orca Engine</title></head><body style="margin:0;padding:0;"><iframe src="/vnc.html?autoconnect=true&resize=scale&quality=6" style="width:100vw;height:100vh;border:none;"></iframe></body></html>' > /opt/novnc/index.html
+
+# Expose VNC and noVNC ports
+EXPOSE 5900 6080
+
+# Start supervisor
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

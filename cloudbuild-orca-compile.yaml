@@ -1,0 +1,61 @@
+timeout: 7200s  # 2 hours for compilation
+options:
+  machineType: 'E2_HIGHCPU_32'  # Use faster machine with 32 CPUs
+steps:
+  # Build Orca Engine for Linux
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'build'
+      - '-f'
+      - 'docker/Dockerfile.orca-builder'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-builder:latest'
+      - '.'
+    timeout: 6000s
+
+  # Push the builder image (contains the compiled binary)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-builder:latest'
+
+  # Create the final Orca VNC image with the real binary
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'docker/Dockerfile.orca-final'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
+      - '.'
+
+  # Push the final image
+  - name: 'gcr.io/cloud-builders/docker'  
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
+
+  # Deploy the real Orca editor
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'orca-editor'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '6080'
+      - '--memory'
+      - '8Gi'
+      - '--cpu'
+      - '4'
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-builder:latest'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-real:latest'
