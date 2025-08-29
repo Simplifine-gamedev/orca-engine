@@ -424,3 +424,5 @@ backend/.auth_sessions.pkl
 releases/
 .vercel
 backend/vertex-ai-key.json
+bin/
+*.wasm
