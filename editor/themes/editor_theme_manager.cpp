@@ -313,10 +313,10 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 				// A negative contrast rate looks better for light themes, since it better follows the natural order of UI "elevation".
 				preset_contrast = -0.06;
 			} else if (config.preset == "Black (OLED)") {
-				preset_accent_color = Color(0.8, 0.8, 0.8);
-				preset_base_color = Color(0, 0, 0);
-				// The contrast rate value is irrelevant on a fully black theme.
-				preset_contrast = 0.0;
+				preset_accent_color = Color(0.75, 0.75, 0.75);
+				preset_base_color = Color(0.12, 0.12, 0.14);  // Dark gray instead of pure black
+				// Slight contrast for better depth perception
+				preset_contrast = 0.15;
 				preset_draw_extra_borders = true;
 			} else { // Default
 				preset_accent_color = Color(0.44, 0.73, 0.98);

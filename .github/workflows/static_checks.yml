@@ -7,6 +7,8 @@ jobs:
     name: Code style, file formatting, and docs
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      CHANGED_FILES: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v4

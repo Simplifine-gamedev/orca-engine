@@ -363,7 +363,7 @@ void EditorNode::_update_title() {
 		// Display the "modified" mark before anything else so that it can always be seen in the OS task bar.
 		title = vformat("(*) %s", title);
 	}
-	DisplayServer::get_singleton()->window_set_title(title + String(" - ") + GODOT_VERSION_NAME);
+	DisplayServer::get_singleton()->window_set_title(title + String(" - Orca Engine"));
 	if (project_title) {
 		project_title->set_text(title);
 	}
@@ -626,7 +626,6 @@ void EditorNode::_propagate_translation_notification() {
 	pending_translation_notification = false;
 	scene_root->propagate_notification(NOTIFICATION_TRANSLATION_CHANGED);
 }
-
 void EditorNode::_update_theme(bool p_skip_creation) {
 	if (!p_skip_creation) {
 		theme = EditorThemeManager::generate_theme(theme);
@@ -1177,7 +1176,6 @@ void EditorNode::_resources_changed(const Vector<String> &p_resources) {
 		}
 	}
 }
-
 void EditorNode::_fs_changed() {
 	for (FileDialog *E : file_dialogs) {
 		E->invalidate();
@@ -1816,7 +1814,6 @@ void EditorNode::_save_editor_states(const String &p_file, int p_idx) {
 	Error err = cf->save(path);
 	ERR_FAIL_COND_MSG(err != OK, "Cannot save config file to '" + path + "'.");
 }
-
 bool EditorNode::_find_and_save_resource(Ref<Resource> p_res, HashMap<Ref<Resource>, bool> &processed, int32_t flags) {
 	if (p_res.is_null()) {
 		return false;
@@ -2328,7 +2325,6 @@ bool EditorNode::_is_scene_unsaved(int p_idx) {
 	}
 	return false;
 }
-
 void EditorNode::_dialog_action(String p_file) {
 	switch (current_menu_option) {
 		case SCENE_NEW_INHERITED_SCENE: {
@@ -2970,7 +2966,6 @@ void EditorNode::_android_install_build_template() {
 void EditorNode::_android_explore_build_templates() {
 	OS::get_singleton()->shell_show_in_file_manager(ProjectSettings::get_singleton()->globalize_path(export_template_manager->get_android_build_directory(android_export_preset).get_base_dir()), true);
 }
-
 static String _get_unsaved_scene_dialog_text(String p_scene_filename, uint64_t p_started_timestamp) {
 	String unsaved_message;
 
@@ -3604,7 +3599,6 @@ void EditorNode::_save_screenshot(const String &p_path) {
 		OS::get_singleton()->shell_show_in_file_manager(ProjectSettings::get_singleton()->globalize_path(p_path), true);
 	}
 }
-
 void EditorNode::_check_system_theme_changed() {
 	DisplayServer *display_server = DisplayServer::get_singleton();
 
@@ -4242,7 +4236,6 @@ void EditorNode::_set_current_scene(int p_idx) {
 
 	_set_current_scene_nocheck(p_idx);
 }
-
 void EditorNode::_set_current_scene_nocheck(int p_idx) {
 	// Save the folding in case the scene gets reloaded.
 	if (editor_data.get_scene_path(p_idx) != "" && editor_data.get_edited_scene_root(p_idx)) {
@@ -4879,7 +4872,6 @@ void EditorNode::edit_foreign_resource(Ref<Resource> p_resource) {
 	load_scene(p_resource->get_path().get_slice("::", 0));
 	callable_mp(InspectorDock::get_singleton(), &InspectorDock::edit_resource).call_deferred(p_resource);
 }
-
 bool EditorNode::is_resource_read_only(Ref<Resource> p_resource, bool p_foreign_resources_are_writable) {
 	ERR_FAIL_COND_V(p_resource.is_null(), false);
 
@@ -5429,7 +5421,7 @@ String EditorNode::_get_system_info() const {
 	}
 	const String distribution_version = OS::get_singleton()->get_version_alias();
 
-	String godot_version = "Godot v" + String(GODOT_VERSION_FULL_CONFIG);
+	String godot_version = "Orca v" + String(GODOT_VERSION_FULL_CONFIG);
 	if (String(GODOT_VERSION_BUILD) != "official") {
 		String hash = String(GODOT_VERSION_HASH);
 		hash = hash.is_empty() ? String("unknown") : vformat("(%s)", hash.left(9));
@@ -6127,7 +6119,6 @@ void EditorNode::_proceed_save_asing_scene_tabs() {
 bool EditorNode::_is_closing_editor() const {
 	return tab_closing_menu_option == SCENE_QUIT || tab_closing_menu_option == PROJECT_QUIT_TO_PROJECT_MANAGER || tab_closing_menu_option == PROJECT_RELOAD_CURRENT_PROJECT;
 }
-
 void EditorNode::_restart_editor(bool p_goto_project_manager) {
 	exiting = true;
 
@@ -6634,7 +6625,6 @@ void EditorNode::preload_reimporting_with_path_in_edited_scenes(const List<Strin
 
 	progress.step(TTR("Preparation done."), editor_data.get_edited_scene_count());
 }
-
 void EditorNode::reload_instances_with_path_in_edited_scenes() {
 	if (scenes_modification_table.is_empty()) {
 		return;
@@ -7279,7 +7269,6 @@ void EditorNode::_print_handler_impl(const String &p_string, bool p_error, bool 
 		singleton->log->add_message(p_string, EditorLog::MSG_TYPE_STD);
 	}
 }
-
 static void _execute_thread(void *p_ud) {
 	EditorNode::ExecuteThreadArgs *eta = (EditorNode::ExecuteThreadArgs *)p_ud;
 	Error err = OS::get_singleton()->execute(eta->path, eta->args, &eta->output, &eta->exitcode, true, &eta->execute_output_mutex);
@@ -7827,6 +7816,7 @@ EditorNode::EditorNode() {
 	gui_base->add_child(base_vbox);
 #else
 	gui_base->add_child(main_vbox);
+	main_vbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	title_bar = memnew(EditorTitleBar);
 	main_vbox->add_child(title_bar);
@@ -7834,9 +7824,8 @@ EditorNode::EditorNode() {
 
 	left_l_hsplit = memnew(DockSplitContainer);
 	left_l_hsplit->set_name("DockHSplitLeftL");
-	main_vbox->add_child(left_l_hsplit);
-
 	left_l_hsplit->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	main_vbox->add_child(left_l_hsplit);
 
 	left_l_vsplit = memnew(DockSplitContainer);
 	left_l_vsplit->set_name("DockVSplitLeftL");
@@ -7872,6 +7861,7 @@ EditorNode::EditorNode() {
 	main_hsplit->add_child(center_vb);
 
 	center_vb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	center_vb->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 
 	center_split = memnew(DockSplitContainer);
 	center_split->set_name("DockVSplitCenter");
@@ -8248,9 +8238,9 @@ EditorNode::EditorNode() {
 	help_menu->add_separator();
 	if (!global_menu || !OS::get_singleton()->has_feature("macos")) {
 		// On macOS  "Quit" and "About" options are in the "app" menu.
-		help_menu->add_icon_shortcut(_get_editor_theme_native_menu_icon(SNAME("Godot"), global_menu, dark_mode), ED_SHORTCUT_AND_COMMAND("editor/about", TTRC("About Godot...")), HELP_ABOUT);
+		help_menu->add_icon_shortcut(_get_editor_theme_native_menu_icon(SNAME("Godot"), global_menu, dark_mode), ED_SHORTCUT_AND_COMMAND("editor/about", TTRC("About Orca...")), HELP_ABOUT);
 	}
-	help_menu->add_icon_shortcut(_get_editor_theme_native_menu_icon(SNAME("Heart"), global_menu, dark_mode), ED_SHORTCUT_AND_COMMAND("editor/support_development", TTRC("Support Godot Development")), HELP_SUPPORT_GODOT_DEVELOPMENT);
+	help_menu->add_icon_shortcut(_get_editor_theme_native_menu_icon(SNAME("Heart"), global_menu, dark_mode), ED_SHORTCUT_AND_COMMAND("editor/support_development", TTRC("Support Orca Development")), HELP_SUPPORT_GODOT_DEVELOPMENT);
 
 	// Spacer to center 2D / 3D / Script buttons.
 	right_spacer = memnew(Control);
@@ -8867,7 +8857,6 @@ EditorNode::EditorNode() {
 	system_theme_timer->set_owner(get_owner());
 	system_theme_timer->set_autostart(true);
 }
-
 EditorNode::~EditorNode() {
 	EditorInspector::cleanup_plugins();
 	EditorTranslationParser::get_singleton()->clean_parsers();

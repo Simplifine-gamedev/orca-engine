@@ -1,0 +1,25 @@
+# Ignore everything except web export
+*
+!bin/
+bin/*
+!bin/web_export/
+!vercel.json
+!package.json
+
+# Core files for deployment
+!bin/web_export/*.html
+!bin/web_export/*.js  
+!bin/web_export/*.wasm
+!bin/web_export/*.json
+!bin/web_export/*.svg
+!bin/web_export/*.png
+!bin/web_export/favicon.png
+!bin/web_export/offline.html
+
+# Don't ignore these build artifacts
+!bin/web_export/godot.editor.audio.position.worklet.js
+!bin/web_export/godot.editor.audio.worklet.js
+!bin/web_export/godot.editor.js
+!bin/web_export/godot.editor.wasm
+!bin/web_export/service.worker.js
+

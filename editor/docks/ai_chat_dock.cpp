@@ -461,7 +461,7 @@ void AIChatDock::_notification(int p_notification) {
 			
 			input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-			input_field->set_placeholder("Ask me anything about Godot...");
+			input_field->set_placeholder("Ask me anything about Orca...");
 			input_field->set_custom_minimum_size(Size2(0, 100)); // Minimum height for the input box
 			input_field->connect("text_changed", callable_mp(this, &AIChatDock::_on_input_text_changed));
 			input_field->connect("gui_input", callable_mp(this, &AIChatDock::_on_input_field_gui_input));
@@ -8055,6 +8055,28 @@ void AIChatDock::_on_new_conversation_pressed() {
 	// Use delayed save to avoid UI blocking
 	_queue_delayed_save();
 	_execute_delayed_save(); // start background save immediately
+
+	// Orca analytics: chat session start
+	{
+		Error __err = OK;
+		Ref<FileAccess> rf = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
+		String app_session_id;
+		if (rf.is_valid()) app_session_id = rf->get_line();
+		auto _log_line = [](const String &line) {
+			Error werr = OK;
+			Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
+			if (f.is_null()) return;
+			f->seek_end();
+			f->store_line(line);
+			f->flush();
+		};
+		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
+		String user_id = OS::get_singleton()->get_unique_id();
+		String chat_session_id = String::num_uint64(Time::get_singleton()->get_ticks_usec()) + String("_") + user_id;
+		Ref<FileAccess> wf = FileAccess::open("user://chat_session_id.txt", FileAccess::WRITE, &__err);
+		if (wf.is_valid()) { wf->store_line(chat_session_id); wf->flush(); }
+		_log_line(vformat("{\"t\":\"%s\",\"type\":\"chat_session_start\",\"app_session\":\"%s\",\"chat_session\":\"%s\"}", _now_iso(), app_session_id, chat_session_id));
+	}
 }
 void AIChatDock::_build_hierarchy_tree_item(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_node_data) {
 	if (p_node_data.is_empty()) {

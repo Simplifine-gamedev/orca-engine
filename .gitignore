@@ -31,7 +31,14 @@ misc/hooks/pre-commit-custom-*
 
 # Buildsystem
 bin
+!bin/web_export/
 *.gen.*
+
+# Security - NEVER commit private keys
+.sparkle_keys/
+*.pem
+*.key
+*.p12
 compile_commands.json
 platform/windows/godot_res.res
 
@@ -101,6 +108,8 @@ platform/android/java/*/libs/
 # Web platform
 *.bc
 platform/web/node_modules/
+node_modules/
+package-lock.json
 
 # Misc
 *.debug
@@ -413,3 +422,5 @@ backend/.auth_sessions.pkl
 
 backend/.auth_sessions.pkl
 releases/
+.vercel
+backend/vertex-ai-key.json

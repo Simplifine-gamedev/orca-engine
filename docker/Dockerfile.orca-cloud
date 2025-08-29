@@ -1,0 +1,68 @@
+# Headless Orca Engine for Cloud IDE
+FROM ubuntu:22.04
+
+# Set timezone to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Los_Angeles
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    scons \
+    pkg-config \
+    libx11-dev \
+    libxcursor-dev \
+    libxinerama-dev \
+    libgl1-mesa-dev \
+    libglu1-mesa-dev \
+    libasound2-dev \
+    libpulse-dev \
+    libudev-dev \
+    libxi-dev \
+    libxrandr-dev \
+    xvfb \
+    x11vnc \
+    websockify \
+    supervisor \
+    curl \
+    python3-pip \
+    nginx \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install noVNC
+RUN mkdir -p /opt/novnc/utils/websockify \
+    && curl -L https://github.com/novnc/noVNC/archive/v1.4.0.tar.gz | tar -xz --strip-components=1 -C /opt/novnc \
+    && curl -L https://github.com/novnc/websockify/archive/v0.11.0.tar.gz | tar -xz --strip-components=1 -C /opt/novnc/utils/websockify
+
+# Copy Orca binary (you'll need to build Linux version first)
+# For now, we'll build it in the container
+# COPY bin/orca.linux.editor.x86_64 /usr/local/bin/orca
+# RUN chmod +x /usr/local/bin/orca
+
+# Alternative: Install pre-built Godot (Orca is based on Godot)
+RUN curl -L https://downloads.tuxfamily.org/godotengine/4.2/Godot_v4.2-stable_linux.x86_64.zip -o godot.zip \
+    && unzip godot.zip \
+    && mv Godot_v4.2-stable_linux.x86_64 /usr/local/bin/orca \
+    && chmod +x /usr/local/bin/orca \
+    && rm godot.zip
+
+# Setup virtual display
+ENV DISPLAY=:99
+ENV RESOLUTION=1920x1080x24
+
+# Create workspace directory
+RUN mkdir -p /workspace /var/log/supervisor
+
+# Copy supervisor config
+COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Copy startup script
+COPY docker/start.sh /start.sh
+RUN chmod +x /start.sh
+
+# Expose ports
+EXPOSE 6080 5900 8080
+
+# Start services
+CMD ["/start.sh"]

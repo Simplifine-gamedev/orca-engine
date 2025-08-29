@@ -1,0 +1,73 @@
+steps:
+  # Build backend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'cloud-ide/backend/Dockerfile', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-backend:latest', 'cloud-ide/backend']
+  
+  # Push backend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-backend:latest']
+  
+  # Build frontend
+  - name: 'node:18'
+    entrypoint: npm
+    args: ['install']
+    dir: 'cloud-ide/frontend'
+  
+  - name: 'node:18'
+    entrypoint: npm
+    args: ['run', 'build']
+    dir: 'cloud-ide/frontend'
+  
+  # Build frontend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'cloud-ide/frontend/Dockerfile', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-frontend:latest', 'cloud-ide/frontend']
+  
+  # Push frontend image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-frontend:latest']
+  
+  # Deploy backend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'orca-backend'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-backend:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8000'
+      - '--memory'
+      - '4Gi'
+      - '--cpu'
+      - '2'
+  
+  # Deploy frontend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'orca-frontend'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-frontend:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '3000'
+      - '--memory'
+      - '1Gi'
+      - '--set-env-vars'
+      - 'NEXT_PUBLIC_API_URL=https://orca-backend-umkiqffckq-uc.a.run.app'
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-backend:latest'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-frontend:latest'

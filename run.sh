@@ -1,8 +1,5 @@
 # for mac os
 scons platform=macos target=editor dev_build=yes vulkan=no
 
-# ensure friendly binary name
-ln -sf ./godot.macos.editor.dev.arm64 ./bin/Orca
-
-# run
-./bin/Orca
+# run the Orca app bundle with proper dock icon
+open -n ./bin/Orca.app

@@ -1,0 +1,38 @@
+steps:
+  # Build VNC Docker image with real Godot/Orca editor
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'docker/Dockerfile.orca-vnc', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-vnc:latest', '.']
+  
+  # Push VNC image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-vnc:latest']
+  
+  # Deploy to Cloud Run with more resources
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'orca-editor'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-vnc:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '6080'
+      - '--memory'
+      - '8Gi'
+      - '--cpu'
+      - '4'
+      - '--max-instances'
+      - '10'
+      - '--min-instances'
+      - '0'
+      - '--timeout'
+      - '3600'
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/orca-cloud/orca-vnc:latest'

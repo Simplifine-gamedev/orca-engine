@@ -1,0 +1,63 @@
+# Fixed Orca/Godot Cloud IDE with proper VNC setup
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Los_Angeles
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    wget curl unzip \
+    xvfb x11vnc fluxbox \
+    libasound2 libx11-6 libxext6 libxcursor1 libxinerama1 libxi6 libxrandr2 \
+    libgl1 libglu1-mesa libfontconfig1 libdbus-1-3 \
+    python3 python3-numpy \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install noVNC and websockify properly
+RUN mkdir -p /opt/novnc && \
+    cd /opt && \
+    wget -q https://github.com/novnc/noVNC/archive/v1.4.0.tar.gz && \
+    tar -xzf v1.4.0.tar.gz && \
+    mv noVNC-1.4.0/* /opt/novnc/ && \
+    rm -rf v1.4.0.tar.gz noVNC-1.4.0 && \
+    wget -q https://github.com/novnc/websockify/archive/v0.11.0.tar.gz && \
+    tar -xzf v0.11.0.tar.gz && \
+    mv websockify-0.11.0 /opt/novnc/utils/websockify && \
+    rm v0.11.0.tar.gz && \
+    ln -s /opt/novnc/vnc.html /opt/novnc/index.html
+
+# Download and install Godot
+RUN wget -q https://github.com/godotengine/godot/releases/download/4.2-stable/Godot_v4.2-stable_linux.x86_64.zip && \
+    unzip -q Godot_v4.2-stable_linux.x86_64.zip && \
+    mv Godot_v4.2-stable_linux.x86_64 /usr/local/bin/godot && \
+    chmod +x /usr/local/bin/godot && \
+    rm Godot_v4.2-stable_linux.x86_64.zip
+
+# Create directories
+RUN mkdir -p /workspace /var/log/supervisor
+
+# Create a proper startup script
+RUN echo '#!/bin/bash\n\
+export DISPLAY=:99\n\
+# Start X Virtual Framebuffer\n\
+Xvfb :99 -screen 0 1920x1080x24 &\n\
+sleep 2\n\
+# Start Fluxbox window manager\n\
+fluxbox &\n\
+sleep 1\n\
+# Start VNC server\n\
+x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -shared &\n\
+sleep 1\n\
+# Start Godot editor\n\
+godot --editor --path /workspace &\n\
+sleep 1\n\
+# Start noVNC\n\
+cd /opt/novnc && ./utils/novnc_proxy --vnc localhost:5900 --listen 6080' > /start.sh && \
+    chmod +x /start.sh
+
+EXPOSE 6080 5900
+
+WORKDIR /workspace
+
+CMD ["/start.sh"]

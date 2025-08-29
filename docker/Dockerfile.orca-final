@@ -1,0 +1,73 @@
+# Final Orca Cloud IDE with the REAL Orca Engine
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Los_Angeles
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    xvfb x11vnc fluxbox \
+    libasound2 libx11-6 libxext6 libxcursor1 libxinerama1 libxi6 libxrandr2 \
+    libgl1 libglu1-mesa libfontconfig1 libdbus-1-3 libpulse0 \
+    libudev1 libspeechd2 \
+    python3 python3-numpy \
+    curl wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install noVNC
+RUN mkdir -p /opt/novnc && \
+    cd /opt && \
+    wget -q https://github.com/novnc/noVNC/archive/v1.4.0.tar.gz && \
+    tar -xzf v1.4.0.tar.gz && \
+    mv noVNC-1.4.0/* /opt/novnc/ && \
+    rm -rf v1.4.0.tar.gz noVNC-1.4.0 && \
+    wget -q https://github.com/novnc/websockify/archive/v0.11.0.tar.gz && \
+    tar -xzf v0.11.0.tar.gz && \
+    mv websockify-0.11.0 /opt/novnc/utils/websockify && \
+    rm v0.11.0.tar.gz && \
+    ln -s /opt/novnc/vnc.html /opt/novnc/index.html
+
+# Copy the compiled Orca binary from the builder stage
+COPY --from=us-central1-docker.pkg.dev/new-website-85890/orca-cloud/orca-builder:latest \
+     /build/bin/godot.linuxbsd.editor.x86_64 /usr/local/bin/orca
+
+# Make it executable
+RUN chmod +x /usr/local/bin/orca
+
+# Create workspace and startup script
+RUN mkdir -p /workspace /var/log
+
+# Create startup script for Orca
+RUN echo '#!/bin/bash\n\
+export DISPLAY=:99\n\
+echo "Starting Orca Engine Cloud IDE..."\n\
+# Start X Virtual Framebuffer\n\
+Xvfb :99 -screen 0 1920x1080x24 &\n\
+sleep 2\n\
+# Start Fluxbox window manager\n\
+fluxbox &\n\
+sleep 1\n\
+# Start VNC server\n\
+x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -shared &\n\
+sleep 1\n\
+# Start REAL Orca Engine editor\n\
+echo "Starting Orca Engine..."\n\
+orca --editor --path /workspace &\n\
+sleep 1\n\
+# Start noVNC\n\
+cd /opt/novnc && ./utils/novnc_proxy --vnc localhost:5900 --listen 6080' > /start.sh && \
+    chmod +x /start.sh
+
+EXPOSE 6080 5900
+
+WORKDIR /workspace
+
+# Add a welcome project file
+RUN echo "[application]\n\
+\n\
+config/name=\"Welcome to Orca Cloud\"\n\
+config/features=PackedStringArray(\"4.3\")\n\
+config/icon=\"res://icon.svg\"" > /workspace/project.godot
+
+CMD ["/start.sh"]
+
