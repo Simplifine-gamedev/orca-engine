@@ -147,6 +147,8 @@ void AIChatDock::_bind_methods() {
     ClassDB::bind_method(D_METHOD("_perform_filesystem_scan_changes"), &AIChatDock::_perform_filesystem_scan_changes);
 	ClassDB::bind_method(D_METHOD("_on_embedding_status_tick"), &AIChatDock::_on_embedding_status_tick);
 	ClassDB::bind_method(D_METHOD("_show_diff_in_script_editor_deferred"), &AIChatDock::_show_diff_in_script_editor_deferred);
+	ClassDB::bind_method(D_METHOD("_on_script_editor_diff_accepted"), &AIChatDock::_on_script_editor_diff_accepted);
+	ClassDB::bind_method(D_METHOD("_on_script_editor_diff_rejected"), &AIChatDock::_on_script_editor_diff_rejected);
 
 	ClassDB::bind_method(D_METHOD("_scroll_to_bottom"), &AIChatDock::_scroll_to_bottom);
 	ClassDB::bind_method(D_METHOD("_perform_scroll"), &AIChatDock::_perform_scroll);
@@ -705,6 +707,20 @@ void AIChatDock::_on_send_button_pressed() {
 		return;
 	}
 
+	// CRITICAL: Ensure we have a valid conversation before proceeding
+	if (conversations.is_empty()) {
+		print_line("AI Chat: No conversations exist, creating new one");
+		_create_new_conversation();
+		_update_conversation_dropdown();
+	}
+	
+	// Ensure we have a valid current conversation index
+	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
+		print_line("AI Chat: Invalid conversation index, creating new conversation");
+		_create_new_conversation();
+		_update_conversation_dropdown();
+	}
+
 	// Auto-suggest relevant files based on message content
 	if (embedding_system_initialized && initial_indexing_done) {
 		_auto_attach_relevant_context();
@@ -712,7 +728,6 @@ void AIChatDock::_on_send_button_pressed() {
 
 	// PERFORMANCE OPTIMIZATION: Instant UI feedback with deferred heavy processing
 	// This prevents UI freezing by splitting operations across frames
-	input_field->set_text("");
 	is_waiting_for_response = true;
 	_update_ui_state();
 	
@@ -730,6 +745,17 @@ void AIChatDock::_on_send_button_pressed() {
 	chat_history.push_back(msg);
 	_create_message_bubble(msg, chat_history.size() - 1);
 	call_deferred("_scroll_to_bottom");
+	
+	print_line("AI Chat: Added user message to conversation " + itos(current_conversation_index) + " (" + conversations[current_conversation_index].title + "), total messages: " + itos(chat_history.size()));
+	
+	// DON'T clear input field here - keep user message visible until assistant responds
+	// input_field->set_text(""); // MOVED to response completion handlers
+	
+	// Ensure conversation is saved with new user message
+	if (current_conversation_index >= 0) {
+		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+		_queue_delayed_save();
+	}
 
 	// Clear attachments immediately for instant feedback
 	_clear_attachments();
@@ -770,6 +796,12 @@ void AIChatDock::_on_stop_button_pressed() {
 	// Drop any pending assistant label reference to avoid UI deadlocks.
 	current_assistant_message_label = nullptr;
 
+	// Clear input field when manually stopped
+	if (input_field && input_field->is_inside_tree()) {
+		input_field->set_text("");
+		print_line("AI Chat: Cleared input field after manual stop");
+	}
+	
 	// Reflect immediately in UI.
 	is_waiting_for_response = false;
 	_update_ui_state();
@@ -1506,13 +1538,20 @@ void AIChatDock::_process_send_request_async() {
 	// This runs in the next frame, keeping UI responsive
 	
 	// Update conversation timestamp and title (heavier operations)
-	if (current_conversation_index >= 0) {
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
 		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 		// Update title if it's still "New Conversation"
 		if (conversations[current_conversation_index].title == "New Conversation") {
-			conversations.write[current_conversation_index].title = _generate_conversation_title(_get_current_chat_history());
+			Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
+			String new_title = _generate_conversation_title(history);
+			if (!new_title.is_empty() && new_title != "New Conversation") {
+				conversations.write[current_conversation_index].title = new_title;
+				print_line("AI Chat: Updated conversation title to: " + new_title);
+			}
 		}
 		_update_conversation_dropdown();
+	} else {
+		print_line("AI Chat: ERROR - Invalid conversation index in _process_send_request_async: " + itos(current_conversation_index));
 	}
 	
 	// Now send the actual request (this is the heavy operation)
@@ -2875,11 +2914,18 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			_queue_delayed_save();
 		}
 		
-		// Reset state silently (no system message shown to user)
-		is_waiting_for_response = false;
-		stop_requested = false;
-		current_request_id = "";
-		_update_ui_state();
+			// Reset state silently (no system message shown to user)
+	is_waiting_for_response = false;
+	stop_requested = false;
+	current_request_id = "";
+	
+	// Clear input field when request is stopped
+	if (input_field && input_field->is_inside_tree()) {
+		input_field->set_text("");
+		print_line("AI Chat: Cleared input field after stop");
+	}
+	
+	_update_ui_state();
 		return;
 	}
 	
@@ -5049,9 +5095,25 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         String file_path = p_args.has("path") ? p_args.get("path", "Unknown") : p_args.get("file_path", "Unknown");
         String original_content = p_result.get("original_content", "");
         String edited_content = p_result.get("edited_content", "");
+        String inline_diff = p_result.get("inline_diff", "");
         Dictionary structured_edits = p_result.get("structured_edits", Dictionary());
         Array comp_errors = p_result.get("compilation_errors", Array());
         bool has_errors = p_result.get("has_errors", false);
+        
+        // DEBUG: Check what we got from backend
+        Array keys = p_result.keys();
+        String keys_str = "";
+        for (int i = 0; i < keys.size(); i++) {
+            keys_str += String(keys[i]);
+            if (i < keys.size() - 1) keys_str += ", ";
+        }
+        print_line("AI Chat: Backend response keys: " + keys_str);
+        print_line("AI Chat: inline_diff from backend - length: " + itos(inline_diff.length()));
+        if (!inline_diff.is_empty()) {
+            print_line("AI Chat: inline_diff preview: " + inline_diff.left(200).replace("\n", "\\n"));
+        } else {
+            print_line("AI Chat: WARNING - inline_diff is EMPTY from backend!");
+        }
         
         // Get the tool call ID for proper tracking
         String tool_call_id;
@@ -5076,7 +5138,36 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             String ext = file_path.get_extension().to_lower();
             bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
             if (is_script_like) {
-                _show_diff_in_script_editor(file_path, original_content, edited_content);
+                print_line("=== DEBUG: Showing diff for " + file_path + " ===");
+                print_line("Original content preview: " + original_content.left(200) + "...");
+                print_line("Edited content preview: " + edited_content.left(200) + "...");
+                
+                // CRITICAL: Check and clean edited_content if it contains diff markers
+                if (edited_content.contains("\n+ ") || edited_content.contains("\n- ") ||
+                    edited_content.begins_with("+ ") || edited_content.begins_with("- ")) {
+                    print_line("ERROR: edited_content from AI contains diff markers! Cleaning...");
+                    Vector<String> lines = edited_content.split("\n");
+                    String cleaned;
+                    for (const String &line : lines) {
+                        if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+                            cleaned += line.substr(2) + "\n";
+                        } else {
+                            cleaned += line + "\n";
+                        }
+                    }
+                    if (cleaned.ends_with("\n")) {
+                        cleaned = cleaned.substr(0, cleaned.length() - 1);
+                    }
+                    edited_content = cleaned;
+                    print_line("Cleaned edited_content from AI");
+                    
+                    // Update the preview overlay with cleaned content
+                    EditorTools::set_preview_overlay(file_path, edited_content);
+                }
+                
+                print_line("AI Chat: Passing inline_diff to script editor, length: " + itos(inline_diff.length()));
+                print_line("AI Chat: Inline diff preview: " + inline_diff.left(300).replace("\n", "\\n"));
+                _show_diff_in_script_editor(file_path, original_content, edited_content, inline_diff);
             }
         }
 
@@ -5168,30 +5259,171 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 
         // Note: Pending edit tracking now handled by the new banner system in _add_apply_edit_buttons_to_tool_container
         
-        if (!file_path.is_empty() && is_truly_pending) {
-            // Add a compact summary instead of full diff
+        if (!file_path.is_empty() && is_truly_pending && !original_content.is_empty() && !edited_content.is_empty()) {
+            // Add unified diff display
             HSeparator *sep = memnew(HSeparator);
             edit_vbox->add_child(sep);
             
-            // Changes summary
-            Label *summary_label = memnew(Label);
-            int lines_changed = 0;
-            if (structured_edits.has("hunks")) {
-                Array hunks = structured_edits["hunks"];
-                for (int i = 0; i < hunks.size(); i++) {
-                    Dictionary hunk = hunks[i];
-                    Array removed = hunk.get("removed_lines", Array());
-                    Array added = hunk.get("added_lines", Array());
-                    lines_changed += removed.size() + added.size();
+            // Generate unified diff
+            Vector<String> original_lines = original_content.split("\n");
+            Vector<String> modified_lines = edited_content.split("\n");
+            
+            // Simple diff algorithm for tool results
+            // For more complex diffs, the script editor view provides better visualization
+            
+            // Track which lines have been processed
+            HashSet<int> processed_original;
+            HashSet<int> processed_modified;
+            
+            String diff_text;
+            int max_lines = 50; // Increased limit for better visibility
+            int lines_shown = 0;
+            bool truncated = false;
+            
+            // Use LCS to find the differences
+            int n = original_lines.size();
+            int m = modified_lines.size();
+            
+            // Build LCS table
+            Vector<Vector<int>> lcs;
+            lcs.resize(n + 1);
+            for (int i = 0; i <= n; i++) {
+                lcs.write[i].resize(m + 1);
+                for (int j = 0; j <= m; j++) {
+                    if (i == 0 || j == 0) {
+                        lcs.write[i].write[j] = 0;
+                    } else if (original_lines[i-1] == modified_lines[j-1]) {
+                        lcs.write[i].write[j] = lcs[i-1][j-1] + 1;
+                    } else {
+                        lcs.write[i].write[j] = MAX(lcs[i-1][j], lcs[i][j-1]);
+                    }
                 }
             }
-            String summary_text = "Changes: " + String::num_int64(lines_changed) + " lines modified";
-            summary_label->set_text(summary_text);
-            summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
-            summary_label->add_theme_font_size_override("font_size", 12);
-            edit_vbox->add_child(summary_label);
             
-            // Skip the large diff display - it's shown in the script editor already
+            // Backtrack to build the diff
+            Vector<String> diff_lines;
+            int i = n, j = m;
+            while (i > 0 || j > 0) {
+                if (i > 0 && j > 0 && original_lines[i-1] == modified_lines[j-1]) {
+                    // Common line - add as context
+                    diff_lines.push_back("  " + original_lines[i-1]);
+                    i--;
+                    j--;
+                } else if (j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j])) {
+                    // Line added in modified
+                    diff_lines.push_back("+ " + modified_lines[j-1]);
+                    j--;
+                } else {
+                    // Line deleted from original
+                    diff_lines.push_back("- " + original_lines[i-1]);
+                    i--;
+                }
+            }
+            
+            // Reverse since we built it backwards
+            diff_lines.reverse();
+            
+            // Show diff with context
+            bool in_change_region = false;
+            int lines_since_change = 0;
+            
+            for (int k = 0; k < diff_lines.size() && lines_shown < max_lines; k++) {
+                String line = diff_lines[k];
+                bool is_change = line.begins_with("+ ") || line.begins_with("- ");
+                
+                if (is_change) {
+                    // Always show changes
+                    diff_text += line + "\n";
+                    lines_shown++;
+                    in_change_region = true;
+                    lines_since_change = 0;
+                } else {
+                    // Context line
+                    if (in_change_region) {
+                        // Show context after changes
+                        if (lines_since_change < 2 && lines_shown < max_lines) {
+                            diff_text += line + "\n";
+                            lines_shown++;
+                            lines_since_change++;
+                        } else {
+                            // Check if more changes are coming soon
+                            bool more_changes_ahead = false;
+                            for (int ahead = k + 1; ahead < MIN(k + 3, diff_lines.size()); ahead++) {
+                                if (diff_lines[ahead].begins_with("+ ") || diff_lines[ahead].begins_with("- ")) {
+                                    more_changes_ahead = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (more_changes_ahead && lines_shown < max_lines) {
+                                diff_text += line + "\n";
+                                lines_shown++;
+                            } else {
+                                // End of change region
+                                in_change_region = false;
+                                if (lines_shown < max_lines - 1) {
+                                    diff_text += "...\n";
+                                    lines_shown++;
+                                }
+                            }
+                        }
+                    } else {
+                        // Check if a change is coming soon
+                        bool change_ahead = false;
+                        for (int ahead = k; ahead < MIN(k + 3, diff_lines.size()); ahead++) {
+                            if (diff_lines[ahead].begins_with("+ ") || diff_lines[ahead].begins_with("- ")) {
+                                change_ahead = true;
+                                break;
+                            }
+                        }
+                        
+                        if (change_ahead && lines_shown < max_lines) {
+                            // Show context before upcoming change
+                            diff_text += line + "\n";
+                            lines_shown++;
+                        }
+                    }
+                }
+            }
+            
+            if (lines_shown >= max_lines && diff_lines.size() > max_lines) {
+                truncated = true;
+            }
+            
+            if (!diff_text.is_empty()) {
+                // Create diff display
+                Label *diff_label = memnew(Label);
+                diff_label->set_text("Diff Preview:");
+                diff_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+                edit_vbox->add_child(diff_label);
+                
+                // Create a code editor for the diff
+                CodeEdit *diff_editor = memnew(CodeEdit);
+                diff_editor->set_editable(false);
+                diff_editor->set_text(diff_text);
+                diff_editor->set_custom_minimum_size(Size2(0, 200));
+                diff_editor->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+                
+                // Apply syntax highlighting for diff
+                for (int line = 0; line < diff_editor->get_line_count(); line++) {
+                    String line_text = diff_editor->get_line(line);
+                    if (line_text.begins_with("+ ")) {
+                        diff_editor->set_line_background_color(line, Color(0.1, 0.8, 0.1, 0.28));
+                    } else if (line_text.begins_with("- ")) {
+                        diff_editor->set_line_background_color(line, Color(0.9, 0.2, 0.2, 0.28));
+                    }
+                }
+                
+                edit_vbox->add_child(diff_editor);
+                
+                if (truncated) {
+                    Label *truncated_label = memnew(Label);
+                    truncated_label->set_text("... diff truncated for display. Full diff shown in script editor.");
+                    truncated_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+                    truncated_label->add_theme_font_size_override("font_size", 12);
+                    edit_vbox->add_child(truncated_label);
+                }
+            }
         }
 
         // After Accept/Discard, collapse to view-only mode by clearing the overlay and disabling buttons.
@@ -7064,6 +7296,12 @@ void AIChatDock::_request_completed() {
 	if (!has_async_work) {
 		stop_requested = false;
 		current_request_id = "";
+		
+		// NOW clear the input field since the conversation is truly complete
+		if (input_field && input_field->is_inside_tree()) {
+			input_field->set_text("");
+			print_line("AI Chat: Cleared input field after conversation completion");
+		}
 	}
 	_update_ui_state();
 
@@ -7790,6 +8028,16 @@ Vector<AIChatDock::ChatMessage> &AIChatDock::_get_current_chat_history() {
 	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
 		return conversations.write[current_conversation_index].messages;
 	}
+	
+	// If we don't have a valid conversation, create one immediately
+	print_line("AI Chat: WARNING - _get_current_chat_history called with invalid conversation index " + itos(current_conversation_index) + ", creating emergency conversation");
+	_create_new_conversation();
+	_update_conversation_dropdown();
+	
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		return conversations.write[current_conversation_index].messages;
+	}
+	
 	return empty_history;
 }
 
@@ -9896,6 +10144,60 @@ void AIChatDock::_send_file_batch(const Array &p_all_files, int p_start_index, i
 	_send_embedding_request("index_files", payload);
 }
 
+void AIChatDock::_on_script_editor_diff_accepted(const String &p_path, const String &p_content) {
+	print_line("AI Chat: *** SIGNAL RECEIVED *** Script editor diff accepted for: " + p_path);
+	print_line("AI Chat: Content length: " + itos(p_content.length()));
+	
+	// The script editor has already saved the file, so we just need to update our UI
+	// Find all tool call IDs for this file and update their UI
+	String matched_path = p_path;
+	if (!file_to_tool_ids.has(p_path)) {
+		// Try normalized path
+		String normalized_path = p_path;
+		if (p_path.begins_with("res://")) {
+			// Path is already relative to project
+		} else if (p_path.is_absolute_path()) {
+			// Convert absolute to res:// if it's within the project
+			String project_path = ProjectSettings::get_singleton()->get_resource_path();
+			if (p_path.begins_with(project_path)) {
+				normalized_path = "res://" + p_path.substr(project_path.length()).lstrip("/");
+			}
+		}
+		if (file_to_tool_ids.has(normalized_path)) {
+			matched_path = normalized_path;
+		}
+	}
+	
+	// Clear the pending edit and update UI
+	_handle_apply_edit_accepted(matched_path, p_content);
+}
+
+void AIChatDock::_on_script_editor_diff_rejected(const String &p_path) {
+	print_line("AI Chat: *** SIGNAL RECEIVED *** Script editor diff rejected for: " + p_path);
+	
+	// Find all tool call IDs for this file and update their UI
+	String matched_path = p_path;
+	if (!file_to_tool_ids.has(p_path)) {
+		// Try normalized path
+		String normalized_path = p_path;
+		if (p_path.begins_with("res://")) {
+			// Path is already relative to project
+		} else if (p_path.is_absolute_path()) {
+			// Convert absolute to res:// if it's within the project
+			String project_path = ProjectSettings::get_singleton()->get_resource_path();
+			if (p_path.begins_with(project_path)) {
+				normalized_path = "res://" + p_path.substr(project_path.length()).lstrip("/");
+			}
+		}
+		if (file_to_tool_ids.has(normalized_path)) {
+			matched_path = normalized_path;
+		}
+	}
+	
+	// Handle the rejection
+	_handle_apply_edit_rejected(matched_path);
+}
+
 void AIChatDock::_register_pending_edit(const String &p_path, const NodePath &p_btns_path, const NodePath &p_status_label_path) {
 	Dictionary info;
 	info["btns_path"] = p_btns_path;
@@ -10009,7 +10311,7 @@ void AIChatDock::_connect_script_editor_signals() {
 		get_tree()->create_timer(0.5)->connect("timeout", callable_mp(this, &AIChatDock::_connect_script_editor_signals), CONNECT_ONE_SHOT);
 	}
 }
-void AIChatDock::_show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified) {
+void AIChatDock::_show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff) {
 	// Ensure signals are connected before showing diff
 	_connect_script_editor_signals();
 	
@@ -10041,10 +10343,10 @@ void AIChatDock::_show_diff_in_script_editor(const String &p_path, const String 
 	script_editor->edit(script);
 	
 	// We need to wait a frame for the script editor to be ready
-	call_deferred("_show_diff_in_script_editor_deferred", p_path, p_original, p_modified);
+	call_deferred("_show_diff_in_script_editor_deferred", p_path, p_original, p_modified, p_inline_diff);
 }
 
-void AIChatDock::_show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified) {
+void AIChatDock::_show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff) {
 	ScriptEditor *script_editor = ScriptEditor::get_singleton();
 	if (!script_editor) {
 		return;
@@ -10063,8 +10365,14 @@ void AIChatDock::_show_diff_in_script_editor_deferred(const String &p_path, cons
 		return;
 	}
 	
+	// Connect signals if not already connected
+	if (!ste->is_connected("diff_accepted", callable_mp(this, &AIChatDock::_on_script_editor_diff_accepted))) {
+		ste->connect("diff_accepted", callable_mp(this, &AIChatDock::_on_script_editor_diff_accepted));
+		ste->connect("diff_rejected", callable_mp(this, &AIChatDock::_on_script_editor_diff_rejected));
+	}
+	
 	// Show the diff in the script editor
-	ste->set_diff(p_original, p_modified);
+			ste->set_diff(p_original, p_modified, p_inline_diff);
 	
 	// Switch to Script editor view
 	EditorInterface::get_singleton()->set_main_screen_editor("Script");
@@ -10723,7 +11031,8 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 		bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
 		if (is_script_like) {
 			String original_content = p_result.get("original_content", "");
-			_show_diff_in_script_editor(file_path, original_content, edited_content);
+			String inline_diff = p_result.get("inline_diff", "");
+			_show_diff_in_script_editor(file_path, original_content, edited_content, inline_diff);
 		}
 	}
 	
@@ -10824,12 +11133,28 @@ void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const St
 			// Handle through diff accepted
 			_on_diff_accepted(p_file_path, p_content);
 			
-			// Close any diff UI in script editor
+			// Update script editor diff UI to show accepted state
 			ScriptEditor *script_editor = ScriptEditor::get_singleton();
 			if (script_editor) {
-				ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
-				if (ste && ste->has_method("clear_diff")) {
-					ste->call("clear_diff");
+				// Check all open script editors for the matching file
+				TypedArray<ScriptEditorBase> open_editors = script_editor->call("get_open_script_editors");
+				print_line("AI Chat: Checking " + itos(open_editors.size()) + " open script editors for file: " + p_file_path);
+				
+				for (int i = 0; i < open_editors.size(); i++) {
+					ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(open_editors[i]);
+					if (ste) {
+						Ref<Script> script = ste->get_edited_resource();
+						if (script.is_valid()) {
+							String script_path = script->get_path();
+							print_line("  Editor " + itos(i) + ": " + script_path + " (has_diff: " + itos(ste->has_diff()) + ")");
+							
+							if (script_path == p_file_path && ste->has_diff()) {
+								print_line("AI Chat: Found matching script editor with diff, calling accept_all_diffs");
+								ste->accept_all_diffs();
+								break;
+							}
+						}
+					}
 				}
 			}
 		} else {
@@ -10843,6 +11168,21 @@ void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const St
 	
 	// Clear old pending edit tracking
 	_clear_pending_edit(p_file_path);
+	
+	// Update ALL tool call buttons for this file
+	if (file_to_tool_ids.has(p_file_path)) {
+		Array tool_ids = file_to_tool_ids[p_file_path];
+		print_line("AI Chat: Updating " + itos(tool_ids.size()) + " tool call buttons for file: " + p_file_path);
+		for (int i = 0; i < tool_ids.size(); i++) {
+			String tool_id = tool_ids[i];
+			print_line("  Updating tool call button: " + tool_id);
+			_update_tool_call_button_status(tool_id, "Accepted");
+		}
+		// Clear the mapping after updating
+		file_to_tool_ids.erase(p_file_path);
+	} else {
+		print_line("AI Chat: WARNING - No tool IDs found for file: " + p_file_path);
+	}
 	
 	// Hide ALL UI elements for this file in tool results
 	if (chat_container) {
@@ -10888,13 +11228,44 @@ void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
 	// Clear old pending edit tracking
 	_clear_pending_edit(p_file_path);
 	
-	// Close any diff UI in script editor
+	// Update script editor diff UI to show rejected state
 	ScriptEditor *script_editor = ScriptEditor::get_singleton();
 	if (script_editor) {
-		ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
-		if (ste && ste->has_method("clear_diff")) {
-			ste->call("clear_diff");
+		// Check all open script editors for the matching file
+		TypedArray<ScriptEditorBase> open_editors = script_editor->call("get_open_script_editors");
+		print_line("AI Chat: Checking " + itos(open_editors.size()) + " open script editors for rejection of file: " + p_file_path);
+		
+		for (int i = 0; i < open_editors.size(); i++) {
+			ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(open_editors[i]);
+			if (ste) {
+				Ref<Script> script = ste->get_edited_resource();
+				if (script.is_valid()) {
+					String script_path = script->get_path();
+					print_line("  Editor " + itos(i) + ": " + script_path + " (has_diff: " + itos(ste->has_diff()) + ")");
+					
+					if (script_path == p_file_path && ste->has_diff()) {
+						print_line("AI Chat: Found matching script editor with diff, calling reject_all_diffs");
+						ste->reject_all_diffs();
+						break;
+					}
+				}
+			}
 		}
+	}
+	
+	// Update ALL tool call buttons for this file
+	if (file_to_tool_ids.has(p_file_path)) {
+		Array tool_ids = file_to_tool_ids[p_file_path];
+		print_line("AI Chat: Updating " + itos(tool_ids.size()) + " tool call buttons for file: " + p_file_path);
+		for (int i = 0; i < tool_ids.size(); i++) {
+			String tool_id = tool_ids[i];
+			print_line("  Updating tool call button: " + tool_id);
+			_update_tool_call_button_status(tool_id, "Rejected");
+		}
+		// Clear the mapping after updating
+		file_to_tool_ids.erase(p_file_path);
+	} else {
+		print_line("AI Chat: WARNING - No tool IDs found for file: " + p_file_path);
 	}
 	
 	// Hide ALL UI elements for this file in tool results

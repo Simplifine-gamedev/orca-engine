@@ -397,11 +397,13 @@ private:
 	void _on_discard_preview(const String &p_path, const NodePath &p_btns_path = NodePath(), const NodePath &p_status_label_path = NodePath());
 	void _mark_apply_discard_buttons_hidden_and_status(Node *p_context, const String &p_status_text);
 	void _on_script_editor_save(const String &p_path);
+	void _on_script_editor_diff_accepted(const String &p_path, const String &p_content);
+	void _on_script_editor_diff_rejected(const String &p_path);
 	void _register_pending_edit(const String &p_path, const NodePath &p_btns_path, const NodePath &p_status_label_path);
 	void _clear_pending_edit(const String &p_path);
 	void _connect_script_editor_signals();
-	void _show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified);
-	void _show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified);
+	void _show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
+	void _show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
 
 	// Image processing methods
 	bool _is_image_file(const String &p_path);

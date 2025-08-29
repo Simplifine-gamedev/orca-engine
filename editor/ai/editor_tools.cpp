@@ -2137,6 +2137,17 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
     int range_start = (int)p_args.get("start_line", 0);
     int range_end = (int)p_args.get("end_line", 0);
     bool use_range = (lines_mode == "range") || (range_start > 0 && range_end >= range_start);
+    
+    // For GDScript files in range mode, expand context for better indentation awareness
+    String ext = path.get_extension().to_lower();
+    bool is_script_file = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
+    int context_lines = 0;
+    
+    if (is_script_file && use_range) {
+        // Expand context for script files to help AI understand indentation structure
+        context_lines = 10; // Add 10 lines before and after for context
+        print_line("APPLY_EDIT: Expanding context for script file indentation awareness");
+    }
 
     Vector<String> file_lines = file_content.split("\n");
     String pre_text, segment_text, post_text;
@@ -2145,16 +2156,27 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         // Clamp range within file
         if (range_start <= 0) range_start = 1;
         if (range_end <= 0 || range_end > total_lines) range_end = total_lines;
-        // Build pre/segment/post
-        for (int i = 0; i < range_start - 1 && i < total_lines; i++) {
+        
+        // Expand context for script files
+        int context_start = range_start - 1;
+        int context_end = range_end;
+        
+        if (context_lines > 0) {
+            context_start = MAX(0, range_start - 1 - context_lines);
+            context_end = MIN(total_lines, range_end + context_lines);
+            print_line("APPLY_EDIT: Expanded context from lines " + itos(context_start + 1) + "-" + itos(context_end) + " (original range: " + itos(range_start) + "-" + itos(range_end) + ")");
+        }
+        
+        // Build pre/segment/post with expanded context
+        for (int i = 0; i < context_start && i < total_lines; i++) {
             pre_text += file_lines[i];
-            if (i < range_start - 2 || total_lines > 1) pre_text += "\n";
+            if (i < context_start - 1 || total_lines > 1) pre_text += "\n";
         }
-        for (int i = range_start - 1; i < range_end && i < total_lines; i++) {
+        for (int i = context_start; i < context_end && i < total_lines; i++) {
             segment_text += file_lines[i];
-            if (i < range_end - 1) segment_text += "\n";
+            if (i < context_end - 1) segment_text += "\n";
         }
-        for (int i = range_end; i < total_lines; i++) {
+        for (int i = context_end; i < total_lines; i++) {
             if (!post_text.is_empty()) post_text += "\n";
             post_text += file_lines[i];
         }
@@ -2279,6 +2301,15 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         result["compilation_errors"] = comp_errors;
         result["has_errors"] = has_errors;
         result["dynamic_approach"] = false;
+        
+        // Copy inline_diff from backend response if available
+        if (local_result.has("inline_diff")) {
+            result["inline_diff"] = local_result["inline_diff"];
+            print_line("APPLY_EDIT: Copied inline_diff from backend, length: " + itos(String(local_result["inline_diff"]).length()));
+        } else {
+            result["inline_diff"] = "";
+            print_line("APPLY_EDIT: No inline_diff in backend response");
+        }
         if (use_range) {
             Dictionary edit_range;
             edit_range["start_line"] = range_start;

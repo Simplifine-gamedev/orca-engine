@@ -67,14 +67,6 @@ public:
 };
 
 // Forward declarations and structures for diff functionality
-struct MyersDiffEdit {
-	enum Type { EQUAL, DELETE, INSERT };
-	Type type;
-	String text;
-	int original_line;
-	int modified_line;
-};
-
 struct DiffDisplayLine {
 	enum Type { UNCHANGED, ADDED, REMOVED };
 	Type type;
@@ -114,6 +106,7 @@ class ScriptTextEditor : public ScriptEditorBase {
 	PopupMenu *highlighter_menu = nullptr;
 	PopupMenu *context_menu = nullptr;
 
+
 	int inline_color_line = -1;
 	int inline_color_start = -1;
 	int inline_color_end = -1;
@@ -135,36 +128,72 @@ class ScriptTextEditor : public ScriptEditorBase {
 	Color default_line_number_color = Color(1, 1, 1);
 	Color safe_line_number_color = Color(1, 1, 1);
 
-	// Simple diff system - read-only unified diff viewer
-	struct MyersDiffEdit {
-		enum Type { INSERT, DELETE, EQUAL } type = EQUAL;
-		String text;
-		int original_line = 0;
-		int modified_line = 0;
+	// Enhanced diff system with proper unified view and individual hunk controls
+	struct DiffHunk {
+		int start_line = 0;
+		int end_line = 0;
+		Vector<String> original_lines;
+		Vector<String> modified_lines;
+		bool accepted = false;
+		bool rejected = false;
 	};
 	
-	int diff_gutter = -1;  // Keep this for existing gutter code
+	// Line states for smart diff display
+	enum LineState {
+		LINE_STATE_NORMAL,    // Unchanged line
+		LINE_STATE_ADDED,     // Added line (still shown as diff)
+		LINE_STATE_REMOVED,   // Removed line (still shown as diff)
+		LINE_STATE_ACCEPTED   // Accepted change (shown as normal text)
+	};
+	Vector<LineState> line_states;
+	
+	int diff_gutter = -1;
 	String original_content;
 	String modified_content;
 	bool has_pending_diffs = false;
-
+	Vector<DiffHunk> diff_hunks;
+	HashMap<int, int> line_to_hunk_map; // Maps display line to hunk index
+	String inline_diff_text; // Backend-generated inline diff
+	bool has_inline_diff = false;
+	Vector<String> stored_backend_diff_lines; // Original diff lines for color mapping
+	
 	// UI controls
 	Control *diff_toolbar = nullptr;
 	Button *accept_all_button = nullptr;
 	Button *reject_all_button = nullptr;
-
+	HBoxContainer *hunk_buttons_container = nullptr;
+	Vector<Button*> hunk_accept_buttons;
+	Vector<Button*> hunk_reject_buttons;
+	
+	// Current selected hunk for context menu
+	int current_hunk_index = -1;
+	
 	// Core diff functions
 	void _clear_diff_data();
 	void _apply_all_diff_hunks(bool p_accept);
+	void _apply_hunk(int p_hunk_index, bool p_accept);
+
 	void _create_diff_toolbar();
 	void _show_diff_toolbar();
 	void _hide_diff_toolbar();
+	void _create_hunk_buttons();
+	void _update_hunk_button_states();
+	void _on_hunk_accept_pressed(int p_hunk_idx);
+	void _on_hunk_reject_pressed(int p_hunk_idx);
+	void _scroll_to_hunk(int p_hunk_idx);
+	Ref<StyleBoxFlat> _create_hunk_button_style(const Color &p_color);
 	void _show_unified_diff(const String &p_original, const String &p_modified);
+	void _build_diff_hunks(const String &p_original, const String &p_modified);
+	String _generate_unified_diff_text();
+	void _update_diff_display();
 	void _on_accept_all_pressed();
 	void _on_reject_all_pressed();
-
-	// Additional member variables for unified diff view
-	String unified_content;
+	String _generate_smart_diff_text();
+	
+	// Colors for diff display
+	Color diff_added_color = Color(0.1, 0.8, 0.1, 0.28);     // Green for additions
+	Color diff_removed_color = Color(0.9, 0.2, 0.2, 0.28);   // Red for deletions
+	Color diff_hunk_header_color = Color(0.2, 0.6, 1.0, 0.22); // Blue for headers
 
 	Color marked_line_color = Color(1, 1, 1);
 	Color warning_line_color = Color(1, 1, 1);
@@ -221,6 +250,8 @@ class ScriptTextEditor : public ScriptEditorBase {
 		BOOKMARK_GOTO_NEXT,
 		BOOKMARK_GOTO_PREV,
 		BOOKMARK_REMOVE_ALL,
+		EDIT_ACCEPT_HUNK,
+		EDIT_REJECT_HUNK,
 		DEBUG_TOGGLE_BREAKPOINT,
 		DEBUG_REMOVE_ALL_BREAKPOINTS,
 		DEBUG_GOTO_NEXT_BREAKPOINT,
@@ -363,10 +394,13 @@ public:
 	void store_previous_state();
 
 	// Diff system public methods
-	void set_diff(const String &p_original_content, const String &p_modified_content);
+	void set_diff(const String &p_original_content, const String &p_modified_content, const String &p_inline_diff = "");
 	void clear_diff();
 	bool has_diff() const { return has_pending_diffs; }
 	void apply_accepted_diffs();
+	String get_unified_diff_text() const;
+	void accept_all_diffs();
+	void reject_all_diffs();
 
 	ScriptTextEditor();
 	~ScriptTextEditor();

@@ -32,6 +32,28 @@ from auth_manager import AuthManager
 # Load environment variables from .env file
 load_dotenv()
 
+# Configure Vertex AI credentials and settings
+VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')
+VERTEX_AI_LOCATION = os.getenv('VERTEX_AI_LOCATION', 'global')
+VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
+
+# Set up Vertex AI authentication
+if VERTEX_AI_PROJECT:
+    os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
+    os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
+    
+    if VERTEX_AI_CREDENTIALS_PATH:
+        # Use explicit credentials file if provided
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
+        print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
+    else:
+        # Use default GCP authentication (gcloud CLI credentials)
+        print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
+    
+    print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
+else:
+    print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
+
 # --- Global State & Configuration ---
 
 
@@ -125,7 +147,7 @@ else:
 # Base models (always available)
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514"),
+    "claude-4": os.getenv("CLAUDE_MODEL", f"vertex_ai/claude-sonnet-4@20250514"),
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
@@ -3498,6 +3520,140 @@ def generate_script():
             "success": False
         }), 500
 
+def _analyze_gdscript_indentation(file_content: str, edit_prompt: str) -> str:
+    """
+    Analyze GDScript indentation patterns and provide context to help AI preserve structure.
+    This is a dynamic analysis that understands the actual code structure.
+    """
+    lines = file_content.split('\n')
+    indentation_rules = []
+    
+    # Detect base indentation (tabs vs spaces and size)
+    indent_char = None
+    indent_size = 4  # Default for GDScript
+    
+    for line in lines:
+        if line.strip() and line.startswith((' ', '\t')):
+            if line.startswith('\t'):
+                indent_char = '\t'
+                indent_size = 1
+                break
+            elif line.startswith(' '):
+                indent_char = ' '
+                # Count leading spaces
+                spaces = 0
+                for char in line:
+                    if char == ' ':
+                        spaces += 1
+                    else:
+                        break
+                if spaces > 0:
+                    indent_size = spaces
+                    break
+    
+    if not indent_char:
+        indent_char = '\t'  # Default for GDScript
+    
+    # Analyze code structure patterns
+    current_indent_level = 0
+    function_contexts = []
+    class_contexts = []
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+            
+        # Calculate current indentation level
+        leading_whitespace = len(line) - len(line.lstrip())
+        if indent_char == '\t':
+            line_indent_level = leading_whitespace
+        else:
+            line_indent_level = leading_whitespace // indent_size
+        
+        # Track function definitions
+        if stripped.startswith('func '):
+            func_name = stripped.split('(')[0].replace('func ', '')
+            function_contexts.append({
+                'name': func_name,
+                'line': i + 1,
+                'indent_level': line_indent_level,
+                'body_indent': line_indent_level + 1
+            })
+        
+        # Track class definitions  
+        elif stripped.startswith('class '):
+            class_name = stripped.split(':')[0].replace('class ', '')
+            class_contexts.append({
+                'name': class_name,
+                'line': i + 1,
+                'indent_level': line_indent_level,
+                'body_indent': line_indent_level + 1
+            })
+        
+        # Track control structures
+        elif any(stripped.startswith(keyword + ' ') or stripped.startswith(keyword + ':') 
+                for keyword in ['if', 'elif', 'else', 'for', 'while', 'match']):
+            # These increase indentation for their body
+            pass
+    
+    # Build indentation guidance
+    indent_type = 'tabs' if indent_char == '\t' else f'{indent_size} spaces'
+    rules = [
+        f"- Use {indent_type} for indentation",
+        "- GDScript uses indentation to define code blocks (like Python)",
+        "- Function bodies must be indented one level deeper than the function definition",
+        "- Class bodies must be indented one level deeper than the class definition", 
+        "- Control structures (if/for/while) increase indentation by one level for their body",
+        "- Statements at the same logical level should have the same indentation"
+    ]
+    
+    # Add context about existing functions if relevant
+    if function_contexts and any(keyword in edit_prompt.lower() 
+                               for keyword in ['function', 'func', 'method', 'add', 'insert']):
+        rules.append("- Current functions in this file:")
+        for func in function_contexts[-3:]:  # Show last 3 functions for context
+            rules.append(f"  • {func['name']}() at line {func['line']}, body indented to level {func['body_indent']}")
+    
+    # Analyze the specific area being edited if possible
+    if any(keyword in edit_prompt.lower() for keyword in ['line', 'after', 'before', 'around']):
+        # Try to extract line numbers or context from the prompt
+        import re
+        line_numbers = re.findall(r'line\s*(\d+)', edit_prompt.lower())
+        if line_numbers:
+            target_line = int(line_numbers[0]) - 1  # Convert to 0-based
+            if 0 <= target_line < len(lines):
+                target_line_content = lines[target_line].strip()
+                original_line = lines[target_line]
+                target_indent = len(original_line) - len(original_line.lstrip())
+                
+                if indent_char == '\t':
+                    target_level = target_indent
+                    indent_example = '\t' * target_indent
+                else:
+                    target_level = target_indent // indent_size
+                    indent_example = ' ' * target_indent
+                
+                rules.append(f"- Target area context: Line {target_line + 1} ('{target_line_content}') uses indent level {target_level}")
+                rules.append(f"- EXACT indentation for this area: '{indent_example}' ({target_indent} {'tabs' if indent_char == '\\t' else 'spaces'})")
+                rules.append(f"- When modifying this line, preserve the EXACT leading whitespace: '{original_line[:target_indent]}'")
+                rules.append(f"- MANDATORY: Every line you output must start with exactly {target_indent} {'tabs' if indent_char == '\\t' else 'spaces'}")
+                rules.append(f"- COPY this exact indentation: '{repr(original_line[:target_indent])}'")
+                rules.append(f"- New code in this area should match indent level {target_level} or follow the logical structure")
+                
+                # Add context about surrounding lines for better understanding
+                if target_line > 0:
+                    prev_line = lines[target_line - 1]
+                    prev_indent = len(prev_line) - len(prev_line.lstrip())
+                    rules.append(f"- Previous line indent: {prev_indent} {'tabs' if indent_char == '\\t' else 'spaces'}")
+                
+                if target_line < len(lines) - 1:
+                    next_line = lines[target_line + 1]
+                    next_indent = len(next_line) - len(next_line.lstrip())
+                    rules.append(f"- Next line indent: {next_indent} {'tabs' if indent_char == '\\t' else 'spaces'}")
+    
+    return '\n'.join(rules)
+
 @app.route('/predict_code_edit', methods=['POST'])
 def predict_code_edit():
     gate = verify_server_key_if_required()
@@ -3531,14 +3687,23 @@ def predict_code_edit():
         # OPTIMIZATION: Simpler, direct prompts without JSON schemas
         is_range = (lines_mode == 'range') or (start_line > 0 and end_line >= start_line)
         
+        # Analyze indentation for GDScript files FIRST (before building prompts)
+        indentation_context = ""
+        if path and path.endswith('.gd'):
+            indentation_context = _analyze_gdscript_indentation(file_content, prompt)
+            print(f"GDSCRIPT INDENTATION ANALYSIS for {path}:")
+            print(indentation_context)
+        
         # Build a simple, clear prompt
         if is_range:
             # For range edits, provide context about the specific lines
+            indentation_reminder = f"\n\nCRITICAL INDENTATION RULES:\n{indentation_context}" if indentation_context else ""
             full_prompt = (
                 f"Task: {prompt}\n\n"
                 f"Edit the following code segment (lines {start_line}-{end_line}):\n"
                 f"{file_content}\n\n"
-                "Reply with ONLY the edited code for this segment. No explanations or markdown."
+                f"CRITICAL: You must preserve EXACT indentation. Look at the existing lines and match their indentation precisely. Count the tabs/spaces and use exactly the same amount.{indentation_reminder}\n\n"
+                f"Reply with ONLY the edited code for this segment."
             )
         else:
             # For full file edits, provide the complete file
@@ -3553,13 +3718,17 @@ def predict_code_edit():
                     "Reply with ONLY the complete edited file content. No explanations or markdown."
                 )
             else:
+                indentation_reminder = f"\n\nCRITICAL: {indentation_context}" if indentation_context else ""
                 full_prompt = (
                     f"Task: {prompt}\n\n"
                     f"Current file content:\n"
                     f"{file_content}\n\n"
-                    "Reply with ONLY the complete edited file content. No explanations or markdown."
+                    f"IMPORTANT: Reply with the COMPLETE edited file content. You must include ALL original lines plus your changes.{indentation_reminder}\n\n"
+                    "Output format: Just the complete file content, no explanations, no markdown, no truncation."
                 )
 
+        # Indentation context already analyzed above
+        
         # OPTIMIZATION: Add temperature and timeout settings
         # Use claude-4 by default for apply_edit as it's often faster
         model_for_edit = data.get('model', 'claude-4')
@@ -3569,14 +3738,19 @@ def predict_code_edit():
         max_attempts = 5
         while True:
             try:
+                # Enhanced system prompt for GDScript indentation awareness
+                system_prompt = "You are a code editor. Output only edited code, no explanations."
+                if indentation_context:
+                    system_prompt += f"\n\nCRITICAL INDENTATION REQUIREMENTS:\n{indentation_context}\n\nYou MUST preserve exact indentation. Copy the whitespace characters exactly as shown. This is non-negotiable."
+                
                 response = completion(
                     model=get_validated_chat_model(model_for_edit),
                     messages=[
-                        {"role": "system", "content": "You are a code editor. Output only edited code, no explanations."},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": full_prompt}
                     ],
-                    temperature=0.3,  # Lower temperature for more consistent edits
-                    max_tokens=8000   # Reasonable limit while allowing for large edits
+                    temperature=0.2,  # Even lower temperature for precise indentation
+                    max_tokens=16000  # Higher limit to ensure complete file generation
                 )
                 break
             except Exception as e:
@@ -3602,6 +3776,12 @@ def predict_code_edit():
 
         raw = response.choices[0].message.content
         print(f"APPLY_EDIT: Response length: {len(raw)}")
+        print(f"APPLY_EDIT: Raw response preview: {raw[:200]}")
+        
+        # Check if response is suspiciously short for a full file edit
+        if not is_range and len(raw) < len(file_content) * 0.5:
+            print(f"WARNING: AI response ({len(raw)} chars) is much shorter than original file ({len(file_content)} chars)")
+            print(f"This suggests the AI didn't complete the task properly")
 
         # OPTIMIZATION: Simple response cleaning instead of complex JSON parsing
         edited_content = raw.strip()
@@ -3641,7 +3821,7 @@ def predict_code_edit():
             original_full = file_content or ''
             full_edited_content = edited_content
 
-        # Generate diff for user review
+        # Generate both unified diff and inline diff for user review
         diff_lines = list(difflib.unified_diff(
             (original_full or '').splitlines(),
             (full_edited_content or '').splitlines(),
@@ -3650,6 +3830,64 @@ def predict_code_edit():
             lineterm=''
         ))
         diff_text = "\n".join(diff_lines)
+        
+        # Generate inline diff using SequenceMatcher for better quality
+        import difflib
+        original_lines = (original_full or '').splitlines()
+        edited_lines = (full_edited_content or '').splitlines()
+        
+        # Debug: Check for whitespace issues
+        print(f"DIFF DEBUG: Comparing {len(original_lines)} vs {len(edited_lines)} lines")
+        if len(original_lines) > 20 and len(edited_lines) > 20:
+            # Sample a few lines to check for whitespace differences
+            for i in [20, 21, 22, 23, 24]:
+                if i < len(original_lines) and i < len(edited_lines):
+                    if original_lines[i] != edited_lines[i]:
+                        print(f"DIFF DEBUG: Line {i+1} differs:")
+                        print(f"  Original: {repr(original_lines[i])}")
+                        print(f"  Edited:   {repr(edited_lines[i])}")
+        
+        inline_diff_lines = []
+        matcher = difflib.SequenceMatcher(None, original_lines, edited_lines)
+        
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'equal':
+                # Unchanged lines
+                for i in range(i1, i2):
+                    inline_diff_lines.append({"type": "equal", "content": original_lines[i]})
+            elif tag == 'delete':
+                # Lines removed
+                for i in range(i1, i2):
+                    inline_diff_lines.append({"type": "delete", "content": original_lines[i]})
+            elif tag == 'insert':
+                # Lines added
+                for j in range(j1, j2):
+                    inline_diff_lines.append({"type": "insert", "content": edited_lines[j]})
+            elif tag == 'replace':
+                # Lines changed - show as delete + insert
+                for i in range(i1, i2):
+                    inline_diff_lines.append({"type": "delete", "content": original_lines[i]})
+                for j in range(j1, j2):
+                    inline_diff_lines.append({"type": "insert", "content": edited_lines[j]})
+        
+        # Convert inline diff to text format for frontend
+        inline_diff_text = ""
+        for line in inline_diff_lines:
+            if line["type"] == "equal":
+                inline_diff_text += "  " + line["content"] + "\n"
+            elif line["type"] == "delete":
+                inline_diff_text += "- " + line["content"] + "\n"
+            elif line["type"] == "insert":
+                inline_diff_text += "+ " + line["content"] + "\n"
+        
+        # DEBUG: Log the diff generation
+        print(f"PREDICT_CODE_EDIT DIFF: Generated inline_diff_text length: {len(inline_diff_text)}")
+        print(f"PREDICT_CODE_EDIT DIFF: Original lines: {len(original_lines)}, Edited lines: {len(edited_lines)}")
+        print(f"PREDICT_CODE_EDIT DIFF: Diff operations count: {len(inline_diff_lines)}")
+        if inline_diff_text:
+            print(f"PREDICT_CODE_EDIT DIFF: Preview: {inline_diff_text[:300]}")
+        else:
+            print("PREDICT_CODE_EDIT DIFF: WARNING - inline_diff_text is EMPTY!")
 
         return jsonify({
             "success": True,
@@ -3664,6 +3902,8 @@ def predict_code_edit():
             "full_edited_content": full_edited_content,
             "edited_content": full_edited_content,  # For compatibility
             "diff": diff_text,
+            "inline_diff": inline_diff_text,  # New inline diff format
+            "inline_diff_data": inline_diff_lines,  # Structured diff data
             "original_content": original_full  # Include for frontend diff display
         })
         

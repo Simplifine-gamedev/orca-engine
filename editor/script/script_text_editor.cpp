@@ -32,6 +32,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/io/json.h"
+#include "core/io/resource_saver.h"
 #include "core/math/expression.h"
 #include "core/os/keyboard.h"
 #include "editor/debugger/editor_debugger_node.h"
@@ -66,6 +67,8 @@ static Dictionary s_pending_diffs;
 
 // Simple helper to compute diff hunks (line ranges) between original and modified.
 // Returns an array of Dictionaries with keys: mod_start, mod_end, orig_start, orig_end
+// NOTE: Currently unused - keeping for potential future use
+#if 0
 static Vector<Dictionary> _compute_line_hunks(const Vector<String> &original_lines, const Vector<String> &modified_lines) {
     int n = original_lines.size();
     int m = modified_lines.size();
@@ -130,6 +133,7 @@ static Vector<Dictionary> _compute_line_hunks(const Vector<String> &original_lin
     }
     return hunks;
 }
+#endif
 
 void ConnectionInfoDialog::ok_pressed() {
 }
@@ -1685,7 +1689,7 @@ void ScriptTextEditor::_gutter_clicked(int p_line, int p_gutter) {
 				emit_signal(SNAME("go_to_help"), "class_method:" + base_class_split[1] + ":" + method);
 			}
 		}
-    }
+	}
 }
 
 
@@ -1901,6 +1905,16 @@ void ScriptTextEditor::_edit_option(int p_op) {
 		case BOOKMARK_REMOVE_ALL: {
 			code_editor->remove_all_bookmarks();
 		} break;
+		case EDIT_ACCEPT_HUNK: {
+			if (current_hunk_index >= 0 && current_hunk_index < diff_hunks.size()) {
+				_apply_hunk(current_hunk_index, true);
+			}
+		} break;
+		case EDIT_REJECT_HUNK: {
+			if (current_hunk_index >= 0 && current_hunk_index < diff_hunks.size()) {
+				_apply_hunk(current_hunk_index, false);
+			}
+		} break;
 		case DEBUG_TOGGLE_BREAKPOINT: {
 			Vector<int> sorted_carets = tx->get_sorted_carets();
 			int last_line = -1;
@@ -2047,6 +2061,9 @@ void ScriptTextEditor::_change_syntax_highlighter(int p_idx) {
 
 void ScriptTextEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("clear_diff"), &ScriptTextEditor::clear_diff);
+	
+	ADD_SIGNAL(MethodInfo("diff_accepted", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "content")));
+	ADD_SIGNAL(MethodInfo("diff_rejected", PropertyInfo(Variant::STRING, "path")));
 }
 
 void ScriptTextEditor::_notification(int p_what) {
@@ -2403,6 +2420,59 @@ void ScriptTextEditor::_text_edit_gui_input(const Ref<InputEvent> &ev) {
 		Point2i pos = tx->get_line_column_at_pos(local_pos);
 		int mouse_line = pos.y;
 		int mouse_column = pos.x;
+		
+		// Check if we're in diff mode and clicking on a diff line
+		if (has_pending_diffs && mouse_line >= 0 && mouse_line < line_states.size()) {
+			LineState state = line_states[mouse_line];
+			if (state == LINE_STATE_ADDED || state == LINE_STATE_REMOVED) {
+				// Find which hunk this line belongs to
+				int hunk_idx = -1;
+				
+				// First, we need to map display line to the original diff line
+				int diff_line = -1;
+				int current_display_line = 0;
+				
+				for (int i = 0; i < stored_backend_diff_lines.size(); i++) {
+					if (current_display_line == mouse_line) {
+						diff_line = i;
+						break;
+					}
+					
+					// Check if this line would be displayed
+					String line = stored_backend_diff_lines[i];
+					bool skip = false;
+					if (line_to_hunk_map.has(i)) {
+						int h_idx = line_to_hunk_map[i];
+						if (h_idx >= 0 && h_idx < diff_hunks.size() && diff_hunks[h_idx].accepted && line.begins_with("- ")) {
+							skip = true; // Skip removed lines in accepted hunks
+						}
+					}
+					if (!skip) {
+						current_display_line++;
+					}
+				}
+				
+				// Now find the hunk for this diff line
+				if (diff_line >= 0 && line_to_hunk_map.has(diff_line)) {
+					hunk_idx = line_to_hunk_map[diff_line];
+				}
+				
+				// Show hunk context menu if hunk is undecided
+				if (hunk_idx >= 0 && hunk_idx < diff_hunks.size() && !diff_hunks[hunk_idx].accepted && !diff_hunks[hunk_idx].rejected) {
+					print_line("Right-click on diff line " + itos(mouse_line) + " (diff line " + itos(diff_line) + "), hunk " + itos(hunk_idx));
+					context_menu->clear();
+					context_menu->add_item("Accept this hunk", EDIT_ACCEPT_HUNK);
+					context_menu->add_item("Reject this hunk", EDIT_REJECT_HUNK);
+					current_hunk_index = hunk_idx;
+					
+					Point2 global_pos = tx->get_global_transform().xform(local_pos);
+					context_menu->set_position(global_pos);
+					context_menu->reset_size();
+					context_menu->popup();
+					return;
+				}
+			}
+		}
 
 		tx->set_move_caret_on_right_click_enabled(EDITOR_GET("text_editor/behavior/navigation/move_caret_on_right_click"));
 		int selection_clicked = -1;
@@ -2756,6 +2826,11 @@ void ScriptTextEditor::_enable_code_editor() {
 }
 
 ScriptTextEditor::ScriptTextEditor() {
+	// Initialize diff colors
+	diff_added_color = Color(0.1, 0.8, 0.1, 0.28);     // Green
+	diff_removed_color = Color(0.9, 0.2, 0.2, 0.28);   // Red
+	diff_hunk_header_color = Color(0.2, 0.6, 1.0, 0.22); // Blue
+	
 	code_editor = memnew(CodeTextEditor);
 	code_editor->set_toggle_list_control(ScriptEditor::get_singleton()->get_left_list_split());
 	code_editor->add_theme_constant_override("separation", 2);
@@ -2776,16 +2851,17 @@ ScriptTextEditor::ScriptTextEditor() {
 	code_editor->get_text_editor()->set_gutter_overwritable(connection_gutter, true);
 	code_editor->get_text_editor()->set_gutter_type(connection_gutter, TextEdit::GUTTER_TYPE_ICON);
 
-	// Add diff gutter
+	// Add diff gutter (for line markers)
 	diff_gutter = code_editor->get_text_editor()->get_gutter_count();
 	code_editor->get_text_editor()->add_gutter(diff_gutter);
 	code_editor->get_text_editor()->set_gutter_name(diff_gutter, "diff_gutter");
-	    // Hide the diff gutter and collapse its width since per-hunk actions were removed.
 	    code_editor->get_text_editor()->set_gutter_draw(diff_gutter, false);
 	code_editor->get_text_editor()->set_gutter_overwritable(diff_gutter, false);
 	code_editor->get_text_editor()->set_gutter_type(diff_gutter, TextEdit::GUTTER_TYPE_STRING);
 	code_editor->get_text_editor()->set_gutter_clickable(diff_gutter, false);
 	    code_editor->get_text_editor()->set_gutter_width(diff_gutter, 0);
+	
+	// We'll use right-click context menu instead of gutters for individual hunks
 
 	warnings_panel = memnew(RichTextLabel);
 	warnings_panel->set_custom_minimum_size(Size2(0, 100 * EDSCALE));
@@ -2845,6 +2921,8 @@ ScriptTextEditor::ScriptTextEditor() {
 
 	bookmarks_menu = memnew(PopupMenu);
 	breakpoints_menu = memnew(PopupMenu);
+	
+
 
 	inline_color_popup = memnew(PopupPanel);
 	add_child(inline_color_popup);
@@ -2968,162 +3046,41 @@ void ScriptTextEditor::validate() {
 	code_editor->validate_script();
 }
 
-// Simple Myers O(ND) Diff Algorithm Implementation
-class MyersDiff {
-private:
-	Vector<String> original_lines;
-	Vector<String> modified_lines;
-	
-	struct Point {
-		int x, y;
-		Point(int x = 0, int y = 0) : x(x), y(y) {}
-		Point operator+(const Point& other) const { return Point(x + other.x, y + other.y); }
-	};
-	
-	Vector<MyersDiffEdit> compute_diff() {
-		int N = original_lines.size();
-		int M = modified_lines.size();
-		
-		// Handle edge cases
-		if (N == 0 && M == 0) {
-			return Vector<MyersDiffEdit>();
-		}
-		
-		if (N == 0) {
-			// All insertions
-			Vector<MyersDiffEdit> result_diff;
-			for (int i = 0; i < M; i++) {
-				MyersDiffEdit edit;
-				edit.type = MyersDiffEdit::INSERT;
-				edit.text = modified_lines[i];
-				edit.original_line = 0;
-				edit.modified_line = i;
-				result_diff.push_back(edit);
-			}
-			return result_diff;
-		}
-		
-		if (M == 0) {
-			// All deletions
-			Vector<MyersDiffEdit> result_diff;
-			for (int i = 0; i < N; i++) {
-				MyersDiffEdit edit;
-				edit.type = MyersDiffEdit::DELETE;
-				edit.text = original_lines[i];
-				edit.original_line = i;
-				edit.modified_line = 0;
-				result_diff.push_back(edit);
-			}
-			return result_diff;
-		}
-		
-		int max_d = N + M;
-		
-		// V array for the algorithm
-		Vector<int> V;
-		V.resize(2 * max_d + 1);
-		for (int i = 0; i < V.size(); i++) {
-			V.write[i] = -1;
-		}
-		V.write[max_d + 1] = 0;
-		
-		// Find the shortest edit script
-		Vector<Vector<int>> trace;
-		
-		for (int d = 0; d <= max_d; d++) {
-			Vector<int> v_copy = V;
-			trace.push_back(v_copy);
-			
-			for (int k = -d; k <= d; k += 2) {
-				int x;
-				if (k == -d || (k != d && V[max_d + k - 1] < V[max_d + k + 1])) {
-					x = V[max_d + k + 1];
-				} else {
-					x = V[max_d + k - 1] + 1;
-				}
-				
-				int y = x - k;
-				
-				while (x < N && y < M && original_lines[x] == modified_lines[y]) {
-					x++;
-					y++;
-				}
-				
-				V.write[max_d + k] = x;
-				
-				if (x >= N && y >= M) {
-					// Found the solution, now backtrack
-					Vector<MyersDiffEdit> result_diff;
-					
-					x = N;
-					y = M;
-					
-					for (int trace_d = d; trace_d >= 0; trace_d--) {
-						const Vector<int> &v = trace[trace_d];
-						int k = x - y;
-						
-						int prev_k;
-						if (k == -trace_d || (k != trace_d && v[max_d + k - 1] < v[max_d + k + 1])) {
-							prev_k = k + 1;
-						} else {
-							prev_k = k - 1;
-						}
-						
-						int prev_x = (trace_d > 0) ? v[max_d + prev_k] : 0;
-						int prev_y = prev_x - prev_k;
-						
-						while (x > prev_x && y > prev_y) {
-							x--;
-							y--;
-						}
-						
-						if (trace_d > 0) {
-							if (x > prev_x) {
-								MyersDiffEdit edit;
-								edit.type = MyersDiffEdit::DELETE;
-								edit.text = original_lines[x - 1];
-								edit.original_line = x - 1;
-								edit.modified_line = y;
-								result_diff.push_back(edit);
-								x = prev_x;
-							} else if (y > prev_y) {
-								MyersDiffEdit edit;
-								edit.type = MyersDiffEdit::INSERT;
-								edit.text = modified_lines[y - 1];
-								edit.original_line = x;
-								edit.modified_line = y;
-								result_diff.push_back(edit);
-								y = prev_y;
-							}
-						}
-					}
-					
-					// Reverse the diff since we built it backwards
-					result_diff.reverse();
-					return result_diff;
-				}
-			}
-		}
-		
-		// Fallback - should not happen
-		return Vector<MyersDiffEdit>();
-	}
-	
-public:
-	Vector<MyersDiffEdit> diff(const Vector<String>& orig, const Vector<String>& mod) {
-		original_lines = orig;
-		modified_lines = mod;
-		return compute_diff();
-	}
-};
+// Removed MyersDiff implementation - using simpler approach
 
-// Simple unified diff viewer - no live editing, just static comparison
-void ScriptTextEditor::set_diff(const String &p_original_content, const String &p_modified_content) {
+// Enhanced unified diff viewer with individual hunk controls
+void ScriptTextEditor::set_diff(const String &p_original_content, const String &p_modified_content, const String &p_inline_diff) {
+	print_line("=== SET_DIFF CALLED ===");
+	print_line("Original content length: " + itos(p_original_content.length()));
+	print_line("Modified content length: " + itos(p_modified_content.length()));
+	print_line("Has inline diff: " + String(p_inline_diff.is_empty() ? "NO" : "YES"));
+	if (!p_inline_diff.is_empty()) {
+		print_line("Inline diff length: " + itos(p_inline_diff.length()));
+		print_line("Inline diff preview: " + p_inline_diff.left(200).replace("\n", "\\n") + "...");
+	}
+	
+	// Check for diff markers in input
+	if (p_original_content.contains("+ ") || p_original_content.contains("- ")) {
+		print_line("WARNING: Original content contains diff markers!");
+	}
+	if (p_modified_content.contains("+ ") || p_modified_content.contains("- ")) {
+		print_line("WARNING: Modified content contains diff markers!");
+	}
+	
 	_clear_diff_data();
-    // Normalize line endings to avoid false positives where entire file appears changed.
+	// Only normalize line endings, don't strip edges as that changes the content
     original_content = p_original_content.replace("\r\n", "\n");
     modified_content = p_modified_content.replace("\r\n", "\n");
-    // Track pending diff for this script path so focus changes don't lose the preview
+	inline_diff_text = p_inline_diff.replace("\r\n", "\n");
+	has_inline_diff = !p_inline_diff.is_empty();
+	
+	print_line("SET_DIFF: has_inline_diff = " + String(has_inline_diff ? "true" : "false"));
+	print_line("SET_DIFF: inline_diff_text length = " + itos(inline_diff_text.length()));
+	if (has_inline_diff) {
+		print_line("SET_DIFF: inline_diff_text preview: " + inline_diff_text.left(500).replace("\n", "\\n"));
+	}
+	
+	// Track pending diff for this script path
     if (script.is_valid()) {
         s_pending_diff_path = script->get_path();
         Dictionary snap;
@@ -3133,180 +3090,556 @@ void ScriptTextEditor::set_diff(const String &p_original_content, const String &
     }
 
 	if (original_content == modified_content) {
+		print_line("Content is identical after normalization!");
 		return;
 	}
+	
+	// Check what's different
+	Vector<String> orig_lines = original_content.split("\n");
+	Vector<String> mod_lines = modified_content.split("\n");
+	print_line("Original lines: " + itos(orig_lines.size()));
+	print_line("Modified lines: " + itos(mod_lines.size()));
+	
+	// Sample a few lines to see differences
+	int samples = MIN(5, MIN(orig_lines.size(), mod_lines.size()));
+	for (int i = 0; i < samples; i++) {
+		if (i < orig_lines.size() && i < mod_lines.size()) {
+			if (orig_lines[i] != mod_lines[i]) {
+				print_line("Line " + itos(i) + " differs:");
+				print_line("  Orig: '" + orig_lines[i] + "'");
+				print_line("  Mod:  '" + mod_lines[i] + "'");
+			}
+		}
+	}
 
-    _show_unified_diff(original_content, modified_content);
+	// Build diff hunks and display unified diff
+	_build_diff_hunks(original_content, modified_content);
+	_update_diff_display();
     _show_diff_toolbar();
 	has_pending_diffs = true;
 }
 
-void ScriptTextEditor::_show_unified_diff(const String &p_original, const String &p_modified) {
-    // Robust line-based diff using dtl (Myers) so small insertions show as pure additions.
-    Vector<String> original_lines = p_original.split("\n");
-    Vector<String> modified_lines = p_modified.split("\n");
+void ScriptTextEditor::_build_diff_hunks(const String &p_original, const String &p_modified) {
+	diff_hunks.clear();
+	line_to_hunk_map.clear();
+	
+	// If we have inline diff from backend, build hunks based on that
+	if (has_inline_diff && !inline_diff_text.is_empty()) {
+		Vector<String> diff_lines = inline_diff_text.split("\n");
+		
+		// Identify contiguous blocks of changes as separate hunks
+		int current_hunk_start = -1;
+		int current_hunk_end = -1;
+		int context_count = 0;
+		
+		for (int i = 0; i < diff_lines.size(); i++) {
+			String line = diff_lines[i];
+			bool is_change = line.begins_with("+ ") || line.begins_with("- ");
+			
+			if (is_change) {
+				if (current_hunk_start == -1) {
+					// Starting a new hunk
+					current_hunk_start = i;
+					current_hunk_end = i;
+					context_count = 0;
+				} else if (context_count > 0 && context_count < 3) {
+					// Continue current hunk after some context lines
+					current_hunk_end = i;
+					context_count = 0;
+				} else if (context_count >= 3) {
+					// Too many context lines, finish previous hunk and start new one
+					DiffHunk hunk;
+					hunk.start_line = current_hunk_start;
+					hunk.end_line = current_hunk_end;
+					hunk.accepted = false;
+					hunk.rejected = false;
+					diff_hunks.push_back(hunk);
+					print_line("Created hunk " + itos(diff_hunks.size() - 1) + " from line " + itos(hunk.start_line) + " to " + itos(hunk.end_line));
+					
+					// Start new hunk
+					current_hunk_start = i;
+					current_hunk_end = i;
+					context_count = 0;
+				} else {
+					// Continue current hunk
+					current_hunk_end = i;
+				}
+			} else {
+				// Context line or unchanged line
+				if (current_hunk_start != -1) {
+					context_count++;
+				}
+			}
+		}
+		
+		// Handle any remaining hunk
+		if (current_hunk_start != -1) {
+			DiffHunk hunk;
+			hunk.start_line = current_hunk_start;
+			hunk.end_line = current_hunk_end;
+			hunk.accepted = false;
+			hunk.rejected = false;
+			diff_hunks.push_back(hunk);
+			print_line("Created final hunk " + itos(diff_hunks.size() - 1) + " from line " + itos(hunk.start_line) + " to " + itos(hunk.end_line));
+		}
+		
+		// Build line_to_hunk_map
+		for (int hunk_idx = 0; hunk_idx < diff_hunks.size(); hunk_idx++) {
+			const DiffHunk &hunk = diff_hunks[hunk_idx];
+			for (int line = hunk.start_line; line <= hunk.end_line; line++) {
+				if (line < diff_lines.size()) {
+					String line_text = diff_lines[line];
+					// Map all change lines (+ and -) to their hunk
+					if (line_text.begins_with("+ ") || line_text.begins_with("- ")) {
+						line_to_hunk_map[line] = hunk_idx;
+						print_line("Mapped line " + itos(line) + " to hunk " + itos(hunk_idx));
+					}
+				}
+			}
+		}
+		
+		print_line("Built " + itos(diff_hunks.size()) + " diff hunks from inline diff, mapped " + itos(line_to_hunk_map.size()) + " lines");
+	} else {
+		// Fallback to original logic
+		Vector<String> original_lines = p_original.split("\n");
+		Vector<String> modified_lines = p_modified.split("\n");
 
-    CodeEdit *te = code_editor->get_text_editor();
-    te->set_text(p_modified);
-    te->set_editable(false);
-
-    for (int li = 0; li < te->get_line_count(); li++) {
-        te->set_line_background_color(li, Color(0, 0, 0, 0));
-    }
-
-    // LCS dynamic programming to classify operations precisely
-    int n = original_lines.size();
-    int m = modified_lines.size();
-    std::vector<std::vector<int>> dp(n + 1, std::vector<int>(m + 1, 0));
-    for (int i = 1; i <= n; i++) {
-        for (int j = 1; j <= m; j++) {
-            if (original_lines[i - 1] == modified_lines[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
-            } else {
-                dp[i][j] = dp[i - 1][j] > dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1];
-            }
-        }
-    }
-
-    const Color added_color = Color(0.1, 0.8, 0.1, 0.28);
-    const Color deleted_context = Color(0.9, 0.2, 0.2, 0.28);
-    const Color changed_color = Color(0.2, 0.6, 1.0, 0.22);
-
-    // Backtrack and mark lines in modified buffer only
-    int i = n, j = m;
-    while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && original_lines[i - 1] == modified_lines[j - 1]) {
-            i--; j--; // common
-        } else if (j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-            // insertion in modified at line j-1
-            if (j - 1 < te->get_line_count()) {
-                te->set_line_background_color(j - 1, added_color);
-            }
-            j--;
-        } else if (i > 0 && (j == 0 || dp[i][j - 1] < dp[i - 1][j])) {
-            // deletion from original at line i-1 -> hint on the corresponding modified index only
-            // Do NOT fall back to last line; that incorrectly paints EOF insertions as deletions.
-            if (j < te->get_line_count()) {
-                te->set_line_background_color(j, deleted_context);
-            }
-            i--;
-        }
-    }
-
-    // Mark changed lines where both sides differ around anchors (heuristic)
-    int overlap = MIN(n, m);
-    for (int k = 0; k < overlap; k++) {
-        if (original_lines[k] != modified_lines[k]) {
-            if (k < te->get_line_count()) {
-                Color current = te->get_line_background_color(k);
-                if (current == Color(0, 0, 0, 0)) {
-                    te->set_line_background_color(k, changed_color);
-                }
-            }
-        }
-    }
-
+		// For now, create a single hunk encompassing all changes
+		// This is simpler and works better with our line-by-line diff
+		if (original_lines.size() > 0 || modified_lines.size() > 0) {
+			DiffHunk hunk;
+			hunk.start_line = 0;
+			hunk.end_line = MAX(original_lines.size(), modified_lines.size());
+			hunk.accepted = false;
+			hunk.rejected = false;
+			diff_hunks.push_back(hunk);
+		}
+	}
 }
 
-void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
-	print_line("ScriptTextEditor::_apply_all_diff_hunks called with accept=" + String(p_accept ? "true" : "false"));
+String ScriptTextEditor::_generate_unified_diff_text() {
+	// Debug: Check what we're diffing
+	print_line("=== GENERATING DIFF ===");
+	print_line("Original content lines: " + itos(original_content.split("\n").size()));
+	print_line("Modified content lines: " + itos(modified_content.split("\n").size()));
 	
+	// First, let's see if the content is actually different
+	if (original_content == modified_content) {
+		print_line("Content is identical!");
+		return "";
+	}
+	
+	// Check if we have cached inline diff from backend
+	if (has_inline_diff && !inline_diff_text.is_empty()) {
+		print_line("Using inline diff from backend");
+		print_line("Inline diff length: " + itos(inline_diff_text.length()));
+		print_line("Inline diff preview: " + inline_diff_text.left(300).replace("\n", "\\n"));
+		
+		// Convert backend diff to clean display format (remove +, -, and space prefixes)
+		Vector<String> diff_lines = inline_diff_text.split("\n");
+		String clean_diff_text = "";
+		// Don't clear line_to_hunk_map - it was already properly built in _build_diff_hunks
+		
+		for (int i = 0; i < diff_lines.size(); i++) {
+			String line = diff_lines[i];
+			if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+				// Remove the diff prefix but keep track of the line type for coloring
+				String clean_line = line.substr(2);
+				clean_diff_text += clean_line + "\n";
+				
+				// Don't overwrite the hunk mapping here - it's already done in _build_diff_hunks
+			} else {
+				// Line without prefix, keep as-is
+				clean_diff_text += line + "\n";
+			}
+		}
+		
+		// Remove trailing newline
+		if (clean_diff_text.ends_with("\n")) {
+			clean_diff_text = clean_diff_text.substr(0, clean_diff_text.length() - 1);
+		}
+		
+		// Store the original diff for color mapping
+		stored_backend_diff_lines = diff_lines;
+		
+		return clean_diff_text;
+	}
+	
+	// Fallback to simple line-by-line diff if no backend diff available
+	print_line("WARNING: No backend diff available, using simple fallback");
+	Vector<String> original_lines = original_content.split("\n");
+	Vector<String> modified_lines = modified_content.split("\n");
+
+	String diff_text;
+	line_to_hunk_map.clear();
+	int display_line_num = 0;
+
+	int max_lines = MAX(original_lines.size(), modified_lines.size());
+	for (int i = 0; i < max_lines; i++) {
+		if (i < original_lines.size() && i < modified_lines.size()) {
+			if (original_lines[i] == modified_lines[i]) {
+				diff_text += "  " + original_lines[i] + "\n";
+			} else {
+				// Show as changed
+				diff_text += "- " + original_lines[i] + "\n";
+				diff_text += "+ " + modified_lines[i] + "\n";
+				line_to_hunk_map[display_line_num] = 0;
+				line_to_hunk_map[display_line_num + 1] = 0;
+				display_line_num++;
+			}
+		} else if (i < original_lines.size()) {
+			// Deleted line
+			diff_text += "- " + original_lines[i] + "\n";
+			line_to_hunk_map[display_line_num] = 0;
+		} else {
+			// Added line
+			diff_text += "+ " + modified_lines[i] + "\n";
+			line_to_hunk_map[display_line_num] = 0;
+		}
+		display_line_num++;
+	}
+
+	return diff_text;
+}
+
+String ScriptTextEditor::_generate_smart_diff_text() {
+	// Generate a diff where accepted hunks are shown as normal text
+	if (!has_inline_diff || inline_diff_text.is_empty()) {
+		return _generate_unified_diff_text(); // Fallback to regular diff
+	}
+	
+	Vector<String> diff_lines = inline_diff_text.split("\n");
+	String result_text;
+	line_states.clear();
+	
+	for (int i = 0; i < diff_lines.size(); i++) {
+		String line = diff_lines[i];
+		
+		// Check if this line belongs to an accepted hunk
+		bool is_accepted = false;
+		if (line_to_hunk_map.has(i)) {
+			int hunk_idx = line_to_hunk_map[i];
+			if (hunk_idx >= 0 && hunk_idx < diff_hunks.size()) {
+				is_accepted = diff_hunks[hunk_idx].accepted;
+			}
+		}
+		
+		if (is_accepted) {
+			// For accepted hunks, show only the new content without diff markers
+			if (line.begins_with("+ ")) {
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_ACCEPTED);
+			} else if (line.begins_with("- ")) {
+				// Skip removed lines in accepted hunks
+				continue;
+			} else {
+				// Context line
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_NORMAL);
+			}
+		} else {
+			// For non-accepted hunks, show as diff
+			if (line.begins_with("+ ")) {
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_ADDED);
+			} else if (line.begins_with("- ")) {
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_REMOVED);
+			} else {
+				// Context line
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_NORMAL);
+			}
+		}
+	}
+	
+	return result_text;
+}
+
+void ScriptTextEditor::_update_diff_display() {
 	CodeEdit *te = code_editor->get_text_editor();
 	
-	// Re-enable editing
-	te->set_editable(true);
+	// Store current scroll position and caret
+	int current_scroll = te->get_v_scroll();
+	int current_line = te->get_caret_line();
+	int current_column = te->get_caret_column();
 	
-	if (p_accept) {
-		// Apply the modified content (without the header comments)
-		te->set_text(modified_content);
-		// Persist to disk immediately so the editor reflects accepted changes
-		apply_code();
-	} else {
-		// Revert to the original content
-		te->set_text(original_content);
-		// Save the revert so on re-open it matches the old version
-		apply_code();
-		
-		// Clear the preview overlay since we've rejected the changes
-		if (script.is_valid()) {
-			String path = script->get_path();
-			EditorTools::clear_preview_overlay(path);
-			
-			// Use AI chat dock singleton to notify it
-			AIChatDock *ai_chat = AIChatDock::get_singleton();
-			if (ai_chat) {
-				print_line("ScriptTextEditor: Found AI Chat dock singleton, calling _handle_apply_edit_rejected");
-				ai_chat->_handle_apply_edit_rejected(path);
-			} else {
-				print_line("ScriptTextEditor: AI Chat dock singleton not available");
+	// Temporarily disable script validation while showing diff
+	bool old_script_valid = script_is_valid;
+	script_is_valid = true; // Prevent validation from running
+	
+	// Generate and display the smart diff
+	String diff_text = _generate_smart_diff_text();
+	if (diff_text.is_empty()) {
+		te->set_text("No differences found.");
+		te->set_editable(false);
+		script_is_valid = old_script_valid;
+		return;
+	}
+	
+	te->set_text(diff_text);
+	te->set_editable(false);
+	
+	// Clear any existing errors/warnings since we're showing a diff, not actual code
+	errors.clear();
+	warnings.clear();
+	code_editor->set_error_count(0);
+	code_editor->set_warning_count(0);
+	
+	// Clear all background colors first
+	for (int i = 0; i < te->get_line_count(); i++) {
+		te->set_line_background_color(i, Color(0, 0, 0, 0));
+	}
+	
+	// Apply colors based on line states
+	diff_added_color = Color(0.1, 0.8, 0.1, 0.28);     // Green
+	diff_removed_color = Color(0.9, 0.2, 0.2, 0.28);   // Red
+	
+	// Color the lines based on their state
+	for (int i = 0; i < te->get_line_count(); i++) {
+		if (i < line_states.size()) {
+			LineState state = line_states[i];
+			switch (state) {
+				case LINE_STATE_ADDED:
+					te->set_line_background_color(i, diff_added_color);
+					break;
+				case LINE_STATE_REMOVED:
+					te->set_line_background_color(i, diff_removed_color);
+					break;
+				case LINE_STATE_ACCEPTED:
+				case LINE_STATE_NORMAL:
+					// No coloring for accepted or normal lines
+					break;
 			}
 		}
 	}
 	
-	// CRITICAL: Clear GDScript cache and force save to disk
-	if (script.is_valid() && script->get_path().get_extension() == "gd") {
-		GDScriptCache::remove_script(script->get_path());
-		
-		// Save the script to disk
-		EditorNode::get_singleton()->save_resource(script);
-		
-		// Force reload
-		script->reload(true);
-		
-		// Trigger live reload
-		ScriptEditor::get_singleton()->trigger_live_script_reload(script->get_path());
+	// Restore script validation state
+	script_is_valid = old_script_valid;
+	
+	// Restore scroll position and caret
+	te->set_v_scroll(current_scroll);
+	if (current_line < te->get_line_count()) {
+		te->set_caret_line(current_line);
+		te->set_caret_column(MIN(current_column, te->get_line(current_line).length()));
+	}
+}
+
+
+
+void ScriptTextEditor::_show_unified_diff(const String &p_original, const String &p_modified) {
+	// This function is now replaced by _build_diff_hunks and _update_diff_display
+	_build_diff_hunks(p_original, p_modified);
+	_update_diff_display();
+}
+
+void ScriptTextEditor::_apply_hunk(int p_hunk_index, bool p_accept) {
+	if (p_hunk_index < 0 || p_hunk_index >= diff_hunks.size()) {
+		return;
 	}
 	
-	// Notify about the diff acceptance/rejection
-	print_line("ScriptTextEditor: Checking script validity and accept status");
-	print_line("  - script.is_valid(): " + String(script.is_valid() ? "true" : "false"));
-	print_line("  - p_accept: " + String(p_accept ? "true" : "false"));
+	// Mark the hunk as accepted or rejected
+	diff_hunks.write[p_hunk_index].accepted = p_accept;
+	diff_hunks.write[p_hunk_index].rejected = !p_accept;
 	
+	print_line("Hunk " + itos(p_hunk_index) + " marked as " + (p_accept ? "accepted" : "rejected"));
+	
+	// Check if all hunks have been decided
+	bool all_decided = true;
+	for (const DiffHunk &h : diff_hunks) {
+		if (!h.accepted && !h.rejected) {
+			all_decided = false;
+			break;
+		}
+	}
+	
+	if (all_decided) {
+		// Apply all decisions
+		print_line("All hunks decided, applying changes");
+		_apply_all_diff_hunks(true);
+	} else {
+		// Update display to show the decision
+		_update_diff_display();
+		// Update button states
+		_update_hunk_button_states();
+	}
+}
+
+// Removed old hunk action implementation - will use new approach
+
+void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
+	CodeEdit *te = code_editor->get_text_editor();
+
+	// Build the final content based on individual hunk decisions
+	String final_content;
+	
+	// Check if we have individual hunk decisions
+	bool has_individual_decisions = false;
+	bool any_hunks_accepted = false;
+	bool all_hunks_rejected = true;
+	
+	for (const DiffHunk &hunk : diff_hunks) {
+		if (hunk.accepted || hunk.rejected) {
+			has_individual_decisions = true;
+		}
+		if (hunk.accepted) {
+			any_hunks_accepted = true;
+			all_hunks_rejected = false;
+		}
+		if (!hunk.rejected) {
+			all_hunks_rejected = false;
+		}
+	}
+	
+	if (!p_accept) {
+		// Rejecting all changes - use original content
+		final_content = original_content;
+		print_line("Using original content (rejecting all)");
+	} else if (!has_individual_decisions || !has_inline_diff) {
+		// No individual decisions made or no inline diff - accept all changes
+		// Use modified_content which is the clean final content from backend
+		final_content = modified_content;
+		print_line("Using modified content (accepting all, no individual decisions)");
+	} else if (all_hunks_rejected) {
+		// All hunks individually rejected
+		final_content = original_content;
+		print_line("Using original content (all hunks rejected)");
+	} else {
+		// Apply individual hunk decisions
+		// We need to build the final content by processing the diff line by line
+		if (has_inline_diff && !inline_diff_text.is_empty()) {
+			Vector<String> diff_lines = inline_diff_text.split("\n");
+			String result;
+			
+			// Track which lines belong to which hunks
+			HashMap<int, int> line_to_hunk;
+			for (int h = 0; h < diff_hunks.size(); h++) {
+				for (int l = diff_hunks[h].start_line; l <= diff_hunks[h].end_line; l++) {
+					line_to_hunk[l] = h;
+				}
+			}
+			
+			// Process each line based on hunk decisions
+			for (int i = 0; i < diff_lines.size(); i++) {
+				String line = diff_lines[i];
+				
+				if (line.begins_with("+ ")) {
+					// Addition line
+					if (line_to_hunk.has(i)) {
+						int hunk_idx = line_to_hunk[i];
+						if (hunk_idx >= 0 && hunk_idx < diff_hunks.size()) {
+							if (diff_hunks[hunk_idx].accepted) {
+								// Include the addition (remove the "+ " prefix)
+								result += line.substr(2) + "\n";
+							}
+							// If rejected, don't include it
+						}
+					}
+				} else if (line.begins_with("- ")) {
+					// Deletion line
+					if (line_to_hunk.has(i)) {
+						int hunk_idx = line_to_hunk[i];
+						if (hunk_idx >= 0 && hunk_idx < diff_hunks.size()) {
+							if (diff_hunks[hunk_idx].rejected) {
+								// Keep the original line (remove the "- " prefix)
+								result += line.substr(2) + "\n";
+							}
+							// If accepted, don't include it (it's deleted)
+						}
+					}
+				} else if (line.begins_with("  ")) {
+					// Context line (unchanged)
+					result += line.substr(2) + "\n";
+				} else {
+					// Handle lines without proper diff markers
+					// This could be header lines or malformed diff
+					if (!line.begins_with("@@") && !line.begins_with("---") && !line.begins_with("+++")) {
+						// Include as-is if it's actual content
+						result += line + "\n";
+					}
+				}
+			}
+			
+			// Remove trailing newline
+			if (result.ends_with("\n")) {
+				result = result.substr(0, result.length() - 1);
+			}
+			
+			final_content = result;
+		} else {
+			// Fallback: use modified content if we can't process hunks individually
+			final_content = modified_content;
+		}
+	}
+	
+	// CRITICAL: Ensure we NEVER apply content with diff markers
+	print_line("=== CHECKING FINAL CONTENT ===");
+	print_line("p_accept = " + String(p_accept ? "true" : "false"));
+	print_line("any_hunks_accepted = " + String(any_hunks_accepted ? "true" : "false"));
+	print_line("has_individual_decisions = " + String(has_individual_decisions ? "true" : "false"));
+	
+	// Clean any remaining diff markers from final content
+	if (final_content.contains("\n+ ") || final_content.contains("\n- ") || 
+	    final_content.begins_with("+ ") || final_content.begins_with("- ")) {
+		print_line("WARNING: final_content still has diff markers! Cleaning...");
+		Vector<String> lines = final_content.split("\n");
+		String cleaned;
+		for (const String &line : lines) {
+			if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+				cleaned += line.substr(2) + "\n";
+			} else {
+				cleaned += line + "\n";
+			}
+		}
+		if (cleaned.ends_with("\n")) {
+			cleaned = cleaned.substr(0, cleaned.length() - 1);
+		}
+		final_content = cleaned;
+	}
+	
+	print_line("Final content preview: " + final_content.left(200) + "...");
+	print_line("=== END CHECKING ===");
+
+	// Always clear the diff state and UI first.
+	_clear_diff_data();
+
+	// Now, apply the final content (clean, without diff markers)
+	te->set_text(final_content);
+	apply_code();
+
+	// Save the file after applying changes
 	if (script.is_valid()) {
 		String path = script->get_path();
-		print_line("  - script path: " + path);
 		
-		if (p_accept) {
-			print_line("ScriptTextEditor: Diff accepted for " + path);
+		if (any_hunks_accepted) {
+			// At least some changes were accepted - save and emit accepted signal
+			ResourceSaver::save(script, path);
+			print_line("Saved script after accepting some/all changes: " + path);
 			
-			// Clear the preview overlay since we've accepted the changes
+			// Emit signal that diff was accepted (with final applied content)
+			emit_signal("diff_accepted", path, final_content);
+		} else {
+			// All changes were rejected - clear overlay and emit rejected signal
 			EditorTools::clear_preview_overlay(path);
+			print_line("All changes rejected for: " + path);
 			
-			// Use AI chat dock singleton to notify it
-			AIChatDock *ai_chat = AIChatDock::get_singleton();
-			if (ai_chat) {
-				print_line("ScriptTextEditor: Found AI Chat dock singleton, calling _handle_apply_edit_accepted");
-				ai_chat->_handle_apply_edit_accepted(path, te->get_text());
-			} else {
-				print_line("ScriptTextEditor: AI Chat dock singleton not available");
-			}
-			
-			// Also emit the signal for future compatibility
-			ScriptEditor *se = ScriptEditor::get_singleton();
-			if (se) {
-				se->emit_signal("script_saved", path);
-			}
+			// Emit signal that diff was rejected
+			emit_signal("diff_rejected", path);
 		}
 	}
-	
-	// Mark the current buffer as up to date and reset undo history
-	te->clear_undo_history();
-	te->tag_saved_version();
-
-	// Clear diff UI and cached snapshot on completion
-	if (script.is_valid()) {
-		String path_snap = script->get_path();
-		if (s_pending_diffs.has(path_snap)) {
-			s_pending_diffs.erase(path_snap);
-		}
-	}
-	_clear_diff_data();
 }
 
 void ScriptTextEditor::_clear_diff_data() {
+	print_line("_clear_diff_data called!");
 	original_content = "";
 	modified_content = "";
 	has_pending_diffs = false;
+	diff_hunks.clear();
+	line_to_hunk_map.clear();
+	inline_diff_text = "";
+	has_inline_diff = false;
+	stored_backend_diff_lines.clear();
+	
 	// Clear cached snapshot for last-diff path if present, then reset
 	if (!s_pending_diff_path.is_empty() && s_pending_diffs.has(s_pending_diff_path)) {
 		s_pending_diffs.erase(s_pending_diff_path);
@@ -3319,13 +3652,62 @@ void ScriptTextEditor::_clear_diff_data() {
 		te->set_editable(true);
 		for (int i = 0; i < te->get_line_count(); i++) {
 			te->set_line_background_color(i, Color(0, 0, 0, 0));
+			
 		}
+
 	}
 	_hide_diff_toolbar();
 }
 
 void ScriptTextEditor::clear_diff() {
 	_clear_diff_data();
+}
+
+String ScriptTextEditor::get_unified_diff_text() const {
+	if (!has_pending_diffs || original_content.is_empty() || modified_content.is_empty()) {
+		return "";
+	}
+	
+	// Create a const version of the diff generation for external use
+	Vector<String> original_lines = original_content.split("\n");
+	Vector<String> modified_lines = modified_content.split("\n");
+	
+	// Use same dtl approach as in _generate_unified_diff_text
+	std::vector<std::string> orig_vec;
+	std::vector<std::string> mod_vec;
+	
+	for (const String &line : original_lines) {
+		orig_vec.push_back(line.utf8().get_data());
+	}
+	for (const String &line : modified_lines) {
+		mod_vec.push_back(line.utf8().get_data());
+	}
+	
+	// Use dtl SES format directly
+	dtl::Diff<std::string> diff(orig_vec, mod_vec);
+	diff.compose();
+	
+	String diff_text;
+	auto ses = diff.getSes();
+	auto seq = ses.getSequence();
+	
+	for (const auto &elem : seq) {
+		String content = String::utf8(elem.first.c_str());
+		
+		switch (elem.second.type) {
+			case dtl::SES_ADD:
+				diff_text += "+ " + content + "\n";
+				break;
+			case dtl::SES_DELETE:
+				diff_text += "- " + content + "\n";
+				break;
+			case dtl::SES_COMMON:
+				diff_text += "  " + content + "\n";
+				break;
+		}
+	}
+	
+	return diff_text;
 }
 
 void ScriptTextEditor::_create_diff_toolbar() {
@@ -3338,30 +3720,62 @@ void ScriptTextEditor::_create_diff_toolbar() {
 
 	HBoxContainer *toolbar_hbox = memnew(HBoxContainer);
 	toolbar_hbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	toolbar_hbox->set_custom_minimum_size(Size2(0, 32));
-	toolbar_hbox->add_spacer();
+	toolbar_hbox->set_custom_minimum_size(Size2(0, 36));
+	toolbar_hbox->add_theme_constant_override("separation", 12);
 
+	// Info section
 	Label *label = memnew(Label);
-	label->set_text("AI Code Changes Preview (Read-Only):");
+	label->set_text("Unified Diff View:");
 	label->add_theme_color_override("font_color", Color(0.8, 0.8, 0.8));
 	toolbar_hbox->add_child(label);
 
+	Label *instructions = memnew(Label);
+	instructions->set_text("Use buttons below to accept/reject individual hunks:");
+	instructions->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+	instructions->add_theme_font_size_override("font_size", 12);
+	toolbar_hbox->add_child(instructions);
+
 	toolbar_hbox->add_spacer();
 
+	// Color legend
+	HBoxContainer *legend = memnew(HBoxContainer);
+	legend->add_theme_constant_override("separation", 8);
+	
+	Label *added_label = memnew(Label);
+	added_label->set_text("+ Added");
+	added_label->add_theme_color_override("font_color", diff_added_color * 2.0);
+	legend->add_child(added_label);
+	
+	Label *removed_label = memnew(Label);
+	removed_label->set_text("- Removed");
+	removed_label->add_theme_color_override("font_color", diff_removed_color * 2.0);
+	legend->add_child(removed_label);
+	
+	toolbar_hbox->add_child(legend);
+	toolbar_hbox->add_spacer();
+
+	// Action buttons
 	accept_all_button = memnew(Button);
 	accept_all_button->set_text("Accept All");
 	accept_all_button->add_theme_color_override("font_color", Color(0.2, 0.8, 0.2));
+	accept_all_button->set_tooltip_text("Accept all changes and save the file");
 	accept_all_button->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_accept_all_pressed));
 	toolbar_hbox->add_child(accept_all_button);
 
 	reject_all_button = memnew(Button);
 	reject_all_button->set_text("Reject All");
 	reject_all_button->add_theme_color_override("font_color", Color(0.8, 0.2, 0.2));
+	reject_all_button->set_tooltip_text("Reject all changes and keep original");
 	reject_all_button->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_reject_all_pressed));
 	toolbar_hbox->add_child(reject_all_button);
 
-	toolbar_hbox->add_spacer();
 	toolbar_panel->add_child(toolbar_hbox);
+	
+	// Create hunk buttons container (will be populated when hunks are built)
+	hunk_buttons_container = memnew(HBoxContainer);
+	hunk_buttons_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_buttons_container->add_theme_constant_override("separation", 8);
+	toolbar_panel->add_child(hunk_buttons_container);
 
 	VSplitContainer *editor_box = nullptr;
 	for (int i = 0; i < get_child_count(); i++) {
@@ -3384,6 +3798,7 @@ void ScriptTextEditor::_create_diff_toolbar() {
 
 void ScriptTextEditor::_show_diff_toolbar() {
 	_create_diff_toolbar();
+	_create_hunk_buttons();
 	if (diff_toolbar) {
 		diff_toolbar->set_visible(true);
 	}
@@ -3395,12 +3810,280 @@ void ScriptTextEditor::_hide_diff_toolbar() {
 	}
 }
 
+void ScriptTextEditor::_create_hunk_buttons() {
+	if (!hunk_buttons_container) {
+		return;
+	}
+	
+	// Clear existing buttons
+	for (Button *btn : hunk_accept_buttons) {
+		if (btn) {
+			btn->queue_free();
+		}
+	}
+	for (Button *btn : hunk_reject_buttons) {
+		if (btn) {
+			btn->queue_free();
+		}
+	}
+	hunk_accept_buttons.clear();
+	hunk_reject_buttons.clear();
+	
+	// Clear container
+	for (int i = hunk_buttons_container->get_child_count() - 1; i >= 0; i--) {
+		Node *child = hunk_buttons_container->get_child(i);
+		hunk_buttons_container->remove_child(child);
+		child->queue_free();
+	}
+	
+	if (diff_hunks.size() == 0) {
+		return;
+	}
+	
+	Label *hunk_label = memnew(Label);
+	hunk_label->set_text("Individual Hunks:");
+	hunk_label->add_theme_color_override("font_color", Color(0.8, 0.8, 0.8));
+	hunk_buttons_container->add_child(hunk_label);
+	
+	// Create buttons for each hunk
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		VBoxContainer *hunk_group = memnew(VBoxContainer);
+		hunk_group->add_theme_constant_override("separation", 2);
+		
+		Label *hunk_number = memnew(Label);
+		hunk_number->set_text("Hunk " + itos(i + 1));
+		hunk_number->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+		hunk_number->add_theme_font_size_override("font_size", 10);
+		hunk_number->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		hunk_group->add_child(hunk_number);
+		
+		HBoxContainer *button_pair = memnew(HBoxContainer);
+		button_pair->add_theme_constant_override("separation", 4);
+		
+		Button *accept_btn = memnew(Button);
+		accept_btn->set_text("A");
+		accept_btn->set_tooltip_text("Accept hunk " + itos(i + 1) + " • Click to view location");
+		accept_btn->add_theme_color_override("font_color", Color(1.0, 1.0, 1.0));
+		accept_btn->add_theme_color_override("font_color_hover", Color(1.0, 1.0, 1.0));
+		accept_btn->add_theme_color_override("font_color_pressed", Color(1.0, 1.0, 1.0));
+		accept_btn->add_theme_color_override("font_color_disabled", Color(1.0, 1.0, 1.0));
+		accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.2, 0.8, 0.2, 0.8)));
+		accept_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.3, 0.9, 0.3, 0.9)));
+		accept_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.1, 0.7, 0.1, 1.0)));
+		accept_btn->set_custom_minimum_size(Size2(28, 28));
+		accept_btn->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_hunk_accept_pressed).bind(i));
+		button_pair->add_child(accept_btn);
+		hunk_accept_buttons.push_back(accept_btn);
+		
+		Button *reject_btn = memnew(Button);
+		reject_btn->set_text("D");
+		reject_btn->set_tooltip_text("Reject hunk " + itos(i + 1) + " • Click to view location");
+		reject_btn->add_theme_color_override("font_color", Color(1.0, 1.0, 1.0));
+		reject_btn->add_theme_color_override("font_color_hover", Color(1.0, 1.0, 1.0));
+		reject_btn->add_theme_color_override("font_color_pressed", Color(1.0, 1.0, 1.0));
+		reject_btn->add_theme_color_override("font_color_disabled", Color(1.0, 1.0, 1.0));
+		reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.8, 0.2, 0.2, 0.8)));
+		reject_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.9, 0.3, 0.3, 0.9)));
+		reject_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.7, 0.1, 0.1, 1.0)));
+		reject_btn->set_custom_minimum_size(Size2(28, 28));
+		reject_btn->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_hunk_reject_pressed).bind(i));
+		button_pair->add_child(reject_btn);
+		hunk_reject_buttons.push_back(reject_btn);
+		
+		hunk_group->add_child(button_pair);
+		hunk_buttons_container->add_child(hunk_group);
+		
+	}
+	
+	// Update button states based on hunk status
+	_update_hunk_button_states();
+}
+
+void ScriptTextEditor::_update_hunk_button_states() {
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		if (i < hunk_accept_buttons.size() && i < hunk_reject_buttons.size()) {
+			Button *accept_btn = hunk_accept_buttons[i];
+			Button *reject_btn = hunk_reject_buttons[i];
+			
+			if (diff_hunks[i].accepted) {
+				// Hunk accepted - bright green accept button, dimmed reject button
+				accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.3, 1.0, 0.3, 1.0)));
+				accept_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.3, 1.0, 0.3, 1.0)));
+				accept_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.3, 1.0, 0.3, 1.0)));
+				accept_btn->add_theme_style_override("disabled", _create_hunk_button_style(Color(0.3, 1.0, 0.3, 1.0)));
+				
+				reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				reject_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				reject_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				reject_btn->add_theme_style_override("disabled", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				
+				// Keep them enabled so they can be clicked to view the hunk
+				accept_btn->set_disabled(false);
+				reject_btn->set_disabled(false);
+			} else if (diff_hunks[i].rejected) {
+				// Hunk rejected - bright red reject button, dimmed accept button
+				accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				accept_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				accept_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				accept_btn->add_theme_style_override("disabled", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				
+				reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(1.0, 0.3, 0.3, 1.0)));
+				reject_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(1.0, 0.3, 0.3, 1.0)));
+				reject_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(1.0, 0.3, 0.3, 1.0)));
+				reject_btn->add_theme_style_override("disabled", _create_hunk_button_style(Color(1.0, 0.3, 0.3, 1.0)));
+				
+				// Keep them enabled so they can be clicked to view the hunk
+				accept_btn->set_disabled(false);
+				reject_btn->set_disabled(false);
+			} else {
+				// Hunk undecided - normal state
+				accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.2, 0.8, 0.2, 0.8)));
+				accept_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.3, 0.9, 0.3, 0.9)));
+				accept_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.1, 0.7, 0.1, 1.0)));
+				
+				reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.8, 0.2, 0.2, 0.8)));
+				reject_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.9, 0.3, 0.3, 0.9)));
+				reject_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.7, 0.1, 0.1, 1.0)));
+				
+				accept_btn->set_disabled(false);
+				reject_btn->set_disabled(false);
+			}
+		}
+	}
+}
+
+Ref<StyleBoxFlat> ScriptTextEditor::_create_hunk_button_style(const Color &p_color) {
+	Ref<StyleBoxFlat> style = memnew(StyleBoxFlat);
+	style->set_bg_color(p_color);
+	style->set_corner_radius_all(4);
+	style->set_border_width_all(1);
+	style->set_border_color(p_color * 1.2);
+	return style;
+}
+
+void ScriptTextEditor::_scroll_to_hunk(int p_hunk_idx) {
+	if (p_hunk_idx < 0 || p_hunk_idx >= diff_hunks.size()) {
+		return;
+	}
+	
+	CodeEdit *te = code_editor->get_text_editor();
+	if (!te) {
+		return;
+	}
+	
+	// Find the display line for this hunk
+	int display_line = -1;
+	int current_display_line = 0;
+	
+	// Map from diff line to display line
+	for (int i = 0; i < stored_backend_diff_lines.size(); i++) {
+		if (line_to_hunk_map.has(i) && line_to_hunk_map[i] == p_hunk_idx) {
+			display_line = current_display_line;
+			break;
+		}
+		
+		// Check if this line would be displayed
+		String line = stored_backend_diff_lines[i];
+		bool skip = false;
+		if (line_to_hunk_map.has(i)) {
+			int h_idx = line_to_hunk_map[i];
+			if (h_idx >= 0 && h_idx < diff_hunks.size() && diff_hunks[h_idx].accepted && line.begins_with("- ")) {
+				skip = true; // Skip removed lines in accepted hunks
+			}
+		}
+		if (!skip) {
+			current_display_line++;
+		}
+	}
+	
+	if (display_line >= 0) {
+		// Scroll to the hunk
+		te->set_caret_line(display_line);
+		te->center_viewport_to_caret();
+		print_line("Scrolled to hunk " + itos(p_hunk_idx) + " at display line " + itos(display_line));
+	}
+}
+
+void ScriptTextEditor::_on_hunk_accept_pressed(int p_hunk_idx) {
+	print_line("Accept hunk " + itos(p_hunk_idx) + " pressed");
+	_scroll_to_hunk(p_hunk_idx);
+	
+	// Only apply the decision if the hunk is undecided
+	if (!diff_hunks[p_hunk_idx].accepted && !diff_hunks[p_hunk_idx].rejected) {
+		_apply_hunk(p_hunk_idx, true);
+	}
+}
+
+void ScriptTextEditor::_on_hunk_reject_pressed(int p_hunk_idx) {
+	print_line("Reject hunk " + itos(p_hunk_idx) + " pressed");
+	_scroll_to_hunk(p_hunk_idx);
+	
+	// Only apply the decision if the hunk is undecided
+	if (!diff_hunks[p_hunk_idx].accepted && !diff_hunks[p_hunk_idx].rejected) {
+		_apply_hunk(p_hunk_idx, false);
+	}
+}
+
 void ScriptTextEditor::_on_accept_all_pressed() {
-	_apply_all_diff_hunks(true);
+	print_line("ScriptTextEditor::_on_accept_all_pressed called (from button)!");
+	// Accept all undecided hunks
+	bool any_changed = false;
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		if (!diff_hunks[i].accepted && !diff_hunks[i].rejected) {
+			diff_hunks.write[i].accepted = true;
+			diff_hunks.write[i].rejected = false;
+			any_changed = true;
+		}
+	}
+	
+	if (any_changed) {
+		// Apply all hunks with their current states
+		_apply_all_diff_hunks(true);
+	} else {
+		// All hunks already decided, just apply them
+		_apply_all_diff_hunks(true);
+	}
 }
 
 void ScriptTextEditor::_on_reject_all_pressed() {
-	_apply_all_diff_hunks(false);
+	print_line("ScriptTextEditor::_on_reject_all_pressed called (from button)!");
+	// Reject all undecided hunks
+	bool any_changed = false;
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		if (!diff_hunks[i].accepted && !diff_hunks[i].rejected) {
+			diff_hunks.write[i].accepted = false;
+			diff_hunks.write[i].rejected = true;
+			any_changed = true;
+		}
+	}
+	
+	if (any_changed) {
+		// Apply all hunks with their current states (rejecting)
+		_apply_all_diff_hunks(false);
+	} else {
+		// All hunks already decided, just apply them (rejecting)
+		_apply_all_diff_hunks(false);
+	}
+}
+
+void ScriptTextEditor::accept_all_diffs() {
+	print_line("ScriptTextEditor: accept_all_diffs called (from AI chat dock)");
+	print_line("  has_pending_diffs: " + itos(has_pending_diffs));
+	print_line("  diff_hunks count: " + itos(diff_hunks.size()));
+	if (has_pending_diffs) {
+		// Don't modify individual hunk states when called from AI chat dock
+		// Just apply all changes
+		_apply_all_diff_hunks(true);
+	}
+}
+
+void ScriptTextEditor::reject_all_diffs() {
+	print_line("ScriptTextEditor: reject_all_diffs called");
+	if (has_pending_diffs) {
+		// Don't modify individual hunk states when called from AI chat dock
+		// Just reject all changes
+		_apply_all_diff_hunks(false);
+	}
 }
 
 //
