@@ -5117,5 +5117,5 @@ if __name__ == '__main__':
         print("3D_GENERATION: Disabled (configure MODEL_3D_* environment variables to enable)")
     
     # Local dev only; in production use Gunicorn (configured in Dockerfile)
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port, debug=False)
