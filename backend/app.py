@@ -130,11 +130,27 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     return pruned_messages
 
 app = Flask(__name__)
+
+# Add request logging for debugging
+@app.before_request
+def log_request_info():
+    print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+
 # Secret must be stable across restarts in production. Require env in production, random only in DEV_MODE.
 _dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
 DEPLOYMENT_MODE = os.getenv('DEPLOYMENT_MODE', 'oss').lower()  # 'oss' or 'cloud'
 REQUIRE_SERVER_API_KEY = os.getenv('REQUIRE_SERVER_API_KEY', 'false').lower() == 'true'
 SERVER_API_KEY = os.getenv('SERVER_API_KEY')
+
+# Optional 3D Model Generation Service Integration
+# Only enabled when all required environment variables are set
+MODEL_3D_SERVICE_URL = os.getenv('MODEL_3D_SERVICE_URL')
+MODEL_3D_SECRET_KEY = os.getenv('MODEL_3D_SECRET_KEY')  
+MODEL_3D_ENABLED = (
+    os.getenv('MODEL_3D_ENABLED', 'false').lower() == 'true' and
+    MODEL_3D_SERVICE_URL and 
+    MODEL_3D_SECRET_KEY
+)
 _secret_env = os.getenv('FLASK_SECRET_KEY')
 if _secret_env:
     app.secret_key = _secret_env
@@ -3635,9 +3651,10 @@ def _analyze_gdscript_indentation(file_content: str, edit_prompt: str) -> str:
                     indent_example = ' ' * target_indent
                 
                 rules.append(f"- Target area context: Line {target_line + 1} ('{target_line_content}') uses indent level {target_level}")
-                rules.append(f"- EXACT indentation for this area: '{indent_example}' ({target_indent} {'tabs' if indent_char == '\\t' else 'spaces'})")
+                indent_type = 'tabs' if indent_char == '\t' else 'spaces'
+                rules.append(f"- EXACT indentation for this area: '{indent_example}' ({target_indent} {indent_type})")
                 rules.append(f"- When modifying this line, preserve the EXACT leading whitespace: '{original_line[:target_indent]}'")
-                rules.append(f"- MANDATORY: Every line you output must start with exactly {target_indent} {'tabs' if indent_char == '\\t' else 'spaces'}")
+                rules.append(f"- MANDATORY: Every line you output must start with exactly {target_indent} {indent_type}")
                 rules.append(f"- COPY this exact indentation: '{repr(original_line[:target_indent])}'")
                 rules.append(f"- New code in this area should match indent level {target_level} or follow the logical structure")
                 
@@ -3645,12 +3662,14 @@ def _analyze_gdscript_indentation(file_content: str, edit_prompt: str) -> str:
                 if target_line > 0:
                     prev_line = lines[target_line - 1]
                     prev_indent = len(prev_line) - len(prev_line.lstrip())
-                    rules.append(f"- Previous line indent: {prev_indent} {'tabs' if indent_char == '\\t' else 'spaces'}")
+                    prev_indent_type = 'tabs' if indent_char == '\t' else 'spaces'
+                    rules.append(f"- Previous line indent: {prev_indent} {prev_indent_type}")
                 
                 if target_line < len(lines) - 1:
                     next_line = lines[target_line + 1]
                     next_indent = len(next_line) - len(next_line.lstrip())
-                    rules.append(f"- Next line indent: {next_indent} {'tabs' if indent_char == '\\t' else 'spaces'}")
+                    next_indent_type = 'tabs' if indent_char == '\t' else 'spaces'
+                    rules.append(f"- Next line indent: {next_indent} {next_indent_type}")
     
     return '\n'.join(rules)
 
@@ -4923,7 +4942,180 @@ def search_docs():
             'error': str(e)
         }), 500
 
+# --- Optional 3D Model Generation Endpoints ---
+# Only available when properly configured via environment variables
+
+def _forward_to_3d_service(endpoint: str, method: str = 'GET', **kwargs):
+    """Helper to forward requests to 3D model service with authentication"""
+    if not MODEL_3D_ENABLED:
+        return jsonify({
+            'error': '3D model generation not available',
+            'message': 'Service not configured. Contact administrator.',
+            'available': False
+        }), 503
+    
+    try:
+        url = f"{MODEL_3D_SERVICE_URL}/{endpoint.lstrip('/')}"
+        headers = kwargs.get('headers', {})
+        headers['Authorization'] = f'Bearer {MODEL_3D_SECRET_KEY}'
+        headers['X-Forwarded-For'] = request.environ.get('REMOTE_ADDR', 'unknown')
+        headers['User-Agent'] = 'Godot-AI-Backend/1.0'
+        
+        kwargs['headers'] = headers
+        kwargs['timeout'] = kwargs.get('timeout', 60)
+        
+        if method.upper() == 'POST':
+            response = requests.post(url, **kwargs)
+        else:
+            response = requests.get(url, **kwargs)
+            
+        # Filter headers to avoid conflicts
+        safe_headers = {}
+        for key, value in response.headers.items():
+            if key.lower() not in ['content-length', 'content-encoding', 'transfer-encoding', 'connection']:
+                safe_headers[key] = value
+        
+        return Response(
+            response.content,
+            status=response.status_code,
+            headers=safe_headers,
+            mimetype=response.headers.get('content-type', 'application/json')
+        )
+        
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            'error': '3D service unavailable',
+            'message': 'Failed to connect to 3D model generation service',
+            'available': False
+        }), 502
+
+@app.route('/api/3d/health', methods=['GET'])
+def model_3d_health():
+    """Check 3D model generation service availability"""
+    print("DEBUG: /api/3d/health endpoint hit!")
+    if not MODEL_3D_ENABLED:
+        return jsonify({
+            'available': False,
+            'message': '3D model generation not configured',
+            'config_required': ['MODEL_3D_SERVICE_URL', 'MODEL_3D_SECRET_KEY', 'MODEL_3D_ENABLED=true']
+        })
+    
+    return _forward_to_3d_service('health')
+
+@app.route('/api/3d/generate/text', methods=['POST'])
+def generate_3d_from_text():
+    """Generate 3D model from text prompt"""
+    print("DEBUG: /api/3d/generate/text endpoint hit!")
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    if not MODEL_3D_ENABLED:
+        return jsonify({
+            'error': '3D model generation not available',
+            'message': 'Service not configured'
+        }), 503
+    
+    try:
+        data = request.json or {}
+        if not data.get('prompt'):
+            return jsonify({'error': 'Prompt is required'}), 400
+        
+        # Add user_id based on IP (as expected by Point-E service)
+        user_ip = request.environ.get('REMOTE_ADDR', 'unknown')
+        data['user_id'] = f"user_{user_ip.replace('.', '_')}"
+        
+        return _forward_to_3d_service(
+            'generate/text',
+            method='POST',
+            json=data,
+            headers={'Content-Type': 'application/json'}
+        )
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Generation failed',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/3d/generate/image', methods=['POST'])
+def generate_3d_from_image():
+    """Generate 3D model from image"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    if not MODEL_3D_ENABLED:
+        return jsonify({
+            'error': '3D model generation not available',
+            'message': 'Service not configured'
+        }), 503
+    
+    try:
+        if 'image' not in request.files:
+            return jsonify({'error': 'Image file is required'}), 400
+        
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'error': 'No image file selected'}), 400
+        
+        # Validate file size (max 10MB)
+        file.seek(0, 2)  # Seek to end
+        size = file.tell()
+        file.seek(0)  # Reset to beginning
+        
+        if size > 10 * 1024 * 1024:  # 10MB
+            return jsonify({'error': 'Image file too large (max 10MB)'}), 413
+        
+        # Forward multipart data
+        files = {'image': (file.filename, file, file.content_type)}
+        
+        # Add user_id based on IP (as expected by Point-E service)
+        user_ip = request.environ.get('REMOTE_ADDR', 'unknown')
+        data = {'user_id': f"user_{user_ip.replace('.', '_')}"}
+        
+        return _forward_to_3d_service(
+            'generate/image',
+            method='POST',
+            files=files,
+            data=data
+        )
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Generation failed',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/3d/download/<path:filename>', methods=['GET'])
+def download_3d_model(filename: str):
+    """Download generated 3D model file"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    return _forward_to_3d_service(f'download/{filename}')
+
+@app.route('/api/3d/models/<user_id>', methods=['GET'])
+def list_user_3d_models(user_id: str):
+    """List 3D models for a user"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    # Basic authorization - users can only see their own models
+    if hasattr(g, 'user_id') and g.user_id != user_id:
+        return jsonify({'error': 'Access denied'}), 403
+    
+    return _forward_to_3d_service(f'models/{user_id}')
+
 if __name__ == '__main__':
+    # Print 3D service status on startup
+    if MODEL_3D_ENABLED:
+        print(f"3D_GENERATION: Enabled, forwarding to {MODEL_3D_SERVICE_URL}")
+    else:
+        print("3D_GENERATION: Disabled (configure MODEL_3D_* environment variables to enable)")
+    
     # Local dev only; in production use Gunicorn (configured in Dockerfile)
-    port = int(os.environ.get('PORT', 8000))
+    port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)

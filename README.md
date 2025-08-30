@@ -43,6 +43,7 @@ The integrated chatbot has access to comprehensive tools for Godot development:
 #### Visual Content Creation
 - **Image Generation**: Create new images from text descriptions with various art styles
 - **Image Editing**: Modify existing images using AI-powered editing
+- **3D Model Generation**: Generate 3D models from text prompts or images (when configured)
 - **Asset Management**: Save generated images to specific project paths
 - **Style Consistency**: Maintain visual coherence across generated assets
 
