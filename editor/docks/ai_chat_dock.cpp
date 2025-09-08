@@ -718,6 +718,23 @@ void AIChatDock::_notification(int p_notification) {
 				}
 				// Always perform a final synchronous save
 				_save_conversations();
+
+				// Stop background timers to avoid pending callbacks during shutdown
+				if (embedding_poll_timer) embedding_poll_timer->stop();
+				if (embedding_status_timer) embedding_status_timer->stop();
+				if (status_notification_timer) status_notification_timer->stop();
+				if (login_poll_timer) login_poll_timer->stop();
+
+				// Cancel any outstanding HTTP requests
+				if (embedding_request) { embedding_request->cancel_request(); }
+				if (auth_request) { auth_request->cancel_request(); }
+				if (auth_providers_request) { auth_providers_request->cancel_request(); }
+
+				// Stop tool server thread to prevent hang on quit
+				if (tool_server.is_valid() && tool_server->is_listening()) {
+					tool_server->stop();
+				}
+				tool_server.unref();
 			} break;
 		case NOTIFICATION_THEME_CHANGED: {
 			// Theme updates handled automatically
