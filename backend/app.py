@@ -4,6 +4,7 @@ Personal Non‑Commercial License applies. Commercial use requires a separate li
 See LICENSES/COMPANY-NONCOMMERCIAL.md.
 """
 from flask import Flask, request, Response, jsonify, redirect, session, stream_with_context, g
+from flask_cors import CORS
 import openai
 from litellm import completion
 import litellm
@@ -28,6 +29,9 @@ try:
 except Exception:
     LocalVectorManager = None
 from auth_manager import AuthManager
+
+# app = Flask(__name__)
+# CORS(app)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -131,6 +135,9 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
 
 app = Flask(__name__)
 
+# Configure CORS for development and production
+CORS(app, origins=["*"])
+
 # Add request logging for debugging
 @app.before_request
 def log_request_info():
@@ -146,11 +153,14 @@ SERVER_API_KEY = os.getenv('SERVER_API_KEY')
 # Only enabled when all required environment variables are set
 MODEL_3D_SERVICE_URL = os.getenv('MODEL_3D_SERVICE_URL')
 MODEL_3D_SECRET_KEY = os.getenv('MODEL_3D_SECRET_KEY')  
-MODEL_3D_ENABLED = (
-    os.getenv('MODEL_3D_ENABLED', 'false').lower() == 'true' and
+_model_3d_enabled_env = os.getenv('MODEL_3D_ENABLED', 'false').lower()
+print(f"DEBUG ENV: MODEL_3D_ENABLED={_model_3d_enabled_env}, MODEL_3D_SERVICE_URL={MODEL_3D_SERVICE_URL}, MODEL_3D_SECRET_KEY={'[SET]' if MODEL_3D_SECRET_KEY else '[NOT SET]'}")
+MODEL_3D_ENABLED = bool(
+    _model_3d_enabled_env == 'true' and
     MODEL_3D_SERVICE_URL and 
     MODEL_3D_SECRET_KEY
 )
+print(f"DEBUG RESULT: MODEL_3D_ENABLED={MODEL_3D_ENABLED}")
 _secret_env = os.getenv('FLASK_SECRET_KEY')
 if _secret_env:
     app.secret_key = _secret_env
@@ -1517,6 +1527,100 @@ def get_runtime_errors_detailed_internal(arguments: dict) -> dict:
         "note": "This tool provides filtered error details with options for grouping duplicates and searching by message content."
     }
 
+def generate_3d_model_internal(arguments: dict) -> dict:
+    """Generate a 3D model from text prompt using the AI 3D service"""
+    try:
+        prompt = arguments.get('prompt', '')
+        if not prompt:
+            return {"success": False, "error": "Prompt is required for 3D model generation"}
+        
+        model = arguments.get('model', 'fast')
+        save_path = arguments.get('save_path', '')
+        
+        print(f"3D_GENERATION: Generating model for prompt: '{prompt}' using model: {model}")
+        
+
+        # 3D Generation API endpoint - use local server for development
+        if os.getenv('DEV_MODE', 'false').lower() == 'true':
+            api_url = "http://127.0.0.1:3030/api/generate-3d"
+            base_3d_url = "http://127.0.0.1:3030"
+        else:
+            api_url = "https://ai-3d-proxy-976792908107.us-central1.run.app/api/generate-3d"
+            base_3d_url = "https://ai-3d-proxy-976792908107.us-central1.run.app"
+        
+        # Generate unique user ID for tracking
+        user_id = f"godot_user_{hashlib.md5(prompt.encode()).hexdigest()[:8]}"
+        
+        # Prepare request payload
+        payload = {
+            "user_id": user_id,
+            "prompt": prompt,
+            "model": model,
+            "output_format": "glb"
+        }
+        
+        print(f"3D_GENERATION: Sending request to {api_url}")
+        
+        # Make request to 3D generation service
+        response = requests.post(api_url, json=payload, timeout=120)  # 2 minute timeout for 3D generation
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if not result.get('success', False):
+            error_msg = result.get('error', 'Unknown error from 3D service')
+            print(f"3D_GENERATION_ERROR: {error_msg}")
+            return {"success": False, "error": f"3D generation failed: {error_msg}"}
+        
+        job_id = result.get('job_id', '')
+        download_url = result.get('download_url', '')
+        generation_time = result.get('generation_time', 0)
+        model_used = result.get('model', model)
+        
+        if not download_url:
+            return {"success": False, "error": "3D service did not provide download URL"}
+        
+        # Construct full download URL if it's relative
+        if download_url.startswith('/'):
+            full_download_url = base_3d_url + download_url
+        else:
+            full_download_url = download_url
+        
+        print(f"3D_GENERATION: Model generated successfully - Job ID: {job_id}, Download URL: {full_download_url}")
+        
+        # Download the GLB file
+        print(f"3D_GENERATION: Downloading GLB file from {full_download_url}")
+        glb_response = requests.get(full_download_url, timeout=60)
+        glb_response.raise_for_status()
+        
+        if len(glb_response.content) == 0:
+            return {"success": False, "error": "Downloaded GLB file is empty"}
+        
+        # Convert to base64 for transmission to frontend
+        glb_base64 = base64.b64encode(glb_response.content).decode('utf-8')
+        
+        result_data = {
+            "success": True,
+            "prompt": prompt,
+            "model": model_used,
+            "generation_time": generation_time,
+            "job_id": job_id,
+            "download_url": download_url,
+            "glb_data": glb_base64,
+            "file_size": len(glb_response.content),
+            "format": "glb"
+        }
+        
+        if save_path:
+            result_data["save_path"] = save_path
+        
+        print(f"3D_GENERATION: Successfully generated 3D model - Size: {len(glb_response.content)} bytes")
+        return result_data
+        
+    except Exception as e:
+        print(f"3D_GENERATION_ERROR: {str(e)}")
+        return {"success": False, "error": f"3D model generation failed: {str(e)}"}
+
 # --- Note: Script generation now handled by dedicated /generate_script endpoint ---
 
 # --- Tool Execution Function ---
@@ -1534,6 +1638,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return search_godot_assets_internal(arguments)
     elif function_name == "install_godot_asset":
         return install_godot_asset_internal(arguments)
+    elif function_name == "generate_3d_model":
+        return generate_3d_model_internal(arguments)
     # Note: Game testing tools (start_game, stop_game, etc.) are frontend-only and not executed in backend
     else:
         # This shouldn't happen if we filter correctly
@@ -1801,10 +1907,39 @@ godot_tools = [
                     },
                     "parent_node": {
                         "type": "string",
-                        "description": "Parent node for instantiate operations"
+                        "description": "Parent node path for instantiate operations"
+                    },
+                    "instance_name": {
+                        "type": "string",
+                        "description": "Name for the instantiated scene (optional)"
                     }
                 },
                 "required": ["operation"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_and_assign_resource",
+            "description": "Load a resource (mesh, texture, material, etc.) from file and assign it to a node property",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resource_path": {
+                        "type": "string",
+                        "description": "Path to the resource file (e.g., 'res://models/sword.glb', 'res://textures/wood.png')"
+                    },
+                    "node_path": {
+                        "type": "string",
+                        "description": "Path to the target node"
+                    },
+                    "property": {
+                        "type": "string",
+                        "description": "Property name to assign the resource to (e.g., 'mesh', 'texture', 'material')"
+                    }
+                },
+                "required": ["resource_path", "node_path", "property"]
             }
         }
     },
@@ -2352,7 +2487,34 @@ godot_tools = [
                 "required": []
             }
         }
-    }
+    },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "generate_3d_model",
+    #         "description": "Generate a 3D model from a text description. Creates a GLB file that can be imported into Godot.",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "prompt": {
+    #                     "type": "string",
+    #                     "description": "Text description of the 3D model to generate (e.g., 'a low-poly tree', 'a simple spaceship', 'a medieval sword')"
+    #                 },
+    #                 "model": {
+    #                     "type": "string",
+    #                     "enum": ["fast", "good", "pretty good"],
+    #                     "default": "fast",
+    #                     "description": "Generation quality/speed tradeoff. 'fast' for quick results, 'good' for better quality, 'pretty good' for highest quality."
+    #                 },
+    #                 "save_path": {
+    #                     "type": "string",
+    #                     "description": "Optional path where to save the generated model in the project (e.g., 'res://models/generated_tree.glb')"
+    #                 }
+    #             },
+    #             "required": ["prompt"]
+    #         }
+    #     }
+    # }
 ]
 
 
@@ -2950,6 +3112,7 @@ def chat():
                         "slice_spritesheet",
                         "search_godot_assets",
                         "install_godot_asset",
+                        "generate_3d_model",
                         # Note: Game testing tools are frontend-only, not backend
                     ]
                 ]
@@ -2963,6 +3126,7 @@ def chat():
                         "slice_spritesheet",
                         "search_godot_assets",
                         "install_godot_asset",
+                        "generate_3d_model",
                         # Note: Game testing tools are frontend-only, not backend
                     ]
                     for func in tool_call_aggregator.values()
@@ -3333,6 +3497,68 @@ def chat():
                                 "role": "tool", 
                                 "name": "install_godot_asset",
                                 "content": json.dumps(install_summary)
+                            })
+                        
+                        elif func["name"] == "generate_3d_model":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "generate_3d_model", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                            except Exception:
+                                arguments = {}
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_3d_generation():
+                                try:
+                                    _tool_result_holder["result"] = generate_3d_model_internal(arguments)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_3d_generation, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during generate_3d_model")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.1)  # Longer delay for 3D generation
+                            
+                            model_3d_result = _tool_result_holder["result"] or {"success": False, "error": "generate_3d_model returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            # Yield result to frontend immediately
+                            yield json.dumps({
+                                "tool_executed": "generate_3d_model",
+                                "tool_result": model_3d_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Prepare result for conversation history (exclude massive GLB data)
+                            model_3d_summary = {
+                                "success": model_3d_result.get("success"),
+                                "prompt": model_3d_result.get("prompt"),
+                                "model": model_3d_result.get("model"),
+                                "generation_time": model_3d_result.get("generation_time"),
+                                "job_id": model_3d_result.get("job_id"),
+                                "format": model_3d_result.get("format"),
+                                "file_size": model_3d_result.get("file_size")
+                            }
+                            # Exclude the massive 'glb_data' field to save tokens
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "generate_3d_model",
+                                "content": json.dumps(model_3d_summary)
                             })
                 
                     # Add the assistant's decision to call the tool to history
@@ -4961,6 +5187,8 @@ def _forward_to_3d_service(endpoint: str, method: str = 'GET', **kwargs):
         headers['X-Forwarded-For'] = request.environ.get('REMOTE_ADDR', 'unknown')
         headers['User-Agent'] = 'Godot-AI-Backend/1.0'
         
+        print(f"DEBUG FORWARD: Forwarding to {url} with method {method.upper()}")
+        
         kwargs['headers'] = headers
         kwargs['timeout'] = kwargs.get('timeout', 60)
         
@@ -5096,18 +5324,35 @@ def download_3d_model(filename: str):
     
     return _forward_to_3d_service(f'download/{filename}')
 
+@app.route('/download/<path:filename>', methods=['GET'])
+def download_3d_model_legacy(filename: str):
+    """Legacy download route for compatibility with Point-E responses"""
+    return _forward_to_3d_service(f'download/{filename}')
+
 @app.route('/api/3d/models/<user_id>', methods=['GET'])
 def list_user_3d_models(user_id: str):
     """List 3D models for a user"""
+    print(f"DEBUG: /api/3d/models/{user_id} endpoint hit! MODEL_3D_ENABLED={MODEL_3D_ENABLED}")
     gate = verify_server_key_if_required()
     if gate is not None:
         return gate
+    
+    if not MODEL_3D_ENABLED:
+        return jsonify({
+            'error': '3D model generation not available',
+            'message': 'Service not configured'
+        }), 503
     
     # Basic authorization - users can only see their own models
     if hasattr(g, 'user_id') and g.user_id != user_id:
         return jsonify({'error': 'Access denied'}), 403
     
-    return _forward_to_3d_service(f'models/{user_id}')
+    # Point-E server doesn't support model listing, return mock response
+    return jsonify({
+        'user_id': user_id,
+        'models': [],
+        'message': 'Model listing not supported by Point-E service'
+    })
 
 if __name__ == '__main__':
     # Print 3D service status on startup
@@ -5117,5 +5362,5 @@ if __name__ == '__main__':
         print("3D_GENERATION: Disabled (configure MODEL_3D_* environment variables to enable)")
     
     # Local dev only; in production use Gunicorn (configured in Dockerfile)
-    port = int(os.environ.get('PORT', 8000))
+    port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)

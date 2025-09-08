@@ -2,6 +2,7 @@
 
 # Core dependencies
 flask
+flask-cors
 python-dotenv
 openai>=1.50.0  # Required for responses API and image generation
 litellm>=1.44.13  # Multi-provider LLM support (OpenAI, Anthropic, Google)
@@ -22,5 +23,6 @@ pillow  # For image processing
 numpy  # For embedding operations
 weaviate-client>=4.5.0  # High-performance vector database
 
-# Google Cloud dependencies for vector search
+# Google Cloud dependencies for vector search and Vertex AI
 google-cloud-bigquery  # For BigQuery vector storage
+google-cloud-aiplatform>=1.38  # For Vertex AI models (required by litellm)

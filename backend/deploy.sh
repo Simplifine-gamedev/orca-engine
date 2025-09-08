@@ -43,7 +43,7 @@ gcloud services enable cloudbuild.googleapis.com
 gcloud services enable run.googleapis.com
 gcloud services enable containerregistry.googleapis.com
 gcloud services enable bigquery.googleapis.com
-# gcloud services enable aiplatform.googleapis.com  # Not needed for OpenAI embeddings
+gcloud services enable aiplatform.googleapis.com  # Required for Vertex AI models (Claude, Gemini)
 
 # Build and push the container image
 echo "🏗️  Building container image (scoped to backend/ context)..."
@@ -74,10 +74,10 @@ if [ -f ".env" ]; then
         --member="serviceAccount:${COMPUTE_SA}" \
         --role="roles/bigquery.dataEditor"
     
-    # echo "🔧 Granting Vertex AI access to Cloud Run service account..."
-    # gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-    #     --member="serviceAccount:${COMPUTE_SA}" \
-    #     --role="roles/aiplatform.user"
+    echo "🔧 Granting Vertex AI access to Cloud Run service account..."
+    gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+        --member="serviceAccount:${COMPUTE_SA}" \
+        --role="roles/aiplatform.user"
     
     # Optionally set OAuth redirect URI from env or .env; otherwise skip
     if grep -q '^OAUTH_REDIRECT_URI=' .env 2>/dev/null || [ -n "$OAUTH_REDIRECT_URI" ]; then

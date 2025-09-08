@@ -20,6 +20,7 @@ class EditorTools : public Object {
 private:
 	static Dictionary _get_node_info(Node *p_node);
 	static Node *_get_node_from_path(const String &p_path, Dictionary &r_error_result);
+	static void _set_owner_recursive(Node *p_node, Node *p_owner);
     // Trace support
     static EditorTools *tracer_instance;
     static Dictionary trace_registry; // trace_id -> { events:Array, connections:Array, include_args:bool, max_events:int, next_index:int }
@@ -58,6 +59,7 @@ public:
 
     // File utilities
     static int get_file_line_count(const String &p_path, int p_max_bytes = 0);
+    static String smart_truncate_for_ai_context(const String &p_content, const String &p_file_path);
 
 	// Individual Tool Methods (used by universal tools)
 	static Dictionary get_scene_info(const Dictionary &p_args);
@@ -75,6 +77,7 @@ public:
 	static Dictionary get_node_script(const Dictionary &p_args);
 	static Dictionary attach_script(const Dictionary &p_args);
 	static Dictionary manage_scene(const Dictionary &p_args);
+	static Dictionary load_and_assign_resource(const Dictionary &p_args);
 	static Dictionary add_collision_shape(const Dictionary &p_args);
 	static Dictionary generalnodeeditor(const Dictionary &p_args);
 	static Dictionary list_project_files(const Dictionary &p_args);

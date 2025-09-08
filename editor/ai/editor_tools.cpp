@@ -29,6 +29,7 @@
 #include "editor/script/script_text_editor.h"
 #include "scene/main/node.h"
 #include "scene/main/window.h"
+#include "scene/resources/packed_scene.h"
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_parser.h"
 #include "modules/gdscript/gdscript_analyzer.h"
@@ -776,8 +777,9 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
     StringName prop = p_args["property"];
     Variant value = p_args["value"];
 	
-    // Special handling for Vector2/Vector3 position-like properties from flexible inputs
-    if ((prop == StringName("position") || prop == StringName("global_position") || prop == StringName("scale"))) {
+    // Special handling for Vector2/Vector3 properties from flexible inputs
+    if ((prop == StringName("position") || prop == StringName("global_position") || prop == StringName("scale") || 
+         prop == StringName("rotation") || prop == StringName("rotation_degrees") || prop == StringName("size"))) {
         // Check if this is a 2D or 3D node
         bool is_3d_node = node->is_class("Node3D") || node->get_class().contains("3D");
         
@@ -830,12 +832,19 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
                 String coords = s.substr(8, s.length() - 9).strip_edges(); // Extract coordinates from "Vector3(x, y, z)"
                 PackedStringArray parts = coords.split(",");
                 if (parts.size() >= 3) {
-                    vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), parts[2].strip_edges().to_float());
+                    float x = parts[0].strip_edges().to_float();
+                    float y = parts[1].strip_edges().to_float();
+                    float z = parts[2].strip_edges().to_float();
+                    vec3_value = Vector3(x, y, z);
                     value = vec3_value;
+                    // print_line("SET_NODE_PROPERTY: Converted Vector3() '" + s + "' to Vector3(" + String::num(x) + ", " + String::num(y) + ", " + String::num(z) + ") for property " + String(prop)); // Thread-safe: removed
                 } else if (parts.size() == 2) {
                     // Vector3 with only x,y provided - default z to 0
-                    vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), 0.0f);
+                    float x = parts[0].strip_edges().to_float();
+                    float y = parts[1].strip_edges().to_float();
+                    vec3_value = Vector3(x, y, 0.0f);
                     value = vec3_value;
+                    // print_line("SET_NODE_PROPERTY: Converted Vector3() '" + s + "' to Vector3(" + String::num(x) + ", " + String::num(y) + ", 0.0) for property " + String(prop)); // Thread-safe: removed
                 }
             } else if (s.begins_with("Vector2(") && s.ends_with(")")) {
                 String coords = s.substr(8, s.length() - 9).strip_edges(); // Extract coordinates from "Vector2(x, y)"
@@ -843,6 +852,26 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
                 if (parts.size() >= 2) {
                     vec2_value = Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float());
                     value = vec2_value;
+                }
+            } else if (s.begins_with("(") && s.ends_with(")")) {
+                // Handle simple parentheses format "(x, y, z)" or "(x, y)"
+                String coords = s.substr(1, s.length() - 2).strip_edges(); // Extract coordinates from "(x, y, z)"
+                PackedStringArray parts = coords.split(",");
+                if (parts.size() >= 2) {
+                    if (is_3d_node && parts.size() >= 3) {
+                        vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), parts[2].strip_edges().to_float());
+                        value = vec3_value;
+                        // print_line("SET_NODE_PROPERTY: Converted parentheses '" + s + "' to Vector3(" + String::num(vec3_value.x) + ", " + String::num(vec3_value.y) + ", " + String::num(vec3_value.z) + ") for property " + String(prop)); // Thread-safe: removed
+                    } else if (is_3d_node) {
+                        // 3D node with only x,y provided - default z to 0
+                        vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), 0.0f);
+                        value = vec3_value;
+                        // print_line("SET_NODE_PROPERTY: Converted parentheses '" + s + "' to Vector3(" + String::num(vec3_value.x) + ", " + String::num(vec3_value.y) + ", " + String::num(vec3_value.z) + ") for property " + String(prop)); // Thread-safe: removed
+                    } else {
+                        vec2_value = Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float());
+                        value = vec2_value;
+                        // print_line("SET_NODE_PROPERTY: Converted parentheses '" + s + "' to Vector2(" + String::num(vec2_value.x) + ", " + String::num(vec2_value.y) + ") for property " + String(prop)); // Thread-safe: removed
+                    }
                 }
             } else {
                 // Fallback: Allow formats like "x,y,z" or "x y z"
@@ -852,12 +881,18 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
                 }
                 if (parts.size() >= 2) {
                     if (is_3d_node) {
+                        float x = parts[0].strip_edges().to_float();
+                        float y = parts[1].strip_edges().to_float();
                         float z = parts.size() >= 3 ? parts[2].strip_edges().to_float() : 0.0f;
-                        vec3_value = Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), z);
+                        vec3_value = Vector3(x, y, z);
                         value = vec3_value;
+                        // print_line("SET_NODE_PROPERTY: Converted fallback '" + s + "' to Vector3(" + String::num(x) + ", " + String::num(y) + ", " + String::num(z) + ") for property " + String(prop)); // Thread-safe: removed
                     } else {
-                        vec2_value = Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float());
+                        float x = parts[0].strip_edges().to_float();
+                        float y = parts[1].strip_edges().to_float();
+                        vec2_value = Vector2(x, y);
                         value = vec2_value;
+                        // print_line("SET_NODE_PROPERTY: Converted fallback '" + s + "' to Vector2(" + String::num(x) + ", " + String::num(y) + ") for property " + String(prop)); // Thread-safe: removed
                     }
                 }
             }
@@ -1274,11 +1309,116 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 		result["success"] = true;
 		result["message"] = "Scene opened: " + path;
 
+	} else if (operation == "instantiate") {
+		if (!p_args.has("path")) {
+			result["success"] = false;
+			result["message"] = "Missing 'path' argument for instantiate operation.";
+			return result;
+		}
+		String scene_path = p_args["path"];
+		String parent_path = p_args.get("parent_node", "");
+		String instance_name = p_args.get("instance_name", "");
+		
+		// Load the scene resource
+		Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
+		if (packed_scene.is_null()) {
+			result["success"] = false;
+			result["message"] = "Failed to load scene: " + scene_path;
+			return result;
+		}
+		
+		// Instantiate the scene
+		Node *instance = packed_scene->instantiate();
+		if (!instance) {
+			result["success"] = false;
+			result["message"] = "Failed to instantiate scene: " + scene_path;
+			return result;
+		}
+		
+		// Set instance name if provided
+		if (!instance_name.is_empty()) {
+			instance->set_name(instance_name);
+		}
+		
+		// Find parent node
+		Node *parent = nullptr;
+		if (!parent_path.is_empty()) {
+			parent = _get_node_from_path(parent_path, result);
+			if (!parent) {
+				instance->queue_free();
+				return result;
+			}
+		} else {
+			parent = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+			if (!parent) {
+				instance->queue_free();
+				result["success"] = false;
+				result["message"] = "No scene is currently open to add instance to.";
+				return result;
+			}
+		}
+		
+		// Add to parent and set owner
+		parent->add_child(instance);
+		Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+		if (scene_root) {
+			instance->set_owner(scene_root);
+			// Also set owner for all children recursively
+			_set_owner_recursive(instance, scene_root);
+		}
+		
+		result["success"] = true;
+		result["message"] = "Scene instantiated: " + scene_path;
+		result["instance_path"] = String(instance->get_path());
+		result["parent_path"] = parent_path.is_empty() ? String(parent->get_path()) : parent_path;
+
 	} else {
 		result["success"] = false;
-		result["message"] = "Unknown operation: " + operation + ". Supported: create_new, save_as, open";
+		result["message"] = "Unknown operation: " + operation + ". Supported: create_new, save_as, open, instantiate";
 	}
 
+	return result;
+}
+
+Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
+	Dictionary result;
+	if (!p_args.has("resource_path") || !p_args.has("node_path") || !p_args.has("property")) {
+		result["success"] = false;
+		result["message"] = "Missing required arguments: 'resource_path', 'node_path', and 'property'";
+		return result;
+	}
+	
+	String resource_path = p_args["resource_path"];
+	String node_path = p_args["node_path"];
+	String property = p_args["property"];
+	
+	// Load the resource
+	Ref<Resource> resource = ResourceLoader::load(resource_path);
+	if (resource.is_null()) {
+		result["success"] = false;
+		result["message"] = "Failed to load resource: " + resource_path;
+		return result;
+	}
+	
+	// Get the target node
+	Node *node = _get_node_from_path(node_path, result);
+	if (!node) {
+		return result;
+	}
+	
+	// Set the property
+	bool valid = false;
+	node->set(property, resource, &valid);
+	
+	if (valid) {
+		result["success"] = true;
+		result["message"] = "Resource loaded and assigned: " + resource_path + " -> " + node_path + "." + property;
+		result["resource_type"] = resource->get_class();
+	} else {
+		result["success"] = false;
+		result["message"] = "Failed to assign resource to property '" + property + "' on node: " + node_path;
+	}
+	
 	return result;
 }
 
@@ -1622,6 +1762,140 @@ Dictionary EditorTools::read_file(const Dictionary &p_args) {
     return read_file_content(p_args);
 }
 
+String EditorTools::smart_truncate_for_ai_context(const String &p_content, const String &p_file_path) {
+	String content = p_content;
+	String ext = p_file_path.get_extension().to_lower();
+	
+	// Apply smart truncation for files that commonly contain large arrays
+	if (ext == "tscn" || ext == "tres" || ext == "res" || ext == "scn") {
+		// Truncate large binary data arrays in Godot resource files
+		Vector<String> array_patterns = {
+			"vertex_data = PackedByteArray(",
+			"index_data = PackedByteArray(",
+			"attribute_data_0 = PackedByteArray(",
+			"attribute_data_1 = PackedByteArray(",
+			"attribute_data_2 = PackedByteArray(",
+			"lods = [",
+			"blend_shape_data = PackedByteArray(",
+			"skin_data = PackedByteArray(",
+			"vertex_positions = PackedFloat32Array(",
+			"vertex_normals = PackedFloat32Array(",
+			"vertex_uvs = PackedFloat32Array(",
+			"indices = PackedInt32Array("
+		};
+		
+		for (const String &pattern : array_patterns) {
+			int pos = 0;
+			while ((pos = content.find(pattern, pos)) != -1) {
+				int start = pos;
+				int end = start;
+				int bracket_count = 0;
+				bool in_array = false;
+				
+				// Find the end of the array by counting brackets/parentheses
+				for (int i = start; i < content.length(); i++) {
+					char32_t ch = content[i];
+					if (ch == '(' || ch == '[') {
+						bracket_count++;
+						in_array = true;
+					} else if (ch == ')' || ch == ']') {
+						bracket_count--;
+						if (bracket_count == 0 && in_array) {
+							end = i + 1;
+							break;
+						}
+					}
+				}
+				
+				if (end > start) {
+					// Calculate how much data we're truncating
+					int original_length = end - start;
+					if (original_length > 200) { // Only truncate if it's substantial
+						String before = content.substr(0, start);
+						String pattern_name = pattern.replace(" = PackedByteArray(", "").replace(" = PackedFloat32Array(", "").replace(" = PackedInt32Array(", "").replace(" = [", "");
+						String replacement = pattern + "[...TRUNCATED " + String::num_int64(original_length - 50) + " chars of " + pattern_name + " data...]";
+						// Add closing bracket/parenthesis
+						if (pattern.ends_with("(")) {
+							replacement += ")";
+						} else if (pattern.ends_with("[")) {
+							replacement += "]";
+						}
+						String after = content.substr(end);
+						content = before + replacement + after;
+						
+						// Adjust position for next search
+						pos = before.length() + replacement.length();
+						// print_line("SMART_TRUNCATE: Truncated " + pattern_name + " array (" + String::num_int64(original_length) + " -> " + String::num_int64(replacement.length()) + " chars)"); // Thread-safe: removed print_line
+					} else {
+						pos = end;
+					}
+				} else {
+					pos += pattern.length();
+				}
+			}
+		}
+		
+		// Also truncate very long lines that might contain encoded data
+		Vector<String> lines = content.split("\n");
+		String truncated_content;
+		bool any_truncated = false;
+		
+		for (int i = 0; i < lines.size(); i++) {
+			String line = lines[i];
+			if (line.length() > 500 && (line.contains("PackedByteArray") || line.contains("PackedFloat32Array") || line.contains("PackedInt32Array"))) {
+				String truncated_line = line.substr(0, 200) + "[...TRUNCATED " + String::num_int64(line.length() - 200) + " chars of array data...]";
+				if (line.ends_with(")")) truncated_line += ")";
+				if (line.ends_with("]")) truncated_line += "]";
+				truncated_content += truncated_line + "\n";
+				any_truncated = true;
+			} else {
+				truncated_content += line + "\n";
+			}
+		}
+		
+		if (any_truncated) {
+			content = truncated_content;
+			// print_line("SMART_TRUNCATE: Truncated long array lines in " + p_file_path.get_file()); // Thread-safe: removed print_line
+		}
+	}
+	
+	// For any file type, truncate extremely long lines that might be data
+	Vector<String> lines = content.split("\n");
+	String final_content;
+	bool any_data_truncated = false;
+	
+	for (int i = 0; i < lines.size(); i++) {
+		String line = lines[i];
+		// Truncate lines longer than 1000 chars that look like data
+		if (line.length() > 1000 && (
+			(line.contains("[") && line.count(",") > 50) ||  // Arrays with many elements
+			line.contains("\"data\":") ||                  // JSON data fields
+			line.contains("base64") ||                     // Base64 encoded data
+			line.contains("PackedByteArray") ||            // Godot byte arrays
+			line.contains("PackedFloat32Array") ||         // Godot float arrays
+			line.contains("PackedInt32Array")              // Godot int arrays
+		)) {
+			String truncated_line = line.substr(0, 300) + "[...TRUNCATED " + String::num_int64(line.length() - 300) + " chars of data...]";
+			// Preserve line ending structure
+			if (line.ends_with(",")) truncated_line += ",";
+			if (line.ends_with(")")) truncated_line += ")";
+			if (line.ends_with("]")) truncated_line += "]";
+			if (line.ends_with("}")) truncated_line += "}";
+			final_content += truncated_line + "\n";
+			any_data_truncated = true;
+		} else {
+			final_content += line + "\n";
+		}
+	}
+	
+	if (any_data_truncated) {
+		content = final_content;
+		// print_line("SMART_TRUNCATE: Truncated long data lines in " + p_file_path.get_file()); // Thread-safe: removed print_line
+	}
+	
+	return content;
+}
+
 Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	Dictionary result;
 	if (!p_args.has("path")) {
@@ -1636,14 +1910,14 @@ Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	if (EditorTools::has_preview_overlay(path)) {
 		String overlay = EditorTools::get_preview_overlay(path);
 		result["success"] = true;
-		result["content"] = overlay;
+		result["content"] = smart_truncate_for_ai_context(overlay, path);
 		print_line("READ_FILE: Using preview overlay for " + path + " (staged edit pending)");
 		return result;
 	}
 	String content = FileAccess::get_file_as_string(path, &err);
 	if (err == OK) {
 		result["success"] = true;
-		result["content"] = content;
+		result["content"] = smart_truncate_for_ai_context(content, path);
 		return result;
 	}
 
@@ -1659,7 +1933,8 @@ Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 		f->close();
 		String preview = String::utf8((const char *)bytes.ptr(), (int)read);
 		result["success"] = true;
-		result["content"] = preview + (file_len > to_read ? String("\n\n…\n[Truncated preview. Use read_file_advanced with start_line/end_line to fetch specific sections.]") : String());
+		String smart_truncated = smart_truncate_for_ai_context(preview, path);
+		result["content"] = smart_truncated + (file_len > to_read ? String("\n\n…\n[Truncated preview. Use read_file_advanced with start_line/end_line to fetch specific sections.]") : String());
 		result["truncated"] = file_len > to_read;
 		return result;
 	}
@@ -1690,7 +1965,7 @@ Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
 			out += lines[i - 1] + "\n";
 		}
 		result["success"] = true;
-		result["content"] = out;
+		result["content"] = smart_truncate_for_ai_context(out, path);
 		print_line("READ_FILE_ADVANCED: Using preview overlay for " + path + " (staged edit pending)");
 		return result;
 	}
@@ -1715,7 +1990,7 @@ Dictionary EditorTools::read_file_advanced(const Dictionary &p_args) {
 	}
 
 	result["success"] = true;
-	result["content"] = content;
+	result["content"] = smart_truncate_for_ai_context(content, path);
 	return result;
 }
 
@@ -2966,6 +3241,18 @@ void EditorTools::_get_all_project_files(const String &p_path, List<String> &r_f
     }
     
     dir->list_dir_end();
+}
+
+// Helper function for setting owner recursively
+void EditorTools::_set_owner_recursive(Node *p_node, Node *p_owner) {
+	if (!p_node || !p_owner) return;
+	
+	// Set owner for all children
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		Node *child = p_node->get_child(i);
+		child->set_owner(p_owner);
+		_set_owner_recursive(child, p_owner);
+	}
 }
 
 // --- Universal Tools Implementation ---

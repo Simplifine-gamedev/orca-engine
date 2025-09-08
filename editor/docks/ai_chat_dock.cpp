@@ -63,6 +63,8 @@ void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, con
 #include "ai_auth_helper.h"
 #include "scene/2d/node_2d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/3d/mesh_instance_3d.h"
+#include "scene/resources/packed_scene.h"
 #include "core/string/string_name.h"
 #include "editor/file_system/editor_file_system.h"
 #include "scene/gui/popup.h"
@@ -112,6 +114,9 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_new_conversation_pressed"), &AIChatDock::_on_new_conversation_pressed);
 	ClassDB::bind_method(D_METHOD("_on_save_image_pressed", "base64_data", "format"), &AIChatDock::_on_save_image_pressed);
 	ClassDB::bind_method(D_METHOD("_on_save_image_location_selected", "file_path"), &AIChatDock::_on_save_image_location_selected);
+	ClassDB::bind_method(D_METHOD("_on_save_3d_model_pressed", "glb_data", "prompt", "save_path"), &AIChatDock::_on_save_3d_model_pressed);
+	ClassDB::bind_method(D_METHOD("_on_import_3d_model_to_scene_pressed", "glb_data", "prompt", "save_path"), &AIChatDock::_on_import_3d_model_to_scene_pressed);
+	ClassDB::bind_method(D_METHOD("_on_3d_model_save_location_selected", "file_path"), &AIChatDock::_on_3d_model_save_location_selected);
 
 	ClassDB::bind_method(D_METHOD("_save_conversations_to_disk"), &AIChatDock::_save_conversations_to_disk);
 	ClassDB::bind_method(D_METHOD("_process_image_attachment_async"), &AIChatDock::_process_image_attachment_async);
@@ -173,6 +178,12 @@ void AIChatDock::attach_external_file(const String &p_file_path) {
 void AIChatDock::_notification(int p_notification) {
 	switch (p_notification) {
 		case NOTIFICATION_POST_ENTER_TREE: {
+			// Avoid duplicate UI when dock is re-attached/moved (Godot may re-enter tree)
+			if (ui_initialized) {
+				print_line("AI Chat: Skipping UI re-initialization on re-dock");
+				break;
+			}
+			ui_initialized = true;
 			// UI setup moved from constructor to here to ensure theme is available.
 			
 			// Conversation history row
@@ -568,8 +579,20 @@ void AIChatDock::_notification(int p_notification) {
             }
             _load_conversations();
 
-            // Ensure indexing is set up immediately on startup (guest if needed)
-            _ensure_project_indexing();
+			// Ensure a valid selection immediately to avoid emergency-conversation creation
+			if (!conversations.is_empty()) {
+				if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
+					current_conversation_index = conversations.size() - 1; // default to most recent
+				}
+			}
+
+			// Only initialize embedding system if this is the active singleton instance
+			if (singleton == this) {
+				// Ensure indexing is set up immediately on startup (guest if needed)
+				_ensure_project_indexing();
+			} else {
+				print_line("AI Chat: Skipping embedding initialization - not the active singleton instance");
+			}
 			
 			// Create first conversation if none exist
             if (conversations.is_empty()) {
@@ -663,7 +686,7 @@ void AIChatDock::_notification(int p_notification) {
         is_dev = OS::get_singleton()->get_environment("DEV_MODE");
     }
     if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-        api_endpoint = "http://127.0.0.1:8000/chat";
+        api_endpoint = "http://127.0.0.1:8080/chat";
     } else {
         api_endpoint = "https://gamechat.simplifine.com/chat";
     }
@@ -746,7 +769,12 @@ void AIChatDock::_on_send_button_pressed() {
 	_create_message_bubble(msg, chat_history.size() - 1);
 	call_deferred("_scroll_to_bottom");
 	
-	print_line("AI Chat: Added user message to conversation " + itos(current_conversation_index) + " (" + conversations[current_conversation_index].title + "), total messages: " + itos(chat_history.size()));
+	// Safe conversation access with bounds checking
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		print_line("AI Chat: Added user message to conversation " + itos(current_conversation_index) + " (" + conversations[current_conversation_index].title + "), total messages: " + itos(chat_history.size()));
+	} else {
+		print_line("AI Chat: Added user message (invalid conversation index: " + itos(current_conversation_index) + "), total messages: " + itos(chat_history.size()));
+	}
 	
 	// DON'T clear input field here - keep user message visible until assistant responds
 	// input_field->set_text(""); // MOVED to response completion handlers
@@ -1219,7 +1247,6 @@ void AIChatDock::_setup_authentication_ui() {
 	add_child(auth_providers_request);
 	auth_providers_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_auth_providers_request_completed));
 }
-
 void AIChatDock::_on_login_button_pressed() {
 	if (_is_user_authenticated()) {
 		// User is logged in, offer logout
@@ -1541,7 +1568,8 @@ void AIChatDock::_process_send_request_async() {
 	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
 		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 		// Update title if it's still "New Conversation"
-		if (conversations[current_conversation_index].title == "New Conversation") {
+		if (current_conversation_index >= 0 && current_conversation_index < conversations.size() && 
+			conversations[current_conversation_index].title == "New Conversation") {
 			Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
 			String new_title = _generate_conversation_title(history);
 			if (!new_title.is_empty() && new_title != "New Conversation") {
@@ -2185,7 +2213,7 @@ void AIChatDock::_perform_project_reindex() {
 		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
 	}
 	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-		base_url = "http://127.0.0.1:8000";
+		base_url = "http://127.0.0.1:8080";
 	} else {
 		base_url = "https://gamechat.simplifine.com";
 	}
@@ -2311,9 +2339,12 @@ void AIChatDock::_check_index_status_and_start_if_needed() {
 void AIChatDock::_on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	print_line("AI Chat: 📨 Index status response - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
 	
-	HTTPRequest *request_node = Object::cast_to<HTTPRequest>(get_children()[-1]);
-	if (request_node) {
-		request_node->queue_free();
+	// Safe access to last child to avoid negative indexing crash
+	if (get_child_count() > 0) {
+		HTTPRequest *request_node = Object::cast_to<HTTPRequest>(get_child(get_child_count() - 1));
+		if (request_node) {
+			request_node->queue_free();
+		}
 	}
 	
 	bool should_index = true; // Default to indexing if we can't determine status
@@ -2412,7 +2443,7 @@ void AIChatDock::_on_files_selected(const Vector<String> &p_files) {
 					int64_t read = f->get_buffer(bytes.ptrw(), to_read);
 					f->close();
 					String content = String::utf8((const char *)bytes.ptr(), (int)read);
-					attached_file.content = _truncate_text_for_context(content);
+					attached_file.content = _truncate_text_for_context(EditorTools::smart_truncate_for_ai_context(content, file_path));
 					bool truncated = f->get_length() > to_read || content.length() > attached_file.content.length();
 					if (truncated) {
 						attached_file.content += "\n\n…\n[Truncated preview of large file. Only first " + String::num_int64(attached_file.content.length()) + " chars shown.]";
@@ -2701,7 +2732,7 @@ void AIChatDock::_attach_external_files(const Vector<String> &p_files) {
 					int64_t read = f->get_buffer(bytes.ptrw(), to_read);
 					f->close();
 					String content = String::utf8((const char *)bytes.ptr(), (int)read);
-					attached_file.content = _truncate_text_for_context(content);
+					attached_file.content = _truncate_text_for_context(EditorTools::smart_truncate_for_ai_context(content, file_path));
 					bool truncated = f->get_length() > to_read || content.length() > attached_file.content.length();
 					if (truncated) {
 						attached_file.content += "\n\n…\n[Truncated preview of large file. Only first " + String::num_int64(attached_file.content.length()) + " chars shown.]";
@@ -3387,6 +3418,8 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::attach_script(args);
 		} else if (function_name == "manage_scene") {
 			result = EditorTools::manage_scene(args);
+		} else if (function_name == "load_and_assign_resource") {
+			result = EditorTools::load_and_assign_resource(args);
         } else if (function_name == "add_collision_shape") {
 			result = EditorTools::add_collision_shape(args);
 		} else if (function_name == "list_project_files") {
@@ -3465,6 +3498,12 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result["success"] = false;
 			result["message"] = "Image generation should be handled by backend, not frontend";
 			print_line("AI Chat: Received image_operation tool in frontend - this should be handled by backend");
+		} else if (function_name == "generate_3d_model") {
+			// This tool should be handled by the backend, not the frontend
+			// If we receive it here, it means something went wrong in the backend filtering
+			result["success"] = false;
+			result["message"] = "3D model generation should be handled by backend, not frontend";
+			print_line("AI Chat: Received generate_3d_model tool in frontend - this should be handled by backend");
         } else if (function_name == "editor_introspect") {
             // Execute multiplexed introspection/debug tool
             result = EditorTools::editor_introspect(args);
@@ -3963,7 +4002,6 @@ String AIChatDock::_convert_to_godot_path(const String &p_path) {
     
     return path;
 }
-
 void AIChatDock::_on_tool_file_link_pressed(const String &p_path) {
     String path = _convert_to_godot_path(p_path);
     
@@ -5062,7 +5100,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		parent_label->set_text("New Parent: " + new_parent);
 		parent_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
 		move_vbox->add_child(parent_label);
-
 	} else if (p_tool_name == "search_project_files" && p_success) {
 		VBoxContainer *search_files_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(search_files_vbox);
@@ -5613,6 +5650,112 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			content_label->set_selection_enabled(true);
 			p_content_vbox->add_child(content_label);
 		}
+	} else if (p_tool_name == "generate_3d_model" && p_success) {
+		// Special handling for 3D model generation results
+		String glb_data = p_result.get("glb_data", "");
+		String prompt = p_result.get("prompt", "Generated 3D Model");
+		String model_name = p_result.get("model", "fast");
+		int generation_time = p_result.get("generation_time", 0);
+		int file_size = p_result.get("file_size", 0);
+		String job_id = p_result.get("job_id", "");
+		String save_path = p_result.get("save_path", "");
+		
+		if (!glb_data.is_empty()) {
+			// Display 3D model information and save option
+			VBoxContainer *model_container = memnew(VBoxContainer);
+			p_content_vbox->add_child(model_container);
+			
+			// Header with 3D model icon and title
+			HBoxContainer *header_container = memnew(HBoxContainer);
+			model_container->add_child(header_container);
+			
+			Label *icon_label = memnew(Label);
+			icon_label->add_theme_icon_override("icon", get_theme_icon(SNAME("MeshInstance3D"), SNAME("EditorIcons")));
+			header_container->add_child(icon_label);
+			
+			Label *title_label = memnew(Label);
+			title_label->set_text("Generated 3D Model");
+			title_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			title_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			header_container->add_child(title_label);
+			
+			// Prompt display
+			Label *prompt_label = memnew(Label);
+			prompt_label->set_text("Prompt: " + prompt);
+			prompt_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			prompt_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
+			model_container->add_child(prompt_label);
+			
+			// Model details
+			HBoxContainer *details_container = memnew(HBoxContainer);
+			model_container->add_child(details_container);
+			
+			Label *model_label = memnew(Label);
+			model_label->set_text("Model: " + model_name);
+			model_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+			details_container->add_child(model_label);
+			
+			if (generation_time > 0) {
+				Label *time_label = memnew(Label);
+				time_label->set_text(" • Time: " + String::num(generation_time, 1) + "s");
+				time_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+				details_container->add_child(time_label);
+			}
+			
+			if (file_size > 0) {
+				Label *size_label = memnew(Label);
+				String size_text = " • Size: ";
+				if (file_size < 1024) {
+					size_text += String::num_int64(file_size) + " B";
+				} else if (file_size < 1024 * 1024) {
+					size_text += String::num(file_size / 1024.0, 1) + " KB";
+				} else {
+					size_text += String::num(file_size / (1024.0 * 1024.0), 1) + " MB";
+				}
+				size_label->set_text(size_text);
+				size_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+				details_container->add_child(size_label);
+			}
+			
+			// Action buttons
+			HBoxContainer *actions_container = memnew(HBoxContainer);
+			model_container->add_child(actions_container);
+			
+			// Save to project button
+			Button *save_button = memnew(Button);
+			save_button->set_text("Save to Project");
+			save_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Save"), SNAME("EditorIcons")));
+			save_button->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			save_button->set_tooltip_text("Save this 3D model to your project as a GLB file");
+			save_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_3d_model_pressed).bind(glb_data, prompt, save_path));
+			actions_container->add_child(save_button);
+			
+			// Import to scene button  
+			Button *import_button = memnew(Button);
+			import_button->set_text("Import to Scene");
+			import_button->add_theme_icon_override("icon", get_theme_icon(SNAME("MeshInstance3D"), SNAME("EditorIcons")));
+			import_button->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			import_button->set_tooltip_text("Save and immediately add to current scene as MeshInstance3D");
+			import_button->connect("pressed", callable_mp(this, &AIChatDock::_on_import_3d_model_to_scene_pressed).bind(glb_data, prompt, save_path));
+			actions_container->add_child(import_button);
+			
+			// Info display
+			if (!job_id.is_empty()) {
+				Label *job_label = memnew(Label);
+				job_label->set_text("Job ID: " + job_id);
+				job_label->add_theme_font_size_override("font_size", 10);
+				job_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.5));
+				model_container->add_child(job_label);
+			}
+		} else {
+			// Fallback to text display if no model data
+			RichTextLabel *content_label = memnew(RichTextLabel);
+			content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
+			content_label->set_text(json->stringify(p_result, "  "));
+			content_label->set_fit_content(true);
+			content_label->set_selection_enabled(true);
+			p_content_vbox->add_child(content_label);
+		}
 	} else if (p_tool_name == "search_across_project" && p_success) {
 		// Display search results with nice formatting
 		VBoxContainer *search_vbox = memnew(VBoxContainer);
@@ -6118,7 +6261,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			no_results->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 			assets_vbox->add_child(no_results);
 		}
-
 	} else if (p_tool_name == "install_godot_asset" && p_success) {
 		// Display asset installation results
 		VBoxContainer *install_vbox = memnew(VBoxContainer);
@@ -7912,7 +8054,6 @@ void AIChatDock::_create_new_conversation_instant() {
 		}
 	}
 }
-
 void AIChatDock::_switch_to_conversation(int p_index) {
 	if (p_index < 0 || p_index >= conversations.size()) {
 		return;
@@ -8000,7 +8141,8 @@ void AIChatDock::_update_conversation_dropdown() {
 		conversation_history_dropdown->add_item(display_title);
 	}
 	
-	if (current_conversation_index >= 0) {
+	// Safe dropdown selection with bounds checking
+	if (current_conversation_index >= 0 && current_conversation_index < conversation_history_dropdown->get_item_count()) {
 		conversation_history_dropdown->select(current_conversation_index);
 	}
 }
@@ -8169,6 +8311,31 @@ void AIChatDock::_show_related_graph(const Dictionary &p_graph) {
 	}
 }
 AIChatDock::AIChatDock() {
+	// Enforce singleton pattern - prevent multiple instances during dock movement
+	if (singleton != nullptr && singleton != this) {
+		print_line("AI Chat: WARNING - Multiple AIChatDock instances detected during dock movement. Transferring state from previous instance.");
+		
+		// Transfer essential state from previous instance to maintain continuity
+		if (singleton->conversations.size() > 0) {
+			conversations = singleton->conversations;
+			current_conversation_index = singleton->current_conversation_index;
+			print_line("AI Chat: Transferred " + itos(conversations.size()) + " conversations to new dock instance");
+		}
+		
+		// Transfer authentication state
+		current_user_id = singleton->current_user_id;
+		current_user_name = singleton->current_user_name;
+		auth_token = singleton->auth_token;
+		api_endpoint = singleton->api_endpoint;
+		model = singleton->model;
+		
+		// Clear the old instance's singleton reference to prevent conflicts
+		singleton->singleton = nullptr;
+		
+		// Queue the old instance for deletion to prevent resource leaks
+		singleton->queue_free();
+	}
+	
 	// Set singleton instance
 	singleton = this;
 	
@@ -9073,7 +9240,6 @@ void AIChatDock::_on_asset_browse_requested(const String &p_url) {
 	// Open the URL in the default browser
 	OS::get_singleton()->shell_open(p_url);
 }
-
 void AIChatDock::_on_asset_folder_open_requested(const String &p_path) {
 	if (p_path.is_empty()) {
 		return;
@@ -9409,7 +9575,7 @@ void AIChatDock::_attach_scene_node(Node *p_node) {
 	AIChatDock::AttachedFile attached_file;
 	attached_file.path = node_path_str;
 	attached_file.name = String(p_node->get_name()) + " (" + String(p_node->get_class()) + ")";
-    attached_file.content = _truncate_text_for_context(_get_node_info_string(p_node));
+    	attached_file.content = _truncate_text_for_context(EditorTools::smart_truncate_for_ai_context(_get_node_info_string(p_node), attached_file.path));
 	attached_file.is_node = true;
 	attached_file.node_path = p_node->get_path();
 	attached_file.node_type = p_node->get_class();
@@ -9450,7 +9616,8 @@ void AIChatDock::_attach_current_script() {
 	AIChatDock::AttachedFile attached_file;
 	attached_file.path = script_path;
 	attached_file.name = script_path.get_file();
-    attached_file.content = _truncate_text_for_context(text_editor->get_code_editor()->get_text_editor()->get_text());
+    String script_content = text_editor->get_code_editor()->get_text_editor()->get_text();
+    attached_file.content = _truncate_text_for_context(EditorTools::smart_truncate_for_ai_context(script_content, attached_file.path));
 	attached_file.is_image = false;
 	attached_file.mime_type = _get_mime_type_from_extension(script_path);
 	
@@ -10088,6 +10255,9 @@ Dictionary AIChatDock::_read_file_for_indexing(const String &p_file_path, const 
 	String content = file->get_as_text(true); // Skip BOM if present
 	file->close();
 
+	// Apply smart truncation for large arrays BEFORE other processing
+	content = EditorTools::smart_truncate_for_ai_context(content, p_file_path);
+
 	// Sanitize content to avoid invalid JSON: strip control chars except whitespace
 	{
 		String sanitized;
@@ -10486,7 +10656,7 @@ String AIChatDock::_get_api_base_url() {
 		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
 	}
 	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-		base_url = "http://127.0.0.1:8000";
+		base_url = "http://127.0.0.1:8080";
 	} else {
 		base_url = "https://gamechat.simplifine.com";
 	}
@@ -10978,7 +11148,6 @@ void AIChatDock::_update_tool_call_button_status(const String &p_tool_call_id, c
 	status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 	buttons_container->add_child(status_label);
 }
-
 void AIChatDock::_update_tool_call_button_status_in_container(VBoxContainer *p_container, const String &p_tool_call_id, const String &p_status) {
 	if (!p_container) return;
 	
@@ -11411,6 +11580,246 @@ void AIChatDock::_cleanup_popup(AcceptDialog *p_popup) {
 	if (p_popup) {
 		p_popup->queue_free();
 	}
+}
+
+// 3D Model Generation callback implementations
+
+void AIChatDock::_on_save_3d_model_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path) {
+	if (p_glb_data.is_empty()) {
+		print_line("AI Chat: Cannot save 3D model - no data provided");
+		return;
+	}
+	
+	print_line("AI Chat: Save 3D model requested for prompt: " + p_prompt);
+	
+	// Store the model data for saving
+	pending_save_model_data = p_glb_data;
+	pending_save_model_prompt = p_prompt;
+	
+	// Create or reuse save dialog for 3D models
+	if (!save_3d_model_dialog) {
+		save_3d_model_dialog = memnew(EditorFileDialog);
+		save_3d_model_dialog->set_file_mode(EditorFileDialog::FILE_MODE_SAVE_FILE);
+		save_3d_model_dialog->set_access(EditorFileDialog::ACCESS_RESOURCES);
+		save_3d_model_dialog->add_filter("*.glb", "GLB 3D Models");
+		save_3d_model_dialog->add_filter("*", "All Files");
+		save_3d_model_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_3d_model_save_location_selected));
+		add_child(save_3d_model_dialog);
+	}
+	
+	// Set default filename based on prompt
+	String safe_filename = p_prompt.replace(" ", "_").replace("/", "_").replace("\\", "_");
+	safe_filename = safe_filename.substr(0, MIN(safe_filename.length(), 50)); // Limit length
+	if (!safe_filename.ends_with(".glb")) {
+		safe_filename += ".glb";
+	}
+	
+	// Use provided save path if available, otherwise use default
+	if (!p_save_path.is_empty()) {
+		save_3d_model_dialog->set_current_file(p_save_path.get_file());
+		save_3d_model_dialog->set_current_dir(p_save_path.get_base_dir());
+	} else {
+		save_3d_model_dialog->set_current_file(safe_filename);
+		// Default to models directory if it exists, otherwise project root
+		String models_dir = "res://models";
+		if (DirAccess::exists(ProjectSettings::get_singleton()->globalize_path(models_dir))) {
+			save_3d_model_dialog->set_current_dir(models_dir);
+		} else {
+			save_3d_model_dialog->set_current_dir("res://");
+		}
+	}
+	
+	save_3d_model_dialog->popup_centered(Size2(800, 600));
+}
+
+void AIChatDock::_on_import_3d_model_to_scene_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path) {
+	if (p_glb_data.is_empty()) {
+		print_line("AI Chat: Cannot import 3D model - no data provided");
+		return;
+	}
+	
+	print_line("AI Chat: Import 3D model to scene requested for prompt: " + p_prompt);
+	
+	// First save the model to a file
+	String safe_filename = p_prompt.replace(" ", "_").replace("/", "_").replace("\\", "_");
+	safe_filename = safe_filename.substr(0, MIN(safe_filename.length(), 50));
+	if (!safe_filename.ends_with(".glb")) {
+		safe_filename += ".glb";
+	}
+	
+	String save_path;
+	if (!p_save_path.is_empty()) {
+		save_path = p_save_path;
+	} else {
+		// Default save location
+		String models_dir = "res://models";
+		String models_abs_dir = ProjectSettings::get_singleton()->globalize_path(models_dir);
+		
+		// Create models directory if it doesn't exist
+		if (!DirAccess::exists(models_abs_dir)) {
+			DirAccess::make_dir_recursive_absolute(models_abs_dir);
+		}
+		
+		save_path = models_dir + "/" + safe_filename;
+	}
+	
+	// Save the model file
+	if (_save_glb_model_to_path(p_glb_data, save_path)) {
+		print_line("AI Chat: 3D model saved to " + save_path + ", adding to scene");
+		
+		// Add to current scene as MeshInstance3D
+		Node *current_scene = EditorNode::get_singleton()->get_edited_scene();
+		if (current_scene) {
+			// Create MeshInstance3D node
+			MeshInstance3D *mesh_instance = memnew(MeshInstance3D);
+			
+			// Set node name based on prompt
+			String node_name = p_prompt.replace(" ", "_").substr(0, 30);
+			if (node_name.is_empty()) {
+				node_name = "GeneratedModel";
+			}
+			mesh_instance->set_name(node_name);
+			
+			// Add to scene
+			current_scene->add_child(mesh_instance);
+			mesh_instance->set_owner(current_scene);
+			
+			// Load the GLB file as a mesh resource
+			Ref<Resource> mesh_resource = ResourceLoader::load(save_path);
+			if (mesh_resource.is_valid()) {
+				// For GLB files, we might get a PackedScene or a Mesh
+				Ref<PackedScene> packed_scene = mesh_resource;
+				if (packed_scene.is_valid()) {
+					// If it's a PackedScene, instantiate it instead
+					Node *instantiated = packed_scene->instantiate();
+					if (instantiated) {
+						current_scene->remove_child(mesh_instance);
+						mesh_instance->queue_free();
+						
+						instantiated->set_name(node_name);
+						current_scene->add_child(instantiated);
+						instantiated->set_owner(current_scene);
+						
+						print_line("AI Chat: 3D model instantiated as scene in current scene");
+					}
+				} else {
+					// Try to set as mesh if it's a direct mesh resource
+					Ref<Mesh> mesh = mesh_resource;
+					if (mesh.is_valid()) {
+						mesh_instance->set_mesh(mesh);
+						print_line("AI Chat: 3D model loaded as mesh in MeshInstance3D");
+					} else {
+						print_line("AI Chat: Warning - could not load 3D model as mesh or scene");
+					}
+				}
+			} else {
+				print_line("AI Chat: Warning - could not load 3D model resource from " + save_path);
+			}
+			
+			// Update editor to show the new node
+			EditorInterface::get_singleton()->get_selection()->clear();
+			EditorInterface::get_singleton()->get_selection()->add_node(mesh_instance);
+			
+			// Show success message in chat
+			RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+			if (current_label) {
+				current_label->add_text("\n\n✅ 3D model imported to scene as: " + node_name);
+			}
+		} else {
+			print_line("AI Chat: No current scene open for 3D model import");
+			
+			// Show message to user
+			RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+			if (current_label) {
+				current_label->add_text("\n\n⚠️ No scene open - 3D model saved to " + save_path + " (open a scene to import directly)");
+			}
+		}
+	} else {
+		print_line("AI Chat: Failed to save 3D model file");
+	}
+}
+
+void AIChatDock::_on_3d_model_save_location_selected(const String &p_file_path) {
+	if (p_file_path.is_empty() || pending_save_model_data.is_empty()) {
+		print_line("AI Chat: Cannot save 3D model - missing file path or data");
+		return;
+	}
+	
+	print_line("AI Chat: Saving 3D model to: " + p_file_path);
+	
+	if (_save_glb_model_to_path(pending_save_model_data, p_file_path)) {
+		print_line("AI Chat: 3D model saved successfully to: " + p_file_path);
+		
+		// Show success notification
+		if (EditorNode::get_singleton()) {
+			EditorNode::get_singleton()->show_warning("3D model saved successfully to: " + p_file_path.get_file());
+		}
+		
+		// Show success in chat
+		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+		if (current_label) {
+			current_label->add_text("\n\n✅ 3D model saved to: " + p_file_path);
+		}
+	} else {
+		print_line("AI Chat: Failed to save 3D model to: " + p_file_path);
+		
+		// Show error notification
+		if (EditorNode::get_singleton()) {
+			EditorNode::get_singleton()->show_warning("Failed to save 3D model to: " + p_file_path.get_file());
+		}
+	}
+	
+	// Clear pending data
+	pending_save_model_data = "";
+	pending_save_model_prompt = "";
+}
+bool AIChatDock::_save_glb_model_to_path(const String &p_glb_data, const String &p_file_path) {
+	if (p_glb_data.is_empty() || p_file_path.is_empty()) {
+		return false;
+	}
+	
+	// Decode base64 GLB data
+	Vector<uint8_t> glb_bytes = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_glb_data);
+	if (glb_bytes.size() == 0) {
+		print_line("AI Chat: Failed to decode GLB data");
+		return false;
+	}
+	
+	// Ensure the directory exists
+	String dir_path = p_file_path.get_base_dir();
+	String abs_dir = ProjectSettings::get_singleton()->globalize_path(dir_path);
+	if (!DirAccess::exists(abs_dir)) {
+		DirAccess::make_dir_recursive_absolute(abs_dir);
+	}
+	
+	// Save the GLB file
+	Ref<FileAccess> file = FileAccess::open(p_file_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		print_line("AI Chat: Failed to open file for writing: " + p_file_path);
+		return false;
+	}
+	
+	file->store_buffer(glb_bytes);
+	file->close();
+	
+	// Notify the editor file system so the model is imported and usable immediately
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->update_file(p_file_path);
+		
+		// Force immediate reimport for this file
+		Vector<String> to_reimport;
+		to_reimport.push_back(p_file_path);
+		EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+		
+		// Debounce a follow-up scan to refresh the file system
+		static uint64_t s_last_scan_request_ms = 0;
+		s_last_scan_request_ms = OS::get_singleton()->get_ticks_msec();
+		uint64_t scheduled_at = s_last_scan_request_ms;
+		Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.4, true);
+		timer->connect("timeout", callable_mp(this, &AIChatDock::_on_filesystem_debounced_scan).bind(scheduled_at));
+	}
+	
+	return true;
 }
 
 AIChatDock::~AIChatDock() {

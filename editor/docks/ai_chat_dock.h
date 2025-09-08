@@ -154,6 +154,7 @@ private:
 	HFlowContainer *attached_files_container = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 	EditorFileDialog *save_image_dialog = nullptr;
+	EditorFileDialog *save_3d_model_dialog = nullptr;
 	AcceptDialog *image_warning_dialog = nullptr;
 
 	// Embedding system state
@@ -187,6 +188,9 @@ private:
 	String pending_login_provider;
 	String provider_pending_login;
 
+	// Guard to avoid rebuilding UI on re-dock (NOTIFICATION_POST_ENTER_TREE fired again)
+	bool ui_initialized = false;
+
 	// Login polling
 	Timer *login_poll_timer = nullptr;
 	int login_poll_attempts = 0;
@@ -205,6 +209,10 @@ private:
 	// For saving images
 	String pending_save_image_data; // Base64 image data to save
 	String pending_save_image_format; // "png" or "jpg"
+	
+	// For saving 3D models
+	String pending_save_model_data; // Base64 GLB data to save
+	String pending_save_model_prompt; // Original prompt for filename generation
 
 	// For delayed saving performance optimization
 	bool save_pending = false;
@@ -317,6 +325,9 @@ private:
 	void _on_new_conversation_pressed();
 	void _on_save_image_pressed(const String &p_base64_data, const String &p_format);
 	void _on_save_image_location_selected(const String &p_file_path);
+	void _on_save_3d_model_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path);
+	void _on_import_3d_model_to_scene_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path);
+	void _on_3d_model_save_location_selected(const String &p_file_path);
 	void _save_conversations_to_disk(const String &p_json_data);
 	void _process_image_attachment_async(const String &p_file_path, const String &p_name, const String &p_mime_type);
 	void _handle_response_chunk(const PackedByteArray &p_chunk);
@@ -425,6 +436,9 @@ private:
 
 	// Utility: save base64-encoded image to a path (png/jpg based on extension)
 	bool _save_base64_image_to_path(const String &p_base64_data, const String &p_file_path);
+	
+	// Utility: save base64-encoded GLB model to a path
+	bool _save_glb_model_to_path(const String &p_glb_data, const String &p_file_path);
 
 	// Apply edited content directly to disk for non-script resources (e.g., .tscn)
 	void _apply_file_edit_immediate(const String &p_path, const String &p_content);
