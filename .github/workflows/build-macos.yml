@@ -4,6 +4,11 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build'
+        required: false
+        default: 'true'
 
 permissions:
   contents: write
