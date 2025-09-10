@@ -34,9 +34,9 @@ jobs:
     secrets: inherit
 
   macos-build:
-    name: 🍎 macOS
+    name: 🍎 macOS Production
     needs: static-checks
-    uses: ./.github/workflows/macos_builds.yml
+    uses: ./.github/workflows/macos-production.yml
     secrets: inherit
 
   windows-build:
