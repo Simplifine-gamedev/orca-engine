@@ -183,7 +183,7 @@ jobs:
 
       - name: Code Sign App
         env:
-          IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY != '' && secrets.MACOS_CODESIGN_IDENTITY || format('Developer ID Application: Simplifine Corp ({0})', env.TEAM_ID) }}
+          IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY != '' && secrets.MACOS_CODESIGN_IDENTITY || 'Developer ID Application: Simplifine Corp (92HMJ7DFHF)' }}
         run: |
           set -euo pipefail
           APP_PATH="${{ steps.bundle.outputs.app-path }}"
