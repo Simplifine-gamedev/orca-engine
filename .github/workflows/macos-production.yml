@@ -2,25 +2,15 @@ name: 🍎 macOS Production Build
 
 on:
   workflow_call:
-    outputs:
-      dmg-path:
-        description: "Path to the signed DMG file"
-        value: ${{ jobs.build-sign-notarize.outputs.dmg-path }}
   workflow_dispatch:
-    inputs:
-      force_build:
-        description: 'Force build even if no changes'
-        required: false
-        default: 'false'
-        type: boolean
 
 permissions:
   contents: write
 
 env:
-  APP_NAME: ${{ vars.APP_NAME != '' && vars.APP_NAME || 'Orca' }}
-  BUNDLE_ID: ${{ vars.MACOS_BUNDLE_ID != '' && vars.MACOS_BUNDLE_ID || 'com.orca.engine' }}
-  TEAM_ID: ${{ vars.MACOS_TEAM_ID != '' && vars.MACOS_TEAM_ID || secrets.APPLE_TEAM_ID || '92HMJ7DFHF' }}
+  APP_NAME: Orca
+  BUNDLE_ID: com.orca.engine
+  TEAM_ID: 92HMJ7DFHF
   VERSION: ${{ github.run_number }}
 
 jobs:
@@ -28,8 +18,6 @@ jobs:
     name: Build, Sign & Notarize Orca Engine
     runs-on: macos-14
     timeout-minutes: 120
-    outputs:
-      dmg-path: ${{ steps.create-dmg.outputs.dmg-path }}
     
     steps:
       - name: Checkout
@@ -37,139 +25,69 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
-
       - name: Install dependencies
         run: |
           brew update
           brew install scons
 
-      - name: Setup Python and SCons
-        uses: ./.github/actions/godot-deps
-
-      - name: Download pre-built AccessKit
-        uses: dsaltares/fetch-gh-release-asset@1.1.2
-        with:
-          repo: AccessKit/accesskit-c
-          version: tags/0.17.0
-          file: accesskit-c-0.17.0.zip
-          target: accesskit-c-0.17.0/accesskit_c.zip
-
-      - name: Extract pre-built AccessKit
-        run: unzip -o accesskit-c-0.17.0/accesskit_c.zip
-
-      - name: Setup Vulkan SDK
-        id: vulkan-sdk
-        run: |
-          if sh misc/scripts/install_vulkan_sdk_macos.sh; then
-            echo "VULKAN_ENABLED=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::macOS: Vulkan SDK installation failed, building without Vulkan support."
-            echo "VULKAN_ENABLED=no" >> "$GITHUB_OUTPUT"
-          fi
-        continue-on-error: true
-
-      - name: Build Orca Engine (x86_64)
-        uses: ./.github/actions/godot-build
-        with:
-          scons-flags: >-
-            dev_mode=no
-            module_text_server_fb_enabled=yes
-            debug_symbols=no
-            arch=x86_64
-            vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }}
-            "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.17.0/"
-          platform: macos
-          target: editor
-
       - name: Build Orca Engine (arm64)
-        uses: ./.github/actions/godot-build
-        with:
-          scons-flags: >-
-            dev_mode=no
-            module_text_server_fb_enabled=yes
-            debug_symbols=no
-            arch=arm64
-            vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }}
-            "accesskit_sdk_path=${{ github.workspace }}/accesskit-c-0.17.0/"
-          platform: macos
-          target: editor
-
-      - name: Create Universal Binary
         run: |
-          set -euo pipefail
-          # Create universal binary
-          lipo -create \
-            ./bin/godot.macos.editor.x86_64 \
-            ./bin/godot.macos.editor.arm64 \
-            -output ./bin/orca.macos.editor.universal
-          
-          # Clean up individual arch binaries
-          rm -f ./bin/godot.macos.editor.x86_64 ./bin/godot.macos.editor.arm64
-          
-          # Strip and set permissions
-          strip ./bin/orca.macos.editor.universal
-          chmod +x ./bin/orca.macos.editor.universal
-          
-          echo "✅ Universal binary created: $(file ./bin/orca.macos.editor.universal)"
+          scons platform=macos target=editor dev_build=no arch=arm64 -j$(sysctl -n hw.ncpu)
 
       - name: Prepare Orca.app Bundle
         id: bundle
         run: |
           set -euo pipefail
-          APP_NAME="${APP_NAME}"
-          BUNDLE_ID="${BUNDLE_ID}"
-          VERSION="${VERSION}"
-          TEMPLATE="misc/dist/macos_tools.app"
-          BIN="bin/orca.macos.editor.universal"
+          BIN="bin/godot.macos.editor.arm64"
+          [ -f "$BIN" ] || BIN="bin/godot.macos.editor.dev.arm64"
           
-          # Check if binary exists
           if [ ! -f "$BIN" ]; then
-            echo "❌ Built binary not found at $BIN" >&2
+            echo "Built binary not found" >&2
             ls -la bin/ || true
             exit 1
           fi
           
-          # Check if template exists, if not use the existing one
-          if [ ! -d "$TEMPLATE" ]; then
-            echo "⚠️ Template not found at $TEMPLATE, checking alternatives..."
-            if [ -d "misc/dist/macos_template.app" ]; then
-              TEMPLATE="misc/dist/macos_template.app"
-              echo "✅ Using template: $TEMPLATE"
-            elif [ -d "bin/Orca.app" ]; then
-              echo "✅ Using existing Orca.app as template"
-              cp -R "bin/Orca.app" "${APP_NAME}.app"
-              TEMPLATE=""
-            else
-              echo "❌ No suitable template found" >&2
-              exit 1
-            fi
+          # Use existing Orca.app as template or create from scratch
+          if [ -d "bin/Orca.app" ]; then
+            cp -R "bin/Orca.app" "${APP_NAME}.app"
+          else
+            mkdir -p "${APP_NAME}.app/Contents/MacOS"
+            mkdir -p "${APP_NAME}.app/Contents/Resources"
+            
+            # Create basic Info.plist
+            cat > "${APP_NAME}.app/Contents/Info.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>${BUNDLE_ID}</string>
+    <key>CFBundleName</key>
+    <string>${APP_NAME}</string>
+    <key>CFBundleDisplayName</key>
+    <string>${APP_NAME}</string>
+    <key>CFBundleVersion</key>
+    <string>${VERSION}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${VERSION}</string>
+    <key>CFBundleExecutable</key>
+    <string>${APP_NAME}</string>
+</dict>
+</plist>
+EOF
           fi
           
-          # Copy template if we have one
-          if [ -n "$TEMPLATE" ]; then
-            cp -R "$TEMPLATE" "${APP_NAME}.app"
-          fi
-          
-          # Replace binary
+          # Install binary
           install -m 755 "$BIN" "${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
-          
-          # Update Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "${APP_NAME}.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "${APP_NAME}.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${APP_NAME}" "${APP_NAME}.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${APP_NAME}.app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "${APP_NAME}.app/Contents/Info.plist"
           
           echo "app-path=${APP_NAME}.app" >> "$GITHUB_OUTPUT"
           echo "✅ ${APP_NAME}.app bundle created"
 
       - name: Import Signing Certificate
-        if: ${{ (secrets.MACOS_CERT_P12 != '' || secrets.MACOS_CERTIFICATE_P12 != '') }}
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
         env:
-          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12 != '' && secrets.MACOS_CERT_P12 || secrets.MACOS_CERTIFICATE_P12 }}
-          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD != '' && secrets.MACOS_CERT_P12_PASSWORD || secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
         run: |
           set -euo pipefail
           KEYCHAIN="build.keychain"
@@ -182,24 +100,13 @@ jobs:
           echo "✅ Certificate imported"
 
       - name: Code Sign App
-        env:
-          IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY != '' && secrets.MACOS_CODESIGN_IDENTITY || 'Developer ID Application: Simplifine Corp (92HMJ7DFHF)' }}
         run: |
           set -euo pipefail
           APP_PATH="${{ steps.bundle.outputs.app-path }}"
-          ENTITLEMENTS="misc/dist/macos/editor.entitlements"
-          
-          if [ ! -f "$ENTITLEMENTS" ]; then
-            echo "❌ Entitlements not found at $ENTITLEMENTS" >&2
-            exit 1
-          fi
+          IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
           
           echo "🔐 Signing with identity: $IDENTITY"
-          /usr/bin/codesign --force --options runtime --timestamp \
-            --entitlements "$ENTITLEMENTS" \
-            --sign "$IDENTITY" "$APP_PATH"
-          
-          # Verify signature
+          /usr/bin/codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP_PATH"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           echo "✅ Code signing completed"
 
@@ -208,20 +115,19 @@ jobs:
           set -euo pipefail
           APP_PATH="${{ steps.bundle.outputs.app-path }}"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${APP_PATH%.app}.zip"
-          echo "📦 Notarization package created: ${APP_PATH%.app}.zip"
+          echo "📦 Notarization package created"
 
-      - name: Submit for Notarization (Apple ID)
+      - name: Submit for Notarization
         if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          TEAM_ID: ${{ env.TEAM_ID }}
         run: |
           set -euo pipefail
           ZIP_PATH="${{ steps.bundle.outputs.app-path }}"
           ZIP_PATH="${ZIP_PATH%.app}.zip"
           
-          echo "🍎 Submitting for notarization with Apple ID..."
+          echo "🍎 Submitting for notarization..."
           xcrun notarytool submit "$ZIP_PATH" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
@@ -230,56 +136,18 @@ jobs:
             --timeout 30m
           echo "✅ Notarization completed"
 
-      - name: Submit for Notarization (API Key)
-        if: ${{ secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' && secrets.AC_API_PRIVATE_KEY_P8 != '' && (secrets.APPLE_ID == '' || secrets.APPLE_APP_PASSWORD == '') }}
-        env:
-          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
-          AC_API_PRIVATE_KEY_P8: ${{ secrets.AC_API_PRIVATE_KEY_P8 }}
-        run: |
-          set -euo pipefail
-          echo "$AC_API_PRIVATE_KEY_P8" > /tmp/AuthKey.p8
-          ZIP_PATH="${{ steps.bundle.outputs.app-path }}"
-          ZIP_PATH="${ZIP_PATH%.app}.zip"
-          
-          echo "🔑 Submitting for notarization with API key..."
-          xcrun notarytool submit "$ZIP_PATH" \
-            --key "/tmp/AuthKey.p8" \
-            --key-id "$AC_API_KEY_ID" \
-            --issuer "$AC_API_ISSUER_ID" \
-            --wait \
-            --timeout 30m
-          
-          rm -f /tmp/AuthKey.p8
-          echo "✅ Notarization completed"
-
-      - name: Staple Notarization Ticket
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          APP_PATH="${{ steps.bundle.outputs.app-path }}"
-          
-          echo "📎 Stapling notarization ticket..."
-          xcrun stapler staple "$APP_PATH" || echo "⚠️ Stapling failed but continuing"
-          xcrun stapler validate "$APP_PATH" || echo "⚠️ Validation failed but continuing"
-
       - name: Create Production DMG
         id: create-dmg
         run: |
           set -euo pipefail
           APP_PATH="${{ steps.bundle.outputs.app-path }}"
-          DMG_NAME="${APP_NAME} (Mac).dmg"
+          DMG_NAME="Orca (Mac).dmg"
           
           echo "💿 Creating DMG: $DMG_NAME"
-          hdiutil create \
-            -volname "$APP_NAME" \
-            -srcfolder "$APP_PATH" \
-            -ov \
-            -format UDZO \
-            "$DMG_NAME"
+          hdiutil create -volname "Orca Engine" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_NAME"
           
           echo "dmg-path=$DMG_NAME" >> "$GITHUB_OUTPUT"
-          echo "✅ DMG created: $DMG_NAME ($(du -h "$DMG_NAME" | cut -f1))"
+          echo "✅ DMG created: $DMG_NAME"
 
       - name: Upload Production Artifacts
         uses: actions/upload-artifact@v4
@@ -288,7 +156,6 @@ jobs:
           path: |
             ${{ steps.bundle.outputs.app-path }}
             ${{ steps.create-dmg.outputs.dmg-path }}
-            ${{ steps.bundle.outputs.app-path%.app }}.zip
 
       - name: Verify Final Build
         run: |
@@ -299,8 +166,4 @@ jobs:
           echo "🔍 Final verification:"
           echo "  📱 App: $(du -h "$APP_PATH" | cut -f1) - $APP_PATH"
           echo "  💿 DMG: $(du -h "$DMG_PATH" | cut -f1) - $DMG_PATH"
-          
-          # Test Gatekeeper (may fail but that's okay)
-          spctl -a -vvv "$APP_PATH" || echo "⚠️ Gatekeeper check failed (may be expected)"
-          
-          echo "✅ Orca Engine macOS build completed successfully!"
+          echo "✅ Orca Engine macOS build completed!"
