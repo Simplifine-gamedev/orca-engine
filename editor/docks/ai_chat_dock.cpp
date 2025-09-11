@@ -618,6 +618,7 @@ void AIChatDock::_notification(int p_notification) {
 					if (err != OK) {
 						_add_message_to_chat("system", "Failed to send request to backend.");
 						is_waiting_for_response = false;
+						sent_message_content = ""; // Reset since request failed
 						_update_ui_state();
 						http_status = STATUS_DONE;
 						return;
@@ -796,6 +797,9 @@ void AIChatDock::_on_send_button_pressed() {
 	// DON'T clear input field here - keep user message visible until assistant responds
 	// input_field->set_text(""); // MOVED to response completion handlers
 	
+	// Store the sent message content to prevent clearing if user types during generation
+	sent_message_content = message;
+	
 	// Ensure conversation is saved with new user message
 	if (current_conversation_index >= 0) {
 		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
@@ -841,10 +845,17 @@ void AIChatDock::_on_stop_button_pressed() {
 	// Drop any pending assistant label reference to avoid UI deadlocks.
 	current_assistant_message_label = nullptr;
 
-	// Clear input field when manually stopped
+	// Only clear input field if it still contains the original sent message
 	if (input_field && input_field->is_inside_tree()) {
-		input_field->set_text("");
-		print_line("AI Chat: Cleared input field after manual stop");
+		String current_input = input_field->get_text().strip_edges();
+		if (current_input == sent_message_content) {
+			input_field->set_text("");
+			print_line("AI Chat: Cleared input field after manual stop");
+		} else {
+			print_line("AI Chat: Preserved user input after manual stop - content changed");
+		}
+		// Clear the stored message content regardless
+		sent_message_content = "";
 	}
 	
 	// Reflect immediately in UI.
@@ -2967,10 +2978,17 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 	stop_requested = false;
 	current_request_id = "";
 	
-	// Clear input field when request is stopped
+	// Only clear input field if it still contains the original sent message
 	if (input_field && input_field->is_inside_tree()) {
-		input_field->set_text("");
-		print_line("AI Chat: Cleared input field after stop");
+		String current_input = input_field->get_text().strip_edges();
+		if (current_input == sent_message_content) {
+			input_field->set_text("");
+			print_line("AI Chat: Cleared input field after stop");
+		} else {
+			print_line("AI Chat: Preserved user input after stop - content changed");
+		}
+		// Clear the stored message content regardless
+		sent_message_content = "";
 	}
 	
 	_update_ui_state();
@@ -7386,6 +7404,7 @@ void AIChatDock::_finalize_chat_request() {
 	if (err != OK) {
 		_add_message_to_chat("system", "Failed to connect to backend: " + host + ":" + String::num_int64(port) + " (Error: " + String::num_int64(err) + ")");
 		is_waiting_for_response = false;
+		sent_message_content = ""; // Reset since request failed
 		_update_ui_state();
 		return;
 	}
@@ -7456,10 +7475,18 @@ void AIChatDock::_request_completed() {
 		stop_requested = false;
 		current_request_id = "";
 		
-		// NOW clear the input field since the conversation is truly complete
+		// Only clear the input field if it still contains the original sent message
+		// This prevents clearing user input if they typed while generation was happening
 		if (input_field && input_field->is_inside_tree()) {
-			input_field->set_text("");
-			print_line("AI Chat: Cleared input field after conversation completion");
+			String current_input = input_field->get_text().strip_edges();
+			if (current_input == sent_message_content) {
+				input_field->set_text("");
+				print_line("AI Chat: Cleared input field after conversation completion");
+			} else {
+				print_line("AI Chat: Preserved user input - content changed during generation");
+			}
+			// Clear the stored message content regardless
+			sent_message_content = "";
 		}
 	}
 	_update_ui_state();

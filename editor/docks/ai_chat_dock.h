@@ -278,6 +278,9 @@ private:
 	bool stream_completed_successfully = false;
 	// Timer to defer heavy conversation save to idle time
 	Timer *save_timer = nullptr;
+	
+	// Track the message content that was sent to prevent clearing user input during typing
+	String sent_message_content;
 
 	void _on_send_button_pressed();
 	void _on_stop_button_pressed();
