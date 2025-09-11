@@ -233,6 +233,9 @@ void AIChatDock::_notification(int p_notification) {
             embedding_status_label = memnew(Label);
             embedding_status_label->set_text("");
             embedding_status_label->set_modulate(Color(0.8, 0.8, 0.8));
+            // Set fixed minimum width to prevent layout twitching during dot animation
+            embedding_status_label->set_custom_minimum_size(Size2(80, 0));
+            embedding_status_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
             top_container->add_child(embedding_status_label);
 			
 			// Setup authentication UI
@@ -10006,7 +10009,7 @@ void AIChatDock::_set_embedding_status(const String &p_text, bool p_busy) {
 	embedding_status_dots = 0;
 	
 	if (p_busy) {
-		embedding_status_label->set_text(p_text + "...");
+		embedding_status_label->set_text(p_text + "   "); // Fixed width with 3 spaces
 		embedding_status_label->set_modulate(Color(1.0, 0.8, 0.0)); // Yellow for in-progress
 		if (embedding_status_timer) {
 			embedding_status_timer->start();
@@ -10026,9 +10029,10 @@ void AIChatDock::_on_embedding_status_tick() {
 	}
 	
 	embedding_status_dots = (embedding_status_dots + 1) % 4;
-	String dots = "";
+	// Use fixed-width animation to prevent layout twitching
+	String dots = "   "; // Always 3 spaces width
 	for (int i = 0; i < embedding_status_dots; i++) {
-		dots += ".";
+		dots = dots.substr(0, i) + "." + dots.substr(i + 1);
 	}
 	
 	embedding_status_label->set_text(embedding_status_base + dots);
