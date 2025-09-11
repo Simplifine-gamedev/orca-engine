@@ -13,6 +13,7 @@ env:
   APP_NAME: Orca
   BUNDLE_ID: com.orca.engine
   TEAM_ID: 92HMJ7DFHF
+  VERSION_BASE: "0.01"
 
 jobs:
   build-sign-notarize:
@@ -124,3 +125,4 @@ jobs:
             Orca (Mac).dmg
           prerelease: false
           make_latest: true
+          token: ${{ secrets.GITHUB_TOKEN }}

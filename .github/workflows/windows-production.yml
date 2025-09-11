@@ -103,6 +103,7 @@ jobs:
             Orca (Windows).exe
           prerelease: false
           make_latest: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
