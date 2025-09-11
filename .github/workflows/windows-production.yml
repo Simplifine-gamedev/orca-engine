@@ -43,6 +43,7 @@ jobs:
           scons platform=windows target=editor dev_build=no arch=x86_64 -j4
 
       - name: Verify Build
+        shell: cmd
         run: |
           if not exist "bin\godot.windows.editor.x86_64.exe" (
             echo "Built binary not found"
@@ -58,6 +59,7 @@ jobs:
           java-version: '11'
 
       - name: Sign Windows Binary
+        shell: cmd
         env:
           SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
           SSL_COM_PASSWORD: ${{ secrets.SSL_COM_PASSWORD }}
@@ -77,6 +79,7 @@ jobs:
           echo "✅ Windows binary signed"
 
       - name: Rename for Distribution
+        shell: cmd
         run: |
           copy "bin\signed\orca-windows-production.exe" "Orca (Windows).exe"
           echo "✅ Binary renamed for distribution"

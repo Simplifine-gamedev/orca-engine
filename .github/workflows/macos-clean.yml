@@ -37,7 +37,10 @@ jobs:
       - name: Create App Bundle
         id: bundle
         run: |
-          BIN="bin/godot.macos.editor.arm64"
+          BIN="bin/orca.macos.editor.arm64"
+          if [ ! -f "$BIN" ]; then
+            BIN="bin/godot.macos.editor.arm64"
+          fi
           if [ ! -f "$BIN" ]; then
             BIN="bin/godot.macos.editor.dev.arm64"
           fi
