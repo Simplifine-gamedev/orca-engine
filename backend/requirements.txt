@@ -26,3 +26,4 @@ weaviate-client>=4.5.0  # High-performance vector database
 # Google Cloud dependencies for vector search and Vertex AI
 google-cloud-bigquery  # For BigQuery vector storage
 google-cloud-aiplatform>=1.38  # For Vertex AI models (required by litellm)
+packaging>=21.0  # For semantic versioning in auto-update system

@@ -55,6 +55,7 @@
 #include "scene/gui/color_rect.h"
 #include "scene/gui/control.h"
 #include "scene/gui/dialogs.h"
+#include "scene/gui/update_notification_dialog.h"
 #include "scene/gui/file_dialog.h"
 #include "scene/gui/flow_container.h"
 #include "scene/gui/foldable_container.h"
@@ -96,6 +97,7 @@
 #include "scene/main/canvas_item.h"
 #include "scene/main/canvas_layer.h"
 #include "scene/main/http_request.h"
+#include "scene/main/auto_update_service.h"
 #include "scene/main/instance_placeholder.h"
 #include "scene/main/missing_node.h"
 #include "scene/main/multiplayer_api.h"
@@ -415,6 +417,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(Node);
 	GDREGISTER_VIRTUAL_CLASS(MissingNode);
 	GDREGISTER_ABSTRACT_CLASS(InstancePlaceholder);
+	GDREGISTER_CLASS(AutoUpdateService);
 
 	GDREGISTER_ABSTRACT_CLASS(Viewport);
 	GDREGISTER_CLASS(SubViewport);
@@ -521,6 +524,7 @@ void register_scene_types() {
 
 	GDREGISTER_CLASS(AcceptDialog);
 	GDREGISTER_CLASS(ConfirmationDialog);
+	GDREGISTER_CLASS(UpdateNotificationDialog);
 
 	GDREGISTER_CLASS(SubViewportContainer);
 	GDREGISTER_CLASS(SplitContainer);

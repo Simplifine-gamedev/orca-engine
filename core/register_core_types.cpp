@@ -77,6 +77,7 @@
 #include "core/os/main_loop.h"
 #include "core/os/time.h"
 #include "core/string/optimized_translation.h"
+#include "core/auto_update_manager.h"
 #include "core/string/translation.h"
 #include "core/string/translation_server.h"
 #ifndef DISABLE_DEPRECATED
@@ -108,6 +109,7 @@ static Time *_time = nullptr;
 
 static CoreBind::Geometry2D *_geometry_2d = nullptr;
 static CoreBind::Geometry3D *_geometry_3d = nullptr;
+static AutoUpdateManager *_auto_update_manager = nullptr;
 
 static WorkerThreadPool *worker_thread_pool = nullptr;
 
@@ -341,6 +343,10 @@ void register_early_core_singletons() {
 
 	GDREGISTER_CLASS(Time);
 	Engine::get_singleton()->add_singleton(Engine::Singleton("Time", Time::get_singleton()));
+	
+	_auto_update_manager = memnew(AutoUpdateManager);
+	GDREGISTER_CLASS(AutoUpdateManager);
+	Engine::get_singleton()->add_singleton(Engine::Singleton("AutoUpdateManager", AutoUpdateManager::get_singleton()));
 }
 
 void register_core_singletons() {
@@ -473,6 +479,7 @@ void unregister_core_types() {
 
 	ClassDB::cleanup_defaults();
 	memdelete(_time);
+	memdelete(_auto_update_manager);
 	ObjectDB::cleanup();
 
 	Variant::unregister_types();

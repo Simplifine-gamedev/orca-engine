@@ -29,6 +29,7 @@ try:
 except Exception:
     LocalVectorManager = None
 from auth_manager import AuthManager
+from auto_update_manager import update_manager
 
 # app = Flask(__name__)
 # CORS(app)
@@ -5353,6 +5354,180 @@ def list_user_3d_models(user_id: str):
         'models': [],
         'message': 'Model listing not supported by Point-E service'
     })
+
+# Auto-Update System Endpoints
+@app.route('/api/update/check', methods=['GET'])
+def check_for_updates():
+    """Check for available updates"""
+    try:
+        result = update_manager.check_for_updates()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            'error': 'Update check failed',
+            'message': str(e),
+            'update_available': False
+        }), 500
+
+@app.route('/api/update/status', methods=['GET'])
+def get_update_status():
+    """Get update system status"""
+    try:
+        status = update_manager.get_status()
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({
+            'error': 'Status check failed',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/update/download', methods=['POST'])
+def download_update():
+    """Download update file"""
+    try:
+        data = request.get_json()
+        download_url = data.get('download_url')
+        
+        if not download_url:
+            return jsonify({
+                'error': 'Missing download_url parameter'
+            }), 400
+        
+        result = update_manager.download_update(download_url)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            'error': 'Download failed',
+            'message': str(e),
+            'success': False
+        }), 500
+
+@app.route('/api/update/install', methods=['POST'])
+def install_update():
+    """Install downloaded update"""
+    try:
+        data = request.get_json()
+        file_path = data.get('file_path')
+        
+        if not file_path:
+            return jsonify({
+                'error': 'Missing file_path parameter'
+            }), 400
+        
+        result = update_manager.install_update(file_path)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            'error': 'Installation failed',
+            'message': str(e),
+            'success': False
+        }), 500
+
+@app.route('/api/update/webhook', methods=['POST'])
+def github_webhook():
+    """GitHub webhook for release notifications"""
+    try:
+        # Verify webhook signature if secret is configured
+        github_secret = os.getenv('GITHUB_WEBHOOK_SECRET')
+        if github_secret:
+            signature = request.headers.get('X-Hub-Signature-256')
+            if not signature:
+                return jsonify({'error': 'Missing signature'}), 400
+            
+            expected_signature = 'sha256=' + hashlib.sha256(
+                (github_secret + request.get_data().decode()).encode()
+            ).hexdigest()
+            
+            if not hashlib.compare_digest(signature, expected_signature):
+                return jsonify({'error': 'Invalid signature'}), 403
+        
+        payload = request.get_json()
+        
+        # Handle release events
+        if payload.get('action') == 'published':
+            # Clear cache to force fresh check
+            update_manager.cache.clear()
+            return jsonify({'status': 'Cache cleared, ready for update check'})
+        
+        return jsonify({'status': 'Webhook received'})
+    except Exception as e:
+        return jsonify({
+            'error': 'Webhook processing failed',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/update/notes/<version>', methods=['GET'])
+def get_release_notes(version):
+    """Get release notes for a specific version"""
+    try:
+        # This would typically fetch from GitHub API
+        # For now, return cached data if available
+        cached_data = update_manager._get_cached_data('latest_release')
+        if cached_data and cached_data.get('latest_version') == version:
+            return jsonify({
+                'version': version,
+                'notes': cached_data.get('release_notes', ''),
+                'url': cached_data.get('release_url', '')
+            })
+        
+        # Fallback to GitHub API
+        headers = {'Accept': 'application/vnd.github.v3+json'}
+        github_token = os.getenv('GITHUB_TOKEN')
+        if github_token:
+            headers['Authorization'] = f'token {github_token}'
+        
+        response = requests.get(
+            f"{update_manager.github_api_url}/releases/tags/v{version}",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 404:
+            return jsonify({'error': 'Version not found'}), 404
+        
+        response.raise_for_status()
+        release_data = response.json()
+        
+        return jsonify({
+            'version': version,
+            'notes': release_data.get('body', ''),
+            'url': release_data.get('html_url', '')
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'error': 'Failed to fetch release notes',
+            'message': str(e)
+        }), 500
+
+# AI Tool Integration for Update Checking
+def check_for_app_updates():
+    """AI tool function to check for app updates"""
+    try:
+        result = update_manager.check_for_updates()
+        
+        if result.get('update_available'):
+            return f"✅ Update available: v{result['latest_version']} (current: v{result['current_version']})\n\nRelease notes:\n{result.get('release_notes', 'No release notes available')}\n\nDownload: {result.get('download_url', 'N/A')}"
+        else:
+            return f"✅ You're up to date! Current version: v{result['current_version']}"
+            
+    except Exception as e:
+        return f"❌ Error checking for updates: {str(e)}"
+
+# Register AI tool
+if 'tools' not in globals():
+    tools = []
+
+tools.append({
+    "name": "check_for_app_updates",
+    "description": "Check for available Orca Engine updates and get release information",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+    },
+    "function": check_for_app_updates
+})
 
 if __name__ == '__main__':
     # Print 3D service status on startup

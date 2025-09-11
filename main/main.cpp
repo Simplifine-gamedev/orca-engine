@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "main.h"
+#include "scene/main/auto_update_service.h"
 
 #include "core/config/project_settings.h"
 #include "core/core_globals.h"
@@ -4397,6 +4398,13 @@ int Main::start() {
 					sml->get_root()->add_child(E);
 				}
 				OS::get_singleton()->benchmark_end_measure("Startup", "Load Autoloads");
+				
+				// Initialize Orca Auto-Update Service
+				{
+					AutoUpdateService *auto_update_service = memnew(AutoUpdateService);
+					sml->get_root()->add_child(auto_update_service);
+					print_line("AutoUpdateService initialized and added to scene tree");
+				}
 			}
 		}
 
