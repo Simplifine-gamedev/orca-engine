@@ -106,3 +106,20 @@ jobs:
           path: |
             Orca.app
             Orca (Mac).dmg
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.0.0-build-${{ github.run_number }}
+          name: Orca Engine v1.0.0 Build ${{ github.run_number }}
+          body: |
+            🍎 **Mac Build**: Automatically built, signed & notarized
+            🏁 **Windows Build**: Use manual signed binary from distribution/
+            
+            **Changes in this build:**
+            ${{ github.event.head_commit.message }}
+          files: |
+            Orca (Mac).dmg
+          prerelease: false
+          make_latest: true
