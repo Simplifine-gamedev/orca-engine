@@ -3,6 +3,8 @@ name: 🍎 macOS Production Build
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 permissions:
   contents: write
