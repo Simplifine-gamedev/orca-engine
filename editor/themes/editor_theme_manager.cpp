@@ -262,7 +262,8 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 		Color system_base_color = display_server->get_base_color();
 		Color system_accent_color = display_server->get_accent_color();
 
-		if (follow_system_theme) {
+		// Preserve user's custom theme settings - only apply system theme if user hasn't customized
+		if (follow_system_theme && config.preset != "Custom") {
 			String dark_theme = "Default";
 			String light_theme = "Light";
 
@@ -335,14 +336,28 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 			EditorSettings::get_singleton()->set_initial_value("interface/theme/draw_extra_borders", config.draw_extra_borders);
 		}
 
-		if (follow_system_theme && system_base_color != Color(0, 0, 0, 0)) {
+		// Only override with system colors if user hasn't already customized their theme
+		String original_preset = EDITOR_GET("interface/theme/preset");
+		if (follow_system_theme && system_base_color != Color(0, 0, 0, 0) && original_preset != "Custom") {
 			config.base_color = system_base_color;
 			config.preset = "Custom";
 		}
 
-		if (use_system_accent_color && system_accent_color != Color(0, 0, 0, 0)) {
+		if (use_system_accent_color && system_accent_color != Color(0, 0, 0, 0) && original_preset != "Custom") {
 			config.accent_color = system_accent_color;
 			config.preset = "Custom";
+		}
+
+		// Additional protection: if user had custom colors, preserve the Custom preset
+		// This fixes the issue where Orca would override Godot UI color settings
+		Color original_base_color = EDITOR_GET("interface/theme/base_color");
+		Color original_accent_color = EDITOR_GET("interface/theme/accent_color");
+		// Check against default values: base_color defaults to (0,0,0), accent_color defaults to (0.8,0.8,0.8)
+		if (original_preset == "Custom" && (original_base_color != Color(0, 0, 0) || original_accent_color != Color(0.8, 0.8, 0.8))) {
+			// User has custom colors, preserve them regardless of system theme settings
+			config.preset = "Custom";
+			config.base_color = original_base_color;
+			config.accent_color = original_accent_color;
 		}
 
 		// Enforce values in case they were adjusted or overridden.
