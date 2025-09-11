@@ -31,7 +31,7 @@ jobs:
 
       - name: Build Orca Engine
         run: |
-          scons platform=macos target=editor dev_build=no arch=arm64 -j$(sysctl -n hw.ncpu)
+          scons platform=macos target=editor dev_build=no arch=arm64 vulkan=no -j$(sysctl -n hw.ncpu)
 
       - name: Create App Bundle
         id: bundle
