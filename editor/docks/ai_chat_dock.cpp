@@ -45,6 +45,7 @@
 #include "scene/gui/text_edit.h"
 #include "scene/gui/tree.h"
 #include "scene/main/scene_tree.h"
+#include "servers/display_server.h"
 
 // Initialize static singleton
 AIChatDock *AIChatDock::singleton = nullptr;
@@ -3733,6 +3734,9 @@ void AIChatDock::_on_apply_edit_thread_done() {
     }
 
     if (pending_tool_tasks == 0) {
+        // All async tool tasks completed - show tool completion notification
+        _show_status_notification("completion", "Tool execution completed", "🔧", 2.0);
+        
         current_assistant_message_label = nullptr;
         _send_chat_request();
     }
@@ -7409,15 +7413,37 @@ void AIChatDock::_update_ui_state() {
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
 	input_field->set_editable(!is_waiting_for_response);
 
-	// Handle stop button state
+	// Handle stop button state with improved reliability
 	if (is_waiting_for_response) {
 		// Show stop button and hide/disable send button during request
 		send_button->set_visible(false);
 		stop_button->set_visible(true);
-		bool should_disable_stop = current_request_id.is_empty();
-		stop_button->set_disabled(should_disable_stop); // Only enable if we have a request ID
 		
-		print_line("AI Chat: UI State - waiting for response, stop button visible=" + String(stop_button->is_visible() ? "true" : "false") + ", disabled=" + String(should_disable_stop ? "true" : "false") + ", request_id='" + current_request_id + "'");
+		// More robust stop button state - enable if we have a request ID or any pending work
+		bool has_active_request = !current_request_id.is_empty();
+		bool has_pending_work = pending_tool_tasks > 0;
+		bool should_enable_stop = has_active_request || has_pending_work;
+		
+		stop_button->set_disabled(!should_enable_stop);
+		
+		// Update stop button appearance to indicate activity
+		if (should_enable_stop) {
+			// Red background for active stop button
+			Ref<StyleBoxFlat> stop_style = memnew(StyleBoxFlat);
+			stop_style->set_bg_color(Color(0.8, 0.2, 0.2)); // Red
+			stop_style->set_corner_radius_all(6);
+			stop_style->set_content_margin_all(8);
+			stop_button->add_theme_style_override("normal", stop_style);
+			
+			// Slightly lighter red for hover
+			Ref<StyleBoxFlat> stop_hover_style = memnew(StyleBoxFlat);
+			stop_hover_style->set_bg_color(Color(0.9, 0.3, 0.3)); // Lighter red
+			stop_hover_style->set_corner_radius_all(6);
+			stop_hover_style->set_content_margin_all(8);
+			stop_button->add_theme_style_override("hover", stop_hover_style);
+		}
+		
+		print_line("AI Chat: UI State - waiting for response, stop button visible=" + String(stop_button->is_visible() ? "true" : "false") + ", enabled=" + String(should_enable_stop ? "true" : "false") + ", request_id='" + current_request_id + "', pending_tasks=" + String::num_int64(pending_tool_tasks));
 		
 		// Also disable new conversation button during processing
 		if (new_conversation_button) {
@@ -7428,6 +7454,10 @@ void AIChatDock::_update_ui_state() {
 		send_button->set_visible(true);
 		send_button->set_text("Send");
 		stop_button->set_visible(false);
+		
+		// Reset stop button styling when hidden
+		stop_button->remove_theme_style_override("normal");
+		stop_button->remove_theme_style_override("hover");
 		
 		print_line("AI Chat: UI State - not waiting, send button visible, stop button hidden");
 		
@@ -7456,6 +7486,26 @@ void AIChatDock::_request_completed() {
 		stop_requested = false;
 		current_request_id = "";
 		
+		// Show completion notification and play sound when fully done
+		_show_completion_notification();
+		
+		// Play system beep sound for audio feedback
+		if (DisplayServer::get_singleton()) {
+			DisplayServer::get_singleton()->beep();
+		}
+		
+		// Brief visual feedback on send button to indicate completion
+		if (send_button && send_button->is_inside_tree()) {
+			// Temporarily change send button text to show completion
+			send_button->set_text("✓ Done");
+			
+			// Use a timer to reset the button text after a short delay
+			SceneTree *tree = get_tree();
+			if (tree) {
+				tree->create_timer(1.5)->connect("timeout", callable_mp(this, &AIChatDock::_reset_send_button_text));
+			}
+		}
+		
 		// NOW clear the input field since the conversation is truly complete
 		if (input_field && input_field->is_inside_tree()) {
 			input_field->set_text("");
@@ -7482,6 +7532,13 @@ String AIChatDock::_get_timestamp() {
 	return String::num_int64(time_dict["hour"]).pad_zeros(2) + ":" +
 		   String::num_int64(time_dict["minute"]).pad_zeros(2);
 }
+
+void AIChatDock::_reset_send_button_text() {
+	if (send_button && send_button->is_inside_tree() && !is_waiting_for_response) {
+		send_button->set_text("Send");
+	}
+}
+
 String AIChatDock::_process_inline_markdown(String p_line) {
 	String line = p_line;
 
@@ -10918,6 +10975,10 @@ void AIChatDock::_show_status_notification(const String &p_type, const String &p
 		bg_color = get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
 		border_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
 		text_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
+	} else if (p_type == "completion") {
+		bg_color = get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
 	} else if (p_type == "rate_limit") {
 		bg_color = get_theme_color(SNAME("warning_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
 		border_color = get_theme_color(SNAME("warning_color"), SNAME("Editor"));
@@ -10951,6 +11012,8 @@ void AIChatDock::_show_status_notification(const String &p_type, const String &p
 	if (icon_text.is_empty()) {
 		if (p_type == "summarization") {
 			icon_text = "🧠";
+		} else if (p_type == "completion") {
+			icon_text = "✅";
 		} else if (p_type == "rate_limit") {
 			icon_text = "⚠️";
 		} else if (p_type == "connection_error") {
@@ -11025,6 +11088,10 @@ void AIChatDock::_show_model_switch_notification(const String &p_from_provider, 
 	format_args.push_back(p_reason);
 	String message = String("Switched from {0} to {1}. Reason: {2}").format(format_args);
 	_show_status_notification("model_switch", message, "🔄", 4.0);
+}
+
+void AIChatDock::_show_completion_notification() {
+	_show_status_notification("completion", "AI response completed", "✅", 2.5);
 }
 
 void AIChatDock::_hide_status_notification() {

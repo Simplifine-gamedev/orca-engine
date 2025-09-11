@@ -372,6 +372,7 @@ private:
 
 	// Request completion helper
 	void _request_completed();
+	void _reset_send_button_text();
 
 	// Helper to truncate overly large text before sending to the model
 	String _truncate_text_for_context(const String &p_text, int p_max_chars = MAX_TEXT_ATTACHMENT_PREVIEW_CHARS);
@@ -558,6 +559,7 @@ private:
 	void _show_connection_status_notification(const String &p_status, const String &p_message = "");
 	void _show_rate_limit_notification(const String &p_provider, const String &p_message);
 	void _show_model_switch_notification(const String &p_from_provider, const String &p_to_provider, const String &p_reason);
+	void _show_completion_notification();
 	void _hide_status_notification();
 	void _on_status_notification_timer_timeout();
 	PanelContainer *status_notification_panel = nullptr;
