@@ -1377,13 +1377,13 @@ void AIChatDock::_check_authentication_status() {
 void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
 	
-	print_line("AI Chat: 📡 Auth request completed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
+	print_line("AI Chat: Auth request completed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
 	
 	if (p_code != 200) {
-		print_line("AI Chat: ❌ Authentication request failed with code " + String::num_int64(p_code) + ": " + response_text);
+		print_line("AI Chat: Authentication request failed with code " + String::num_int64(p_code) + ": " + response_text);
 		// If it's a connection error, the backend might not be running
 		if (p_code == 0) {
-			print_line("AI Chat: 🔌 Backend server might not be running. Please start the backend server.");
+			print_line("AI Chat: Backend server might not be running. Please start the backend server.");
 		}
 		return;
 	}
@@ -1409,7 +1409,7 @@ void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const Pack
 		EditorSettings::get_singleton()->set_setting("ai_chat/user_id", current_user_id);
 		EditorSettings::get_singleton()->set_setting("ai_chat/user_name", current_user_name);
 		
-		print_line("AI Chat: ✅ User authenticated successfully: " + current_user_name);
+		print_line("AI Chat: User authenticated successfully: " + current_user_name);
 		
         // Stop login polling if it was running
         _stop_login_polling();
@@ -1477,7 +1477,7 @@ bool AIChatDock::_is_user_authenticated() const {
 }
 
 void AIChatDock::_auto_verify_saved_credentials() {
-	print_line("AI Chat: 🔍 Checking for saved authentication credentials...");
+	print_line("AI Chat: Checking for saved authentication credentials...");
 	
 	// Check if we have saved authentication credentials
 	if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
@@ -1491,7 +1491,7 @@ void AIChatDock::_auto_verify_saved_credentials() {
 			current_user_id = saved_user_id;
 			current_user_name = saved_user_name;
 			
-			print_line("AI Chat: 🔐 Auto-verifying saved authentication for user: " + saved_user_name);
+			print_line("AI Chat: Auto-verifying saved authentication for user: " + saved_user_name);
 			
 			// Show temporary status while verifying
 			user_status_label->set_text("Verifying login...");
@@ -1522,7 +1522,7 @@ void AIChatDock::_start_login_polling() {
 	login_poll_timer->set_one_shot(false);
 	login_poll_timer->start();
 	
-	print_line("AI Chat: 🔄 Started automatic login polling");
+	print_line("AI Chat: Started automatic login polling");
 }
 
 void AIChatDock::_poll_login_status() {
@@ -1532,7 +1532,7 @@ void AIChatDock::_poll_login_status() {
 		// Stop polling after max attempts
 		login_poll_timer->stop();
 		user_status_label->set_text("Login timeout - try again");
-		print_line("AI Chat: ⏰ Login polling timed out");
+		print_line("AI Chat: Login polling timed out");
 		return;
 	}
 	
@@ -1543,18 +1543,18 @@ void AIChatDock::_poll_login_status() {
 void AIChatDock::_stop_login_polling() {
 	if (login_poll_timer && login_poll_timer->is_connected("timeout", callable_mp(this, &AIChatDock::_poll_login_status))) {
 		login_poll_timer->stop();
-		print_line("AI Chat: ✅ Stopped login polling");
+		print_line("AI Chat: Stopped login polling");
 	}
 }
 
 void AIChatDock::_on_index_button_pressed() {
-    print_line("AI Chat: ▶️ Index button pressed");
+    print_line("AI Chat: Index button pressed");
     _ensure_project_indexing();
 }
 void AIChatDock::_ensure_project_indexing() {
-	print_line("AI Chat: 🔄 Ensuring project indexing starts...");
-	print_line("AI Chat: 🔍 DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
-	print_line("AI Chat: 🔍 DEBUG - initial_indexing_done: " + String(initial_indexing_done ? "true" : "false"));
+	print_line("AI Chat: Ensuring project indexing starts...");
+	print_line("AI Chat: DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
+	print_line("AI Chat: DEBUG - initial_indexing_done: " + String(initial_indexing_done ? "true" : "false"));
 	
     // If not authenticated, fallback to guest automatically
     if (!_is_user_authenticated()) {
@@ -1562,18 +1562,18 @@ void AIChatDock::_ensure_project_indexing() {
         current_user_name = "Guest";
         auth_token = "";
         _update_user_status();
-        print_line("AI Chat: ℹ️ No auth detected; indexing as guest");
+        print_line("AI Chat: No auth detected; indexing as guest");
     }
 	
 	// Initialize embedding system if needed
 	if (!embedding_system_initialized) {
-		print_line("AI Chat: 📝 Initializing embedding system...");
+		print_line("AI Chat: Initializing embedding system...");
 		_initialize_embedding_system();
 	} else if (!initial_indexing_done) {
-		print_line("AI Chat: 📝 Embedding system initialized but indexing not done. Checking index status...");
+		print_line("AI Chat: Embedding system initialized but indexing not done. Checking index status...");
 		_check_index_status_and_start_if_needed();
 	} else {
-		print_line("AI Chat: ✅ Embedding system already initialized and indexing complete. Skipping unnecessary re-index.");
+		print_line("AI Chat: Embedding system already initialized and indexing complete. Skipping unnecessary re-index.");
 		return;
 	}
 }
@@ -2191,7 +2191,7 @@ void AIChatDock::_on_attach_resources_pressed() {
 }
 
 void AIChatDock::_on_reindex_project_pressed() {
-	print_line("AI Chat: 🔄 Re-index Project requested");
+	print_line("AI Chat: Re-index Project requested");
 	
 	// Show confirmation dialog
 	AcceptDialog *confirm_dialog = memnew(AcceptDialog);
@@ -2209,7 +2209,7 @@ void AIChatDock::_on_reindex_project_pressed() {
 }
 
 void AIChatDock::_perform_project_reindex() {
-	print_line("AI Chat: 🗑️ Starting project re-index...");
+	print_line("AI Chat: Starting project re-index...");
 	
 	// Ensure we're authenticated
 	if (!_is_user_authenticated()) {
@@ -2217,7 +2217,7 @@ void AIChatDock::_perform_project_reindex() {
 		current_user_name = "Guest";
 		auth_token = "";
 		_update_user_status();
-		print_line("AI Chat: ℹ️ Re-indexing as guest");
+		print_line("AI Chat: Re-indexing as guest");
 	}
 	
 	_set_embedding_status("Clearing old index", true);
@@ -2264,7 +2264,7 @@ void AIChatDock::_perform_project_reindex() {
 	Error err = reindex_request->request(base_url + "/reindex_project", headers, HTTPClient::METHOD_POST, json_string);
 	
 	if (err != OK) {
-		print_line("AI Chat: ❌ Failed to start reindex request: " + String::num_int64(err));
+		print_line("AI Chat: Failed to start reindex request: " + String::num_int64(err));
 		_set_embedding_status("Reindex failed", false);
 		reindex_request->queue_free();
 		return;
@@ -2275,51 +2275,51 @@ void AIChatDock::_perform_project_reindex() {
 }
 
 void AIChatDock::_on_reindex_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	print_line("AI Chat: 📨 Re-index response received - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
+	print_line("AI Chat: Re-index response received - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
 	
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
-		print_line("AI Chat: ❌ Reindex request failed. Code: " + String::num_int64(p_response_code));
+		print_line("AI Chat: Reindex request failed. Code: " + String::num_int64(p_response_code));
 		_set_embedding_status("Reindex failed", false);
 		return;
 	}
 	
 	// Parse response  
 	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
-	print_line("AI Chat: 📄 Reindex response body: " + response_text);
+	print_line("AI Chat: Reindex response body: " + response_text);
 	
 	JSON json_parser;
 	Error parse_err = json_parser.parse(response_text);
 	
 	if (parse_err != OK) {
-		print_line("AI Chat: ❌ Failed to parse reindex response JSON: " + response_text);
+		print_line("AI Chat: Failed to parse reindex response JSON: " + response_text);
 		_set_embedding_status("Reindex failed", false);
 		return;
 	}
 	
 	Dictionary response = json_parser.get_data();
-	print_line("AI Chat: 📊 Parsed response data, success: " + String(response.get("success", false)));
+	print_line("AI Chat: Parsed response data, success: " + String(response.get("success", false)));
 	
 	if (!response.get("success", false)) {
 		String error_msg = response.get("error", "Unknown error");
-		print_line("AI Chat: ❌ Reindex failed: " + error_msg);
+		print_line("AI Chat: Reindex failed: " + error_msg);
 		_set_embedding_status("Reindex failed", false);
 		return;
 	}
 	
-	print_line("AI Chat: ✅ Project cleared successfully. Starting fresh indexing...");
+	print_line("AI Chat: Project cleared successfully. Starting fresh indexing...");
 	// Do not mark busy here; busy=true would block _perform_initial_indexing()
 	_set_embedding_status("Starting reindex", false);
 	
 	// Reset indexing progression only; keep embedding system initialized
 	initial_indexing_done = false;
 	
-	print_line("AI Chat: ▶️ Triggering _perform_initial_indexing directly...");
+	print_line("AI Chat: Triggering _perform_initial_indexing directly...");
 	// Start fresh indexing directly
 	call_deferred("_perform_initial_indexing");
 }
 
 void AIChatDock::_check_index_status_and_start_if_needed() {
-	print_line("AI Chat: 🔍 Checking if project is already indexed...");
+	print_line("AI Chat: Checking if project is already indexed...");
 	
 	// Construct server URL
 	String base_url = _get_embed_base_url();
@@ -2343,7 +2343,7 @@ void AIChatDock::_check_index_status_and_start_if_needed() {
 	Error err = status_request->request(base_url + "/index_status", headers, HTTPClient::METHOD_POST, json_string);
 	
 	if (err != OK) {
-		print_line("AI Chat: ❌ Failed to check index status. Starting fresh indexing as fallback...");
+		print_line("AI Chat: Failed to check index status. Starting fresh indexing as fallback...");
 		status_request->queue_free();
 		call_deferred("_perform_initial_indexing");
 		return;
@@ -2354,7 +2354,7 @@ void AIChatDock::_check_index_status_and_start_if_needed() {
 }
 
 void AIChatDock::_on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	print_line("AI Chat: 📨 Index status response - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
+	print_line("AI Chat: Index status response - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
 	
 	// Safe access to last child to avoid negative indexing crash
 	if (get_child_count() > 0) {
@@ -2379,19 +2379,19 @@ void AIChatDock::_on_index_status_response(int p_result, int p_response_code, co
 			if (indexed) {
 				Dictionary stats = response.get("stats", Dictionary());
 				int total_files = stats.get("total_files", 0);
-				print_line("AI Chat: ✅ Project already indexed with " + String::num_int64(total_files) + " files. Skipping re-index.");
+				print_line("AI Chat: Project already indexed with " + String::num_int64(total_files) + " files. Skipping re-index.");
 				
 				_set_embedding_status(String::num_int64(total_files) + " files already indexed", false);
 				initial_indexing_done = true;
 				should_index = false;
 			} else {
-				print_line("AI Chat: 📝 Project not indexed yet. Starting fresh indexing...");
+				print_line("AI Chat: Project not indexed yet. Starting fresh indexing...");
 			}
 		} else {
-			print_line("AI Chat: ⚠️ Could not parse index status response. Starting indexing as fallback.");
+			print_line("AI Chat: Could not parse index status response. Starting indexing as fallback.");
 		}
 	} else {
-		print_line("AI Chat: ⚠️ Index status check failed. Starting indexing as fallback.");
+		print_line("AI Chat: Index status check failed. Starting indexing as fallback.");
 	}
 	
 	if (should_index) {
@@ -3381,7 +3381,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		String arguments_str = function_dict.get("arguments", "{}");
 
 		// Show immediate visual feedback that tool is starting
-		print_line("AI Chat: 🔧 Executing tool: " + function_name);
+		print_line("AI Chat: Executing tool: " + function_name);
 		
 		// Update placeholder to show execution status
 		_update_tool_placeholder_status(tool_call_id, function_name, "starting");
@@ -9736,7 +9736,7 @@ String AIChatDock::get_machine_id() const {
 // ========== EMBEDDING SYSTEM IMPLEMENTATION ==========
 
 void AIChatDock::_initialize_embedding_system() {
-    print_line("AI Chat: 🔧 Initializing cloud-based embedding system");
+    print_line("AI Chat: Initializing cloud-based embedding system");
 
     // Connect to editor file system signals for automatic reindexing
     // This connection does not require authentication; it only sets up callbacks.
@@ -9747,9 +9747,9 @@ void AIChatDock::_initialize_embedding_system() {
         if (!EditorFileSystem::get_singleton()->is_connected("sources_changed", callable_mp(this, &AIChatDock::_on_sources_changed))) {
             EditorFileSystem::get_singleton()->connect("sources_changed", callable_mp(this, &AIChatDock::_on_sources_changed));
         }
-        print_line("AI Chat: 🔗 Connected to EditorFileSystem change signals (filesystem_changed, sources_changed)");
+        print_line("AI Chat: Connected to EditorFileSystem change signals (filesystem_changed, sources_changed)");
     } else {
-        print_line("AI Chat: ⚠️ EditorFileSystem not ready; change signals not connected");
+        print_line("AI Chat: EditorFileSystem not ready; change signals not connected");
     }
 
     // Connect to precise save signals from EditorNode to index only changed files
@@ -9760,7 +9760,7 @@ void AIChatDock::_initialize_embedding_system() {
         if (!EditorNode::get_singleton()->is_connected("scene_saved", callable_mp(this, &AIChatDock::_on_editor_scene_saved))) {
             EditorNode::get_singleton()->connect("scene_saved", callable_mp(this, &AIChatDock::_on_editor_scene_saved), CONNECT_DEFERRED);
         }
-        print_line("AI Chat: 🔗 Connected to EditorNode save signals (resource_saved, scene_saved)");
+        print_line("AI Chat: Connected to EditorNode save signals (resource_saved, scene_saved)");
     }
 
     // Create HTTPRequest for embedding API calls
@@ -9787,7 +9787,7 @@ void AIChatDock::_initialize_embedding_system() {
         embedding_poll_timer->connect("timeout", callable_mp(this, &AIChatDock::_on_embedding_poll_tick));
         add_child(embedding_poll_timer);
         embedding_poll_timer->start();
-        print_line("AI Chat: ⏱️ Enabled periodic indexing poll every " + String::num_int64(embedding_poll_seconds) + "s");
+        print_line("AI Chat: Enabled periodic indexing poll every " + String::num_int64(embedding_poll_seconds) + "s");
     }
 
     embedding_system_initialized = true;
@@ -9798,39 +9798,39 @@ void AIChatDock::_initialize_embedding_system() {
         current_user_name = "Guest";
         auth_token = "";
         _update_user_status();
-        print_line("AI Chat: ℹ️ Embedding system ready; indexing as guest session");
+        print_line("AI Chat: Embedding system ready; indexing as guest session");
     }
 
     // Defer status/indexing to avoid overlapping requests right after init
-    print_line("AI Chat: ✅ Embedding system initialized successfully");
+    print_line("AI Chat: Embedding system initialized successfully");
 }
 void AIChatDock::_perform_initial_indexing() {
-	print_line("AI Chat: 📚 Starting project indexing...");
-	print_line("AI Chat: 🔍 DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
-	print_line("AI Chat: 🔍 DEBUG - embedding_in_progress: " + String(embedding_in_progress ? "true" : "false"));
+	print_line("AI Chat: Starting project indexing...");
+	print_line("AI Chat: DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
+	print_line("AI Chat: DEBUG - embedding_in_progress: " + String(embedding_in_progress ? "true" : "false"));
 	
 	if (!embedding_system_initialized) {
-		print_line("AI Chat: ❌ Cannot start indexing - system not initialized");
+		print_line("AI Chat: Cannot start indexing - system not initialized");
 		return;
 	}
 	
 	if (embedding_in_progress) {
-		print_line("AI Chat: ⏳ Indexing already in progress");
+		print_line("AI Chat: Indexing already in progress");
 		return;
 	}
 	
-	print_line("AI Chat: ✅ All checks passed, starting file scan...");
+	print_line("AI Chat: All checks passed, starting file scan...");
 	_set_embedding_status("Scanning files", true);
 	
 	// Always use cloud-ready approach: scan files and send content
 	// This works both locally and when deployed to cloud
-	print_line("AI Chat: 📁 About to call _scan_and_index_project_files...");
+	print_line("AI Chat: About to call _scan_and_index_project_files...");
 	_scan_and_index_project_files();
 }
 
 void AIChatDock::_send_embedding_request(const String &p_action, const Dictionary &p_data) {
 	if (!embedding_request || embedding_request_busy) {
-		print_line("AI Chat: ❌ Cannot send embedding request - busy or not initialized");
+		print_line("AI Chat: Cannot send embedding request - busy or not initialized");
 		return;
 	}
 	
@@ -9862,14 +9862,14 @@ void AIChatDock::_send_embedding_request(const String &p_action, const Dictionar
 	headers.push_back("X-User-ID: " + current_user_id);
 	headers.push_back("X-Machine-ID: " + get_machine_id());
 	
-    print_line("AI Chat: 📡 Sending embedding request: " + p_action + " to " + embed_url +
+    print_line("AI Chat: Sending embedding request: " + p_action + " to " + embed_url +
         " (project_root=" + _get_project_root_path() + ")");
 	
 	embedding_request_busy = true;
 	Error err = embedding_request->request(embed_url, headers, HTTPClient::METHOD_POST, request_body);
 	
 	if (err != OK) {
-		print_line("AI Chat: ❌ Failed to send embedding request: " + String::num_int64(err));
+		print_line("AI Chat: Failed to send embedding request: " + String::num_int64(err));
 		embedding_request_busy = false;
 		_set_embedding_status("Request failed", false);
 	}
@@ -9877,11 +9877,11 @@ void AIChatDock::_send_embedding_request(const String &p_action, const Dictionar
 void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	embedding_request_busy = false;
 	
-	print_line("AI Chat: 📨 Embedding request completed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
+	print_line("AI Chat: Embedding request completed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
 	
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
 		String error_msg = "Request failed (" + String::num_int64(p_code) + ")";
-		print_line("AI Chat: ❌ " + error_msg);
+		print_line("AI Chat: " + error_msg);
 		_set_embedding_status(error_msg, false);
 		return;
 	}
@@ -9893,7 +9893,7 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 	Error parse_err = json->parse(response_text);
 	
 	if (parse_err != OK) {
-		print_line("AI Chat: ❌ Failed to parse embedding response");
+		print_line("AI Chat: Failed to parse embedding response");
 		_set_embedding_status("Parse error", false);
 		return;
 	}
@@ -9904,12 +9904,12 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 	
 	if (!success) {
 		String error = response.get("error", "Unknown error");
-		print_line("AI Chat: ❌ Embedding request failed: " + error);
+		print_line("AI Chat: Embedding request failed: " + error);
 		_set_embedding_status("Error: " + error, false);
 		return;
 	}
 	
-	print_line("AI Chat: ✅ Embedding action '" + action + "' completed successfully");
+	print_line("AI Chat: Embedding action '" + action + "' completed successfully");
 	
 	if (action == "index_project") {
 		Dictionary stats = response.get("stats", Dictionary());
@@ -9925,7 +9925,7 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 		_set_embedding_status(status_text, false);
 		initial_indexing_done = true;
 		
-		print_line("AI Chat: 🎉 Project indexing completed - " + status_text);
+		print_line("AI Chat: Project indexing completed - " + status_text);
 		
 	} else if (action == "index_files") {
 		// Handle batch processing response
@@ -9934,7 +9934,7 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 		int batch_skipped = stats.get("skipped", 0);
 		int batch_failed = stats.get("failed", 0);
 		
-		print_line("AI Chat: ✅ Batch completed - indexed: " + String::num_int64(batch_indexed) + ", skipped: " + String::num_int64(batch_skipped) + ", failed: " + String::num_int64(batch_failed));
+		print_line("AI Chat: Batch completed - indexed: " + String::num_int64(batch_indexed) + ", skipped: " + String::num_int64(batch_skipped) + ", failed: " + String::num_int64(batch_failed));
 		
 		// Check if we need to send more batches
 		if (current_batch_info.has("current_batch") && current_batch_info.has("total_batches")) {
@@ -9956,7 +9956,7 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 				// All batches completed
 				_set_embedding_status("All files indexed successfully", false);
 				initial_indexing_done = true;
-				print_line("AI Chat: 🎉 All file batches completed successfully");
+				print_line("AI Chat: All file batches completed successfully");
 			}
 		}
 		
@@ -10059,7 +10059,7 @@ void AIChatDock::_update_file_embedding(const String &p_file_path) {
 	// Cloud-ready: read file content and send via index_files
 	Dictionary file_data = _read_file_for_indexing(p_file_path, _get_project_root_path());
 	if (file_data.is_empty()) {
-		print_line("AI Chat: ❌ Failed to read file for embedding update: " + p_file_path);
+		print_line("AI Chat: Failed to read file for embedding update: " + p_file_path);
 		return;
 	}
 	
@@ -10089,14 +10089,14 @@ void AIChatDock::_remove_file_embedding(const String &p_file_path) {
 }
 
 void AIChatDock::_on_filesystem_changed() {
-    print_line("AI Chat: 📁 filesystem_changed signal received");
+    print_line("AI Chat: filesystem_changed signal received");
     // Only rely on per-file saved signals for accuracy; skip project-wide reindex on generic FS changes.
     pending_fs_changes = true;
 }
 
 void AIChatDock::_on_sources_changed(bool p_exist) {
     // Called when source files change
-    print_line("AI Chat: 📝 sources_changed signal received (exist=" + String(p_exist ? "true" : "false") + ")");
+    print_line("AI Chat: sources_changed signal received (exist=" + String(p_exist ? "true" : "false") + ")");
     // Do nothing here; precise per-file handlers will trigger indexing.
 }
 
@@ -10112,7 +10112,7 @@ void AIChatDock::_on_editor_resource_saved(Object *p_res) {
     if (path.is_empty()) {
         return;
     }
-    print_line("AI Chat: 💾 resource_saved -> " + path);
+    print_line("AI Chat: resource_saved -> " + path);
     // Clear overlay on save to ensure subsequent reads/checks use disk content
     EditorTools::clear_preview_overlay(path);
     // Always queue for periodic batch to avoid immediate requests
@@ -10126,7 +10126,7 @@ void AIChatDock::_on_editor_resource_saved(Object *p_res) {
 }
 
 void AIChatDock::_on_editor_scene_saved(const String &p_path) {
-    print_line("AI Chat: 💾 scene_saved -> " + p_path);
+    print_line("AI Chat: scene_saved -> " + p_path);
     // Always queue for periodic batch to avoid immediate requests
     String abs_path = ProjectSettings::get_singleton()->globalize_path(p_path);
     if (_should_index_file(abs_path)) {
@@ -10168,7 +10168,7 @@ void AIChatDock::_on_embedding_poll_tick() {
     }
     // If there were FS changes but nothing queued, avoid aggressive full project scan
     if (pending_fs_changes) {
-        print_line("AI Chat: 📁 FS changes detected but no specific files queued. Skipping full project scan to avoid unnecessary re-indexing.");
+        print_line("AI Chat: FS changes detected but no specific files queued. Skipping full project scan to avoid unnecessary re-indexing.");
         // Only clear the flag - don't trigger full project indexing for generic FS changes
         // Real changes should be caught by the specific save handlers above
         pending_fs_changes = false;
@@ -10177,33 +10177,33 @@ void AIChatDock::_on_embedding_poll_tick() {
 
 void AIChatDock::_suggest_relevant_files(const String &p_query) {
 	// TODO: Implement smart file suggestions based on embedding similarity
-	print_line("AI Chat: 🔍 Smart file suggestions not implemented yet for query: " + p_query);
+	print_line("AI Chat: Smart file suggestions not implemented yet for query: " + p_query);
 }
 
 void AIChatDock::_auto_attach_relevant_context() {
 	// TODO: Implement automatic context attachment based on message content
-	print_line("AI Chat: 🤖 Auto context attachment not implemented yet");
+	print_line("AI Chat: Auto context attachment not implemented yet");
 }
 
 void AIChatDock::_scan_and_index_project_files() {
-	print_line("AI Chat: 📁 Scanning project files for indexing...");
+	print_line("AI Chat: Scanning project files for indexing...");
 	
 	String project_root = _get_project_root_path();
-	print_line("AI Chat: 🔍 DEBUG - project_root: " + project_root);
+	print_line("AI Chat: DEBUG - project_root: " + project_root);
 	
 	Array file_contents = Array();
 	int files_processed = 0;
 	int files_skipped = 0;
 	
 	// Get all files in project recursively
-	print_line("AI Chat: 🔄 Starting recursive directory scan...");
+	print_line("AI Chat: Starting recursive directory scan...");
 	_scan_directory_recursive(project_root, project_root, file_contents, files_processed, files_skipped);
 	
-	print_line("AI Chat: 📊 Scan complete - " + String::num_int64(files_processed) + " files to index, " + String::num_int64(files_skipped) + " skipped");
-	print_line("AI Chat: 🔍 DEBUG - file_contents.size(): " + String::num_int64(file_contents.size()));
+	print_line("AI Chat: Scan complete - " + String::num_int64(files_processed) + " files to index, " + String::num_int64(files_skipped) + " skipped");
+	print_line("AI Chat: DEBUG - file_contents.size(): " + String::num_int64(file_contents.size()));
 	
 	if (file_contents.size() == 0) {
-		print_line("AI Chat: ❌ No files found to index!");
+		print_line("AI Chat: No files found to index!");
 		_set_embedding_status("No files to index", false);
 		return;
 	}
@@ -10212,7 +10212,7 @@ void AIChatDock::_scan_and_index_project_files() {
 	int batch_size = 20; // Process 20 files at a time
 	int total_batches = (file_contents.size() + batch_size - 1) / batch_size;
 	
-	print_line("AI Chat: 📦 Preparing " + String::num_int64(total_batches) + " batches of " + String::num_int64(batch_size) + " files each");
+	print_line("AI Chat: Preparing " + String::num_int64(total_batches) + " batches of " + String::num_int64(batch_size) + " files each");
 	_set_embedding_status("Indexing files (batch 1/" + String::num_int64(total_batches) + ")", true);
 	_send_file_batch(file_contents, 0, batch_size, 1, total_batches);
 }
@@ -10220,7 +10220,7 @@ void AIChatDock::_scan_and_index_project_files() {
 void AIChatDock::_scan_directory_recursive(const String &p_dir_path, const String &p_project_root, Array &p_file_contents, int &p_files_processed, int &p_files_skipped) {
 	Ref<DirAccess> dir = DirAccess::open(p_dir_path);
 	if (dir.is_null()) {
-		print_line("AI Chat: ❌ Cannot access directory: " + p_dir_path);
+		print_line("AI Chat: Cannot access directory: " + p_dir_path);
 		return;
 	}
 	
@@ -10265,7 +10265,7 @@ void AIChatDock::_scan_directory_recursive(const String &p_dir_path, const Strin
 Dictionary AIChatDock::_read_file_for_indexing(const String &p_file_path, const String &p_project_root) {
 	Ref<FileAccess> file = FileAccess::open(p_file_path, FileAccess::READ);
 	if (file.is_null()) {
-		print_line("AI Chat: ❌ Cannot read file: " + p_file_path);
+		print_line("AI Chat: Cannot read file: " + p_file_path);
 		return Dictionary();
 	}
 	
