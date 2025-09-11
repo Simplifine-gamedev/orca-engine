@@ -111,11 +111,12 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.0.0-build-${{ github.run_number }}
-          name: Orca Engine v1.0.0 Build ${{ github.run_number }}
+          tag_name: v${{ env.VERSION_BASE }}.${{ github.run_number }}
+          name: Orca Engine v${{ env.VERSION_BASE }}.${{ github.run_number }}
           body: |
-            🍎 **Mac Build**: Automatically built, signed & notarized
-            🏁 **Windows Build**: Use manual signed binary from distribution/
+            🚀 **Orca Engine Release v${{ env.VERSION_BASE }}.${{ github.run_number }}**
+            
+            🍎 **Mac**: Automatically built, signed & notarized
             
             **Changes in this build:**
             ${{ github.event.head_commit.message }}

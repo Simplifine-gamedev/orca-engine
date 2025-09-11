@@ -40,9 +40,9 @@ jobs:
     secrets: inherit
 
   windows-build:
-    name: 🏁 Windows
+    name: 🏁 Windows Production
     needs: static-checks
-    uses: ./.github/workflows/windows_builds.yml
+    uses: ./.github/workflows/windows-production.yml
     secrets: inherit
 
   web-build:
