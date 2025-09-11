@@ -1,0 +1,152 @@
+name: 🍎 macOS Production Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Orca
+  BUNDLE_ID: com.orca.engine
+  TEAM_ID: 92HMJ7DFHF
+  VERSION: ${{ github.run_number }}
+
+jobs:
+  build-sign-notarize:
+    name: Build, Sign & Notarize Orca Engine
+    runs-on: macos-14
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install scons
+
+      - name: Build Orca Engine (arm64)
+        run: |
+          scons platform=macos target=editor dev_build=no arch=arm64 -j$(sysctl -n hw.ncpu)
+
+      - name: Prepare Orca.app Bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          BIN="bin/godot.macos.editor.arm64"
+          [ -f "$BIN" ] || BIN="bin/godot.macos.editor.dev.arm64"
+          
+          if [ ! -f "$BIN" ]; then
+            echo "Built binary not found" >&2
+            ls -la bin/ || true
+            exit 1
+          fi
+          
+          # Use existing Orca.app as template or create from scratch
+          if [ -d "bin/Orca.app" ]; then
+            cp -R "bin/Orca.app" "${APP_NAME}.app"
+          else
+            mkdir -p "${APP_NAME}.app/Contents/MacOS"
+            mkdir -p "${APP_NAME}.app/Contents/Resources"
+            
+            # Create basic Info.plist
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string ${BUNDLE_ID}" "${APP_NAME}.app/Contents/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleName string ${APP_NAME}" "${APP_NAME}.app/Contents/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string ${APP_NAME}" "${APP_NAME}.app/Contents/Info.plist" 2>/dev/null || true
+          fi
+          
+          # Install binary
+          install -m 755 "$BIN" "${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+          
+          echo "app-path=${APP_NAME}.app" >> "$GITHUB_OUTPUT"
+          echo "✅ ${APP_NAME}.app bundle created"
+
+      - name: Import Signing Certificate
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="build.keychain"
+          echo "$CERT_P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          echo "✅ Certificate imported"
+
+      - name: Code Sign App
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
+          
+          echo "🔐 Signing with identity: $IDENTITY"
+          /usr/bin/codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP_PATH"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          echo "✅ Code signing completed"
+
+      - name: Create Notarization Package
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${APP_PATH%.app}.zip"
+          echo "📦 Notarization package created"
+
+      - name: Submit for Notarization
+        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ZIP_PATH="${{ steps.bundle.outputs.app-path }}"
+          ZIP_PATH="${ZIP_PATH%.app}.zip"
+          
+          echo "🍎 Submitting for notarization..."
+          xcrun notarytool submit "$ZIP_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$TEAM_ID" \
+            --wait \
+            --timeout 30m
+          echo "✅ Notarization completed"
+
+      - name: Create Production DMG
+        id: create-dmg
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          DMG_NAME="Orca (Mac).dmg"
+          
+          echo "💿 Creating DMG: $DMG_NAME"
+          hdiutil create -volname "Orca Engine" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_NAME"
+          
+          echo "dmg-path=$DMG_NAME" >> "$GITHUB_OUTPUT"
+          echo "✅ DMG created: $DMG_NAME"
+
+      - name: Upload Production Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Orca-macOS-Production
+          path: |
+            ${{ steps.bundle.outputs.app-path }}
+            ${{ steps.create-dmg.outputs.dmg-path }}
+
+      - name: Verify Final Build
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.bundle.outputs.app-path }}"
+          DMG_PATH="${{ steps.create-dmg.outputs.dmg-path }}"
+          
+          echo "🔍 Final verification:"
+          echo "  📱 App: $(du -h "$APP_PATH" | cut -f1) - $APP_PATH"
+          echo "  💿 DMG: $(du -h "$DMG_PATH" | cut -f1) - $DMG_PATH"
+          echo "✅ Orca Engine macOS build completed!"
