@@ -1,0 +1,108 @@
+name: 🍎 macOS Clean Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Orca
+  BUNDLE_ID: com.orca.engine
+  TEAM_ID: 92HMJ7DFHF
+
+jobs:
+  build-sign-notarize:
+    name: Build Sign Notarize Orca
+    runs-on: macos-14
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install scons
+
+      - name: Build Orca Engine
+        run: |
+          scons platform=macos target=editor dev_build=no arch=arm64 -j$(sysctl -n hw.ncpu)
+
+      - name: Create App Bundle
+        id: bundle
+        run: |
+          BIN="bin/godot.macos.editor.arm64"
+          if [ ! -f "$BIN" ]; then
+            BIN="bin/godot.macos.editor.dev.arm64"
+          fi
+          
+          if [ ! -f "$BIN" ]; then
+            echo "Built binary not found"
+            ls -la bin/
+            exit 1
+          fi
+          
+          mkdir -p "Orca.app/Contents/MacOS"
+          install -m 755 "$BIN" "Orca.app/Contents/MacOS/Orca"
+          
+          echo "app-path=Orca.app" >> "$GITHUB_OUTPUT"
+          echo "✅ Orca.app created"
+
+      - name: Import Certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+        run: |
+          if [ -n "$CERT_P12_BASE64" ]; then
+            echo "$CERT_P12_BASE64" | base64 --decode > /tmp/cert.p12
+            security create-keychain -p "" build.keychain
+            security default-keychain -s build.keychain
+            security unlock-keychain -p "" build.keychain
+            security import /tmp/cert.p12 -k build.keychain -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+            echo "✅ Certificate imported"
+          fi
+
+      - name: Code Sign
+        run: |
+          IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
+          /usr/bin/codesign --force --options runtime --timestamp --sign "$IDENTITY" "Orca.app"
+          /usr/bin/codesign --verify --deep --strict "Orca.app"
+          echo "✅ Code signed"
+
+      - name: Create Notarization Package
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "Orca.app" "Orca.zip"
+          echo "✅ Notarization package created"
+
+      - name: Submit for Notarization
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            xcrun notarytool submit "Orca.zip" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "92HMJ7DFHF" \
+              --wait --timeout 30m
+            echo "✅ Notarization submitted"
+          fi
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "Orca Engine" -srcfolder "Orca.app" -ov -format UDZO "Orca (Mac).dmg"
+          echo "✅ DMG created"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Orca-macOS-Production
+          path: |
+            Orca.app
+            Orca (Mac).dmg
