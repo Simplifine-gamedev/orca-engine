@@ -29,6 +29,7 @@ try:
 except Exception:
     LocalVectorManager = None
 from auth_manager import AuthManager
+from auto_update_manager import auto_update_manager
 
 # app = Flask(__name__)
 # CORS(app)
@@ -1624,6 +1625,60 @@ def generate_3d_model_internal(arguments: dict) -> dict:
 # --- Note: Script generation now handled by dedicated /generate_script endpoint ---
 
 # --- Tool Execution Function ---
+def check_for_app_updates_internal(arguments: dict) -> dict:
+    """Check for Orca Engine updates and optionally show notification"""
+    try:
+        force_check = arguments.get('force_check', False)
+        show_notification = arguments.get('show_notification', True)
+        
+        print(f"UPDATE_TOOL: Checking for updates (force={force_check}, notify={show_notification})")
+        
+        # Check for updates
+        update_info = auto_update_manager.check_for_updates(force=force_check)
+        
+        if update_info:
+            result = {
+                "success": True,
+                "update_available": True,
+                "update_info": {
+                    "version": update_info.version,
+                    "current_version": auto_update_manager.current_version,
+                    "download_url": update_info.download_url,
+                    "file_size_mb": round(update_info.file_size / (1024 * 1024), 1),
+                    "release_notes": update_info.release_notes,
+                    "is_critical": update_info.is_critical,
+                    "published_at": update_info.published_at
+                },
+                "message": f"Update available: v{update_info.version}",
+                "show_popup": show_notification
+            }
+            
+            if show_notification:
+                result["popup_config"] = {
+                    "title": "Update Available" if not update_info.is_critical else "Critical Update Available",
+                    "message": f"Orca Engine v{update_info.version} is now available.\n\nCurrent version: v{auto_update_manager.current_version}",
+                    "buttons": ["Install Now", "Later"],
+                    "default_button": 0 if update_info.is_critical else 1,
+                    "icon": "warning" if update_info.is_critical else "info"
+                }
+            
+            return result
+        else:
+            return {
+                "success": True,
+                "update_available": False,
+                "current_version": auto_update_manager.current_version,
+                "message": "You have the latest version of Orca Engine",
+                "show_popup": False
+            }
+            
+    except Exception as e:
+        print(f"UPDATE_TOOL_ERROR: {e}")
+        return {
+            "success": False,
+            "error": f"Update check failed: {str(e)}"
+        }
+
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
     if function_name == "image_operation":
@@ -1640,6 +1695,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return install_godot_asset_internal(arguments)
     elif function_name == "generate_3d_model":
         return generate_3d_model_internal(arguments)
+    elif function_name == "check_for_app_updates":
+        return check_for_app_updates_internal(arguments)
     # Note: Game testing tools (start_game, stop_game, etc.) are frontend-only and not executed in backend
     else:
         # This shouldn't happen if we filter correctly
@@ -2514,7 +2571,30 @@ godot_tools = [
     #             "required": ["prompt"]
     #         }
     #     }
-    # }
+    # },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_for_app_updates",
+            "description": "Check if a newer version of Orca Engine is available and show update notification to user",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "force_check": {
+                        "type": "boolean",
+                        "description": "Force immediate check even if recently checked",
+                        "default": False
+                    },
+                    "show_notification": {
+                        "type": "boolean", 
+                        "description": "Show update popup to user if update is available",
+                        "default": True
+                    }
+                },
+                "required": []
+            }
+        }
+    }
 ]
 
 
@@ -3559,6 +3639,50 @@ def chat():
                                 "role": "tool",
                                 "name": "generate_3d_model",
                                 "content": json.dumps(model_3d_summary)
+                            })
+                        
+                        elif func["name"] == "check_for_app_updates":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "check_for_app_updates", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                            except Exception:
+                                arguments = {}
+                            
+                            update_result = check_for_app_updates_internal(arguments)
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            # Yield result to frontend immediately
+                            yield json.dumps({
+                                "tool_executed": "check_for_app_updates",
+                                "tool_result": update_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Prepare result for conversation history
+                            update_summary = {
+                                "success": update_result.get("success"),
+                                "update_available": update_result.get("update_available"),
+                                "current_version": update_result.get("current_version"),
+                                "message": update_result.get("message")
+                            }
+                            if update_result.get("update_available"):
+                                update_summary["new_version"] = update_result.get("update_info", {}).get("version")
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "check_for_app_updates",
+                                "content": json.dumps(update_summary)
                             })
                 
                     # Add the assistant's decision to call the tool to history
@@ -4810,10 +4934,185 @@ def health_check():
     """Health check endpoint for testing"""
     return jsonify({
         "status": "healthy", 
-        "service": "godot-ai-multi-model-service",
+        "service": "orca-engine-ai-service",
         "providers": ["openai", "anthropic", "google"],
-        "available_models": list(MODEL_MAP.keys())
+        "available_models": list(MODEL_MAP.keys()),
+        "version": auto_update_manager.current_version
     })
+
+# --- Auto-Update Endpoints ---
+
+@app.route('/update/check', methods=['GET', 'POST'])
+def check_for_updates():
+    """Check for available updates"""
+    try:
+        data = request.get_json() if request.method == 'POST' else {}
+        platform = data.get('platform') if data else request.args.get('platform')
+        force = data.get('force', False) if data else request.args.get('force', 'false').lower() == 'true'
+        
+        update_info = auto_update_manager.check_for_updates(force=force, platform=platform)
+        
+        if update_info:
+            return jsonify({
+                'success': True,
+                'update_available': True,
+                'update_info': {
+                    'version': update_info.version,
+                    'download_url': update_info.download_url,
+                    'file_size': update_info.file_size,
+                    'file_size_mb': round(update_info.file_size / (1024 * 1024), 1),
+                    'release_notes': update_info.release_notes,
+                    'published_at': update_info.published_at,
+                    'is_critical': update_info.is_critical
+                },
+                'current_version': auto_update_manager.current_version
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'update_available': False,
+                'current_version': auto_update_manager.current_version,
+                'message': 'You have the latest version'
+            })
+            
+    except Exception as e:
+        print(f"UPDATE_CHECK_ERROR: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/status', methods=['GET'])
+def get_update_status():
+    """Get current update system status"""
+    try:
+        status = auto_update_manager.get_update_status()
+        return jsonify({
+            'success': True,
+            **status
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/download', methods=['POST'])
+def download_update():
+    """Download an available update"""
+    try:
+        data = request.get_json() or {}
+        version = data.get('version')
+        download_path = data.get('download_path')
+        
+        if not auto_update_manager.cached_update_info:
+            return jsonify({
+                'success': False,
+                'error': 'No update available to download'
+            }), 400
+        
+        update_info = auto_update_manager.cached_update_info
+        
+        # Verify version matches if specified
+        if version and version != update_info.version:
+            return jsonify({
+                'success': False,
+                'error': f'Version mismatch: requested {version}, available {update_info.version}'
+            }), 400
+        
+        # Download the update
+        result = auto_update_manager.download_update(update_info, download_path)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"UPDATE_DOWNLOAD_ERROR: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/install', methods=['POST'])
+def install_update():
+    """Install a downloaded update"""
+    try:
+        data = request.get_json() or {}
+        download_path = data.get('download_path')
+        restart_app = data.get('restart_app', True)
+        
+        if not download_path or not os.path.exists(download_path):
+            return jsonify({
+                'success': False,
+                'error': 'Download path not provided or file not found'
+            }), 400
+        
+        # Schedule installation
+        result = auto_update_manager.schedule_install(download_path, restart_app)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"UPDATE_INSTALL_ERROR: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/notes/<version>', methods=['GET'])
+def get_release_notes(version):
+    """Get release notes for a specific version"""
+    try:
+        notes = auto_update_manager.get_release_notes(version)
+        return jsonify({
+            'success': True,
+            'version': version,
+            'release_notes': notes
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/webhook', methods=['POST'])
+def update_webhook():
+    """GitHub webhook endpoint to trigger immediate update checks"""
+    try:
+        # Verify this is a release event
+        event_type = request.headers.get('X-GitHub-Event')
+        if event_type != 'release':
+            return jsonify({'message': 'Not a release event'}), 200
+        
+        data = request.get_json() or {}
+        action = data.get('action')
+        
+        if action in ['published', 'released']:
+            release = data.get('release', {})
+            version = release.get('tag_name', '').lstrip('v')
+            
+            print(f"AUTO_UPDATE: GitHub webhook - new release v{version}")
+            
+            # Clear cache to force fresh check
+            auto_update_manager.cached_update_info = None
+            auto_update_manager.last_check = 0
+            
+            # Trigger immediate check
+            update_info = auto_update_manager.force_check_now()
+            
+            return jsonify({
+                'success': True,
+                'message': f'Update check triggered for v{version}',
+                'update_available': update_info is not None
+            })
+        else:
+            return jsonify({'message': f'Ignored action: {action}'}), 200
+            
+    except Exception as e:
+        print(f"UPDATE_WEBHOOK_ERROR: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 # --- Docs search (shared corpus)
 DOCS_USER_ID = os.getenv('DOCS_USER_ID', 'public_docs')
@@ -5360,6 +5659,16 @@ if __name__ == '__main__':
         print(f"3D_GENERATION: Enabled, forwarding to {MODEL_3D_SERVICE_URL}")
     else:
         print("3D_GENERATION: Disabled (configure MODEL_3D_* environment variables to enable)")
+    
+    # Initialize auto-update system
+    print(f"AUTO_UPDATE: Orca Engine v{auto_update_manager.current_version} - Update system initialized")
+    
+    # Start background update checker in production
+    if not _dev_mode:
+        auto_update_manager.start_background_checker()
+        print("AUTO_UPDATE: Background checker started for production mode")
+    else:
+        print("AUTO_UPDATE: Background checker disabled in dev mode")
     
     # Local dev only; in production use Gunicorn (configured in Dockerfile)
     port = int(os.environ.get('PORT', 8080))
