@@ -231,10 +231,11 @@ void AIChatDock::_notification(int p_notification) {
 
             // Index button removed; indexing will be managed automatically
 
-            // Embedding status label
+            // Embedding status label (hidden by default)
             embedding_status_label = memnew(Label);
             embedding_status_label->set_text("");
             embedding_status_label->set_modulate(Color(0.8, 0.8, 0.8));
+            embedding_status_label->set_visible(false);
             top_container->add_child(embedding_status_label);
 			
 			// Setup authentication UI
@@ -9945,7 +9946,8 @@ void AIChatDock::_initialize_embedding_system() {
     }
 
     embedding_system_initialized = true;
-    _set_embedding_status("Ready to index", false);
+    // Keep status UI hidden by default
+    _set_embedding_status("", false);
 
     if (!_is_user_authenticated()) {
         current_user_id = "guest:" + get_machine_id();
@@ -9973,8 +9975,8 @@ void AIChatDock::_perform_initial_indexing() {
 		return;
 	}
 	
-	print_line("AI Chat: All checks passed, starting file scan...");
-	_set_embedding_status("Scanning files", true);
+	print_line("AI Chat: All checks passed, starting file scan (silent UI)...");
+	_set_embedding_status("", false);
 	
 	// Always use cloud-ready approach: scan files and send content
 	// This works both locally and when deployed to cloud
@@ -10104,7 +10106,8 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 				
 				int next_start_index = start_index + batch_size;
 				
-				_set_embedding_status("Indexing files (batch " + String::num_int64(next_batch) + "/" + String::num_int64(total_batches) + ")", true);
+				// Keep indexing UI silent
+				_set_embedding_status("", false);
 				call_deferred("_send_file_batch", all_files, next_start_index, batch_size, next_batch, total_batches);
 			} else {
 				// All batches completed
@@ -10366,8 +10369,8 @@ void AIChatDock::_scan_and_index_project_files() {
 	int batch_size = 20; // Process 20 files at a time
 	int total_batches = (file_contents.size() + batch_size - 1) / batch_size;
 	
-	print_line("AI Chat: Preparing " + String::num_int64(total_batches) + " batches of " + String::num_int64(batch_size) + " files each");
-	_set_embedding_status("Indexing files (batch 1/" + String::num_int64(total_batches) + ")", true);
+	print_line("AI Chat: Preparing " + String::num_int64(total_batches) + " batches of " + String::num_int64(batch_size) + " files each (silent UI)");
+	_set_embedding_status("", false);
 	_send_file_batch(file_contents, 0, batch_size, 1, total_batches);
 }
 

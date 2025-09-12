@@ -3481,6 +3481,11 @@ void ScriptTextEditor::_apply_hunk(int p_hunk_index, bool p_accept) {
 void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	CodeEdit *te = code_editor->get_text_editor();
 
+	// Preserve current viewport and caret to avoid jumping to top after apply
+	const int prev_v_scroll = te->get_v_scroll();
+	const int prev_caret_line = te->get_caret_line();
+	const int prev_caret_col = te->get_caret_column();
+
 	// Build the final content based on individual hunk decisions
 	String final_content;
 	
@@ -3617,6 +3622,12 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	// Now, apply the final content (clean, without diff markers)
 	te->set_text(final_content);
 	apply_code();
+
+	// Restore viewport and caret as best as possible
+	const int safe_line = CLAMP(prev_caret_line, 0, MAX(0, te->get_line_count() - 1));
+	te->set_caret_line(safe_line);
+	te->set_caret_column(MIN(prev_caret_col, te->get_line(safe_line).length()));
+	te->set_v_scroll(prev_v_scroll);
 
 	// Save the file after applying changes
 	if (script.is_valid()) {
