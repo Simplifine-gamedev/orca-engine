@@ -79,6 +79,13 @@ PY
           ditto -c -k --sequesterRsrc --keepParent "godot.macos.editor.arm64.app" "Orca_${GITHUB_REF_NAME}_mac_arm64.zip"
           echo "MAC_ZIP=$(pwd)/Orca_${GITHUB_REF_NAME}_mac_arm64.zip" >> $GITHUB_ENV
 
+      - name: Create DMG for website downloads
+        run: |
+          # Create a simple compressed DMG containing the app bundle
+          cd bin
+          hdiutil create -volname "Orca" -srcfolder "godot.macos.editor.arm64.app" -ov -format UDZO "Orca (Mac).dmg"
+          echo "MAC_DMG=$(pwd)/Orca (Mac).dmg" >> $GITHUB_ENV
+
       - name: Notarize and staple (optional)
         if: ${{ secrets.AC_API_KEY_ID != '' }}
         env:
@@ -118,6 +125,35 @@ PY
           git add docs/appcast.xml
           git commit -m "Update macOS appcast for $GITHUB_REF_NAME" || echo "No changes"
           git push
+
+      - name: Upload mac DMG to Supabase (versioned and latest)
+        if: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="Orca (Mac).dmg"
+          ENC_NAME=$(python3 - << 'PY'
+import urllib.parse,sys
+print(urllib.parse.quote(sys.argv[1]))
+PY
+"$NAME")
+          BUCKET="${SUPABASE_BUCKET:-downloads}"
+          VER="${GITHUB_REF_NAME}"
+          echo "Uploading $NAME to Supabase bucket $BUCKET"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/versions/$VER/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$MAC_DMG"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$MAC_DMG"
 
   windows:
     runs-on: windows-latest
@@ -162,6 +198,8 @@ PY
         run: |
           cp "$WIN_BIN" "Orca_${GITHUB_REF_NAME}_win_x64.exe"
           echo "WIN_INSTALLER=$(pwd)/Orca_${GITHUB_REF_NAME}_win_x64.exe" >> $GITHUB_ENV
+          cp "$WIN_INSTALLER" "Orca (Windows).exe"
+          echo "WIN_LATEST=$(pwd)/Orca (Windows).exe" >> $GITHUB_ENV
 
       - name: Sign installer (optional)
         if: ${{ secrets.WIN_CERT_PFX_B64 != '' }}
@@ -193,5 +231,34 @@ PY
           git add docs/appcast-windows.xml
           git commit -m "Update Windows appcast for $GITHUB_REF_NAME" || echo "No changes"
           git push
+
+      - name: Upload Windows EXE to Supabase (versioned and latest)
+        if: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="Orca (Windows).exe"
+          ENC_NAME=$(python3 - << 'PY'
+import urllib.parse,sys
+print(urllib.parse.quote(sys.argv[1]))
+PY
+"$NAME")
+          BUCKET="${SUPABASE_BUCKET:-downloads}"
+          VER="${GITHUB_REF_NAME}"
+          echo "Uploading $NAME to Supabase bucket $BUCKET"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/versions/$VER/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$WIN_LATEST"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$WIN_LATEST"
 
 
