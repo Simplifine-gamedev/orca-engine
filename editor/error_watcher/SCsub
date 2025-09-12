@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+
+Import("env")
+
+env_error_watcher = env.Clone()
+
+# Error watcher source files
+error_watcher_sources = [
+    "error_watcher.cpp",
+    "quick_fix_popup.cpp",
+]
+
+env_error_watcher.add_source_files(env.editor_sources, error_watcher_sources)

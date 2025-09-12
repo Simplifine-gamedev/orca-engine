@@ -93,6 +93,8 @@ class ExportTemplateManager;
 class EditorQuickOpenDialog;
 class FBXImporterManager;
 class AIChatDock;
+class ErrorWatcher;
+class ErrorWatcherPanel;
 class FileSystemDock;
 class HistoryDock;
 class OrphanResourcesDialog;
@@ -268,6 +270,8 @@ private:
 	EditorSettingsDialog *editor_settings_dialog = nullptr;
 	HistoryDock *history_dock = nullptr;
 	AIChatDock *ai_chat_dock = nullptr;
+	ErrorWatcher *error_watcher = nullptr;
+	ErrorWatcherPanel *error_watcher_panel = nullptr;
 
 	ProjectExportDialog *project_export = nullptr;
 	ProjectSettingsEditor *project_settings_editor = nullptr;

@@ -83,6 +83,7 @@
 #include "editor/docks/ai_chat_dock.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/docks/filesystem_dock.h"
+#include "editor/error_watcher/error_watcher.h"
 #include "editor/docks/history_dock.h"
 #include "editor/docks/import_dock.h"
 #include "editor/docks/inspector_dock.h"
@@ -8385,6 +8386,12 @@ EditorNode::EditorNode() {
 		editor_dock_manager->add_dock(ai_chat_dock, TTRC("AI Chat"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_ai_chat", TTRC("Open AI Chat Dock")), "RigidBody3D");
 	}
 
+	// Error Watcher: Bottom panel for error detection and quick fixes
+	error_watcher = memnew(ErrorWatcher);
+	error_watcher_panel = memnew(ErrorWatcherPanel);
+	error_watcher->initialize(error_watcher_panel);
+	editor_dock_manager->add_dock(error_watcher_panel, TTRC("Error Watcher"), EditorDockManager::DOCK_SLOT_LEFT_BR, ED_SHORTCUT_AND_COMMAND("docks/open_error_watcher", TTRC("Open Error Watcher Dock")), "StatusError");
+
 	// Add some offsets to left_r and main hsplits to make LEFT_R and RIGHT_L docks wider than minsize.
 	left_r_hsplit->set_split_offset(270 * EDSCALE);
 	main_hsplit->set_split_offset(-270 * EDSCALE);
@@ -8395,7 +8402,7 @@ EditorNode::EditorNode() {
 	default_layout.instantiate();
 	// Dock numbers are based on DockSlot enum value + 1.
 	default_layout->set_value(docks_section, "dock_3", "Scene,Import");
-	default_layout->set_value(docks_section, "dock_4", "FileSystem");
+	default_layout->set_value(docks_section, "dock_4", "FileSystem,Error Watcher");
 	default_layout->set_value(docks_section, "dock_5", "Inspector,Node,History,AI Chat");
 
 	// There are 4 vsplits and 4 hsplits.

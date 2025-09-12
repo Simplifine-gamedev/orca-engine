@@ -95,6 +95,7 @@ if env.editor_build:
     SConscript("debugger/SCsub")
     SConscript("doc/SCsub")
     SConscript("docks/SCsub")
+    SConscript("error_watcher/SCsub")
     SConscript("export/SCsub")
     SConscript("file_system/SCsub")
     SConscript("gui/SCsub")

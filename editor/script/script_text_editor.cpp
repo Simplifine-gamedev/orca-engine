@@ -31,6 +31,7 @@
 #include "script_text_editor.h"
 
 #include "core/config/project_settings.h"
+#include "editor/error_watcher/error_watcher.h"
 #include "core/io/json.h"
 #include "core/io/resource_saver.h"
 #include "core/math/expression.h"
@@ -910,7 +911,7 @@ void ScriptTextEditor::_validate_script() {
 	_update_connected_methods();
 	_update_warnings();
 	_update_errors();
-	
+	_update_error_watcher_markers();
 
 	emit_signal(SNAME("name_changed"));
 	emit_signal(SNAME("edited_script_changed"));
@@ -2866,6 +2867,17 @@ ScriptTextEditor::ScriptTextEditor() {
 	code_editor->get_text_editor()->set_gutter_clickable(diff_gutter, false);
 	    code_editor->get_text_editor()->set_gutter_width(diff_gutter, 0);
 	
+	// Add error watcher gutter
+	error_watcher_gutter = code_editor->get_text_editor()->get_gutter_count();
+	code_editor->get_text_editor()->add_gutter(error_watcher_gutter);
+	code_editor->get_text_editor()->set_gutter_name(error_watcher_gutter, "error_watcher_gutter");
+	code_editor->get_text_editor()->set_gutter_draw(error_watcher_gutter, true);
+	code_editor->get_text_editor()->set_gutter_overwritable(error_watcher_gutter, false);
+	code_editor->get_text_editor()->set_gutter_type(error_watcher_gutter, TextEdit::GUTTER_TYPE_ICON);
+	code_editor->get_text_editor()->set_gutter_clickable(error_watcher_gutter, true);
+	code_editor->get_text_editor()->set_gutter_width(error_watcher_gutter, 16);
+	code_editor->get_text_editor()->connect("gutter_clicked", callable_mp(this, &ScriptTextEditor::_error_watcher_gutter_clicked));
+	
 	// We'll use right-click context menu instead of gutters for individual hunks
 
 	warnings_panel = memnew(RichTextLabel);
@@ -4088,6 +4100,118 @@ void ScriptTextEditor::reject_all_diffs() {
 		// Don't modify individual hunk states when called from AI chat dock
 		// Just reject all changes
 		_apply_all_diff_hunks(false);
+	}
+}
+
+// Error Watcher Integration
+
+void ScriptTextEditor::_error_watcher_gutter_clicked(int p_line, int p_gutter) {
+	if (p_gutter != error_watcher_gutter) {
+		return;
+	}
+	
+	ErrorWatcher *error_watcher = ErrorWatcher::get_singleton();
+	if (!error_watcher || !script.is_valid()) {
+		return;
+	}
+	
+	// Get errors for this file and line
+	Vector<ErrorWatcherError> file_errors = error_watcher->get_errors_for_file(script->get_path());
+	Vector<ErrorWatcherError> line_errors;
+	
+	for (const ErrorWatcherError &error : file_errors) {
+		if (error.line == p_line + 1) { // Convert from 0-based to 1-based line numbering
+			line_errors.push_back(error);
+		}
+	}
+	
+	if (!line_errors.is_empty()) {
+		// Show quick fix popup for the first error on this line
+		ErrorWatcherError error = line_errors[0];
+		Vector<QuickFixAction> fixes = error_watcher->get_quick_fixes(error);
+		
+		if (!fixes.is_empty()) {
+			// Apply the first available fix with undo support
+			QuickFixAction fix = fixes[0];
+			bool success = error_watcher->apply_quick_fix_with_undo(fix, code_editor);
+			
+			if (success) {
+				print_line("Applied quick fix: " + fix.description);
+				// Clear errors for this file and re-validate
+				error_watcher->clear_file_errors(script->get_path());
+				_validate_script();
+			} else {
+				print_line("Failed to apply quick fix: " + fix.description);
+			}
+		}
+	}
+}
+
+void ScriptTextEditor::_update_error_watcher_markers() {
+	if (!script.is_valid()) {
+		return;
+	}
+	
+	ErrorWatcher *error_watcher = ErrorWatcher::get_singleton();
+	if (!error_watcher) {
+		return;
+	}
+	
+	CodeEdit *te = code_editor->get_text_editor();
+	
+	// Clear existing error markers
+	for (int i = 0; i < te->get_line_count(); i++) {
+		te->set_line_gutter_icon(i, error_watcher_gutter, Ref<Texture2D>());
+		te->set_line_gutter_metadata(i, error_watcher_gutter, "");
+	}
+	
+	// Process current script errors and send to ErrorWatcher
+	if (!errors.is_empty() || !warnings.is_empty()) {
+		List<ScriptLanguage::ScriptError> all_errors;
+		
+		// Add errors
+		for (const ScriptLanguage::ScriptError &error : errors) {
+			all_errors.push_back(error);
+		}
+		
+		// Add warnings as errors with lower severity
+		for (const ScriptLanguage::Warning &warning : warnings) {
+			ScriptLanguage::ScriptError warning_as_error;
+			warning_as_error.line = warning.start_line;
+			warning_as_error.column = warning.start_column;
+			warning_as_error.message = warning.message;
+			warning_as_error.path = script->get_path();
+			all_errors.push_back(warning_as_error);
+		}
+		
+		// Clear old errors for this file
+		error_watcher->clear_file_errors(script->get_path());
+		
+		// Send errors to ErrorWatcher
+		error_watcher->process_script_errors(all_errors, script->get_path());
+	}
+	
+	// Get errors from ErrorWatcher and display markers
+	Vector<ErrorWatcherError> file_errors = error_watcher->get_errors_for_file(script->get_path());
+	
+	for (const ErrorWatcherError &error : file_errors) {
+		int line_index = error.line - 1; // Convert to 0-based indexing
+		if (line_index >= 0 && line_index < te->get_line_count()) {
+			// Set appropriate icon based on error type
+			Ref<Texture2D> icon;
+			String tooltip;
+			
+			if (error.has_quick_fix) {
+				icon = get_theme_icon(SNAME("StatusError"), SNAME("EditorIcons"));
+				tooltip = error.message + " (Quick fix available)";
+			} else {
+				icon = get_theme_icon(SNAME("StatusWarning"), SNAME("EditorIcons"));
+				tooltip = error.message;
+			}
+			
+			te->set_line_gutter_icon(line_index, error_watcher_gutter, icon);
+			te->set_line_gutter_metadata(line_index, error_watcher_gutter, tooltip);
+		}
 	}
 }
 

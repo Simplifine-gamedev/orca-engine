@@ -34,6 +34,7 @@
 #include "dtl/dtl.hpp"
 
 #include "editor/gui/code_editor.h"
+#include "editor/error_watcher/error_watcher.h"
 #include "scene/gui/color_picker.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/option_button.h"
@@ -121,7 +122,9 @@ class ScriptTextEditor : public ScriptEditorBase {
 
 	int connection_gutter = -1;
 	void _gutter_clicked(int p_line, int p_gutter);
+	void _error_watcher_gutter_clicked(int p_line, int p_gutter);
 	void _update_gutter_indexes();
+	void _update_error_watcher_markers();
 
 
 	int line_number_gutter = -1;
@@ -148,6 +151,7 @@ class ScriptTextEditor : public ScriptEditorBase {
 	Vector<LineState> line_states;
 	
 	int diff_gutter = -1;
+	int error_watcher_gutter = -1;
 	String original_content;
 	String modified_content;
 	bool has_pending_diffs = false;
