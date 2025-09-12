@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "editor_node.h"
+#include "update/editor_updater.h"
 
 #include "core/config/project_settings.h"
 #include "core/extension/gdextension_manager.h"
@@ -3495,6 +3496,24 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
 		} break;
 		case HELP_COMMUNITY: {
 			OS::get_singleton()->shell_open("https://godotengine.org/community");
+		} break;
+		case HELP_CHECK_FOR_UPDATES: {
+			// Show in-app updater dialog which reads the appcast and downloads the asset.
+			EditorUpdater *updater = memnew(EditorUpdater);
+			String default_feed = OS::get_singleton()->has_feature("windows")
+					? String("https://simplifine-gamedev.github.io/orca-engine/appcast-windows.xml")
+					: String("https://simplifine-gamedev.github.io/orca-engine/appcast.xml");
+			bool feed_valid = false;
+			Variant feed_v = ProjectSettings::get_singleton()->get("application/config/appcast_url", &feed_valid);
+			String feed = feed_valid ? String(feed_v) : default_feed;
+			bool repo_valid = false;
+			Variant repo_v = ProjectSettings::get_singleton()->get("application/config/github_repository", &repo_valid);
+			updater->set_feed_url(feed);
+			String repo = repo_valid ? String(repo_v) : String("simplifine-gamedev/orca-engine");
+			updater->set_owner_repo(repo);
+			EditorNode::get_singleton()->get_gui_base()->add_child(updater);
+			updater->popup_centered();
+			updater->start_check();
 		} break;
 		case HELP_ABOUT: {
 			about->popup_centered(Size2(780, 500) * EDSCALE);
@@ -8235,6 +8254,8 @@ EditorNode::EditorNode() {
 	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/report_a_bug", TTRC("Report a Bug")), HELP_REPORT_A_BUG);
 	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/suggest_a_feature", TTRC("Suggest a Feature")), HELP_SUGGEST_A_FEATURE);
 	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/send_docs_feedback", TTRC("Send Docs Feedback")), HELP_SEND_DOCS_FEEDBACK);
+	help_menu->add_separator();
+	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/check_for_updates", TTRC("Check for Updates...")), HELP_CHECK_FOR_UPDATES);
 	help_menu->add_separator();
 	if (!global_menu || !OS::get_singleton()->has_feature("macos")) {
 		// On macOS  "Quit" and "About" options are in the "app" menu.

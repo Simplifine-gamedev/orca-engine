@@ -104,6 +104,7 @@ if env.editor_build:
     SConscript("plugins/SCsub")
     SConscript("project_manager/SCsub")
     SConscript("project_upgrade/SCsub")
+    SConscript("update/SCsub")
     SConscript("run/SCsub")
     SConscript("settings/SCsub")
     SConscript("scene/SCsub")
