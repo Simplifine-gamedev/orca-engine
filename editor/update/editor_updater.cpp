@@ -155,6 +155,7 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
         }
         downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
         http->set_download_file(downloaded_file_path);
+        http->set_use_threads(true);
         progress->set_indeterminate(false);
         progress->set_value(0);
         // Start actual download.
@@ -236,6 +237,7 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
     }
     downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
     http->set_download_file(downloaded_file_path);
+    http->set_use_threads(true);
     progress->set_indeterminate(false);
     progress->set_value(0);
     http->request(download_url);
@@ -243,20 +245,28 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
 
 void EditorUpdater::_process(double p_delta) {
     if (stage == STAGE_DOWNLOADING) {
-        String s;
-        int downloaded = -1;
-        int total = -1;
-        // Reuse helper from ExportTemplateManager if we want more detail; simple stats here:
-        downloaded = http->get_downloaded_bytes();
-        total = http->get_body_size();
-        if (total > 0) {
-            double percent = (double)downloaded * 100.0 / (double)total;
-            if (percent < 0.0) percent = 0.0;
-            if (percent > 100.0) percent = 100.0;
-            progress->set_value(percent);
-        } else if (downloaded >= 0) {
-            // Unknown total, show activity
-            progress->set_indeterminate(true);
+        int downloaded = http->get_downloaded_bytes();
+        int total = http->get_body_size();
+
+        switch (http->get_http_client_status()) {
+            case HTTPClient::STATUS_RESOLVING: status_label->set_text(TTR("Resolving...")); break;
+            case HTTPClient::STATUS_CONNECTING: status_label->set_text(TTR("Connecting...")); break;
+            case HTTPClient::STATUS_REQUESTING: status_label->set_text(TTR("Requesting...")); break;
+            case HTTPClient::STATUS_CONNECTED: status_label->set_text(TTR("Connected")); break;
+            case HTTPClient::STATUS_BODY: {
+                if (total > 0) {
+                    double percent = (double)downloaded * 100.0 / (double)total;
+                    if (percent < 0.0) percent = 0.0;
+                    if (percent > 100.0) percent = 100.0;
+                    progress->set_indeterminate(false);
+                    progress->set_value(percent);
+                    status_label->set_text(TTR("Downloading ") + String::humanize_size(downloaded) + "/" + String::humanize_size(total));
+                } else if (downloaded >= 0) {
+                    progress->set_indeterminate(true);
+                    status_label->set_text(TTR("Downloading ") + String::humanize_size(downloaded));
+                }
+            } break;
+            default: break;
         }
     }
 }

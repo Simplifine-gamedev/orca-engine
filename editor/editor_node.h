@@ -331,6 +331,7 @@ private:
 	EditorTitleBar *title_bar = nullptr;
 	EditorRunBar *project_run_bar = nullptr;
 	HBoxContainer *right_menu_hb = nullptr;
+	Button *update_badge_button = nullptr;
 
 	// Spacers to center 2D / 3D / Script buttons.
 	HBoxContainer *left_spacer = nullptr;

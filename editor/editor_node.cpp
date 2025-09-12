@@ -8255,7 +8255,7 @@ EditorNode::EditorNode() {
 	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/suggest_a_feature", TTRC("Suggest a Feature")), HELP_SUGGEST_A_FEATURE);
 	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/send_docs_feedback", TTRC("Send Docs Feedback")), HELP_SEND_DOCS_FEEDBACK);
 	help_menu->add_separator();
-	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/check_for_updates", TTRC("Check for Updates...")), HELP_CHECK_FOR_UPDATES);
+	help_menu->add_shortcut(ED_SHORTCUT_AND_COMMAND("editor/check_for_updates", TTRC("Check for Updates..."), KeyModifierMask::CMD_OR_CTRL | Key::U), HELP_CHECK_FOR_UPDATES);
 	help_menu->add_separator();
 	if (!global_menu || !OS::get_singleton()->has_feature("macos")) {
 		// On macOS  "Quit" and "About" options are in the "app" menu.
@@ -8278,6 +8278,14 @@ EditorNode::EditorNode() {
 	right_menu_hb = memnew(HBoxContainer);
 	right_menu_hb->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 	title_bar->add_child(right_menu_hb);
+
+	// Update badge to trigger update checks quickly.
+	update_badge_button = memnew(Button);
+	update_badge_button->set_flat(true);
+	update_badge_button->set_text(TTRC("Update"));
+	update_badge_button->set_tooltip_text(TTRC("Check for Updates (Ctrl/Cmd+U)"));
+	update_badge_button->connect("pressed", callable_mp(this, &EditorNode::_menu_option).bind(HELP_CHECK_FOR_UPDATES));
+	right_menu_hb->add_child(update_badge_button);
 
 	renderer = memnew(OptionButton);
 	renderer->set_visible(true);
