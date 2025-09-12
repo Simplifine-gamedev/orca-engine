@@ -136,6 +136,10 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_tool_result_accept_pressed", "tool_call_id", "file_path", "content", "btns_path", "status_path"), &AIChatDock::_on_tool_result_accept_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_result_reject_pressed", "tool_call_id", "file_path", "btns_path", "status_path"), &AIChatDock::_on_tool_result_reject_pressed);
 	
+	// Bulk operation handlers
+	ClassDB::bind_method(D_METHOD("_on_accept_all_pressed", "popup"), &AIChatDock::_on_accept_all_pressed);
+	ClassDB::bind_method(D_METHOD("_on_reject_all_pressed", "popup"), &AIChatDock::_on_reject_all_pressed);
+	
 	// Legacy fallback handlers for tool results without tool_call_id
 	ClassDB::bind_method(D_METHOD("_on_apply_preview_to_editor", "path", "content", "btns_path", "status_label_path"), &AIChatDock::_on_apply_preview_to_editor);
 	ClassDB::bind_method(D_METHOD("_on_discard_preview", "path", "btns_path", "status_label_path"), &AIChatDock::_on_discard_preview);
@@ -384,6 +388,17 @@ void AIChatDock::_notification(int p_notification) {
 			pending_edits_label->add_theme_color_override("font_color", Color(0.2, 0.4, 0.8, 0.9));
 			pending_edits_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			banner_content->add_child(pending_edits_label);
+			
+			// Accept All button (quick access)
+			Button *banner_accept_all_btn = memnew(Button);
+			banner_accept_all_btn->set_name("banner_accept_all_btn");
+			banner_accept_all_btn->set_text("Accept All");
+			banner_accept_all_btn->set_flat(true);
+			banner_accept_all_btn->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			banner_accept_all_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ImportCheck"), SNAME("EditorIcons")));
+			banner_accept_all_btn->set_custom_minimum_size(Size2(80, 0));
+			banner_accept_all_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_accept_all_pressed).bind((AcceptDialog*)nullptr));
+			banner_content->add_child(banner_accept_all_btn);
 			
 			// Details button
 			pending_edits_details_btn = memnew(Button);
@@ -11517,6 +11532,9 @@ void AIChatDock::_update_pending_edits_banner() {
 	int unique_files = file_to_tool_ids.size();
 	int total_edits = pending_apply_edits.size();
 	
+	// Find the banner Accept All button
+	Button *banner_accept_all_btn = Object::cast_to<Button>(pending_edits_banner->find_child("banner_accept_all_btn", true, false));
+	
 	if (unique_files == 0) {
 		pending_edits_banner->set_visible(false);
 	} else {
@@ -11533,6 +11551,11 @@ void AIChatDock::_update_pending_edits_banner() {
 		}
 		
 		pending_edits_label->set_text(text);
+		
+		// Update Accept All button state
+		if (banner_accept_all_btn) {
+			banner_accept_all_btn->set_disabled(pending_apply_edits.is_empty());
+		}
 	}
 }
 
@@ -11586,6 +11609,37 @@ void AIChatDock::_on_banner_clicked() {
 		file_row->add_child(count_label);
 	}
 	
+	// Add separator and bulk action buttons
+	content->add_child(memnew(HSeparator));
+	
+	HBoxContainer *buttons_container = memnew(HBoxContainer);
+	content->add_child(buttons_container);
+	
+	// Accept All button
+	Button *accept_all_btn = memnew(Button);
+	accept_all_btn->set_text("Accept All");
+	accept_all_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ImportCheck"), SNAME("EditorIcons")));
+	accept_all_btn->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+	accept_all_btn->set_custom_minimum_size(Size2(100, 32));
+	accept_all_btn->set_disabled(pending_apply_edits.is_empty());
+	accept_all_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_accept_all_pressed).bind(details_popup));
+	buttons_container->add_child(accept_all_btn);
+	
+	// Spacer
+	Control *spacer = memnew(Control);
+	spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	buttons_container->add_child(spacer);
+	
+	// Reject All button
+	Button *reject_all_btn = memnew(Button);
+	reject_all_btn->set_text("Reject All");
+	reject_all_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ImportFail"), SNAME("EditorIcons")));
+	reject_all_btn->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	reject_all_btn->set_custom_minimum_size(Size2(100, 32));
+	reject_all_btn->set_disabled(pending_apply_edits.is_empty());
+	reject_all_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_reject_all_pressed).bind(details_popup));
+	buttons_container->add_child(reject_all_btn);
+	
 	add_child(details_popup);
 	details_popup->popup_centered();
 	
@@ -11597,6 +11651,119 @@ void AIChatDock::_cleanup_popup(AcceptDialog *p_popup) {
 	if (p_popup) {
 		p_popup->queue_free();
 	}
+}
+
+void AIChatDock::_on_accept_all_pressed(AcceptDialog *p_popup) {
+	print_line("AI Chat: Accept All pressed - processing " + String::num_int64(pending_apply_edits.size()) + " pending edits");
+	
+	// Emit telemetry event
+	Dictionary telemetry_data;
+	telemetry_data["count"] = pending_apply_edits.size();
+	telemetry_data["files"] = file_to_tool_ids.size();
+	// TODO: Add telemetry call when telemetry system is available
+	// emit_signal("accept_all_clicked", telemetry_data);
+	
+	// Track counts
+	int total_edits = pending_apply_edits.size();
+	int processed = 0;
+	
+	// Process each pending edit
+	HashMap<String, String> pending_copy = pending_apply_edits; // Copy to avoid modification during iteration
+	
+	for (const KeyValue<String, String> &entry : pending_copy) {
+		String tool_call_id = entry.key;
+		String file_path = entry.value;
+		
+		// Find the content for this tool call in the conversation history
+		String content_to_apply;
+		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+		
+		for (int i = 0; i < chat_history.size(); i++) {
+			const ChatMessage &msg = chat_history[i];
+			if (msg.role == "tool" && msg.tool_call_id == tool_call_id) {
+				// Parse the tool result to get edited content
+				Ref<JSON> json;
+				json.instantiate();
+				Error parse_err = json->parse(msg.content);
+				if (parse_err == OK) {
+					Variant result = json->get_data();
+					if (result.get_type() == Variant::DICTIONARY) {
+						Dictionary data = result;
+						content_to_apply = data.get("edited_content", "");
+						break;
+					}
+				}
+			}
+		}
+		
+		if (content_to_apply.is_empty()) {
+			print_line("AI Chat: Warning: Failed to find content for tool call " + tool_call_id + " (file: " + file_path + ")");
+			continue;
+		}
+		
+		// Use the existing unified accept handler
+		_handle_apply_edit_accepted(file_path, content_to_apply);
+		processed++;
+		print_line("AI Chat: Successfully accepted edit for " + file_path);
+	}
+	
+	// Close the popup
+	if (p_popup) {
+		p_popup->hide();
+	}
+	
+	// Show feedback message
+	String message = "✅ Successfully accepted " + String::num_int64(processed) + " of " + String::num_int64(total_edits) + " pending edits";
+	print_line("AI Chat: " + message);
+	
+	// Emit telemetry
+	Dictionary success_data;
+	success_data["count"] = processed;
+	success_data["total"] = total_edits;
+	// TODO: emit_signal("accept_all_succeeded", success_data);
+}
+
+void AIChatDock::_on_reject_all_pressed(AcceptDialog *p_popup) {
+	print_line("AI Chat: Reject All pressed - processing " + String::num_int64(pending_apply_edits.size()) + " pending edits");
+	
+	// Emit telemetry event
+	Dictionary telemetry_data;
+	telemetry_data["count"] = pending_apply_edits.size();
+	telemetry_data["files"] = file_to_tool_ids.size();
+	// TODO: Add telemetry call when telemetry system is available
+	// emit_signal("reject_all_clicked", telemetry_data);
+	
+	// Track counts
+	int total_edits = pending_apply_edits.size();
+	int processed = 0;
+	
+	// Process each pending edit
+	HashMap<String, String> pending_copy = pending_apply_edits; // Copy to avoid modification during iteration
+	
+	for (const KeyValue<String, String> &entry : pending_copy) {
+		String tool_call_id = entry.key;
+		String file_path = entry.value;
+		
+		// Use the existing unified reject handler
+		_handle_apply_edit_rejected(file_path);
+		processed++;
+		print_line("AI Chat: Successfully rejected edit for " + file_path);
+	}
+	
+	// Close the popup
+	if (p_popup) {
+		p_popup->hide();
+	}
+	
+	// Show feedback message
+	String message = "✅ Successfully rejected " + String::num_int64(processed) + " of " + String::num_int64(total_edits) + " pending edits";
+	print_line("AI Chat: " + message);
+	
+	// Emit telemetry
+	Dictionary success_data;
+	success_data["count"] = processed;
+	success_data["total"] = total_edits;
+	// TODO: emit_signal("reject_all_succeeded", success_data);
 }
 
 // 3D Model Generation callback implementations

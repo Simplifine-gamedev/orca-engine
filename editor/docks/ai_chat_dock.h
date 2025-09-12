@@ -587,6 +587,8 @@ private:
 	void _remove_pending_edit(const String &p_tool_call_id);
 	void _remove_pending_edits_for_file(const String &p_file_path); // Remove all edits for same file
 	void _on_banner_clicked(); // Show detailed pending edits
+	void _on_accept_all_pressed(AcceptDialog *p_popup); // Accept all pending edits
+	void _on_reject_all_pressed(AcceptDialog *p_popup); // Reject all pending edits
 	void _cleanup_popup(AcceptDialog *p_popup); // Cleanup helper for popups
 	PanelContainer *pending_edits_banner = nullptr;
 	Label *pending_edits_label = nullptr;
