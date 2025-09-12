@@ -415,6 +415,8 @@ private:
 	void _connect_script_editor_signals();
 	void _show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
 	void _show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
+	void _show_cumulative_diff_for_file(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff = "");
+	String _generate_inline_diff(const String &p_original, const String &p_modified);
 
 	// Image processing methods
 	bool _is_image_file(const String &p_path);
@@ -595,6 +597,9 @@ private:
 	
 	// Consolidated pending edits (replaces old system)
 	HashMap<String, Array> file_to_tool_ids; // file_path -> [tool_call_ids] for same file consolidation
+	
+	// Track actively running apply_edit tools to coordinate diff display
+	HashMap<String, Array> active_edit_tools; // file_path -> [tool_call_ids] of tools currently executing
 
 protected:
 	void _notification(int p_notification);

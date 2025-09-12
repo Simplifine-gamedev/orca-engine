@@ -35,6 +35,10 @@
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_compiler.h"
 
+// C++ standard library for thread-safe sleep
+#include <thread>
+#include <chrono>
+
 // In-memory overlay of edited content awaiting user Accept/Reject in the editor.
 // Key: absolute or res:// path; Value: edited content string
 static Dictionary s_preview_overlays;
@@ -2038,7 +2042,7 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 	int connection_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
+		std::this_thread::sleep_for(std::chrono::microseconds(1000));
 		connection_elapsed_ms += 1;
 		if (connection_elapsed_ms > connection_timeout_ms) {
 			result["success"] = false;
@@ -2083,7 +2087,7 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 	int response_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
+		std::this_thread::sleep_for(std::chrono::microseconds(1000));
 		response_elapsed_ms += 1;
 		if (response_elapsed_ms > response_timeout_ms) {
 			result["success"] = false;
@@ -2117,7 +2121,7 @@ Dictionary EditorTools::_predict_code_edit(const String &p_file_content, const S
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
-			OS::get_singleton()->delay_usec(1000);
+			std::this_thread::sleep_for(std::chrono::microseconds(1000));
 			body_elapsed_ms += 1;
 			if (body_elapsed_ms > body_timeout_ms) {
 				result["success"] = false;
@@ -2202,7 +2206,7 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	int connection_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_CONNECTING || http_client->get_status() == HTTPClient::STATUS_RESOLVING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
+		std::this_thread::sleep_for(std::chrono::microseconds(1000));
 		connection_elapsed_ms += 1;
 		if (connection_elapsed_ms > connection_timeout_ms) {
 			result["success"] = false;
@@ -2246,21 +2250,11 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	headers.push_back("Content-Length: " + itos(request_body.size()));
 	headers.push_back("Accept: application/json");
 
-	// Auth and context headers
-	String auth_token;
-	String user_id;
-	if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
-		auth_token = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
-	}
-	if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
-		user_id = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
-	}
-	String machine_id = OS::get_singleton()->get_unique_id();
-	if (machine_id.is_empty()) {
-		machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
-		machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
-	}
-	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
+	// Auth and context headers - these should have been prepared in advance by the main thread
+	String auth_token = p_ai_args.get("auth_token", "");
+	String user_id = p_ai_args.get("user_id", "");
+	String machine_id = p_ai_args.get("machine_id", "");
+	String project_root = p_ai_args.get("project_root", "");
 
 	if (!auth_token.is_empty()) {
 		headers.push_back("Authorization: Bearer " + auth_token);
@@ -2288,7 +2282,7 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 	int response_elapsed_ms = 0;
 	while (http_client->get_status() == HTTPClient::STATUS_REQUESTING) {
 		http_client->poll();
-		OS::get_singleton()->delay_usec(1000);
+		std::this_thread::sleep_for(std::chrono::microseconds(1000));
 		response_elapsed_ms += 1;
 		if (response_elapsed_ms > response_timeout_ms) {
 			result["success"] = false;
@@ -2323,7 +2317,7 @@ Dictionary EditorTools::_call_apply_endpoint(const String &p_file_path, const St
 		http_client->poll();
 		PackedByteArray chunk = http_client->read_response_body_chunk();
 		if (chunk.size() == 0) {
-			OS::get_singleton()->delay_usec(1000);
+			std::this_thread::sleep_for(std::chrono::microseconds(1000));
 			body_elapsed_ms += 1;
 			if (body_elapsed_ms > body_timeout_ms) {
 				result["success"] = false;
@@ -2461,49 +2455,25 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
     // Prepare request content: either whole file or only the selected segment
     String content_for_model = use_range ? segment_text : file_content;
 
-    // Prepare auth/context headers to mirror chat/image generation
-    String auth_token = String();
-    String user_id = String();
-    if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
-        auth_token = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
-    }
-    if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
-        user_id = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
-    }
-    String machine_id = OS::get_singleton()->get_unique_id();
-    if (machine_id.is_empty()) {
-        machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
-        machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
-    }
-    String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
-
     print_line("APPLY_EDIT: Using HTTPClient to call backend API - prompt: " + prompt);
 
-    // Determine backend URL using same logic as main chat system
-    String base_url;
-    String is_dev = OS::get_singleton()->get_environment("IS_DEV");
-    if (is_dev.is_empty()) {
-        // Backward-compat with DEV_MODE
-        is_dev = OS::get_singleton()->get_environment("DEV_MODE");
-    }
-    if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-        base_url = "http://127.0.0.1:8000";
-    } else {
-        base_url = "https://gamechat.simplifine.com";
-    }
-    // Allow override via editor settings or environment variable
-    if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-        String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
-        if (!override_url.is_empty()) {
-            base_url = override_url;
-        }
-    } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
-        base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
-    }
+    // Use authentication data passed from main thread (avoid singleton access in background thread)
+    String auth_token = p_args.get("auth_token", "");
+    String user_id = p_args.get("user_id", "");
+    String machine_id = p_args.get("machine_id", "");
+    String project_root = p_args.get("project_root", "");
+    String base_url = p_args.get("base_url", "");
 
     // Call backend using only the segment if range mode is used, and pass range context for diff reconstruction
     Dictionary args_for_backend = p_args.duplicate();
     args_for_backend["prompt"] = prompt; // ensure present
+    
+    // Add auth data for background thread (passed from main thread)
+    args_for_backend["auth_token"] = auth_token;
+    args_for_backend["user_id"] = user_id;
+    args_for_backend["machine_id"] = machine_id;
+    args_for_backend["project_root"] = project_root;
+    
     if (use_range) {
         args_for_backend["lines"] = String("range");
         args_for_backend["start_line"] = range_start;
@@ -2515,23 +2485,10 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         args_for_backend["lines"] = String("all");
         args_for_backend["path"] = path;
     }
-    Dictionary local_result = _call_apply_endpoint(path, content_for_model, args_for_backend, base_url + "/chat");
+    Dictionary local_result = _call_apply_endpoint(path, content_for_model, args_for_backend, base_url + "/predict_code_edit");
 
-    // Orca analytics: AI edit request
-    {
-        Error __err = OK;
-        Ref<FileAccess> af = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
-        String app_session_id; if (af.is_valid()) app_session_id = af->get_line();
-        auto _log_line = [](const String &line) {
-            Error werr = OK;
-            Ref<FileAccess> f = FileAccess::open("user://analytics.log", FileAccess::WRITE_READ, &werr);
-            if (f.is_null()) return;
-            f->seek_end(); f->store_line(line); f->flush();
-        };
-        auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
-        const String scope = use_range ? String("range") : String("all");
-        _log_line(vformat("{\"t\":\"%s\",\"type\":\"ai_edit_request\",\"app_session\":\"%s\",\"path\":\"%s\",\"scope\":\"%s\"}", _now_iso(), app_session_id, path, scope));
-    }
+    // Skip analytics in background thread to avoid singleton access issues
+    print_line("APPLY_EDIT: Analytics skipped for background thread safety");
 
     if (local_result.get("success", false)) {
         String backend_segment = local_result.get("edited_content", content_for_model);
@@ -2701,8 +2658,11 @@ String EditorTools::_clean_backend_content(const String &p_content) {
 	// Fix common malformed content issues
 	content = _fix_malformed_content(content);
 	
-	// Trim extra whitespace
-	content = content.strip_edges();
+	// DO NOT strip_edges() on multi-line content - it corrupts first line indentation
+	// Only trim trailing newlines if excessive (but preserve intentional structure)
+	while (content.ends_with("\n\n\n")) {
+		content = content.substr(0, content.length() - 1);
+	}
 	
 	return content;
 }

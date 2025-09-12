@@ -152,6 +152,8 @@ void AIChatDock::_bind_methods() {
     ClassDB::bind_method(D_METHOD("_perform_filesystem_scan_changes"), &AIChatDock::_perform_filesystem_scan_changes);
 	ClassDB::bind_method(D_METHOD("_on_embedding_status_tick"), &AIChatDock::_on_embedding_status_tick);
 	ClassDB::bind_method(D_METHOD("_show_diff_in_script_editor_deferred"), &AIChatDock::_show_diff_in_script_editor_deferred);
+	ClassDB::bind_method(D_METHOD("_show_cumulative_diff_for_file"), &AIChatDock::_show_cumulative_diff_for_file);
+	ClassDB::bind_method(D_METHOD("_generate_inline_diff"), &AIChatDock::_generate_inline_diff);
 	ClassDB::bind_method(D_METHOD("_on_script_editor_diff_accepted"), &AIChatDock::_on_script_editor_diff_accepted);
 	ClassDB::bind_method(D_METHOD("_on_script_editor_diff_rejected"), &AIChatDock::_on_script_editor_diff_rejected);
 
@@ -686,7 +688,7 @@ void AIChatDock::_notification(int p_notification) {
         is_dev = OS::get_singleton()->get_environment("DEV_MODE");
     }
     if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-        api_endpoint = "http://127.0.0.1:8080/chat";
+        api_endpoint = "http://127.0.0.1:5050/chat";
     } else {
         api_endpoint = "https://gamechat.simplifine.com/chat";
     }
@@ -2230,7 +2232,7 @@ void AIChatDock::_perform_project_reindex() {
 		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
 	}
 	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-		base_url = "http://127.0.0.1:8080";
+		base_url = "http://127.0.0.1:5050";
 	} else {
 		base_url = "https://gamechat.simplifine.com";
 	}
@@ -3459,6 +3461,57 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
                 args["skip_compilation_check"] = true;
             }
             pending_tool_tasks++;
+            
+            // Track that this tool is editing a specific file for diff coordination
+            String edit_file_path = String(args.get("path", ""));
+            if (!edit_file_path.is_empty()) {
+                // Add to active edit tools tracking (for diff coordination)
+                if (!active_edit_tools.has(edit_file_path)) {
+                    active_edit_tools[edit_file_path] = Array();
+                }
+                Array active_tool_ids = active_edit_tools[edit_file_path];
+                active_tool_ids.push_back(tool_call_id);
+                active_edit_tools[edit_file_path] = active_tool_ids;
+                print_line("AI Chat: Added tool " + tool_call_id + " to active edit tracking for " + edit_file_path + 
+                          " (total active tools for this file: " + itos(active_tool_ids.size()) + ")");
+            }
+            
+            // Prepare authentication data from main thread to avoid singleton access in background thread
+            if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
+                args["auth_token"] = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
+            }
+            if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
+                args["user_id"] = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
+            }
+            String machine_id = OS::get_singleton()->get_unique_id();
+            if (machine_id.is_empty()) {
+                machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
+                machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
+            }
+            args["machine_id"] = machine_id;
+            args["project_root"] = ProjectSettings::get_singleton()->globalize_path("res://");
+            
+            // Prepare base URL from main thread
+            String base_url;
+            String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+            if (is_dev.is_empty()) {
+                is_dev = OS::get_singleton()->get_environment("DEV_MODE");
+            }
+            if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+                base_url = "http://127.0.0.1:5050";
+            } else {
+                base_url = "https://gamechat.simplifine.com";
+            }
+            if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+                String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+                if (!override_url.is_empty()) {
+                    base_url = override_url;
+                }
+            } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+                base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+            }
+            args["base_url"] = base_url;
+            
             _update_tool_placeholder_status(tool_call_id, function_name, "running");
             _execute_apply_edit_async(tool_call_id, args);
             // Skip immediate result handling; it will be added when the thread completes
@@ -3720,6 +3773,48 @@ void AIChatDock::_on_apply_edit_thread_done() {
         if (!task) continue;
 
         pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
+        
+        // Check if this tool completion triggers a cumulative diff display
+        String file_path = String(task->args.get("path", ""));
+        bool should_show_cumulative_diff = false;
+        
+        if (!file_path.is_empty()) {
+            // Remove this tool from active tracking
+            if (active_edit_tools.has(file_path)) {
+                Array active_tool_ids = active_edit_tools[file_path];
+                int index = active_tool_ids.find(task->tool_call_id);
+                if (index >= 0) {
+                    active_tool_ids.remove_at(index);
+                    print_line("AI Chat: Removed completed tool " + task->tool_call_id + " from active tracking for " + file_path);
+                }
+                
+                // Check if there are other tools still running for this file in the current batch
+                int other_running_tools_in_batch = 0;
+                for (int k = i + 1; k < to_process.size(); k++) {
+                    ApplyEditTaskData *other_task = static_cast<ApplyEditTaskData *>(to_process[k]);
+                    if (other_task && String(other_task->args.get("path", "")) == file_path) {
+                        other_running_tools_in_batch++;
+                    }
+                }
+                
+                // This is the last tool for this file if:
+                // 1. No other tools in the active list for this file
+                // 2. No other tools for this file in the current completion batch
+                should_show_cumulative_diff = (active_tool_ids.is_empty() && other_running_tools_in_batch == 0);
+                
+                if (active_tool_ids.is_empty()) {
+                    active_edit_tools.erase(file_path);
+                } else {
+                    active_edit_tools[file_path] = active_tool_ids;
+                }
+                
+                print_line("AI Chat: Tool " + task->tool_call_id + " completed for " + file_path + 
+                          ", remaining active tools: " + itos(active_tool_ids.size()) + 
+                          ", other tools in batch: " + itos(other_running_tools_in_batch) +
+                          ", should show cumulative diff: " + (should_show_cumulative_diff ? "true" : "false"));
+            }
+        }
+        
         // Keep UI busy if background apply threads still running
         bool busy = false;
         ai_busy_mutex.lock();
@@ -3729,6 +3824,40 @@ void AIChatDock::_on_apply_edit_thread_done() {
         const String tool_name = "apply_edit";
         _update_tool_placeholder_status(task->tool_call_id, tool_name, "completed");
         _add_tool_response_to_chat(task->tool_call_id, tool_name, task->args, task->result);
+        
+        // If this is the last tool for the file and it's a script file, show cumulative diff
+        if (should_show_cumulative_diff && !file_path.is_empty()) {
+            String ext = file_path.get_extension().to_lower();
+            bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
+            if (is_script_like && task->result.get("success", false)) {
+                print_line("AI Chat: Showing cumulative diff for " + file_path + " after all tools completed");
+                
+                // Get the final content from preview overlay (result of all cumulative edits)
+                String final_content = "";
+                if (EditorTools::has_preview_overlay(file_path)) {
+                    final_content = EditorTools::get_preview_overlay(file_path);
+                } else {
+                    final_content = String(task->result.get("edited_content", ""));
+                }
+                
+                // Get original disk content for proper cumulative diff
+                String original_disk_content = "";
+                Error read_err;
+                Ref<FileAccess> original_file = FileAccess::open(file_path, FileAccess::READ, &read_err);
+                if (read_err == OK && original_file.is_valid()) {
+                    original_disk_content = original_file->get_as_text();
+                    original_file->close();
+                } else {
+                    original_disk_content = "";
+                }
+                
+                // Generate the correct cumulative inline diff from original disk content to final content
+                String cumulative_inline_diff = _generate_inline_diff(original_disk_content, final_content);
+                
+                call_deferred("_show_cumulative_diff_for_file", file_path, original_disk_content, final_content, cumulative_inline_diff);
+            }
+        }
+        
         memdelete(task);
     }
 
@@ -5188,11 +5317,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         if (!file_path.is_empty() && is_truly_pending) {
             EditorTools::set_preview_overlay(file_path, edited_content);
             
-            // For script files, also show diff in script editor
+            // For script files, show diff in script editor ONLY if this is the last tool editing this file
             String ext = file_path.get_extension().to_lower();
             bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
             if (is_script_like) {
-                print_line("=== DEBUG: Showing diff for " + file_path + " ===");
+                print_line("=== DEBUG: Checking if should show diff for " + file_path + " ===");
                 print_line("Original content preview: " + original_content.left(200) + "...");
                 print_line("Edited content preview: " + edited_content.left(200) + "...");
                 
@@ -5219,9 +5348,31 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                     EditorTools::set_preview_overlay(file_path, edited_content);
                 }
                 
-                print_line("AI Chat: Passing inline_diff to script editor, length: " + itos(inline_diff.length()));
-                print_line("AI Chat: Inline diff preview: " + inline_diff.left(300).replace("\n", "\\n"));
-                _show_diff_in_script_editor(file_path, original_content, edited_content, inline_diff);
+                // Check if there are other tools actively editing this file
+                bool other_tools_pending = false;
+                if (active_edit_tools.has(file_path)) {
+                    Array active_tool_ids = active_edit_tools[file_path];
+                    print_line("AI Chat: Found " + itos(active_tool_ids.size()) + " active tools editing " + file_path);
+                    
+                    // Count how many other tools are still running for this file
+                    int other_active_count = 0;
+                    for (int i = 0; i < active_tool_ids.size(); i++) {
+                        String check_tool_id = active_tool_ids[i];
+                        if (check_tool_id != tool_call_id) {
+                            other_active_count++;
+                        }
+                    }
+                    other_tools_pending = (other_active_count > 0);
+                    print_line("AI Chat: " + itos(other_active_count) + " other tools still active for " + file_path);
+                }
+                
+                // Note: Diff display is now handled centrally in _on_apply_edit_thread_done
+                // to ensure we show cumulative diffs only after ALL tools for a file complete
+                if (!other_tools_pending) {
+                    print_line("AI Chat: This is the last tool editing " + file_path + " - diff will be shown by completion handler");
+                } else {
+                    print_line("AI Chat: Other tools still editing " + file_path + ", deferring diff display");
+                }
             }
         }
 
@@ -7644,6 +7795,7 @@ void AIChatDock::clear_chat_history() {
 	// Clear pending edits
 	pending_apply_edits.clear();
 	file_to_tool_ids.clear();
+	active_edit_tools.clear();
 	_update_pending_edits_banner();
 
 	// Clear UI (preserve pending edits banner)
@@ -7715,7 +7867,7 @@ void AIChatDock::_load_layout_from_config(Ref<ConfigFile> p_layout, const String
         is_dev = OS::get_singleton()->get_environment("DEV_MODE");
     }
     if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-        base_url = "http://127.0.0.1:8000";
+        base_url = "http://127.0.0.1:5050";
     } else {
         base_url = "https://gamechat.simplifine.com";
     }
@@ -8030,6 +8182,7 @@ void AIChatDock::_create_new_conversation() {
 	// Clear pending edits
 	pending_apply_edits.clear();
 	file_to_tool_ids.clear();
+	active_edit_tools.clear();
 	_update_pending_edits_banner();
 	
 	// Clear UI for new conversation (preserve pending edits banner)
@@ -8059,6 +8212,7 @@ void AIChatDock::_create_new_conversation_instant() {
 	// Clear pending edits
 	pending_apply_edits.clear();
 	file_to_tool_ids.clear();
+	active_edit_tools.clear();
 	_update_pending_edits_banner();
 	
 	// Clear UI for new conversation (preserve pending edits banner)
@@ -10589,6 +10743,133 @@ void AIChatDock::_show_diff_in_script_editor_deferred(const String &p_path, cons
 	print_line("AI Chat: Showing diff in script editor for " + p_path);
 }
 
+void AIChatDock::_show_cumulative_diff_for_file(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff) {
+	print_line("AI Chat: _show_cumulative_diff_for_file called for " + p_path);
+	print_line("AI Chat: Original length: " + itos(p_original.length()) + ", Final length: " + itos(p_final.length()));
+	
+	ScriptEditor *script_editor = ScriptEditor::get_singleton();
+	if (!script_editor) {
+		print_line("AI Chat: ScriptEditor singleton not available");
+		return;
+	}
+	
+	// Load or create the script resource
+	Ref<Resource> resource = ResourceLoader::load(p_path);
+	Ref<Script> script = resource;
+	
+	if (!script.is_valid()) {
+		// For new files, create a temporary script
+		if (p_path.get_extension() == "gd") {
+			Ref<GDScript> gd_script;
+			gd_script.instantiate();
+			gd_script->set_path(p_path);
+			gd_script->set_source_code(p_original.is_empty() ? "extends Node\n\n" : p_original);
+			script = gd_script;
+		} else {
+			print_line("AI Chat: Cannot create temporary script for non-GDScript file: " + p_path);
+			return;
+		}
+	}
+	
+	// Open the script in the editor
+	script_editor->edit(script);
+	
+	// Get the current script editor instance
+	ScriptEditorBase *current = script_editor->get_current_editor();
+	if (!current) {
+		print_line("AI Chat: No current script editor found for cumulative diff");
+		return;
+	}
+	
+	ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(current);
+	if (!ste) {
+		print_line("AI Chat: Current editor is not a ScriptTextEditor for cumulative diff");
+		return;
+	}
+	
+	// Connect signals if not already connected
+	if (!ste->is_connected("diff_accepted", callable_mp(this, &AIChatDock::_on_script_editor_diff_accepted))) {
+		ste->connect("diff_accepted", callable_mp(this, &AIChatDock::_on_script_editor_diff_accepted));
+		ste->connect("diff_rejected", callable_mp(this, &AIChatDock::_on_script_editor_diff_rejected));
+	}
+	
+	// Show the cumulative diff in the script editor
+	print_line("AI Chat: Setting cumulative diff in script editor for " + p_path);
+	ste->set_diff(p_original, p_final, p_inline_diff);
+	
+	// Switch to Script editor view
+	EditorInterface::get_singleton()->set_main_screen_editor("Script");
+	
+	print_line("AI Chat: Successfully displayed cumulative diff for " + p_path);
+}
+
+String AIChatDock::_generate_inline_diff(const String &p_original, const String &p_modified) {
+	// Generate inline diff in the same format as the backend (like predict_code_edit)
+	Vector<String> original_lines = p_original.split("\n");
+	Vector<String> modified_lines = p_modified.split("\n");
+	
+	// Use a simple LCS-based diff algorithm (same approach as backend)
+	String inline_diff_text = "";
+	
+	// Simple diff implementation using dynamic programming (LCS approach)
+	int n = original_lines.size();
+	int m = modified_lines.size();
+	
+	// Build LCS table
+	Vector<Vector<int>> lcs;
+	lcs.resize(n + 1);
+	for (int i = 0; i <= n; i++) {
+		lcs.write[i].resize(m + 1);
+		for (int j = 0; j <= m; j++) {
+			if (i == 0 || j == 0) {
+				lcs.write[i].write[j] = 0;
+			} else if (original_lines[i-1] == modified_lines[j-1]) {
+				lcs.write[i].write[j] = lcs[i-1][j-1] + 1;
+			} else {
+				lcs.write[i].write[j] = MAX(lcs[i-1][j], lcs[i][j-1]);
+			}
+		}
+	}
+	
+	// Backtrack to build the diff
+	Vector<String> diff_lines;
+	int i = n, j = m;
+	while (i > 0 || j > 0) {
+		if (i > 0 && j > 0 && original_lines[i-1] == modified_lines[j-1]) {
+			// Common line - add as unchanged
+			diff_lines.push_back("  " + original_lines[i-1]);
+			i--;
+			j--;
+		} else if (j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j])) {
+			// Line added in modified
+			diff_lines.push_back("+ " + modified_lines[j-1]);
+			j--;
+		} else {
+			// Line deleted from original
+			diff_lines.push_back("- " + original_lines[i-1]);
+			i--;
+		}
+	}
+	
+	// Reverse since we built it backwards
+	diff_lines.reverse();
+	
+	// Join with newlines
+	for (int k = 0; k < diff_lines.size(); k++) {
+		inline_diff_text += diff_lines[k];
+		if (k < diff_lines.size() - 1) {
+			inline_diff_text += "\n";
+		}
+	}
+	
+	print_line("AI Chat: Generated cumulative inline diff, length: " + itos(inline_diff_text.length()));
+	if (!inline_diff_text.is_empty()) {
+		print_line("AI Chat: Cumulative diff preview: " + inline_diff_text.left(300).replace("\n", "\\n"));
+	}
+	
+	return inline_diff_text;
+}
+
 void AIChatDock::_populate_cerebras_models() {
 	// Fetch available models from backend
 	String base_url = _get_api_base_url();
@@ -10673,7 +10954,7 @@ String AIChatDock::_get_api_base_url() {
 		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
 	}
 	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-		base_url = "http://127.0.0.1:8080";
+		base_url = "http://127.0.0.1:5050";
 	} else {
 		base_url = "https://gamechat.simplifine.com";
 	}

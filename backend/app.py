@@ -36,27 +36,29 @@ from auth_manager import AuthManager
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure Vertex AI credentials and settings
-VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')
-VERTEX_AI_LOCATION = os.getenv('VERTEX_AI_LOCATION', 'global')
-VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
+# Vertex AI configuration (DISABLED - using direct Anthropic API instead)
+# VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')  
+# VERTEX_AI_LOCATION = 'us-central1'
+# VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
 
-# Set up Vertex AI authentication
-if VERTEX_AI_PROJECT:
-    os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
-    os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
-    
-    if VERTEX_AI_CREDENTIALS_PATH:
-        # Use explicit credentials file if provided
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
-        print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
-    else:
-        # Use default GCP authentication (gcloud CLI credentials)
-        print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
-    
-    print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
-else:
-    print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
+# # Set up Vertex AI authentication (DISABLED)
+# if VERTEX_AI_PROJECT:
+#     os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
+#     os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
+#     
+#     if VERTEX_AI_CREDENTIALS_PATH:
+#         # Use explicit credentials file if provided
+#         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
+#         print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
+#     else:
+#         # Use default GCP authentication (gcloud CLI credentials)
+#         print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
+#     
+#     print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
+# else:
+#     print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
+
+print("VERTEX_AI: Disabled - using direct Anthropic API instead")
 
 # --- Global State & Configuration ---
 
@@ -173,7 +175,7 @@ else:
 # Base models (always available)
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": os.getenv("CLAUDE_MODEL", f"vertex_ai/claude-sonnet-4@20250514"),
+    "claude-4": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514"),
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
@@ -224,6 +226,15 @@ if cerebras_api_key:
     print(f"CEREBRAS_SETUP: API key configured for LiteLLM")
 else:
     print("WARNING: CEREBRAS_API_KEY not found in environment - Cerebras models will fail")
+
+# Ensure LiteLLM has access to Anthropic API key
+anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+if anthropic_api_key:
+    # Make sure LiteLLM can access the Anthropic API key
+    os.environ['ANTHROPIC_API_KEY'] = anthropic_api_key
+    print(f"ANTHROPIC_SETUP: API key configured for LiteLLM")
+else:
+    print("WARNING: ANTHROPIC_API_KEY not found in environment - Anthropic models will fail")
 
 # Default model and allowed models
 DEFAULT_MODEL = "gpt-5"
@@ -3943,13 +3954,63 @@ def predict_code_edit():
         if is_range:
             # For range edits, provide context about the specific lines
             indentation_reminder = f"\n\nCRITICAL INDENTATION RULES:\n{indentation_context}" if indentation_context else ""
-            full_prompt = (
-                f"Task: {prompt}\n\n"
-                f"Edit the following code segment (lines {start_line}-{end_line}):\n"
-                f"{file_content}\n\n"
-                f"CRITICAL: You must preserve EXACT indentation. Look at the existing lines and match their indentation precisely. Count the tabs/spaces and use exactly the same amount.{indentation_reminder}\n\n"
-                f"Reply with ONLY the edited code for this segment."
-            )
+            
+            # Check if this is expanded context (context expansion detection)
+            file_lines = file_content.split('\n')
+            actual_range_size = end_line - start_line + 1
+            provided_lines = len(file_lines)
+            is_expanded_context = provided_lines > actual_range_size
+            
+            if is_expanded_context:
+                # Calculate exact position of target lines within the expanded segment
+                # Frontend uses: context_start = MAX(0, range_start - 1 - context_lines) with context_lines=10
+                # From logs: "Expanded context from lines 44-64 (original range: 54-54)"
+                # So: context_start = MAX(0, 54 - 1 - 10) = 43 (0-based), first line = 44 (1-based)
+                # Target line 54 is at position: 54 - 44 + 1 = 11 in the segment
+                
+                # Calculate based on frontend's exact algorithm
+                context_lines_used = 10  # From frontend constant
+                original_context_start_0based = max(0, start_line - 1 - context_lines_used)
+                first_line_in_segment_1based = original_context_start_0based + 1
+                
+                # Target position within the segment
+                target_start_in_segment = start_line - first_line_in_segment_1based + 1
+                target_end_in_segment = end_line - first_line_in_segment_1based + 1
+                
+                print(f"CONTEXT_CALC: first_line_in_segment={first_line_in_segment_1based}, target_in_segment={target_start_in_segment}-{target_end_in_segment}")
+                
+                # Validate calculation
+                if target_start_in_segment <= 0 or target_end_in_segment > provided_lines:
+                    print(f"CONTEXT_CALC: Invalid target calculation, falling back to simple detection")
+                    # Simple fallback: assume target is in the middle
+                    target_start_in_segment = (provided_lines // 2)
+                    target_end_in_segment = target_start_in_segment
+                
+                full_prompt = (
+                    f"Task: {prompt}\n\n"
+                    f"IMPORTANT: You received {provided_lines} lines for context, but your edit target is ONLY lines {start_line}-{end_line} from the original file.\n\n"
+                    f"The expanded segment contains:\n"
+                    f"- Lines 1-{target_start_in_segment-1}: Context before target (if any)\n"
+                    f"- Lines {target_start_in_segment}-{target_end_in_segment}: Your actual edit target\n"  
+                    f"- Lines {target_end_in_segment+1}-{provided_lines}: Context after target (if any)\n\n"
+                    f"STRICT INSTRUCTIONS:\n"
+                    f"1. Apply your edit ONLY to the target lines ({target_start_in_segment}-{target_end_in_segment})\n"
+                    f"2. Copy ALL other lines exactly as provided - including every space, tab, and character\n"
+                    f"3. Do not add any markers, arrows, or annotations to the output\n"
+                    f"4. Do not change indentation of any non-target lines{indentation_reminder}\n\n"
+                    f"Code segment:\n"
+                    f"{file_content}\n\n"
+                    f"Return the complete {provided_lines}-line segment with your edit applied only to the target lines."
+                )
+            else:
+                # Original logic for non-expanded ranges
+                full_prompt = (
+                    f"Task: {prompt}\n\n"
+                    f"Edit the following code segment (lines {start_line}-{end_line}):\n"
+                    f"{file_content}\n\n"
+                    f"CRITICAL: You must preserve EXACT indentation. Look at the existing lines and match their indentation precisely. Count the tabs/spaces and use exactly the same amount.{indentation_reminder}\n\n"
+                    f"Reply with ONLY the edited code for this segment."
+                )
         else:
             # For full file edits, provide the complete file
             # Add line numbers for context if file is large
@@ -4050,17 +4111,40 @@ def predict_code_edit():
         import difflib
         
         if is_range:
-            # For range edits, splice the result back into the full file
-            original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+            # Check if this is context expansion (frontend sent expanded segment)
+            file_lines_received = len(file_content.split('\n'))
+            actual_range_size = end_line - start_line + 1
+            is_context_expansion = file_lines_received > actual_range_size
             
-            full_edited_content = (pre_text or '')
-            if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
-                full_edited_content += '\n'
-            full_edited_content += edited_content
-            if post_text:
-                if full_edited_content and not full_edited_content.endswith('\n'):
+            if is_context_expansion:
+                # Context expansion case: AI edited the entire expanded segment
+                # Don't splice - the AI result IS the full edited content for this section
+                print(f"BACKEND: Context expansion detected - using AI result directly (received {file_lines_received} lines for {actual_range_size}-line target)")
+                
+                # The edited_content already contains the properly edited expanded segment
+                # We still need to splice with the true pre/post that weren't included in expansion
+                original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+                
+                full_edited_content = (pre_text or '')
+                if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
                     full_edited_content += '\n'
-                full_edited_content += post_text
+                full_edited_content += edited_content
+                if post_text:
+                    if full_edited_content and not full_edited_content.endswith('\n'):
+                        full_edited_content += '\n'
+                    full_edited_content += post_text
+            else:
+                # Regular range edit: splice normally
+                original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+                
+                full_edited_content = (pre_text or '')
+                if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
+                    full_edited_content += '\n'
+                full_edited_content += edited_content
+                if post_text:
+                    if full_edited_content and not full_edited_content.endswith('\n'):
+                        full_edited_content += '\n'
+                    full_edited_content += post_text
         else:
             # For full file edits, the response is the complete new file
             original_full = file_content or ''
