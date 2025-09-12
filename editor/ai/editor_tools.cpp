@@ -32,6 +32,7 @@
 #include "scene/resources/packed_scene.h"
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_parser.h"
+#include "modules/gdscript/gdscript_warning.h"
 #include "modules/gdscript/gdscript_analyzer.h"
 #include "modules/gdscript/gdscript_compiler.h"
 
@@ -2875,7 +2876,24 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 			error_dict["line"] = error.line;
 			error_dict["column"] = error.column;
 			error_dict["message"] = error.message;
+			error_dict["file"] = p_file_path;
+			error_dict["source"] = "scripts";
+			error_dict["language"] = "GDScript";
 			errors.push_back(error_dict);
+		}
+		// Include warnings
+		for (const GDScriptWarning &warn : parser.get_warnings()) {
+			Dictionary warn_dict;
+			warn_dict["type"] = "warning";
+			warn_dict["line"] = warn.start_line;
+			warn_dict["end_line"] = warn.end_line;
+			warn_dict["column"] = 0;
+			warn_dict["message"] = warn.get_message();
+			warn_dict["file"] = p_file_path;
+			warn_dict["source"] = "scripts";
+			warn_dict["language"] = "GDScript";
+			warn_dict["code"] = (int)warn.code;
+			errors.push_back(warn_dict);
 		}
 		
 		// Only continue to analysis if parsing succeeded
@@ -2900,6 +2918,9 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 					error_dict["line"] = error.line;
 					error_dict["column"] = error.column;
 					error_dict["message"] = error.message;
+					error_dict["file"] = p_file_path;
+					error_dict["source"] = "scripts";
+					error_dict["language"] = "GDScript";
 					errors.push_back(error_dict);
 				}
 			}
@@ -2919,6 +2940,9 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 					error_dict["line"] = compiler.get_error_line();
 					error_dict["column"] = compiler.get_error_column();
 					error_dict["message"] = compiler.get_error();
+					error_dict["file"] = p_file_path;
+					error_dict["source"] = "scripts";
+					error_dict["language"] = "GDScript";
 					errors.push_back(error_dict);
 				}
 			}
@@ -2931,12 +2955,15 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 		error_dict["line"] = 0;
 		error_dict["column"] = 0;
 		error_dict["message"] = "C# compilation checking not implemented yet";
+		error_dict["file"] = p_file_path;
+		error_dict["source"] = "scripts";
+		error_dict["language"] = "C#";
 		errors.push_back(error_dict);
 	}
 	
-	print_line("COMPILATION CHECK: Found " + String::num_int64(errors.size()) + " errors for " + p_file_path);
+	print_line("COMPILATION CHECK: Found " + String::num_int64(errors.size()) + " issues for " + p_file_path);
 	
-	    return errors;
+	return errors;
 }
 
 Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
@@ -3008,9 +3035,12 @@ Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
         if (file_err != OK) {
             Dictionary error_dict;
             error_dict["type"] = "file_error";
+            error_dict["file"] = path;
             error_dict["line"] = 0;
             error_dict["column"] = 0;
             error_dict["message"] = "Failed to read file: " + path;
+            error_dict["source"] = "scripts";
+            error_dict["language"] = "GDScript";
             errors.push_back(error_dict);
         } else {
             // Parse the script directly to get detailed error information
@@ -3025,8 +3055,25 @@ Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
                 error_dict["line"] = error.line;
                 error_dict["column"] = error.column;
                 error_dict["message"] = error.message;
+                error_dict["file"] = path;
+                error_dict["source"] = "scripts";
+                error_dict["language"] = "GDScript";
                 errors.push_back(error_dict);
                 print_line("CHECK_COMPILATION_ERRORS: Found parser error at line " + String::num_int64(error.line) + ": " + error.message);
+            }
+            // Include warnings
+            for (const GDScriptWarning &warn : parser.get_warnings()) {
+                Dictionary warn_dict;
+                warn_dict["type"] = "warning";
+                warn_dict["line"] = warn.start_line;
+                warn_dict["end_line"] = warn.end_line;
+                warn_dict["column"] = 0;
+                warn_dict["message"] = warn.get_message();
+                warn_dict["file"] = path;
+                warn_dict["source"] = "scripts";
+                warn_dict["language"] = "GDScript";
+                warn_dict["code"] = (int)warn.code;
+                errors.push_back(warn_dict);
             }
             
             // Only continue to analysis if parsing succeeded
@@ -3051,6 +3098,9 @@ Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
                         error_dict["line"] = error.line;
                         error_dict["column"] = error.column;
                         error_dict["message"] = error.message;
+                        error_dict["file"] = path;
+                        error_dict["source"] = "scripts";
+                        error_dict["language"] = "GDScript";
                         errors.push_back(error_dict);
                         print_line("CHECK_COMPILATION_ERRORS: Found analyzer error at line " + String::num_int64(error.line) + ": " + error.message);
                     }

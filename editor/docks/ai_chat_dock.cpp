@@ -3457,9 +3457,12 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
             result = EditorTools::read_file(args);
         } else if (function_name == "apply_edit") {
             // Run apply_edit asynchronously to avoid blocking the UI
-            // Skip compilation checking by default for better performance
+            // Prefer running compilation checks for script-like files to make errors visible to the agent
             if (!args.has("skip_compilation_check")) {
-                args["skip_compilation_check"] = true;
+                String __tmp_path = String(args.get("path", String()));
+                String __tmp_ext = __tmp_path.get_extension().to_lower();
+                bool __is_script_like = (__tmp_ext == "gd" || __tmp_ext == "cs" || __tmp_ext == "shader" || __tmp_ext == "glsl");
+                args["skip_compilation_check"] = !__is_script_like; // check scripts by default, skip others
             }
             pending_tool_tasks++;
             
