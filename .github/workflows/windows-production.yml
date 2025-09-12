@@ -23,7 +23,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+          fetch-depth: 1
+
+      - name: Remove any submodule references
+        shell: bash
+        run: |
+          rm -f .gitmodules
+          git config --remove-section submodule.emsdk 2>/dev/null || true
 
       - name: Setup Python and SCons
         uses: actions/setup-python@v4
