@@ -2486,7 +2486,37 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         args_for_backend["lines"] = String("all");
         args_for_backend["path"] = path;
     }
-    Dictionary local_result = _call_apply_endpoint(path, content_for_model, args_for_backend, base_url + "/predict_code_edit");
+    Dictionary local_result;
+    int attempts = 0;
+    const int max_attempts = 2; // default + fallback
+    while (attempts < max_attempts) {
+        Dictionary attempt_args = args_for_backend.duplicate();
+        if (attempts == 1) {
+            attempt_args["model"] = String("gpt-5");
+            print_line("APPLY_EDIT: Retry " + itos(attempts) + "/" + itos(max_attempts - 1) + " with fallback model gpt-5");
+        }
+    local_result = _call_apply_endpoint(path, content_for_model, attempt_args, base_url + "/predict_code_edit");
+        attempts++;
+        if (local_result.get("success", false)) {
+            local_result["attempts"] = attempts;
+            local_result["fallback_used"] = (attempts > 1);
+            break;
+        }
+        String msg = local_result.get("message", String());
+        String msg_l = msg.to_lower();
+        bool is_timeout = msg_l.find("timeout") != -1;
+        bool conn_issue = msg_l.find("failed to connect") != -1 || msg_l.find("request failed") != -1;
+        if (!(is_timeout || conn_issue)) {
+            local_result["attempts"] = attempts;
+            local_result["fallback_used"] = (attempts > 1);
+            break;
+        }
+        if (attempts >= max_attempts) {
+            local_result["attempts"] = attempts;
+            local_result["fallback_used"] = true;
+            break;
+        }
+    }
 
     // Skip analytics in background thread to avoid singleton access issues
     print_line("APPLY_EDIT: Analytics skipped for background thread safety");
@@ -2580,6 +2610,8 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         if (local_result.has("end_line")) {
             result["end_line"] = local_result.get("end_line", 0);
         }
+        result["attempts"] = local_result.get("attempts", 1);
+        result["fallback_used"] = local_result.get("fallback_used", false);
         return result;
     }
     
@@ -2881,20 +2913,7 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 			error_dict["language"] = "GDScript";
 			errors.push_back(error_dict);
 		}
-		// Include warnings
-		for (const GDScriptWarning &warn : parser.get_warnings()) {
-			Dictionary warn_dict;
-			warn_dict["type"] = "warning";
-			warn_dict["line"] = warn.start_line;
-			warn_dict["end_line"] = warn.end_line;
-			warn_dict["column"] = 0;
-			warn_dict["message"] = warn.get_message();
-			warn_dict["file"] = p_file_path;
-			warn_dict["source"] = "scripts";
-			warn_dict["language"] = "GDScript";
-			warn_dict["code"] = (int)warn.code;
-			errors.push_back(warn_dict);
-		}
+		// NOTE: Skipping warnings collection (API differs across engine versions).
 		
 		// Only continue to analysis if parsing succeeded
 		if (parse_err == OK) {
@@ -3061,20 +3080,7 @@ Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
                 errors.push_back(error_dict);
                 print_line("CHECK_COMPILATION_ERRORS: Found parser error at line " + String::num_int64(error.line) + ": " + error.message);
             }
-            // Include warnings
-            for (const GDScriptWarning &warn : parser.get_warnings()) {
-                Dictionary warn_dict;
-                warn_dict["type"] = "warning";
-                warn_dict["line"] = warn.start_line;
-                warn_dict["end_line"] = warn.end_line;
-                warn_dict["column"] = 0;
-                warn_dict["message"] = warn.get_message();
-                warn_dict["file"] = path;
-                warn_dict["source"] = "scripts";
-                warn_dict["language"] = "GDScript";
-                warn_dict["code"] = (int)warn.code;
-                errors.push_back(warn_dict);
-            }
+            // NOTE: Skipping warnings collection (API differs across engine versions).
             
             // Only continue to analysis if parsing succeeded
             if (parse_err == OK && parser_errors.is_empty()) {

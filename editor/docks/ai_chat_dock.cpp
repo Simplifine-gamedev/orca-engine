@@ -781,6 +781,10 @@ void AIChatDock::_on_send_button_pressed() {
 	// This prevents UI freezing by splitting operations across frames
 	is_waiting_for_response = true;
 	_update_ui_state();
+	// Clear input immediately on send and prevent further typing while busy
+	if (input_field && input_field->is_inside_tree()) {
+		input_field->set_text("");
+	}
 	
 	// Force auto-scroll to re-engage when user sends a message.
 	auto_scroll_at_bottom = true;
@@ -3834,6 +3838,20 @@ void AIChatDock::_on_apply_edit_thread_done() {
         const String tool_name = "apply_edit";
         _update_tool_placeholder_status(task->tool_call_id, tool_name, "completed");
         _add_tool_response_to_chat(task->tool_call_id, tool_name, task->args, task->result);
+
+        // If backend timed out or failed and we retried with fallback, show a non-blocking banner
+        bool success = task->result.get("success", false);
+        if (!success) {
+            String msg = task->result.get("message", String("Apply edit failed"));
+            int attempts = (int)task->result.get("attempts", 1);
+            bool fallback_used = task->result.get("fallback_used", false);
+            String banner = msg;
+            if (attempts > 1 || fallback_used) {
+                banner += String(" — retried ") + itos(attempts) + String(" time(s)");
+                if (fallback_used) banner += String(" with model fallback");
+            }
+            _show_status_notification("connection_error", banner, "⚠️", 4.0);
+        }
         
         // If this is the last tool for the file and it's a script file, show cumulative diff
         if (should_show_cumulative_diff && !file_path.is_empty()) {
