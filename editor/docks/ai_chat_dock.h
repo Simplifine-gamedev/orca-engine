@@ -358,6 +358,7 @@ private:
 	Dictionary _build_api_message(const ChatMessage &p_msg);
 	void _finalize_chat_request();
 	void _update_ui_state();
+	bool _is_busy();
 	void _create_message_bubble(const AIChatDock::ChatMessage &p_message, int p_message_index = -1);
 	void _build_message_content(PanelContainer *p_message_panel, const AIChatDock::ChatMessage &p_message, int p_message_index);
 	void _update_attached_files_display();

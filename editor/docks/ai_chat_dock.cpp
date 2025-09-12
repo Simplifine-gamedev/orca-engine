@@ -45,6 +45,7 @@
 #include "scene/gui/text_edit.h"
 #include "scene/gui/tree.h"
 #include "scene/main/scene_tree.h"
+#include "servers/display_server.h"
 
 // Initialize static singleton
 AIChatDock *AIChatDock::singleton = nullptr;
@@ -525,6 +526,13 @@ void AIChatDock::_notification(int p_notification) {
 			stop_button_hover_style->set_content_margin_all(8);
 			stop_button->add_theme_style_override("hover", stop_button_hover_style);
 			
+			// Stop button disabled style - keep red when disabled
+			Ref<StyleBoxFlat> stop_button_disabled_style = memnew(StyleBoxFlat);
+			stop_button_disabled_style->set_bg_color(Color(0.8, 0.2, 0.2));
+			stop_button_disabled_style->set_corner_radius_all(6);
+			stop_button_disabled_style->set_content_margin_all(8);
+			stop_button->add_theme_style_override("disabled", stop_button_disabled_style);
+
 			stop_button->connect("pressed", callable_mp(this, &AIChatDock::_on_stop_button_pressed));
 			input_container->add_child(stop_button);
 
@@ -850,8 +858,7 @@ void AIChatDock::_on_stop_button_pressed() {
 		print_line("AI Chat: Cleared input field after manual stop");
 	}
 	
-	// Reflect immediately in UI.
-	is_waiting_for_response = false;
+	// Reflect immediately in UI based on unified busy computation, without prematurely clearing flags.
 	_update_ui_state();
 }
 
@@ -1232,7 +1239,6 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 		}
 	}
 }
-
 // Embedding system code moved to ai_chat_dock_embeddings.cpp
 
 // Authentication Implementation
@@ -3866,6 +3872,9 @@ void AIChatDock::_on_apply_edit_thread_done() {
     }
 
     if (pending_tool_tasks == 0) {
+        // Keep UI in busy state across chained requests to avoid flicker back to Send
+        is_waiting_for_response = true;
+        _update_ui_state();
         current_assistant_message_label = nullptr;
         _send_chat_request();
     }
@@ -3905,7 +3914,6 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 	// Auto-scroll to bottom
 	call_deferred("_scroll_to_bottom");
 }
-
 void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result) {
 	Ref<JSON> json;
 	json.instantiate();
@@ -4551,7 +4559,6 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	// Clear the displayed images set for next message
 	current_displayed_images.clear();
 }
-
 void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	if (!current_assistant_message_label || p_tool_calls.is_empty()) {
 		return;
@@ -5131,7 +5138,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		prop_label->set_text(property + " = " + value);
 		prop_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
 		prop_hbox->add_child(prop_label);
-
 	} else if (p_tool_name == "batch_set_node_properties" && p_success) {
 		VBoxContainer *batch_prop_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(batch_prop_vbox);
@@ -5747,7 +5753,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		run_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Play"), SNAME("EditorIcons")));
 		run_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		run_hbox->add_child(run_label);
-
 	} else if (p_tool_name == "check_compilation_errors" && p_success) {
 		VBoxContainer *compile_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(compile_vbox);
@@ -6278,7 +6283,6 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
 			search_vbox->add_child(summary_label);
 		}
-		
 	} else if (p_tool_name == "search_godot_assets" && p_success) {
 		// Display Godot Asset Library search results
 		VBoxContainer *assets_vbox = memnew(VBoxContainer);
@@ -7421,7 +7425,6 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 	
 	return api_msg;
 }
-
 void AIChatDock::_finalize_chat_request() {
 	// Build final request data
 	Dictionary request_data;
@@ -7559,20 +7562,57 @@ void AIChatDock::_finalize_chat_request() {
 	_chunked_messages.clear();
 }
 
-void AIChatDock::_update_ui_state() {
-	// Handle send button state
-	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
-	input_field->set_editable(!is_waiting_for_response);
+bool AIChatDock::_is_busy() {
+    bool has_async_work = pending_tool_tasks > 0;
+    bool http_waiting = is_waiting_for_response;
+    bool overlay_busy = false;
+    ai_busy_mutex.lock();
+    overlay_busy = ai_busy_count > 0;
+    ai_busy_mutex.unlock();
+    return http_waiting || has_async_work || overlay_busy;
+}
 
-	// Handle stop button state
-	if (is_waiting_for_response) {
+void AIChatDock::_update_ui_state() {
+	// Compute unified busy state to avoid flicker across code paths
+	bool busy = _is_busy();
+
+	// Handle send button state
+	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || busy);
+	input_field->set_editable(!busy);
+
+	// Handle stop button state with robust logic
+	if (busy) {
 		// Show stop button and hide/disable send button during request
 		send_button->set_visible(false);
 		stop_button->set_visible(true);
-		bool should_disable_stop = current_request_id.is_empty();
-		stop_button->set_disabled(should_disable_stop); // Only enable if we have a request ID
-		
-		print_line("AI Chat: UI State - waiting for response, stop button visible=" + String(stop_button->is_visible() ? "true" : "false") + ", disabled=" + String(should_disable_stop ? "true" : "false") + ", request_id='" + current_request_id + "'");
+
+		// Enable stop if we have an active request, requested stop, or pending work
+		bool has_active_request = !current_request_id.is_empty();
+		bool has_pending_work = pending_tool_tasks > 0;
+		bool should_enable_stop = has_active_request || has_pending_work;
+		stop_button->set_disabled(!should_enable_stop);
+
+		// Ensure red styling remains applied even when disabled
+		{
+			Ref<StyleBoxFlat> stop_style = memnew(StyleBoxFlat);
+			stop_style->set_bg_color(Color(0.8, 0.2, 0.2));
+			stop_style->set_corner_radius_all(6);
+			stop_style->set_content_margin_all(8);
+			stop_button->add_theme_style_override("normal", stop_style);
+			Ref<StyleBoxFlat> stop_hover_style = memnew(StyleBoxFlat);
+			stop_hover_style->set_bg_color(Color(0.9, 0.3, 0.3));
+			stop_hover_style->set_corner_radius_all(6);
+			stop_hover_style->set_content_margin_all(8);
+			stop_button->add_theme_style_override("hover", stop_hover_style);
+			// Stop button disabled style - keep red when disabled
+			Ref<StyleBoxFlat> stop_button_disabled_style = memnew(StyleBoxFlat);
+			stop_button_disabled_style->set_bg_color(Color(0.8, 0.2, 0.2));
+			stop_button_disabled_style->set_corner_radius_all(6);
+			stop_button_disabled_style->set_content_margin_all(8);
+			stop_button->add_theme_style_override("disabled", stop_button_disabled_style);
+		}
+
+		print_line("AI Chat: UI State - busy, stop button visible=" + String(stop_button->is_visible() ? "true" : "false") + ", enabled=" + String(should_enable_stop ? "true" : "false") + ", request_id='" + current_request_id + "', pending_tasks=" + String::num_int64(pending_tool_tasks));
 		
 		// Also disable new conversation button during processing
 		if (new_conversation_button) {
@@ -7583,8 +7623,13 @@ void AIChatDock::_update_ui_state() {
 		send_button->set_visible(true);
 		send_button->set_text("Send");
 		stop_button->set_visible(false);
+
+		// Reset stop button styling when hidden to avoid style accumulation
+		stop_button->remove_theme_style_override("normal");
+		stop_button->remove_theme_style_override("hover");
+		stop_button->remove_theme_style_override("disabled");
 		
-		print_line("AI Chat: UI State - not waiting, send button visible, stop button hidden");
+		print_line("AI Chat: UI State - idle, send button visible, stop button hidden");
 		
 		if (new_conversation_button) {
 			new_conversation_button->set_disabled(false);
@@ -7625,6 +7670,11 @@ void AIChatDock::_request_completed() {
 	}
 	current_assistant_message_label = nullptr;
 	set_process(false);
+
+	// Subtle audio cue to indicate completion
+	if (DisplayServer::get_singleton()) {
+		DisplayServer::get_singleton()->beep();
+	}
 
 	// Now that streaming is complete, check if we need to summarize the conversation
 	// This prevents interrupting ongoing streaming responses
@@ -9759,7 +9809,6 @@ void AIChatDock::_attach_scene_node(Node *p_node) {
 	current_attached_files.push_back(attached_file);
 	_update_attached_files_display();
 }
-
 void AIChatDock::_attach_current_script() {
 	ScriptEditor *script_editor = EditorInterface::get_singleton()->get_script_editor();
 	if (!script_editor) {
@@ -10376,7 +10425,6 @@ void AIChatDock::_scan_and_index_project_files() {
 	_set_embedding_status("", false);
 	_send_file_batch(file_contents, 0, batch_size, 1, total_batches);
 }
-
 void AIChatDock::_scan_directory_recursive(const String &p_dir_path, const String &p_project_root, Array &p_file_contents, int &p_files_processed, int &p_files_skipped) {
 	Ref<DirAccess> dir = DirAccess::open(p_dir_path);
 	if (dir.is_null()) {
@@ -11010,7 +11058,6 @@ int AIChatDock::_calculate_conversation_tokens(const Vector<ChatMessage> &p_mess
 	print_line("AI Chat: Total conversation tokens: " + String::num_int64(total_tokens));
 	return total_tokens;
 }
-
 int AIChatDock::_get_model_token_limit(const String &p_model) const {
 	// Token limits with safety margins (same as backend)
 	if (p_model == "claude-4" || p_model.begins_with("anthropic/claude-sonnet-4")) {
@@ -11616,7 +11663,6 @@ void AIChatDock::_remove_pending_edits_for_file(const String &p_file_path) {
 	// Clear the file mapping
 	file_to_tool_ids.erase(p_file_path);
 }
-
 void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const String &p_content) {
 	print_line("AI Chat: Unified accept handler for file: " + p_file_path);
 	

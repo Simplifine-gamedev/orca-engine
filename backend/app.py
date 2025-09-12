@@ -20,6 +20,7 @@ import uuid
 import time
 import tempfile
 import hashlib
+import logging
 try:
     from weaviate_vector_manager import WeaviateVectorManager
 except Exception:
@@ -77,6 +78,67 @@ def cleanup_old_requests():
                 to_remove.append(req_id)
         for req_id in to_remove:
             del ACTIVE_REQUESTS[req_id]
+
+# --- Simple, environment-aware logging ---
+_is_cloud = bool(os.getenv('K_SERVICE') or os.getenv('GAE_ENV') or os.getenv('CLOUD_RUN_JOB'))
+_structured_mode = (os.getenv('STRUCTURED_LOGS', 'auto').lower())
+if _structured_mode == 'auto':
+    STRUCTURED_LOGS = _is_cloud
+else:
+    STRUCTURED_LOGS = (_structured_mode == 'json')
+
+def _anon(val: str | None) -> str | None:
+    try:
+        if not val:
+            return None
+        return hashlib.sha256(str(val).encode('utf-8')).hexdigest()[:16]
+    except Exception:
+        return None
+
+def _should_emit_for_local_request() -> bool:
+    try:
+        # Always emit in cloud (structured logs)
+        if STRUCTURED_LOGS:
+            return True
+        # Local dev: only when detailed_log=true is present
+        if request:
+            q = (request.args.get('detailed_log') or '').strip().lower()
+            h = (request.headers.get('X-Detailed-Log') or '').strip().lower()
+            return q == 'true' or h == 'true'
+        return False
+    except Exception:
+        # Be conservative locally
+        return False
+
+def log_event(event_name: str, props: dict | None = None, severity: str = 'INFO') -> None:
+    try:
+        # Gate local printing unless detailed_log=true
+        if not _should_emit_for_local_request():
+            return
+        payload = {
+            'event': event_name,
+            'severity': severity,
+            'ts': int(time.time() * 1000),
+            'service': 'godot-ai-multi-model-service',
+            'component': 'backend',
+        }
+        # Attach request context if available
+        try:
+            payload['method'] = request.method
+            payload['path'] = request.path
+            payload['request_id'] = getattr(g, 'request_id', None)
+        except Exception:
+            pass
+        if props:
+            payload['props'] = props
+        if STRUCTURED_LOGS:
+            print(json.dumps(payload, separators=(",", ":")))
+        else:
+            # Simple human-readable line for local dev
+            msg = f"[{payload.get('severity')}] {payload.get('event')} path={payload.get('path')} props={props or {}}"
+            print(msg)
+    except Exception:
+        pass
 
 def _estimate_token_count(text: str) -> int:
     """Rough estimation of token count (approximately 4 characters per token)"""
@@ -143,7 +205,39 @@ CORS(app, origins=["*"])
 # Add request logging for debugging
 @app.before_request
 def log_request_info():
-    print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+    try:
+        if _should_emit_for_local_request():
+            print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+    except Exception:
+        pass
+    try:
+        g.request_id = str(uuid.uuid4())
+        g.request_started_at = time.time()
+        log_event('request_start', {
+            'content_length': request.content_length,
+            'query_len': (len(request.query_string) if request.query_string else 0),
+            'ip_h': _anon(request.environ.get('REMOTE_ADDR')),
+        })
+    except Exception:
+        pass
+
+@app.after_request
+def log_request_end(response):
+    try:
+        started = getattr(g, 'request_started_at', None)
+        dur_ms = int((time.time() - started) * 1000) if started else None
+        # Add anonymized hints only; never content
+        uid = request.headers.get('X-User-ID') if request else None
+        mid = request.headers.get('X-Machine-ID') if request else None
+        log_event('request_end', {
+            'status': response.status_code,
+            'duration_ms': dur_ms,
+            'user_h': _anon(uid),
+            'machine_h': _anon(mid),
+        })
+    except Exception:
+        pass
+    return response
 
 # Secret must be stable across restarts in production. Require env in production, random only in DEV_MODE.
 _dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
@@ -2790,6 +2884,14 @@ def chat():
         try:
             # Send request_id first so frontend can use it for stop requests
             yield json.dumps({"request_id": request_id, "status": "started"}) + '\n'
+            try:
+                # Lightweight chat_start event (no content)
+                log_event('chat_start', {
+                    'model': get_model_friendly_name(model),
+                    'messages_count': len(messages) if isinstance(messages, list) else None,
+                })
+            except Exception:
+                pass
             
             # Filter out any None or invalid messages from the start
             conversation_messages = []
@@ -3032,6 +3134,16 @@ def chat():
                                             tool_call_aggregator[key]["arguments"] += fn_args
                         
                         print(f"RESPONSE_DEBUG: Processed {chunk_count} chunks, text_length: {len(full_text_response)}, tools: {len(tool_call_aggregator)}")
+                        try:
+                            # chat_stream_summary with minimal fields for analytics
+                            log_event('chat_stream_summary', {
+                                'model': get_model_friendly_name(model_try),
+                                'chunks': chunk_count,
+                                'used_tools': [f.get('name') for f in tool_call_aggregator.values()] if tool_call_aggregator else [],
+                                'text_len': len(full_text_response or ''),
+                            })
+                        except Exception:
+                            pass
                         if tool_call_aggregator:
                             print(f"RESPONSE_DEBUG: Tool calls: {[f['name'] for f in tool_call_aggregator.values()]}")
                         if not full_text_response and not tool_call_aggregator:
@@ -3647,6 +3759,13 @@ def chat():
                 print(f"FRONTEND_PROCESSING: No tools detected, treating as final text response")
                 conversation_messages.append(assistant_message)
                 print(f"CONVERSATION_ADD: Added final text response message")
+                try:
+                    log_event('chat_completed', {
+                        'final_text_len': len(full_text_response or ''),
+                        'used_tools': [f.get('name') for f in tool_call_aggregator.values()] if tool_call_aggregator else [],
+                    })
+                except Exception:
+                    pass
                 yield json.dumps({"status": "completed"}) + '\n'
                 break # Exit loop
         
@@ -3660,6 +3779,10 @@ def chat():
                 if request_id in ACTIVE_REQUESTS:
                     del ACTIVE_REQUESTS[request_id]
                     print(f"CLEANUP: Removed request {request_id} from active requests")
+            try:
+                log_event('chat_end', {'request_id': request_id})
+            except Exception:
+                pass
 
     # Preserve request context during streaming to avoid 'Working outside of request context'.
     return Response(stream_with_context(generate_stream()), mimetype='application/x-ndjson')
