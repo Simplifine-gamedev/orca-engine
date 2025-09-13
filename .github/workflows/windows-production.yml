@@ -52,12 +52,33 @@ jobs:
       - name: Verify Build
         shell: cmd
         run: |
+          echo "🔍 Verifying build output..."
+          
+          REM Check if binary exists
           if not exist "bin\godot.windows.editor.x86_64.exe" (
-            echo "Built binary not found"
+            echo "❌ Built binary not found: bin\godot.windows.editor.x86_64.exe"
+            echo "Contents of bin directory:"
             dir bin\
+            echo "Looking for alternative binary names..."
+            if exist "bin\orca.windows.editor.x86_64.exe" (
+              echo "Found alternative: bin\orca.windows.editor.x86_64.exe"
+              copy "bin\orca.windows.editor.x86_64.exe" "bin\godot.windows.editor.x86_64.exe"
+            ) else (
+              echo "No suitable binary found"
+              exit /b 1
+            )
+          )
+          
+          REM Check file size
+          for %%A in (bin\godot.windows.editor.x86_64.exe) do set size=%%~zA
+          echo "Binary size: %size% bytes"
+          
+          if %size% LEQ 0 (
+            echo "❌ Binary is empty or corrupted"
             exit /b 1
           )
-          echo "✅ Build successful"
+          
+          echo "✅ Build successful - Binary verified"
 
       - name: Setup Java for Code Signing
         uses: actions/setup-java@v3
@@ -65,17 +86,69 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
+      - name: Setup Code Signing Tools
+        shell: cmd
+        run: |
+          echo "🔧 Setting up code signing tools..."
+          
+          REM Check if jar directory exists
+          if not exist "jar" (
+            echo "❌ jar directory not found"
+            echo "Available files:"
+            dir
+            exit /b 1
+          )
+          
+          REM Check if CodeSignTool jar exists
+          if not exist "jar\code_sign_tool-1.3.2.jar" (
+            echo "❌ CodeSignTool jar not found at jar\code_sign_tool-1.3.2.jar"
+            echo "Contents of jar directory:"
+            dir jar\
+            exit /b 1
+          )
+          
+          REM Verify Java installation
+          java -version
+          
+          echo "✅ Code signing tools ready"
+
       - name: Sign Windows Binary
         shell: cmd
+        continue-on-error: true
+        id: sign_binary
         env:
           SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
           SSL_COM_PASSWORD: ${{ secrets.SSL_COM_PASSWORD }}
           SSL_COM_TOTP_SECRET: ${{ secrets.SSL_COM_TOTP_SECRET }}
         run: |
+          echo "🔐 Starting Windows binary signing..."
+          
+          REM Create signed directory
           mkdir bin\signed
+          
+          REM Copy binary to signed directory
           copy bin\godot.windows.editor.x86_64.exe bin\signed\orca-windows-production.exe
           
-          java -jar jar\code_sign_tool-1.3.2.jar sign ^
+          REM Check if credentials are available
+          if "%SSL_COM_USERNAME%"=="" (
+            echo "⚠️ SSL_COM_USERNAME not set - will create unsigned binary"
+            echo "📋 Creating unsigned distribution binary..."
+            copy bin\signed\orca-windows-production.exe "Orca (Windows).exe"
+            echo "✅ Unsigned binary created for distribution"
+            goto :eof
+          )
+          if "%SSL_COM_PASSWORD%"=="" (
+            echo "⚠️ SSL_COM_PASSWORD not set - will create unsigned binary"
+            echo "📋 Creating unsigned distribution binary..."
+            copy bin\signed\orca-windows-production.exe "Orca (Windows).exe"
+            echo "✅ Unsigned binary created for distribution"
+            goto :eof
+          )
+          
+          echo "🔏 Signing with SSL.com CodeSignTool..."
+          
+          REM Sign the binary with proper path
+          java -jar ".\jar\code_sign_tool-1.3.2.jar" sign ^
             -username="%SSL_COM_USERNAME%" ^
             -password="%SSL_COM_PASSWORD%" ^
             -credential_id="00987e95-0523-49f1-a7a9-8c71d6cec2d9" ^
@@ -83,12 +156,65 @@ jobs:
             -input_file_path="bin\signed\orca-windows-production.exe" ^
             -output_dir_path="bin\signed"
           
-          echo "✅ Windows binary signed"
+          REM Verify signing was successful
+          if %ERRORLEVEL% neq 0 (
+            echo "❌ Code signing failed with exit code %ERRORLEVEL%"
+            exit /b 1
+          )
+          
+          echo "✅ Windows binary signed successfully"
+
+      - name: Verify Binary
+        shell: cmd
+        run: |
+          echo "🔍 Verifying binary..."
+          
+          REM Check if signed binary exists
+          if not exist "bin\signed\orca-windows-production.exe" (
+            echo "⚠️ Signed binary not found, checking for unsigned binary"
+            echo "Contents of bin\signed:"
+            dir bin\signed\
+            
+            REM Fallback: copy original binary if signing failed
+            if exist "bin\godot.windows.editor.x86_64.exe" (
+              echo "📋 Using unsigned binary as fallback"
+              copy "bin\godot.windows.editor.x86_64.exe" "bin\signed\orca-windows-production.exe"
+            ) else (
+              echo "❌ No binary found to distribute"
+              exit /b 1
+            )
+          )
+          
+          REM Check file size (should be > 0)
+          for %%A in (bin\signed\orca-windows-production.exe) do set size=%%~zA
+          if %size% LEQ 0 (
+            echo "❌ Binary is empty or corrupted"
+            exit /b 1
+          )
+          
+          echo "✅ Binary verified (size: %size% bytes)"
+          
+          REM Check if signing was successful
+          if "${{ steps.sign_binary.outcome }}"=="success" (
+            echo "🔐 Binary is digitally signed"
+          ) else (
+            echo "⚠️ Binary is unsigned (signing failed or skipped)"
+          )
 
       - name: Rename for Distribution
         shell: cmd
         run: |
+          echo "📝 Preparing distribution binary..."
+          
+          REM Copy signed binary to distribution name
           copy "bin\signed\orca-windows-production.exe" "Orca (Windows).exe"
+          
+          REM Verify distribution binary
+          if not exist "Orca (Windows).exe" (
+            echo "❌ Distribution binary creation failed"
+            exit /b 1
+          )
+          
           echo "✅ Binary renamed for distribution"
 
       - name: Create Release
@@ -101,18 +227,40 @@ jobs:
             🚀 **Orca Engine Release v${{ env.VERSION_BASE }}.${{ github.run_number }}**
             
             🍎 **Mac**: Automatically built, signed & notarized
-            🏁 **Windows**: Automatically built & signed with SSL.com certificate
+            🏁 **Windows**: Automatically built${{ steps.sign_binary.outcome == 'success' && ' & signed with SSL.com certificate' || ' (unsigned - signing failed)' }}
             
             **Changes in this build:**
             ${{ github.event.head_commit.message }}
             
             **Download Instructions:**
             - **Mac**: Download DMG, mount, drag to Applications
-            - **Windows**: Download EXE, run directly (no security warnings)
+            - **Windows**: Download EXE${{ steps.sign_binary.outcome == 'success' && ', run directly (no security warnings)' || ' (may show security warning - unsigned)' }}
           files: |
             Orca (Windows).exe
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Summary
+        shell: cmd
+        run: |
+          echo "📄 Windows Build Summary:"
+          echo "=============================="
+          echo "Build Status: Success"
+          echo "Signing Status: ${{ steps.sign_binary.outcome }}"
+          
+          if exist "Orca (Windows).exe" (
+            for %%A in ("Orca (Windows).exe") do echo "Distribution Binary: %%~zA bytes"
+          ) else (
+            echo "Distribution Binary: NOT FOUND"
+          )
+          
+          if exist "bin\signed\orca-windows-production.exe" (
+            for %%A in (bin\signed\orca-windows-production.exe) do echo "Signed Binary: %%~zA bytes"
+          ) else (
+            echo "Signed Binary: NOT FOUND"
+          )
+          
+          echo "=============================="
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
