@@ -203,6 +203,7 @@ public:
 		HELP_REPORT_A_BUG,
 		HELP_SUGGEST_A_FEATURE,
 		HELP_SEND_DOCS_FEEDBACK,
+		HELP_CHECK_FOR_UPDATES,
 		HELP_ABOUT,
 		HELP_SUPPORT_GODOT_DEVELOPMENT,
 
@@ -330,6 +331,7 @@ private:
 	EditorTitleBar *title_bar = nullptr;
 	EditorRunBar *project_run_bar = nullptr;
 	HBoxContainer *right_menu_hb = nullptr;
+	Button *update_badge_button = nullptr;
 
 	// Spacers to center 2D / 3D / Script buttons.
 	HBoxContainer *left_spacer = nullptr;

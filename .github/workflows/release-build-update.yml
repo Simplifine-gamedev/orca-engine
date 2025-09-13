@@ -1,0 +1,264 @@
+name: Release build, sign/notarize, and update appcast feeds
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Setup Python and tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install SCons
+        run: python3 -m pip install --upgrade pip scons
+
+      - name: Set Orca version from tag
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MAJOR="$(echo "$TAG" | cut -d. -f1)"; MINOR="$(echo "$TAG" | cut -d. -f2)"; PATCH="$(echo "$TAG" | cut -d. -f3)"
+          : "${MAJOR:=0}"; : "${MINOR:=0}"; : "${PATCH:=0}"
+          python3 - "$MAJOR" "$MINOR" "$PATCH" "$GITHUB_REF_NAME" << 'PY'
+import sys, pathlib, re
+maj, min_, pat, tag = sys.argv[1:]
+p = pathlib.Path("version.py")
+s = p.read_text()
+s = re.sub(r'^major\s*=.*$', f'major = {int(maj)}', s, flags=re.M)
+s = re.sub(r'^minor\s*=.*$', f'minor = {int(min_)}', s, flags=re.M)
+s = re.sub(r'^patch\s*=.*$', f'patch = {int(pat)}', s, flags=re.M)
+s = re.sub(r'^status\s*=.*$', 'status = "stable"', s, flags=re.M)
+s = re.sub(r'^module_config\s*=.*$', f'module_config = " {tag}"', s, flags=re.M)
+p.write_text(s)
+print("Updated version.py to", tag)
+PY
+
+      - name: Configure temporary keychain and import Developer ID cert
+        if: ${{ secrets.MAC_CERT_P12_B64 != '' }}
+        env:
+          KEYCHAIN_PASS: ${{ secrets.MAC_KEYCHAIN_PASS }}
+          MAC_CERT_P12_B64: ${{ secrets.MAC_CERT_P12_B64 }}
+          MAC_CERT_P12_PASS: ${{ secrets.MAC_CERT_P12_PASS }}
+        run: |
+          security create-keychain -p "$KEYCHAIN_PASS" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASS" build.keychain
+          echo "$MAC_CERT_P12_B64" | base64 --decode > dev_id.p12
+          security import dev_id.p12 -k build.keychain -P "$MAC_CERT_P12_PASS" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" build.keychain
+
+      - name: Build macOS app (editor)
+        run: |
+          python3 --version
+          scons platform=macos target=editor arch=arm64
+          echo "APP_PATH=$(pwd)/bin/godot.macos.editor.arm64.app" >> $GITHUB_ENV
+
+      - name: Codesign app
+        if: ${{ secrets.MAC_CODESIGN_IDENTITY != '' }}
+        env:
+          MAC_CODESIGN_IDENTITY: ${{ secrets.MAC_CODESIGN_IDENTITY }}
+        run: |
+          codesign --deep --force --options runtime \
+                   -s "$MAC_CODESIGN_IDENTITY" "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Package zip
+        run: |
+          cd bin
+          ditto -c -k --sequesterRsrc --keepParent "godot.macos.editor.arm64.app" "Orca_${GITHUB_REF_NAME}_mac_arm64.zip"
+          echo "MAC_ZIP=$(pwd)/Orca_${GITHUB_REF_NAME}_mac_arm64.zip" >> $GITHUB_ENV
+
+      - name: Create DMG for website downloads
+        run: |
+          # Create a simple compressed DMG containing the app bundle
+          cd bin
+          hdiutil create -volname "Orca" -srcfolder "godot.macos.editor.arm64.app" -ov -format UDZO "Orca (Mac).dmg"
+          echo "MAC_DMG=$(pwd)/Orca (Mac).dmg" >> $GITHUB_ENV
+
+      - name: Notarize and staple (optional)
+        if: ${{ secrets.AC_API_KEY_ID != '' }}
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER: ${{ secrets.AC_API_ISSUER }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+        run: |
+          xcrun notarytool submit "$MAC_ZIP" --key "$AC_API_KEY_P8" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER" --wait
+          xcrun stapler staple "$APP_PATH"
+
+      - name: Generate Sparkle signature (optional)
+        if: ${{ secrets.SPARKLE_ED25519_PRIV_PEM != '' }}
+        env:
+          SPARKLE_ED25519_PRIV_PEM: ${{ secrets.SPARKLE_ED25519_PRIV_PEM }}
+        run: |
+          brew install sparkle || true
+          echo "$SPARKLE_ED25519_PRIV_PEM" > sparkle_private.pem
+          export SPARKLE_PRIVATE_KEY_FILE=sparkle_private.pem
+          sign_update "$MAC_ZIP" > sparkle_sig.txt || echo "" > sparkle_sig.txt
+
+      - name: Upload macOS asset to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.MAC_ZIP }}
+
+      - name: Update docs/appcast.xml
+        run: |
+          python3 scripts/update_appcast.py \
+            --feed docs/appcast.xml \
+            --version "$GITHUB_REF_NAME" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$(basename "$MAC_ZIP")" \
+            --size "$(stat -f%z "$MAC_ZIP")" \
+            --os mac \
+            --signature "$(cat sparkle_sig.txt 2>/dev/null || echo '')"
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add docs/appcast.xml
+          git commit -m "Update macOS appcast for $GITHUB_REF_NAME" || echo "No changes"
+          git push
+
+      - name: Upload mac DMG to Supabase (versioned and latest)
+        if: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="Orca (Mac).dmg"
+          ENC_NAME=$(python3 - << 'PY'
+import urllib.parse,sys
+print(urllib.parse.quote(sys.argv[1]))
+PY
+"$NAME")
+          BUCKET="${SUPABASE_BUCKET:-downloads}"
+          VER="${GITHUB_REF_NAME}"
+          echo "Uploading $NAME to Supabase bucket $BUCKET"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/versions/$VER/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$MAC_DMG"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$MAC_DMG"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Setup Python and tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install SCons
+        run: python -m pip install --upgrade pip scons
+
+      - name: Set Orca version from tag
+        shell: pwsh
+        run: |
+          $tag = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $parts = $tag -split '\.'
+          $maj = if ($parts.Length -ge 1) { [int]$parts[0] } else { 0 }
+          $min = if ($parts.Length -ge 2) { [int]$parts[1] } else { 0 }
+          $pat = if ($parts.Length -ge 3) { [int]$parts[2] } else { 0 }
+          $content = Get-Content version.py -Raw
+          $content = [regex]::Replace($content, '(?m)^major\s*=.*$', "major = $maj")
+          $content = [regex]::Replace($content, '(?m)^minor\s*=.*$', "minor = $min")
+          $content = [regex]::Replace($content, '(?m)^patch\s*=.*$', "patch = $pat")
+          $content = [regex]::Replace($content, '(?m)^status\s*=.*$', 'status = "stable"')
+          $content = [regex]::Replace($content, '(?m)^module_config\s*=.*$', "module_config = ' $env:GITHUB_REF_NAME'")
+          Set-Content version.py $content -NoNewline
+
+      - name: Build Windows editor
+        run: |
+          python --version
+          scons platform=windows target=editor
+          echo "WIN_BIN=bin/godot.windows.editor.x86_64.exe" >> $GITHUB_ENV
+
+      - name: Create installer placeholder
+        shell: bash
+        run: |
+          cp "$WIN_BIN" "Orca_${GITHUB_REF_NAME}_win_x64.exe"
+          echo "WIN_INSTALLER=$(pwd)/Orca_${GITHUB_REF_NAME}_win_x64.exe" >> $GITHUB_ENV
+          cp "$WIN_INSTALLER" "Orca (Windows).exe"
+          echo "WIN_LATEST=$(pwd)/Orca (Windows).exe" >> $GITHUB_ENV
+
+      - name: Sign installer (optional)
+        if: ${{ secrets.WIN_CERT_PFX_B64 != '' }}
+        shell: pwsh
+        env:
+          WIN_CERT_PFX_B64: ${{ secrets.WIN_CERT_PFX_B64 }}
+          WIN_CERT_PFX_PASS: ${{ secrets.WIN_CERT_PFX_PASS }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WIN_CERT_PFX_B64)
+          [IO.File]::WriteAllBytes("codesign.pfx", $bytes)
+          & "C:\\Program Files (x86)\\Windows Kits\\10\\bin\\x64\\signtool.exe" sign /f codesign.pfx /p $env:WIN_CERT_PFX_PASS /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "$env:WIN_INSTALLER"
+
+      - name: Upload Windows asset to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.WIN_INSTALLER }}
+
+      - name: Update docs/appcast-windows.xml
+        shell: bash
+        run: |
+          python3 scripts/update_appcast.py \
+            --feed docs/appcast-windows.xml \
+            --version "$GITHUB_REF_NAME" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$(basename "$WIN_INSTALLER")" \
+            --size "$(stat -c%s "$WIN_INSTALLER" 2>/dev/null || wc -c < "$WIN_INSTALLER")" \
+            --os windows
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add docs/appcast-windows.xml
+          git commit -m "Update Windows appcast for $GITHUB_REF_NAME" || echo "No changes"
+          git push
+
+      - name: Upload Windows EXE to Supabase (versioned and latest)
+        if: ${{ secrets.SUPABASE_URL != '' && secrets.SUPABASE_SERVICE_ROLE != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE: ${{ secrets.SUPABASE_SERVICE_ROLE }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="Orca (Windows).exe"
+          ENC_NAME=$(python3 - << 'PY'
+import urllib.parse,sys
+print(urllib.parse.quote(sys.argv[1]))
+PY
+"$NAME")
+          BUCKET="${SUPABASE_BUCKET:-downloads}"
+          VER="${GITHUB_REF_NAME}"
+          echo "Uploading $NAME to Supabase bucket $BUCKET"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/versions/$VER/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$WIN_LATEST"
+          curl -sS -X POST "$SUPABASE_URL/storage/v1/object/$BUCKET/$ENC_NAME" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE" \
+            -H "Content-Type: application/octet-stream" \
+            -H "x-upsert: true" \
+            --data-binary @"$WIN_LATEST"
+
+

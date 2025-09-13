@@ -20,6 +20,7 @@ import uuid
 import time
 import tempfile
 import hashlib
+import logging
 try:
     from weaviate_vector_manager import WeaviateVectorManager
 except Exception:
@@ -37,27 +38,29 @@ from auto_update_manager import auto_update_manager
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure Vertex AI credentials and settings
-VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')
-VERTEX_AI_LOCATION = os.getenv('VERTEX_AI_LOCATION', 'global')
-VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
+# Vertex AI configuration (DISABLED - using direct Anthropic API instead)
+# VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')  
+# VERTEX_AI_LOCATION = 'us-central1'
+# VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
 
-# Set up Vertex AI authentication
-if VERTEX_AI_PROJECT:
-    os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
-    os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
-    
-    if VERTEX_AI_CREDENTIALS_PATH:
-        # Use explicit credentials file if provided
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
-        print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
-    else:
-        # Use default GCP authentication (gcloud CLI credentials)
-        print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
-    
-    print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
-else:
-    print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
+# # Set up Vertex AI authentication (DISABLED)
+# if VERTEX_AI_PROJECT:
+#     os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
+#     os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
+#     
+#     if VERTEX_AI_CREDENTIALS_PATH:
+#         # Use explicit credentials file if provided
+#         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
+#         print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
+#     else:
+#         # Use default GCP authentication (gcloud CLI credentials)
+#         print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
+#     
+#     print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
+# else:
+#     print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
+
+print("VERTEX_AI: Disabled - using direct Anthropic API instead")
 
 # --- Global State & Configuration ---
 
@@ -76,6 +79,67 @@ def cleanup_old_requests():
                 to_remove.append(req_id)
         for req_id in to_remove:
             del ACTIVE_REQUESTS[req_id]
+
+# --- Simple, environment-aware logging ---
+_is_cloud = bool(os.getenv('K_SERVICE') or os.getenv('GAE_ENV') or os.getenv('CLOUD_RUN_JOB'))
+_structured_mode = (os.getenv('STRUCTURED_LOGS', 'auto').lower())
+if _structured_mode == 'auto':
+    STRUCTURED_LOGS = _is_cloud
+else:
+    STRUCTURED_LOGS = (_structured_mode == 'json')
+
+def _anon(val: str | None) -> str | None:
+    try:
+        if not val:
+            return None
+        return hashlib.sha256(str(val).encode('utf-8')).hexdigest()[:16]
+    except Exception:
+        return None
+
+def _should_emit_for_local_request() -> bool:
+    try:
+        # Always emit in cloud (structured logs)
+        if STRUCTURED_LOGS:
+            return True
+        # Local dev: only when detailed_log=true is present
+        if request:
+            q = (request.args.get('detailed_log') or '').strip().lower()
+            h = (request.headers.get('X-Detailed-Log') or '').strip().lower()
+            return q == 'true' or h == 'true'
+        return False
+    except Exception:
+        # Be conservative locally
+        return False
+
+def log_event(event_name: str, props: dict | None = None, severity: str = 'INFO') -> None:
+    try:
+        # Gate local printing unless detailed_log=true
+        if not _should_emit_for_local_request():
+            return
+        payload = {
+            'event': event_name,
+            'severity': severity,
+            'ts': int(time.time() * 1000),
+            'service': 'godot-ai-multi-model-service',
+            'component': 'backend',
+        }
+        # Attach request context if available
+        try:
+            payload['method'] = request.method
+            payload['path'] = request.path
+            payload['request_id'] = getattr(g, 'request_id', None)
+        except Exception:
+            pass
+        if props:
+            payload['props'] = props
+        if STRUCTURED_LOGS:
+            print(json.dumps(payload, separators=(",", ":")))
+        else:
+            # Simple human-readable line for local dev
+            msg = f"[{payload.get('severity')}] {payload.get('event')} path={payload.get('path')} props={props or {}}"
+            print(msg)
+    except Exception:
+        pass
 
 def _estimate_token_count(text: str) -> int:
     """Rough estimation of token count (approximately 4 characters per token)"""
@@ -142,7 +206,39 @@ CORS(app, origins=["*"])
 # Add request logging for debugging
 @app.before_request
 def log_request_info():
-    print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+    try:
+        if _should_emit_for_local_request():
+            print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+    except Exception:
+        pass
+    try:
+        g.request_id = str(uuid.uuid4())
+        g.request_started_at = time.time()
+        log_event('request_start', {
+            'content_length': request.content_length,
+            'query_len': (len(request.query_string) if request.query_string else 0),
+            'ip_h': _anon(request.environ.get('REMOTE_ADDR')),
+        })
+    except Exception:
+        pass
+
+@app.after_request
+def log_request_end(response):
+    try:
+        started = getattr(g, 'request_started_at', None)
+        dur_ms = int((time.time() - started) * 1000) if started else None
+        # Add anonymized hints only; never content
+        uid = request.headers.get('X-User-ID') if request else None
+        mid = request.headers.get('X-Machine-ID') if request else None
+        log_event('request_end', {
+            'status': response.status_code,
+            'duration_ms': dur_ms,
+            'user_h': _anon(uid),
+            'machine_h': _anon(mid),
+        })
+    except Exception:
+        pass
+    return response
 
 # Secret must be stable across restarts in production. Require env in production, random only in DEV_MODE.
 _dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
@@ -174,7 +270,7 @@ else:
 # Base models (always available)
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": os.getenv("CLAUDE_MODEL", f"vertex_ai/claude-sonnet-4@20250514"),
+    "claude-4": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514"),
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
@@ -225,6 +321,15 @@ if cerebras_api_key:
     print(f"CEREBRAS_SETUP: API key configured for LiteLLM")
 else:
     print("WARNING: CEREBRAS_API_KEY not found in environment - Cerebras models will fail")
+
+# Ensure LiteLLM has access to Anthropic API key
+anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+if anthropic_api_key:
+    # Make sure LiteLLM can access the Anthropic API key
+    os.environ['ANTHROPIC_API_KEY'] = anthropic_api_key
+    print(f"ANTHROPIC_SETUP: API key configured for LiteLLM")
+else:
+    print("WARNING: ANTHROPIC_API_KEY not found in environment - Anthropic models will fail")
 
 # Default model and allowed models
 DEFAULT_MODEL = "gpt-5"
@@ -2859,6 +2964,14 @@ def chat():
         try:
             # Send request_id first so frontend can use it for stop requests
             yield json.dumps({"request_id": request_id, "status": "started"}) + '\n'
+            try:
+                # Lightweight chat_start event (no content)
+                log_event('chat_start', {
+                    'model': get_model_friendly_name(model),
+                    'messages_count': len(messages) if isinstance(messages, list) else None,
+                })
+            except Exception:
+                pass
             
             # Filter out any None or invalid messages from the start
             conversation_messages = []
@@ -3101,6 +3214,16 @@ def chat():
                                             tool_call_aggregator[key]["arguments"] += fn_args
                         
                         print(f"RESPONSE_DEBUG: Processed {chunk_count} chunks, text_length: {len(full_text_response)}, tools: {len(tool_call_aggregator)}")
+                        try:
+                            # chat_stream_summary with minimal fields for analytics
+                            log_event('chat_stream_summary', {
+                                'model': get_model_friendly_name(model_try),
+                                'chunks': chunk_count,
+                                'used_tools': [f.get('name') for f in tool_call_aggregator.values()] if tool_call_aggregator else [],
+                                'text_len': len(full_text_response or ''),
+                            })
+                        except Exception:
+                            pass
                         if tool_call_aggregator:
                             print(f"RESPONSE_DEBUG: Tool calls: {[f['name'] for f in tool_call_aggregator.values()]}")
                         if not full_text_response and not tool_call_aggregator:
@@ -3760,6 +3883,13 @@ def chat():
                 print(f"FRONTEND_PROCESSING: No tools detected, treating as final text response")
                 conversation_messages.append(assistant_message)
                 print(f"CONVERSATION_ADD: Added final text response message")
+                try:
+                    log_event('chat_completed', {
+                        'final_text_len': len(full_text_response or ''),
+                        'used_tools': [f.get('name') for f in tool_call_aggregator.values()] if tool_call_aggregator else [],
+                    })
+                except Exception:
+                    pass
                 yield json.dumps({"status": "completed"}) + '\n'
                 break # Exit loop
         
@@ -3773,6 +3903,10 @@ def chat():
                 if request_id in ACTIVE_REQUESTS:
                     del ACTIVE_REQUESTS[request_id]
                     print(f"CLEANUP: Removed request {request_id} from active requests")
+            try:
+                log_event('chat_end', {'request_id': request_id})
+            except Exception:
+                pass
 
     # Preserve request context during streaming to avoid 'Working outside of request context'.
     return Response(stream_with_context(generate_stream()), mimetype='application/x-ndjson')
@@ -4067,13 +4201,63 @@ def predict_code_edit():
         if is_range:
             # For range edits, provide context about the specific lines
             indentation_reminder = f"\n\nCRITICAL INDENTATION RULES:\n{indentation_context}" if indentation_context else ""
-            full_prompt = (
-                f"Task: {prompt}\n\n"
-                f"Edit the following code segment (lines {start_line}-{end_line}):\n"
-                f"{file_content}\n\n"
-                f"CRITICAL: You must preserve EXACT indentation. Look at the existing lines and match their indentation precisely. Count the tabs/spaces and use exactly the same amount.{indentation_reminder}\n\n"
-                f"Reply with ONLY the edited code for this segment."
-            )
+            
+            # Check if this is expanded context (context expansion detection)
+            file_lines = file_content.split('\n')
+            actual_range_size = end_line - start_line + 1
+            provided_lines = len(file_lines)
+            is_expanded_context = provided_lines > actual_range_size
+            
+            if is_expanded_context:
+                # Calculate exact position of target lines within the expanded segment
+                # Frontend uses: context_start = MAX(0, range_start - 1 - context_lines) with context_lines=10
+                # From logs: "Expanded context from lines 44-64 (original range: 54-54)"
+                # So: context_start = MAX(0, 54 - 1 - 10) = 43 (0-based), first line = 44 (1-based)
+                # Target line 54 is at position: 54 - 44 + 1 = 11 in the segment
+                
+                # Calculate based on frontend's exact algorithm
+                context_lines_used = 10  # From frontend constant
+                original_context_start_0based = max(0, start_line - 1 - context_lines_used)
+                first_line_in_segment_1based = original_context_start_0based + 1
+                
+                # Target position within the segment
+                target_start_in_segment = start_line - first_line_in_segment_1based + 1
+                target_end_in_segment = end_line - first_line_in_segment_1based + 1
+                
+                print(f"CONTEXT_CALC: first_line_in_segment={first_line_in_segment_1based}, target_in_segment={target_start_in_segment}-{target_end_in_segment}")
+                
+                # Validate calculation
+                if target_start_in_segment <= 0 or target_end_in_segment > provided_lines:
+                    print(f"CONTEXT_CALC: Invalid target calculation, falling back to simple detection")
+                    # Simple fallback: assume target is in the middle
+                    target_start_in_segment = (provided_lines // 2)
+                    target_end_in_segment = target_start_in_segment
+                
+                full_prompt = (
+                    f"Task: {prompt}\n\n"
+                    f"IMPORTANT: You received {provided_lines} lines for context, but your edit target is ONLY lines {start_line}-{end_line} from the original file.\n\n"
+                    f"The expanded segment contains:\n"
+                    f"- Lines 1-{target_start_in_segment-1}: Context before target (if any)\n"
+                    f"- Lines {target_start_in_segment}-{target_end_in_segment}: Your actual edit target\n"  
+                    f"- Lines {target_end_in_segment+1}-{provided_lines}: Context after target (if any)\n\n"
+                    f"STRICT INSTRUCTIONS:\n"
+                    f"1. Apply your edit ONLY to the target lines ({target_start_in_segment}-{target_end_in_segment})\n"
+                    f"2. Copy ALL other lines exactly as provided - including every space, tab, and character\n"
+                    f"3. Do not add any markers, arrows, or annotations to the output\n"
+                    f"4. Do not change indentation of any non-target lines{indentation_reminder}\n\n"
+                    f"Code segment:\n"
+                    f"{file_content}\n\n"
+                    f"Return the complete {provided_lines}-line segment with your edit applied only to the target lines."
+                )
+            else:
+                # Original logic for non-expanded ranges
+                full_prompt = (
+                    f"Task: {prompt}\n\n"
+                    f"Edit the following code segment (lines {start_line}-{end_line}):\n"
+                    f"{file_content}\n\n"
+                    f"CRITICAL: You must preserve EXACT indentation. Look at the existing lines and match their indentation precisely. Count the tabs/spaces and use exactly the same amount.{indentation_reminder}\n\n"
+                    f"Reply with ONLY the edited code for this segment."
+                )
         else:
             # For full file edits, provide the complete file
             # Add line numbers for context if file is large
@@ -4174,17 +4358,40 @@ def predict_code_edit():
         import difflib
         
         if is_range:
-            # For range edits, splice the result back into the full file
-            original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+            # Check if this is context expansion (frontend sent expanded segment)
+            file_lines_received = len(file_content.split('\n'))
+            actual_range_size = end_line - start_line + 1
+            is_context_expansion = file_lines_received > actual_range_size
             
-            full_edited_content = (pre_text or '')
-            if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
-                full_edited_content += '\n'
-            full_edited_content += edited_content
-            if post_text:
-                if full_edited_content and not full_edited_content.endswith('\n'):
+            if is_context_expansion:
+                # Context expansion case: AI edited the entire expanded segment
+                # Don't splice - the AI result IS the full edited content for this section
+                print(f"BACKEND: Context expansion detected - using AI result directly (received {file_lines_received} lines for {actual_range_size}-line target)")
+                
+                # The edited_content already contains the properly edited expanded segment
+                # We still need to splice with the true pre/post that weren't included in expansion
+                original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+                
+                full_edited_content = (pre_text or '')
+                if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
                     full_edited_content += '\n'
-                full_edited_content += post_text
+                full_edited_content += edited_content
+                if post_text:
+                    if full_edited_content and not full_edited_content.endswith('\n'):
+                        full_edited_content += '\n'
+                    full_edited_content += post_text
+            else:
+                # Regular range edit: splice normally
+                original_full = (pre_text or '') + ('\n' if pre_text and file_content else '') + (file_content or '') + ('\n' if file_content and post_text else '') + (post_text or '')
+                
+                full_edited_content = (pre_text or '')
+                if full_edited_content and edited_content and not full_edited_content.endswith('\n'):
+                    full_edited_content += '\n'
+                full_edited_content += edited_content
+                if post_text:
+                    if full_edited_content and not full_edited_content.endswith('\n'):
+                        full_edited_content += '\n'
+                    full_edited_content += post_text
         else:
             # For full file edits, the response is the complete new file
             original_full = file_content or ''

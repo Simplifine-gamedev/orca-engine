@@ -5,5 +5,5 @@ minor = 5
 patch = 0
 status = "beta"
 module_config = ""
-website = "https://orca.engine"
+website = "https://orcaengine.ai"
 docs = "latest"

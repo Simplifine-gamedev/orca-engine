@@ -2062,6 +2062,12 @@ void ScriptTextEditor::_change_syntax_highlighter(int p_idx) {
 
 void ScriptTextEditor::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("clear_diff"), &ScriptTextEditor::clear_diff);
+	ClassDB::bind_method(D_METHOD("accept_all_diffs"), &ScriptTextEditor::accept_all_diffs);
+	ClassDB::bind_method(D_METHOD("reject_all_diffs"), &ScriptTextEditor::reject_all_diffs);
+	ClassDB::bind_method(D_METHOD("_on_accept_all_pressed"), &ScriptTextEditor::_on_accept_all_pressed);
+	ClassDB::bind_method(D_METHOD("_on_reject_all_pressed"), &ScriptTextEditor::_on_reject_all_pressed);
+	ClassDB::bind_method(D_METHOD("_on_hunk_accept_pressed"), &ScriptTextEditor::_on_hunk_accept_pressed);
+	ClassDB::bind_method(D_METHOD("_on_hunk_reject_pressed"), &ScriptTextEditor::_on_hunk_reject_pressed);
 	
 	ADD_SIGNAL(MethodInfo("diff_accepted", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "content")));
 	ADD_SIGNAL(MethodInfo("diff_rejected", PropertyInfo(Variant::STRING, "path")));
@@ -3475,6 +3481,11 @@ void ScriptTextEditor::_apply_hunk(int p_hunk_index, bool p_accept) {
 void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	CodeEdit *te = code_editor->get_text_editor();
 
+	// Preserve current viewport and caret to avoid jumping to top after apply
+	const int prev_v_scroll = te->get_v_scroll();
+	const int prev_caret_line = te->get_caret_line();
+	const int prev_caret_col = te->get_caret_column();
+
 	// Build the final content based on individual hunk decisions
 	String final_content;
 	
@@ -3611,6 +3622,12 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	// Now, apply the final content (clean, without diff markers)
 	te->set_text(final_content);
 	apply_code();
+
+	// Restore viewport and caret as best as possible
+	const int safe_line = CLAMP(prev_caret_line, 0, MAX(0, te->get_line_count() - 1));
+	te->set_caret_line(safe_line);
+	te->set_caret_column(MIN(prev_caret_col, te->get_line(safe_line).length()));
+	te->set_v_scroll(prev_v_scroll);
 
 	// Save the file after applying changes
 	if (script.is_valid()) {
@@ -3759,11 +3776,21 @@ void ScriptTextEditor::_create_diff_toolbar() {
 	toolbar_hbox->add_child(legend);
 	toolbar_hbox->add_spacer();
 
+	// Create hunk buttons container INSIDE the main toolbar to avoid overlay
+	hunk_buttons_container = memnew(HBoxContainer);
+	hunk_buttons_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_buttons_container->add_theme_constant_override("separation", 8);
+	toolbar_hbox->add_child(hunk_buttons_container);
+	// Spacer to push Accept/Reject to the right edge
+	toolbar_hbox->add_spacer();
+
 	// Action buttons
 	accept_all_button = memnew(Button);
 	accept_all_button->set_text("Accept All");
 	accept_all_button->add_theme_color_override("font_color", Color(0.2, 0.8, 0.2));
 	accept_all_button->set_tooltip_text("Accept all changes and save the file");
+	accept_all_button->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	accept_all_button->set_disabled(false);
 	accept_all_button->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_accept_all_pressed));
 	toolbar_hbox->add_child(accept_all_button);
 
@@ -3771,16 +3798,13 @@ void ScriptTextEditor::_create_diff_toolbar() {
 	reject_all_button->set_text("Reject All");
 	reject_all_button->add_theme_color_override("font_color", Color(0.8, 0.2, 0.2));
 	reject_all_button->set_tooltip_text("Reject all changes and keep original");
+	reject_all_button->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	reject_all_button->set_disabled(false);
 	reject_all_button->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_reject_all_pressed));
 	toolbar_hbox->add_child(reject_all_button);
 
+	// PanelContainer must only contain one child; we add the unified toolbar row
 	toolbar_panel->add_child(toolbar_hbox);
-	
-	// Create hunk buttons container (will be populated when hunks are built)
-	hunk_buttons_container = memnew(HBoxContainer);
-	hunk_buttons_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	hunk_buttons_container->add_theme_constant_override("separation", 8);
-	toolbar_panel->add_child(hunk_buttons_container);
 
 	VSplitContainer *editor_box = nullptr;
 	for (int i = 0; i < get_child_count(); i++) {
@@ -3791,12 +3815,28 @@ void ScriptTextEditor::_create_diff_toolbar() {
 	}
 
 	if (editor_box) {
-		editor_box->add_child(toolbar_panel);
-		editor_box->move_child(toolbar_panel, editor_box->get_child_count() - 1);
+		// Add toolbar between code editor and errors panels for better positioning
+		int code_editor_index = -1;
+		for (int i = 0; i < editor_box->get_child_count(); i++) {
+			if (editor_box->get_child(i) == code_editor) {
+				code_editor_index = i;
+				break;
+			}
+		}
+		
+		if (code_editor_index >= 0) {
+			editor_box->add_child(toolbar_panel);
+			editor_box->move_child(toolbar_panel, code_editor_index + 1);
+		} else {
+			editor_box->add_child(toolbar_panel);
+		}
 	} else {
 		add_child(toolbar_panel);
 	}
 
+	// Ensure toolbar can receive mouse events properly
+	toolbar_panel->set_mouse_filter(Control::MOUSE_FILTER_PASS);
+	toolbar_panel->set_custom_minimum_size(Size2(0, 60)); // Give it minimum height
 	toolbar_panel->set_visible(false);
 	diff_toolbar = toolbar_panel;
 }
@@ -3876,6 +3916,7 @@ void ScriptTextEditor::_create_hunk_buttons() {
 		accept_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.3, 0.9, 0.3, 0.9)));
 		accept_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.1, 0.7, 0.1, 1.0)));
 		accept_btn->set_custom_minimum_size(Size2(28, 28));
+		accept_btn->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 		accept_btn->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_hunk_accept_pressed).bind(i));
 		button_pair->add_child(accept_btn);
 		hunk_accept_buttons.push_back(accept_btn);
@@ -3891,6 +3932,7 @@ void ScriptTextEditor::_create_hunk_buttons() {
 		reject_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.9, 0.3, 0.3, 0.9)));
 		reject_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.7, 0.1, 0.1, 1.0)));
 		reject_btn->set_custom_minimum_size(Size2(28, 28));
+		reject_btn->set_mouse_filter(Control::MOUSE_FILTER_STOP);
 		reject_btn->connect("pressed", callable_mp(this, &ScriptTextEditor::_on_hunk_reject_pressed).bind(i));
 		button_pair->add_child(reject_btn);
 		hunk_reject_buttons.push_back(reject_btn);

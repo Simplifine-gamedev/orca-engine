@@ -1,0 +1,9 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+
+if env.editor_build:
+    env.add_source_files(env.editor_sources, "*.cpp")
+
+
