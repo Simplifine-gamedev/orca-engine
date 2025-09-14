@@ -1,4 +1,18 @@
 # Godot .gitignore config
+
+# Code signing and build artifacts (sensitive)
+eSigner_CKA.zip
+CodeSignTool.zip
+CodeSignTool.bat
+CodeSignTool.sh
+jar/
+*_Build*Release*Windows*/
+windows_build_logs.zip
+0_Build*Sign*Release*Windows*.txt
+orca-installer.iss
+Orca*.exe
+distribution/
+production_downloads/
 #
 # Aims to encompass the most commonly found files that we don't want committed
 # to Git, such as compilation output, IDE specific files, etc.
