@@ -98,6 +98,18 @@ jobs:
             echo "✅ Notarization submitted"
           fi
 
+      - name: Staple Notarization Ticket
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            xcrun stapler staple "Orca.app"
+            xcrun stapler validate "Orca.app"
+            spctl -a -vvv "Orca.app"
+            echo "✅ Notarization ticket stapled and validated"
+          fi
+
       - name: Create DMG
         run: |
           hdiutil create -volname "Orca Engine" -srcfolder "Orca.app" -ov -format UDZO "Orca (Mac).dmg"
