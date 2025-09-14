@@ -51,11 +51,56 @@ jobs:
             exit 1
           fi
           
+          # Create app bundle structure
           mkdir -p "Orca.app/Contents/MacOS"
+          mkdir -p "Orca.app/Contents/Resources"
+          
+          # Copy binary
           install -m 755 "$BIN" "Orca.app/Contents/MacOS/Orca"
           
+          # Create Info.plist
+          cat > "Orca.app/Contents/Info.plist" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>Orca</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.orca.engine</string>
+	<key>CFBundleName</key>
+	<string>Orca Engine</string>
+	<key>CFBundleDisplayName</key>
+	<string>Orca Engine</string>
+	<key>CFBundleShortVersionString</key>
+	<string>${{ env.VERSION_BASE }}.${{ github.run_number }}</string>
+	<key>CFBundleVersion</key>
+	<string>${{ github.run_number }}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>ORCA</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>CFBundleIconFile</key>
+	<string>Orca.icns</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>
+EOF
+          
+          # Copy icon if available
+          if [ -f "Orca.icns" ]; then
+            cp "Orca.icns" "Orca.app/Contents/Resources/"
+          elif [ -f "icon.icns" ]; then
+            cp "icon.icns" "Orca.app/Contents/Resources/Orca.icns"
+          fi
+          
           echo "app-path=Orca.app" >> "$GITHUB_OUTPUT"
-          echo "✅ Orca.app created"
+          echo "✅ Orca.app created with proper bundle structure"
 
       - name: Import Certificate
         env:
