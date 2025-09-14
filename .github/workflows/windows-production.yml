@@ -89,7 +89,7 @@ jobs:
       - name: Download CodeSignTool
         shell: powershell
         run: |
-          Write-Host "Downloading SSL.com CodeSignTool..."
+          Write-Host "📥 Downloading SSL.com CodeSignTool..."
           
           # Create jar directory
           New-Item -ItemType Directory -Force -Path "jar"
@@ -100,17 +100,17 @@ jobs:
           
           try {
               Invoke-WebRequest -Uri $url -OutFile $zipPath -ErrorAction Stop
-              Write-Host "SUCCESS: Downloaded CodeSignTool.zip"
+              Write-Host "✅ Downloaded CodeSignTool.zip"
           } catch {
-              Write-Host "WARNING: Primary download failed, trying alternative..."
+              Write-Host "⚠️ Primary download failed, trying alternative..."
               # Fallback: try direct JAR download if available
               $jarUrl = "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/code_sign_tool-1.3.2.jar"
               try {
                   Invoke-WebRequest -Uri $jarUrl -OutFile "jar\code_sign_tool-1.3.2.jar" -ErrorAction Stop
-                  Write-Host "SUCCESS: Downloaded JAR directly"
+                  Write-Host "✅ Downloaded JAR directly"
                   exit 0
               } catch {
-                  Write-Host "ERROR: Failed to download CodeSignTool from GitHub releases"
+                  Write-Host "❌ Failed to download CodeSignTool from GitHub releases"
                   Write-Host "Error: $_"
                   exit 1
               }
@@ -124,9 +124,9 @@ jobs:
           
           if ($jarFile) {
               Copy-Item $jarFile.FullName "jar\code_sign_tool-1.3.2.jar"
-              Write-Host "SUCCESS: Found and copied JAR: $($jarFile.Name)"
+              Write-Host "✅ Found and copied JAR: $($jarFile.Name)"
           } else {
-              Write-Host "ERROR: No JAR file found in extracted contents"
+              Write-Host "❌ No JAR file found in extracted contents"
               Get-ChildItem -Path "jar\temp" -Recurse | Format-Table Name, Length
               exit 1
           }
@@ -135,40 +135,48 @@ jobs:
           Remove-Item "jar\temp" -Recurse -Force
           Remove-Item $zipPath -Force
           
-          Write-Host "SUCCESS: CodeSignTool setup complete"
+          # Create config file  
+          New-Item -ItemType Directory -Force -Path "conf"
+          "# SSL.com CodeSignTool Configuration" | Out-File -FilePath "conf\code_sign_tool.properties" -Encoding ASCII
+          "CLIENT_ID=" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
+          "OAUTH2_ENDPOINT=https://oauth.ssl.com/oauth2/token" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
+          "CSC_API_ENDPOINT=https://cs.ssl.com" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
+          "TSA_URL=http://ts.ssl.com" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
+          
+          Write-Host "✅ CodeSignTool setup complete"
+          Write-Host "✅ Config file created"
 
       - name: Verify Code Signing Tools
         shell: cmd
         run: |
-          echo "Verifying code signing tools..."
+          echo "🔍 Verifying code signing tools..."
           
           REM Check if JAR exists
           if not exist "jar\code_sign_tool-1.3.2.jar" (
-            echo "ERROR: CodeSignTool JAR not found"
+            echo "❌ CodeSignTool JAR not found"
             exit /b 1
           )
           
           REM Check JAR file size
           for %%A in (jar\code_sign_tool-1.3.2.jar) do set size=%%~zA
-          echo "CodeSignTool JAR size: %size% bytes"
+          echo "📄 CodeSignTool JAR size: %size% bytes"
           
           REM Verify Java installation
           java -version
           
           REM Test JAR execution
-          echo "Testing JAR execution..."
+          echo "🧪 Testing JAR execution..."
           java -jar jar\code_sign_tool-1.3.2.jar --help >nul 2>&1
           if %ERRORLEVEL% equ 0 (
-            echo "SUCCESS: CodeSignTool JAR is executable"
+            echo "✅ CodeSignTool JAR is executable"
           ) else (
-            echo "WARNING: CodeSignTool JAR test failed (may be normal - requires args)"
+            echo "⚠️ CodeSignTool JAR test failed (may be normal - requires args)"
           )
           
-          echo "SUCCESS: Code signing tools verified"
+          echo "✅ Code signing tools verified"
 
       - name: Sign Windows Binary
         shell: cmd
-        continue-on-error: true
         id: sign_binary
         env:
           SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
