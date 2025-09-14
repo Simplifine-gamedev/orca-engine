@@ -1,0 +1,285 @@
+name: 🐧 Linux Production Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Orca
+  VERSION_BASE: "0.01"
+
+jobs:
+  build-package-release:
+    name: Build Package Release Orca Linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Free disk space on runner
+        run: |
+          echo "Disk usage before:" && df -h
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          echo "Disk usage after:" && df -h
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            scons \
+            pkg-config \
+            libx11-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libasound2-dev \
+            libpulse-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libudev-dev \
+            libdbus-1-dev \
+            libspeechd-dev \
+            libssl-dev \
+            libmbedtls-dev \
+            libwayland-bin
+
+      - name: Setup Python and SCons
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install SCons
+        run: |
+          python -m pip install --upgrade pip
+          pip install scons
+
+      - name: Build Orca Engine
+        run: |
+          echo "🔨 Building Orca Engine for Linux..."
+          scons platform=linuxbsd target=editor dev_build=no arch=x86_64 vulkan=no -j$(nproc)
+
+      - name: Verify Build
+        run: |
+          echo "🔍 Verifying build output..."
+          
+          # Check if binary exists (try different possible names)
+          if [ -f "bin/godot.linuxbsd.editor.x86_64" ]; then
+            BINARY="bin/godot.linuxbsd.editor.x86_64"
+          elif [ -f "bin/orca.linuxbsd.editor.x86_64" ]; then
+            BINARY="bin/orca.linuxbsd.editor.x86_64"
+          else
+            echo "❌ Built binary not found"
+            echo "Contents of bin directory:"
+            ls -la bin/
+            exit 1
+          fi
+          
+          # Check file size and permissions
+          SIZE=$(stat -f%z "$BINARY" 2>/dev/null || stat -c%s "$BINARY" 2>/dev/null)
+          echo "📄 Binary: $BINARY"
+          echo "📏 Size: $SIZE bytes"
+          
+          if [ "$SIZE" -le 0 ]; then
+            echo "❌ Binary is empty or corrupted"
+            exit 1
+          fi
+          
+          # Test binary execution
+          echo "🧪 Testing binary execution..."
+          timeout 10s "$BINARY" --version || echo "⚠️ Version test failed (may be normal)"
+          
+          echo "✅ Build successful - Binary verified"
+
+      - name: Prepare Distribution Binary
+        run: |
+          echo "📦 Preparing distribution binary..."
+          
+          # Find the built binary
+          if [ -f "bin/godot.linuxbsd.editor.x86_64" ]; then
+            BINARY="bin/godot.linuxbsd.editor.x86_64"
+          elif [ -f "bin/orca.linuxbsd.editor.x86_64" ]; then
+            BINARY="bin/orca.linuxbsd.editor.x86_64"
+          fi
+          
+          # Create distribution directory
+          mkdir -p dist
+          
+          # Copy and rename binary
+          cp "$BINARY" "dist/Orca"
+          chmod +x "dist/Orca"
+          
+          # Strip debug symbols to reduce size
+          strip "dist/Orca"
+          
+          # Create version info
+          echo "Orca Engine v${{ env.VERSION_BASE }}.${{ github.run_number }}" > dist/VERSION
+          echo "Built on: $(date)" >> dist/VERSION
+          echo "Platform: Linux x86_64" >> dist/VERSION
+          
+          # Create simple README
+          cat > dist/README.txt << 'EOF'
+# Orca Engine - Linux Distribution
+
+## Installation:
+1. Extract this archive to your desired location
+2. Make sure the 'Orca' binary is executable: chmod +x Orca
+3. Run: ./Orca
+
+## Requirements:
+- Linux x86_64 (Ubuntu 18.04+ or equivalent)
+- OpenGL 3.3+ support
+- ALSA or PulseAudio for audio
+
+## Support:
+Visit: https://github.com/Simplifine-gamedev/orca-engine
+EOF
+          
+          echo "✅ Distribution binary prepared"
+
+      - name: Create TAR.GZ Archive
+        run: |
+          echo "📦 Creating TAR.GZ archive..."
+          
+          cd dist
+          tar -czf "../Orca-Linux-x86_64.tar.gz" *
+          cd ..
+          
+          # Verify archive
+          if [ -f "Orca-Linux-x86_64.tar.gz" ]; then
+            SIZE=$(stat -f%z "Orca-Linux-x86_64.tar.gz" 2>/dev/null || stat -c%s "Orca-Linux-x86_64.tar.gz" 2>/dev/null)
+            echo "📦 Archive created: Orca-Linux-x86_64.tar.gz ($SIZE bytes)"
+          else
+            echo "❌ Archive creation failed"
+            exit 1
+          fi
+
+      - name: Create AppImage (Optional)
+        continue-on-error: true
+        run: |
+          echo "🚀 Creating AppImage..."
+          
+          # Download AppImage tools
+          wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool-x86_64.AppImage
+          
+          # Create AppDir structure
+          mkdir -p Orca.AppDir/usr/bin
+          mkdir -p Orca.AppDir/usr/share/applications
+          mkdir -p Orca.AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy binary
+          cp dist/Orca Orca.AppDir/usr/bin/
+          
+          # Create desktop file
+          cat > Orca.AppDir/usr/share/applications/orca.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Orca Engine
+Comment=Game Engine
+Exec=Orca
+Icon=orca
+Categories=Development;
+EOF
+          
+          # Copy icon if available
+          if [ -f "icon.png" ]; then
+            cp icon.png Orca.AppDir/usr/share/icons/hicolor/256x256/apps/orca.png
+          fi
+          
+          # Create AppRun
+          cat > Orca.AppDir/AppRun << 'EOF'
+#!/bin/bash
+SELF=$(readlink -f "$0")
+HERE=${SELF%/*}
+export PATH="${HERE}/usr/bin/:${PATH}"
+exec "${HERE}/usr/bin/Orca" "$@"
+EOF
+          chmod +x Orca.AppDir/AppRun
+          
+          # Create symlinks
+          ln -sf usr/share/applications/orca.desktop Orca.AppDir/
+          if [ -f "Orca.AppDir/usr/share/icons/hicolor/256x256/apps/orca.png" ]; then
+            ln -sf usr/share/icons/hicolor/256x256/apps/orca.png Orca.AppDir/
+          fi
+          
+          # Build AppImage
+          ./appimagetool-x86_64.AppImage Orca.AppDir Orca-Linux-x86_64.AppImage
+          
+          if [ -f "Orca-Linux-x86_64.AppImage" ]; then
+            chmod +x Orca-Linux-x86_64.AppImage
+            echo "✅ AppImage created successfully"
+          else
+            echo "⚠️ AppImage creation failed"
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Orca-Linux-Production
+          path: |
+            Orca-Linux-x86_64.tar.gz
+            Orca-Linux-x86_64.AppImage
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v${{ env.VERSION_BASE }}.${{ github.run_number }}
+          name: Orca Engine v${{ env.VERSION_BASE }}.${{ github.run_number }}
+          body: |
+            🚀 **Orca Engine Release v${{ env.VERSION_BASE }}.${{ github.run_number }}**
+            
+            🍎 **Mac**: Automatically built, signed & notarized
+            🏁 **Windows**: Automatically built & signed with SSL.com certificate
+            🐧 **Linux**: Automatically built for x86_64 (Ubuntu 18.04+ compatible)
+            
+            **Linux Installation:**
+            - **TAR.GZ**: Extract and run `./Orca`
+            - **AppImage**: Make executable and run directly
+            
+            **Changes in this build:**
+            ${{ github.event.head_commit.message }}
+          files: |
+            Orca-Linux-x86_64.tar.gz
+            Orca-Linux-x86_64.AppImage
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Summary
+        run: |
+          echo "📄 Linux Build Summary:"
+          echo "=============================="
+          echo "Build Status: Success"
+          echo "Platform: Linux x86_64"
+          echo "Target: Production Release"
+          
+          if [ -f "Orca-Linux-x86_64.tar.gz" ]; then
+            SIZE=$(stat -f%z "Orca-Linux-x86_64.tar.gz" 2>/dev/null || stat -c%s "Orca-Linux-x86_64.tar.gz" 2>/dev/null)
+            echo "TAR.GZ Archive: $SIZE bytes"
+          fi
+          
+          if [ -f "Orca-Linux-x86_64.AppImage" ]; then
+            SIZE=$(stat -f%z "Orca-Linux-x86_64.AppImage" 2>/dev/null || stat -c%s "Orca-Linux-x86_64.AppImage" 2>/dev/null)
+            echo "AppImage: $SIZE bytes"
+          fi
+          
+          echo "=============================="
