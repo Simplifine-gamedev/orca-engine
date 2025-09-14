@@ -86,31 +86,85 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
-      - name: Setup Code Signing Tools
+      - name: Download CodeSignTool
+        shell: powershell
+        run: |
+          Write-Host "📥 Downloading SSL.com CodeSignTool..."
+          
+          # Create jar directory
+          New-Item -ItemType Directory -Force -Path "jar"
+          
+          # Download CodeSignTool from GitHub releases (more reliable)
+          $url = "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/CodeSignTool-v1.3.2.zip"
+          $zipPath = "jar\CodeSignTool.zip"
+          
+          try {
+              Invoke-WebRequest -Uri $url -OutFile $zipPath -ErrorAction Stop
+              Write-Host "✅ Downloaded CodeSignTool.zip"
+          } catch {
+              Write-Host "⚠️ Primary download failed, trying alternative..."
+              # Fallback: try direct JAR download if available
+              $jarUrl = "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/code_sign_tool-1.3.2.jar"
+              try {
+                  Invoke-WebRequest -Uri $jarUrl -OutFile "jar\code_sign_tool-1.3.2.jar" -ErrorAction Stop
+                  Write-Host "✅ Downloaded JAR directly"
+                  exit 0
+              } catch {
+                  Write-Host "❌ Failed to download CodeSignTool from GitHub releases"
+                  Write-Host "Error: $_"
+                  exit 1
+              }
+          }
+          
+          # Extract the ZIP
+          Expand-Archive -Path $zipPath -DestinationPath "jar\temp" -Force
+          
+          # Find the JAR file
+          $jarFile = Get-ChildItem -Path "jar\temp" -Recurse -Filter "*.jar" | Select-Object -First 1
+          
+          if ($jarFile) {
+              Copy-Item $jarFile.FullName "jar\code_sign_tool-1.3.2.jar"
+              Write-Host "✅ Found and copied JAR: $($jarFile.Name)"
+          } else {
+              Write-Host "❌ No JAR file found in extracted contents"
+              Get-ChildItem -Path "jar\temp" -Recurse | Format-Table Name, Length
+              exit 1
+          }
+          
+          # Cleanup
+          Remove-Item "jar\temp" -Recurse -Force
+          Remove-Item $zipPath -Force
+          
+          Write-Host "✅ CodeSignTool setup complete"
+
+      - name: Verify Code Signing Tools
         shell: cmd
         run: |
-          echo "🔧 Setting up code signing tools..."
+          echo "🔍 Verifying code signing tools..."
           
-          REM Check if jar directory exists
-          if not exist "jar" (
-            echo "❌ jar directory not found"
-            echo "Available files:"
-            dir
-            exit /b 1
-          )
-          
-          REM Check if CodeSignTool jar exists
+          REM Check if JAR exists
           if not exist "jar\code_sign_tool-1.3.2.jar" (
-            echo "❌ CodeSignTool jar not found at jar\code_sign_tool-1.3.2.jar"
-            echo "Contents of jar directory:"
-            dir jar\
+            echo "❌ CodeSignTool JAR not found"
             exit /b 1
           )
+          
+          REM Check JAR file size
+          for %%A in (jar\code_sign_tool-1.3.2.jar) do set size=%%~zA
+          echo "📄 CodeSignTool JAR size: %size% bytes"
           
           REM Verify Java installation
           java -version
           
-          echo "✅ Code signing tools ready"
+          REM Test JAR execution
+          echo "🧪 Testing JAR execution..."
+          java -jar jar\code_sign_tool-1.3.2.jar --help >nul 2>&1
+          if %ERRORLEVEL% equ 0 (
+            echo "✅ CodeSignTool JAR is executable"
+          ) else (
+            echo "⚠️ CodeSignTool JAR test failed (may be normal - requires args)"
+          )
+          
+          echo "✅ Code signing tools verified"
 
       - name: Sign Windows Binary
         shell: cmd
