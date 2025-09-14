@@ -1,0 +1,79 @@
+# Production builder image for compiling Orca Engine for Linux distribution
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies including static linking support
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    scons \
+    pkg-config \
+    libx11-dev \
+    libxcursor-dev \
+    libxinerama-dev \
+    libxi-dev \
+    libxrandr-dev \
+    libxrender-dev \
+    libxext-dev \
+    libxfixes-dev \
+    libgl1-mesa-dev \
+    libglu1-mesa-dev \
+    libasound2-dev \
+    libpulse-dev \
+    libfreetype6-dev \
+    libfontconfig1-dev \
+    libudev-dev \
+    libdbus-1-dev \
+    libspeechd-dev \
+    libssl-dev \
+    libmbedtls-dev \
+    git \
+    python3 \
+    python3-pip \
+    upx-ucl \
+    binutils \
+    file \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create build directory
+WORKDIR /build
+
+# Copy Orca source code
+COPY . /build/
+
+# Build Orca Engine for Linux (production-ready with maximum optimizations)
+RUN scons platform=linuxbsd target=editor arch=x86_64 \
+    production=yes \
+    use_lto=auto \
+    debug_symbols=no \
+    optimize=speed \
+    disable_3d=no \
+    module_mono_enabled=no \
+    use_static_cpp=yes \
+    builtin_freetype=yes \
+    builtin_libpng=yes \
+    builtin_zlib=yes \
+    builtin_mbedtls=yes \
+    builtin_wslay=yes \
+    builtin_miniupnpc=yes \
+    builtin_pcre2=yes \
+    threads=yes \
+    -j$(nproc)
+
+# Strip the binary and compress it
+RUN strip bin/godot.linuxbsd.editor.x86_64 && \
+    upx --best bin/godot.linuxbsd.editor.x86_64 || echo "UPX compression failed, continuing without compression" && \
+    chmod +x bin/godot.linuxbsd.editor.x86_64
+
+# Create a renamed version for distribution
+RUN cp bin/godot.linuxbsd.editor.x86_64 bin/orca-engine-linux-x86_64 && \
+    chmod +x bin/orca-engine-linux-x86_64
+
+# Show build info
+RUN echo "=== Build Information ===" && \
+    ls -la bin/ && \
+    file bin/godot.linuxbsd.editor.x86_64 && \
+    echo "Binary size: $(du -h bin/godot.linuxbsd.editor.x86_64)" && \
+    echo "Orca binary size: $(du -h bin/orca-engine-linux-x86_64)"
+
+CMD ["ls", "-la", "bin/"]

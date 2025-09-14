@@ -38,14 +38,18 @@ WORKDIR /build
 # Copy Orca source code
 COPY . /build/
 
-# Build Orca Engine for Linux (optimized for speed)
+# Build Orca Engine for Linux (production-ready)
 RUN scons platform=linuxbsd target=editor arch=x86_64 \
-    production=no \
-    use_lto=no \
+    production=yes \
+    use_lto=auto \
     debug_symbols=no \
     optimize=speed \
     disable_3d=no \
     module_mono_enabled=no \
+    use_static_cpp=yes \
+    builtin_freetype=yes \
+    builtin_libpng=yes \
+    builtin_zlib=yes \
     -j$(nproc)
 
 # The binary will be at bin/godot.linuxbsd.editor.x86_64

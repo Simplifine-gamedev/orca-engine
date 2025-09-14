@@ -1,0 +1,265 @@
+name: 🚀 Release Automation
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  discussions: write
+
+env:
+  VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.create-release.outputs.id }}
+      upload-url: ${{ steps.create-release.outputs.upload_url }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          # Get the previous tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            echo "Generating release notes from $PREVIOUS_TAG to ${{ env.VERSION }}"
+            
+            # Generate changelog
+            cat > release_notes.md << EOF
+          # Orca Engine ${{ env.VERSION }}
+          
+          ## What's New
+          
+          $(git log --pretty=format:"- %s" "$PREVIOUS_TAG"..HEAD | grep -E "(feat|fix|add|update|improve)" | head -20)
+          
+          ## Full Changelog
+          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/$PREVIOUS_TAG...${{ env.VERSION }}
+          
+          ## Downloads
+          
+          Choose the appropriate download for your system:
+          
+          - **Linux x86_64**: \`orca-engine-linux-x86_64-${{ env.VERSION }}.tar.gz\` (Recommended)
+          - **Linux AppImage**: \`OrcaEngine-${{ env.VERSION }}-x86_64.AppImage\` (Portable)
+          - **Linux DEB**: \`orca-engine_${{ env.VERSION }}-1_amd64.deb\` (Debian/Ubuntu)
+          - **Signed Package**: \`orca-engine-linux-x86_64-${{ env.VERSION }}-signed.tar.gz\` (With checksums)
+          
+          ## System Requirements
+          
+          - Linux x86_64
+          - OpenGL 3.3 compatible graphics card
+          - 2GB RAM minimum, 4GB recommended
+          - 500MB free disk space
+          - Audio system (ALSA/PulseAudio)
+          
+          ## Installation
+          
+          ### TAR.GZ Package (Recommended)
+          1. Download \`orca-engine-linux-x86_64-${{ env.VERSION }}.tar.gz\`
+          2. Extract: \`tar -xzf orca-engine-linux-x86_64-${{ env.VERSION }}.tar.gz\`
+          3. Run: \`cd orca-engine-${{ env.VERSION }} && ./orca-engine.sh\`
+          
+          ### AppImage (Portable)
+          1. Download \`OrcaEngine-${{ env.VERSION }}-x86_64.AppImage\`
+          2. Make executable: \`chmod +x OrcaEngine-${{ env.VERSION }}-x86_64.AppImage\`
+          3. Run: \`./OrcaEngine-${{ env.VERSION }}-x86_64.AppImage\`
+          
+          ### DEB Package (Debian/Ubuntu)
+          1. Download \`orca-engine_${{ env.VERSION }}-1_amd64.deb\`
+          2. Install: \`sudo dpkg -i orca-engine_${{ env.VERSION }}-1_amd64.deb\`
+          3. Fix dependencies if needed: \`sudo apt-get install -f\`
+          4. Run: \`orca-engine\`
+          
+          ## Verification
+          
+          For security, verify your download using the checksums in the signed package:
+          
+          1. Download \`orca-engine-linux-x86_64-${{ env.VERSION }}-signed.tar.gz\`
+          2. Extract and run: \`./verify.sh\`
+          
+          ## Support
+          
+          - 📚 Documentation: https://orcaengine.ai/docs
+          - 💬 Community: https://github.com/${{ github.repository }}/discussions
+          - 🐛 Issues: https://github.com/${{ github.repository }}/issues
+          
+          ---
+          
+          Built with ❤️ by the Orca Engine team
+          EOF
+          else
+            echo "First release, generating basic notes"
+            cat > release_notes.md << EOF
+          # Orca Engine ${{ env.VERSION }}
+          
+          🎉 Welcome to Orca Engine ${{ env.VERSION }}!
+          
+          This is the first official release of Orca Engine for Linux.
+          
+          ## Downloads
+          
+          Choose the appropriate download for your system:
+          
+          - **Linux x86_64**: \`orca-engine-linux-x86_64-${{ env.VERSION }}.tar.gz\` (Recommended)
+          - **Linux AppImage**: \`OrcaEngine-${{ env.VERSION }}-x86_64.AppImage\` (Portable)
+          - **Linux DEB**: \`orca-engine_${{ env.VERSION }}-1_amd64.deb\` (Debian/Ubuntu)
+          - **Signed Package**: \`orca-engine-linux-x86_64-${{ env.VERSION }}-signed.tar.gz\` (With checksums)
+          
+          ## System Requirements
+          
+          - Linux x86_64
+          - OpenGL 3.3 compatible graphics card
+          - 2GB RAM minimum, 4GB recommended
+          - 500MB free disk space
+          - Audio system (ALSA/PulseAudio)
+          
+          ## Support
+          
+          - 📚 Documentation: https://orcaengine.ai/docs
+          - 💬 Community: https://github.com/${{ github.repository }}/discussions
+          - 🐛 Issues: https://github.com/${{ github.repository }}/issues
+          EOF
+          fi
+          
+          echo "release-notes-file=release_notes.md" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create-release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Orca Engine ${{ env.VERSION }}
+          body_path: ${{ steps.release-notes.outputs.release-notes-file }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-upload:
+    name: Build and Upload Assets
+    needs: create-release
+    uses: ./.github/workflows/linux-production.yml
+    secrets: inherit
+
+  update-release:
+    name: Update Release Information
+    runs-on: ubuntu-latest
+    needs: [create-release, build-and-upload]
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update release with build information
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          append_body: true
+          body: |
+            
+            ## Build Information
+            
+            - **Build Date**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+            - **Commit**: ${{ github.sha }}
+            - **Workflow**: ${{ github.run_id }}
+            
+            All packages have been built and are ready for download! 🎉
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-completion:
+    name: Notify Release Completion
+    runs-on: ubuntu-latest
+    needs: [create-release, build-and-upload, update-release]
+    if: always()
+    
+    steps:
+      - name: Notify success
+        if: needs.build-and-upload.result == 'success'
+        run: |
+          echo "🎉 Release ${{ env.VERSION }} completed successfully!"
+          echo "📦 All packages have been built and uploaded to GitHub Releases"
+          echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ env.VERSION }}"
+
+      - name: Notify failure
+        if: needs.build-and-upload.result == 'failure'
+        run: |
+          echo "❌ Release ${{ env.VERSION }} failed during build process"
+          echo "🔍 Check the workflow logs for details"
+          exit 1
+
+  post-release-tasks:
+    name: Post-Release Tasks
+    runs-on: ubuntu-latest
+    needs: [create-release, build-and-upload]
+    if: needs.build-and-upload.result == 'success'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release branch
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Create a release branch for this version
+          BRANCH_NAME="release/${{ env.VERSION }}"
+          git checkout -b "$BRANCH_NAME"
+          git push origin "$BRANCH_NAME"
+          
+          echo "✅ Created release branch: $BRANCH_NAME"
+
+      - name: Update version for next development cycle
+        run: |
+          # This would update version files for the next development cycle
+          # Implementation depends on how version is managed in the project
+          echo "🔄 Version update for next development cycle would go here"
+
+      - name: Create discussion post
+        uses: abirismyname/create-discussion@v1.2.0
+        with:
+          title: "Orca Engine ${{ env.VERSION }} Released! 🎉"
+          body: |
+            We're excited to announce the release of Orca Engine ${{ env.VERSION }}!
+            
+            ## What's New
+            
+            Check out the [release notes](https://github.com/${{ github.repository }}/releases/tag/${{ env.VERSION }}) for all the details.
+            
+            ## Downloads
+            
+            You can download the latest version from the [releases page](https://github.com/${{ github.repository }}/releases/tag/${{ env.VERSION }}).
+            
+            ## Feedback
+            
+            We'd love to hear your feedback! Please share your experience with this release.
+            
+            Happy game development! 🎮
+          category-id: "announcements"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

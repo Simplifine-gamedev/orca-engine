@@ -1,0 +1,338 @@
+name: 🐧 Linux Production Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Orca
+  VERSION: ${{ github.ref_name || github.run_number }}
+
+jobs:
+  build-linux-production:
+    name: Build Production Linux Binary
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Free disk space
+        run: |
+          echo "Disk usage before cleanup:" && df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          echo "Disk usage after cleanup:" && df -h
+
+      - name: Build production binary
+        run: |
+          echo "Building Orca Engine for Linux (production)..."
+          ./build_linux_orca.sh --production
+
+      - name: Verify binary
+        run: |
+          if [ ! -f "bin/godot.linuxbsd.editor.x86_64" ]; then
+            echo "❌ Binary not found!"
+            ls -la bin/
+            exit 1
+          fi
+          
+          echo "✅ Binary verification:"
+          file bin/godot.linuxbsd.editor.x86_64
+          ldd bin/godot.linuxbsd.editor.x86_64 || echo "Static binary (no dependencies)"
+          du -h bin/godot.linuxbsd.editor.x86_64
+          
+          # Test basic functionality
+          ./bin/godot.linuxbsd.editor.x86_64 --version
+          ./bin/godot.linuxbsd.editor.x86_64 --help
+
+      - name: Create distribution package
+        run: |
+          mkdir -p dist/orca-engine-linux-x86_64
+          
+          # Copy main binary
+          cp bin/godot.linuxbsd.editor.x86_64 dist/orca-engine-linux-x86_64/orca-engine
+          chmod +x dist/orca-engine-linux-x86_64/orca-engine
+          
+          # Copy branded binary
+          if [ -f "bin/orca-engine-linux-x86_64" ]; then
+            cp bin/orca-engine-linux-x86_64 dist/orca-engine-linux-x86_64/
+            chmod +x dist/orca-engine-linux-x86_64/orca-engine-linux-x86_64
+          fi
+          
+          # Create launcher script
+          cat > dist/orca-engine-linux-x86_64/orca-engine.sh << 'EOF'
+          #!/bin/bash
+          # Orca Engine Launcher Script
+          
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          BINARY="$SCRIPT_DIR/orca-engine"
+          
+          if [ ! -f "$BINARY" ]; then
+            echo "Error: Orca Engine binary not found at $BINARY"
+            exit 1
+          fi
+          
+          # Set library path for potential dependencies
+          export LD_LIBRARY_PATH="$SCRIPT_DIR:$LD_LIBRARY_PATH"
+          
+          # Launch Orca Engine with all arguments
+          exec "$BINARY" "$@"
+          EOF
+          chmod +x dist/orca-engine-linux-x86_64/orca-engine.sh
+          
+          # Add documentation
+          cat > dist/orca-engine-linux-x86_64/README.txt << 'EOF'
+          Orca Engine - Linux x86_64 Distribution
+          ======================================
+          
+          This package contains the Orca Engine editor for Linux x86_64 systems.
+          
+          Files:
+          - orca-engine: Main executable
+          - orca-engine.sh: Launcher script (recommended)
+          - README.txt: This file
+          
+          Installation:
+          1. Extract this archive to your desired location
+          2. Make sure the binary is executable: chmod +x orca-engine
+          3. Run with: ./orca-engine or ./orca-engine.sh
+          
+          System Requirements:
+          - Linux x86_64
+          - OpenGL 3.3 compatible graphics card
+          - Audio system (ALSA/PulseAudio)
+          
+          For support and documentation, visit: https://orcaengine.ai
+          EOF
+          
+          # Copy license and other important files
+          [ -f LICENSE.txt ] && cp LICENSE.txt dist/orca-engine-linux-x86_64/
+          [ -f COPYRIGHT.txt ] && cp COPYRIGHT.txt dist/orca-engine-linux-x86_64/
+          [ -f AUTHORS.md ] && cp AUTHORS.md dist/orca-engine-linux-x86_64/
+          
+          echo "📦 Distribution package created:"
+          ls -la dist/orca-engine-linux-x86_64/
+
+      - name: Sign binary and create checksums
+        run: |
+          mkdir -p signed
+          
+          # Create signing script directory
+          mkdir -p scripts
+          
+          # Copy the signing script if it exists, otherwise create a simple version
+          if [ -f "scripts/sign-linux-binary.sh" ]; then
+            chmod +x scripts/sign-linux-binary.sh
+            ./scripts/sign-linux-binary.sh --binary bin/godot.linuxbsd.editor.x86_64 --output signed/
+          else
+            # Simple signing without GPG (checksums only)
+            cp bin/godot.linuxbsd.editor.x86_64 signed/
+            cd signed
+            sha256sum godot.linuxbsd.editor.x86_64 > godot.linuxbsd.editor.x86_64.sha256
+            sha512sum godot.linuxbsd.editor.x86_64 > godot.linuxbsd.editor.x86_64.sha512
+            md5sum godot.linuxbsd.editor.x86_64 > godot.linuxbsd.editor.x86_64.md5
+            
+            # Create verification script
+            cat > verify.sh << 'EOF'
+          #!/bin/bash
+          echo "🔍 Verifying Orca Engine binary..."
+          if sha256sum -c godot.linuxbsd.editor.x86_64.sha256 && sha512sum -c godot.linuxbsd.editor.x86_64.sha512; then
+            echo "✅ All checksums verified!"
+          else
+            echo "❌ Checksum verification failed!"
+            exit 1
+          fi
+          EOF
+            chmod +x verify.sh
+            cd ..
+          fi
+          
+          echo "📝 Signed files created:"
+          ls -la signed/
+
+      - name: Create tar.gz archive
+        run: |
+          cd dist
+          tar -czf orca-engine-linux-x86_64-${VERSION}.tar.gz orca-engine-linux-x86_64/
+          echo "📦 Archive created:"
+          ls -la orca-engine-linux-x86_64-${VERSION}.tar.gz
+          
+          # Create signed archive
+          cd ../signed
+          tar -czf ../dist/orca-engine-linux-x86_64-${VERSION}-signed.tar.gz *
+          echo "📦 Signed archive created:"
+          ls -la ../dist/orca-engine-linux-x86_64-${VERSION}-signed.tar.gz
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-engine-linux-x86_64
+          path: |
+            bin/godot.linuxbsd.editor.x86_64
+            bin/orca-engine-linux-x86_64
+            dist/orca-engine-linux-x86_64-${{ env.VERSION }}.tar.gz
+            dist/orca-engine-linux-x86_64-${{ env.VERSION }}-signed.tar.gz
+            signed/
+          retention-days: 30
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/orca-engine-linux-x86_64-${{ env.VERSION }}.tar.gz
+            dist/orca-engine-linux-x86_64-${{ env.VERSION }}-signed.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-appimage:
+    name: Build AppImage
+    runs-on: ubuntu-20.04  # Use older Ubuntu for better compatibility
+    timeout-minutes: 90
+    needs: build-linux-production
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: orca-engine-linux-x86_64
+          path: artifacts/
+
+      - name: Install AppImage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget file
+          
+          # Download AppImageTool
+          wget -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          
+          # Download linuxdeploy
+          wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+
+      - name: Create AppImage
+        run: |
+          # Create AppDir structure
+          mkdir -p OrcaEngine.AppDir/usr/bin
+          mkdir -p OrcaEngine.AppDir/usr/share/applications
+          mkdir -p OrcaEngine.AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy binary
+          cp artifacts/bin/godot.linuxbsd.editor.x86_64 OrcaEngine.AppDir/usr/bin/orca-engine
+          chmod +x OrcaEngine.AppDir/usr/bin/orca-engine
+          
+          # Create desktop file
+          cat > OrcaEngine.AppDir/usr/share/applications/orca-engine.desktop << 'EOF'
+          [Desktop Entry]
+          Name=Orca Engine
+          Comment=Game Development Engine
+          Exec=orca-engine
+          Icon=orca-engine
+          Type=Application
+          Categories=Development;IDE;
+          Terminal=false
+          StartupNotify=true
+          EOF
+          
+          # Copy icon (use existing or create placeholder)
+          if [ -f "icon.png" ]; then
+            cp icon.png OrcaEngine.AppDir/usr/share/icons/hicolor/256x256/apps/orca-engine.png
+          elif [ -f "orcabranding/icon.png" ]; then
+            cp orcabranding/icon.png OrcaEngine.AppDir/usr/share/icons/hicolor/256x256/apps/orca-engine.png
+          else
+            # Create a simple placeholder icon
+            convert -size 256x256 xc:blue -fill white -gravity center -pointsize 48 -annotate +0+0 "ORCA" OrcaEngine.AppDir/usr/share/icons/hicolor/256x256/apps/orca-engine.png || echo "No ImageMagick, skipping icon creation"
+          fi
+          
+          # Copy icon to AppDir root
+          cp OrcaEngine.AppDir/usr/share/icons/hicolor/256x256/apps/orca-engine.png OrcaEngine.AppDir/ || echo "Icon copy failed"
+          
+          # Copy desktop file to AppDir root
+          cp OrcaEngine.AppDir/usr/share/applications/orca-engine.desktop OrcaEngine.AppDir/
+          
+          # Create AppRun script
+          cat > OrcaEngine.AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+          exec "${HERE}/usr/bin/orca-engine" "$@"
+          EOF
+          chmod +x OrcaEngine.AppDir/AppRun
+          
+          # Use linuxdeploy to bundle dependencies
+          ./linuxdeploy --appdir OrcaEngine.AppDir --output appimage || echo "linuxdeploy failed, trying manual AppImage creation"
+          
+          # If linuxdeploy failed, try manual creation
+          if [ ! -f "Orca_Engine*.AppImage" ]; then
+            ./appimagetool OrcaEngine.AppDir OrcaEngine-${VERSION}-x86_64.AppImage
+          fi
+          
+          # Rename if needed
+          if [ -f "Orca_Engine*.AppImage" ]; then
+            mv Orca_Engine*.AppImage OrcaEngine-${VERSION}-x86_64.AppImage
+          fi
+          
+          echo "📦 AppImage created:"
+          ls -la *.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-engine-appimage
+          path: "*.AppImage"
+          retention-days: 30
+
+      - name: Upload AppImage to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "*.AppImage"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test-compatibility:
+    name: Test Linux Compatibility
+    runs-on: ${{ matrix.os }}
+    needs: build-linux-production
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+    
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: orca-engine-linux-x86_64
+          path: artifacts/
+
+      - name: Test binary compatibility
+        run: |
+          chmod +x artifacts/bin/godot.linuxbsd.editor.x86_64
+          
+          echo "Testing on $(lsb_release -d -s):"
+          echo "Kernel: $(uname -r)"
+          echo "Architecture: $(uname -m)"
+          
+          # Test basic functionality
+          artifacts/bin/godot.linuxbsd.editor.x86_64 --version
+          artifacts/bin/godot.linuxbsd.editor.x86_64 --help
+          
+          echo "✅ Binary works on $(lsb_release -d -s)"
