@@ -14,8 +14,8 @@ env:
   BUNDLE_ID: com.orca.engine
   TEAM_ID: 92HMJ7DFHF
   VERSION_BASE: "0.01"
-  # Use date-based version for consistent releases across platforms
-  RELEASE_VERSION: "0.01.${{ github.run_number }}"
+  # Use commit hash for consistent releases across platforms
+  RELEASE_VERSION: "0.01.${{ github.run_id }}"
 
 jobs:
   build-sign-notarize:
