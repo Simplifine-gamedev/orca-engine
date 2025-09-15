@@ -164,14 +164,22 @@ jobs:
 
       - name: Create DMG
         run: |
-          hdiutil create -volname "Orca Engine" -srcfolder "Orca.app" -ov -format UDZO "Orca (Mac).dmg"
-          echo "✅ DMG created"
+          # Create proper DMG structure with Applications shortcut
+          mkdir -p dmg-staging
+          cp -R "Orca.app" dmg-staging/
+          ln -sf /Applications dmg-staging/Applications
+          
+          hdiutil create -volname "Orca Engine" -srcfolder dmg-staging -ov -format UDZO "Orca (Mac).dmg"
+          echo "✅ DMG created with Applications shortcut"
           
           # Sign the DMG as well
           IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
           /usr/bin/codesign --force --sign "$IDENTITY" "Orca (Mac).dmg"
           /usr/bin/codesign --verify --deep --strict "Orca (Mac).dmg"
           echo "✅ DMG signed"
+          
+          # Clean up staging directory
+          rm -rf dmg-staging
 
       - name: Notarize DMG
         env:
