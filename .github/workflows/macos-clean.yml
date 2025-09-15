@@ -179,7 +179,7 @@ jobs:
             Orca.app
             Orca (Mac).dmg
 
-      - name: Create Release
+      - name: Create or Update Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
@@ -189,6 +189,8 @@ jobs:
             🚀 **Orca Engine Release v${{ env.VERSION_BASE }}.${{ github.run_number }}**
             
             🍎 **Mac**: Automatically built, signed & notarized
+            🏁 **Windows**: Automatically built & signed with SSL.com certificate  
+            🐧 **Linux**: Automatically built for x86_64 (Ubuntu 18.04+ compatible)
             
             **Changes in this build:**
             ${{ github.event.head_commit.message }}
@@ -196,3 +198,5 @@ jobs:
             Orca (Mac).dmg
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_unmatched_files: false
+          append_body: false
