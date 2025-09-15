@@ -120,9 +120,14 @@ jobs:
       - name: Code Sign
         run: |
           IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
-          /usr/bin/codesign --force --options runtime --timestamp --sign "$IDENTITY" "Orca.app"
+          
+          # Use proper entitlements for notarization
+          /usr/bin/codesign --force --deep --options runtime --timestamp \
+            --entitlements "misc/dist/macos/editor.entitlements" \
+            --sign "$IDENTITY" "Orca.app"
+          
           /usr/bin/codesign --verify --deep --strict "Orca.app"
-          echo "✅ Code signed"
+          echo "✅ Code signed with entitlements"
 
       - name: Create Notarization Package
         run: |
