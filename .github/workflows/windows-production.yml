@@ -94,12 +94,15 @@ jobs:
           Write-Host "🔧 Setting up SSL.com CodeSignTool..."
           
           # Check if CodeSignTool JAR already exists in repo
-          if (Test-Path "jar\code_sign_tool-1.3.2.jar") {
-              $fileSize = (Get-Item "jar\code_sign_tool-1.3.2.jar").Length
+          if (Test-Path "jar/code_sign_tool-1.3.2.jar") {
+              $fileSize = (Get-Item "jar/code_sign_tool-1.3.2.jar").Length
               Write-Host "✅ CodeSignTool JAR found in repository - Size: $fileSize bytes"
           } else {
               Write-Host "❌ CodeSignTool JAR not found in repository"
-              Write-Host "Expected location: jar\code_sign_tool-1.3.2.jar"
+              Write-Host "Expected location: jar/code_sign_tool-1.3.2.jar"
+              Write-Host "Current directory: $(Get-Location)"
+              Write-Host "Directory contents:"
+              Get-ChildItem -Recurse -Filter "*.jar" | Select-Object FullName
               exit 1
           }
           

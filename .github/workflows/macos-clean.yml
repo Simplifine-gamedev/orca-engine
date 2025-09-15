@@ -180,25 +180,35 @@ jobs:
         run: |
           if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
             echo "🍎 Notarizing DMG for macOS 15.6+ compatibility..."
+            
+            # Submit DMG for notarization
             xcrun notarytool submit "Orca (Mac).dmg" \
               --apple-id "$APPLE_ID" \
               --password "$APPLE_APP_PASSWORD" \
               --team-id "92HMJ7DFHF" \
-              --wait --timeout 30m
+              --wait --timeout 30m || {
+                echo "❌ DMG notarization submission failed"
+                exit 1
+              }
             
             # Staple the notarization ticket to the DMG
-            xcrun stapler staple "Orca (Mac).dmg"
-            xcrun stapler validate "Orca (Mac).dmg"
-            
-            # Verify notarization ticket is attached (spctl doesn't work on DMGs)
-            if xcrun stapler validate "Orca (Mac).dmg" > /dev/null 2>&1; then
-              echo "✅ DMG notarized and stapled - Compatible with macOS 15.6+ Safari"
-            else
-              echo "❌ DMG stapling failed"
+            xcrun stapler staple "Orca (Mac).dmg" || {
+              echo "❌ Failed to staple notarization ticket to DMG"
               exit 1
-            fi
+            }
+            
+            # Validate the stapled ticket
+            xcrun stapler validate "Orca (Mac).dmg" || {
+              echo "❌ DMG validation failed after stapling"
+              exit 1
+            }
+            
+            echo "✅ DMG notarized and stapled - Compatible with macOS 15.6+ Safari"
           else
-            echo "⚠️  Skipping DMG notarization (credentials not available)"
+            echo "❌ CRITICAL: Apple credentials not available - DMG will NOT work on macOS 15.6+"
+            echo "APPLE_ID is: ${APPLE_ID:+set}"
+            echo "APPLE_APP_PASSWORD is: ${APPLE_APP_PASSWORD:+set}"
+            exit 1
           fi
 
       - name: Upload Artifacts
