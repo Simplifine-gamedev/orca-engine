@@ -188,9 +188,13 @@ jobs:
             xcrun stapler staple "Orca (Mac).dmg"
             xcrun stapler validate "Orca (Mac).dmg"
             
-            # Final verification
-            spctl -a -vvv "Orca (Mac).dmg"
-            echo "✅ DMG notarized and stapled - Compatible with macOS 15.6+ Safari"
+            # Verify notarization ticket is attached (spctl doesn't work on DMGs)
+            if xcrun stapler validate "Orca (Mac).dmg" > /dev/null 2>&1; then
+              echo "✅ DMG notarized and stapled - Compatible with macOS 15.6+ Safari"
+            else
+              echo "❌ DMG stapling failed"
+              exit 1
+            fi
           else
             echo "⚠️  Skipping DMG notarization (credentials not available)"
           fi
