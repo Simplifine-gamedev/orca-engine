@@ -231,14 +231,17 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v${{ env.RELEASE_VERSION }}
-          name: Orca Engine v${{ env.RELEASE_VERSION }}
+          tag_name: v${{ env.RELEASE_VERSION }}-mac
+          name: 🍎 Orca Engine Mac v${{ env.RELEASE_VERSION }}
           body: |
-            🚀 **Orca Engine Release v${{ env.RELEASE_VERSION }}**
+            🚀 **Orca Engine Mac Release v${{ env.RELEASE_VERSION }}**
             
-            🍎 **Mac**: Automatically built, signed & notarized
-            🏁 **Windows**: Automatically built & signed with SSL.com certificate  
-            🐧 **Linux**: Automatically built for x86_64 (Ubuntu 18.04+ compatible)
+            🍎 **Mac Only**: Automatically built, signed & notarized
+            
+            **Installation:**
+            - Download the DMG file
+            - Open DMG and drag Orca.app to Applications folder
+            - Launch from Applications
             
             **Changes in this build:**
             ${{ github.event.head_commit.message }}

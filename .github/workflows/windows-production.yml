@@ -254,19 +254,20 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v${{ env.RELEASE_VERSION }}
-          name: Orca Engine v${{ env.RELEASE_VERSION }}
+          tag_name: v${{ env.RELEASE_VERSION }}-windows
+          name: 🏁 Orca Engine Windows v${{ env.RELEASE_VERSION }}
           body: |
-            🚀 **Orca Engine Release v${{ env.RELEASE_VERSION }}**
+            🚀 **Orca Engine Windows Release v${{ env.RELEASE_VERSION }}**
             
-            🍎 **Mac**: Automatically built, signed & notarized
-            🏁 **Windows**: Automatically built${{ steps.sign_binary.outcome == 'success' && ' & signed with SSL.com certificate' || ' (unsigned - signing failed)' }}
+            🏁 **Windows Only**: Automatically built${{ steps.sign_binary.outcome == 'success' && ' & signed with SSL.com certificate' || ' (unsigned - signing failed)' }}
+            
+            **Installation:**
+            - Download the .exe file
+            - Run the executable directly
+            - No installation required
             
             **Changes in this build:**
             ${{ github.event.head_commit.message }}
-            
-            **Download Instructions:**
-            - **Mac**: Download DMG, mount, drag to Applications
             - **Windows**: Download EXE${{ steps.sign_binary.outcome == 'success' && ', run directly (no security warnings)' || ' (may show security warning - unsigned)' }}
           files: |
             Orca (Windows).exe

@@ -245,18 +245,19 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v${{ env.RELEASE_VERSION }}
-          name: Orca Engine v${{ env.RELEASE_VERSION }}
+          tag_name: v${{ env.RELEASE_VERSION }}-linux
+          name: 🐧 Orca Engine Linux v${{ env.RELEASE_VERSION }}
           body: |
-            🚀 **Orca Engine Release v${{ env.RELEASE_VERSION }}**
+            🚀 **Orca Engine Linux Release v${{ env.RELEASE_VERSION }}**
             
-            🍎 **Mac**: Automatically built, signed & notarized
-            🏁 **Windows**: Automatically built & signed with SSL.com certificate
-            🐧 **Linux**: Automatically built for x86_64 (Ubuntu 18.04+ compatible)
+            🐧 **Linux Only**: Automatically built for x86_64 (Ubuntu 18.04+ compatible)
             
-            **Linux Installation:**
+            **Installation:**
             - **TAR.GZ**: Extract and run `./Orca`
-            - **AppImage**: Make executable and run directly
+            - **AppImage**: Make executable (`chmod +x`) and run directly
+            
+            **Changes in this build:**
+            ${{ github.event.head_commit.message }}
             
             **Changes in this build:**
             ${{ github.event.head_commit.message }}
