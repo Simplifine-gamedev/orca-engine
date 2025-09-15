@@ -86,91 +86,19 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
-      - name: Download CodeSignTool
+      - name: Setup CodeSignTool
         shell: powershell
         run: |
-          Write-Host "📥 Downloading SSL.com CodeSignTool v1.3.2..."
+          Write-Host "🔧 Setting up SSL.com CodeSignTool..."
           
-          # Create jar directory
-          New-Item -ItemType Directory -Force -Path "jar"
-          
-          # Try multiple download sources for CodeSignTool v1.3.2
-          $sources = @(
-              @{
-                  Name = "SSL.com Direct Download"
-                  Url = "https://www.ssl.com/download/codesigntool/"
-                  File = "jar\CodeSignTool-v1.3.2.zip"
-              },
-              @{
-                  Name = "GitHub Releases"
-                  Url = "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/CodeSignTool-v1.3.2.zip"
-                  File = "jar\CodeSignTool-v1.3.2.zip"
-              },
-              @{
-                  Name = "GitHub JAR Direct"
-                  Url = "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/code_sign_tool-1.3.2.jar"
-                  File = "jar\code_sign_tool-1.3.2.jar"
-              }
-          )
-          
-          $success = $false
-          
-          foreach ($source in $sources) {
-              Write-Host "Trying: $($source.Name)..."
-              try {
-                  # Add headers to avoid bot detection
-                  $headers = @{
-                      'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                  }
-                  
-                  Invoke-WebRequest -Uri $source.Url -OutFile $source.File -Headers $headers -ErrorAction Stop
-                  Write-Host "SUCCESS: Downloaded from $($source.Name)"
-                  
-                  # If it's a JAR file, we're done
-                  if ($source.File -like "*.jar") {
-                      $success = $true
-                      break
-                  }
-                  
-                  # If it's a ZIP, try to extract it
-                  if (Test-Path $source.File) {
-                      Write-Host "Extracting ZIP file..."
-                      Expand-Archive -Path $source.File -DestinationPath "jar\temp" -Force
-                      
-                      # Find the JAR file
-                      $jarFile = Get-ChildItem -Path "jar\temp" -Recurse -Filter "*.jar" | Select-Object -First 1
-                      
-                      if ($jarFile) {
-                          Copy-Item $jarFile.FullName "jar\code_sign_tool-1.3.2.jar"
-                          Write-Host "SUCCESS: Extracted JAR: $($jarFile.Name)"
-                          $success = $true
-                          
-                          # Cleanup
-                          Remove-Item "jar\temp" -Recurse -Force -ErrorAction SilentlyContinue
-                          Remove-Item $source.File -Force -ErrorAction SilentlyContinue
-                          break
-                      }
-                  }
-                  
-              } catch {
-                  Write-Host "Failed: $($_.Exception.Message)"
-                  continue
-              }
-          }
-          
-          if (-not $success) {
-              Write-Host "ERROR: All download attempts failed"
-              Write-Host "Attempting to create a minimal fallback..."
-              
-              # As a last resort, try wget if available
-              try {
-                  wget "https://github.com/SSLcom/CodeSignTool/releases/download/v1.3.2/code_sign_tool-1.3.2.jar" -O "jar\code_sign_tool-1.3.2.jar"
-                  $success = $true
-                  Write-Host "SUCCESS: Downloaded via wget"
-              } catch {
-                  Write-Host "ERROR: All download methods exhausted"
-                  exit 1
-              }
+          # Check if CodeSignTool JAR already exists in repo
+          if (Test-Path "jar\code_sign_tool-1.3.2.jar") {
+              $fileSize = (Get-Item "jar\code_sign_tool-1.3.2.jar").Length
+              Write-Host "✅ CodeSignTool JAR found in repository - Size: $fileSize bytes"
+          } else {
+              Write-Host "❌ CodeSignTool JAR not found in repository"
+              Write-Host "Expected location: jar\code_sign_tool-1.3.2.jar"
+              exit 1
           }
           
           # Create config file  
@@ -181,7 +109,7 @@ jobs:
           "CSC_API_ENDPOINT=https://cs.ssl.com" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
           "TSA_URL=http://ts.ssl.com" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
           
-          Write-Host "SUCCESS: CodeSignTool setup complete"
+          Write-Host "✅ CodeSignTool setup complete"
           Write-Host "SUCCESS: Config file created"
 
       - name: Verify Code Signing Tools
