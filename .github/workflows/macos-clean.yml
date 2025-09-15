@@ -171,6 +171,30 @@ jobs:
           /usr/bin/codesign --verify --deep --strict "Orca (Mac).dmg"
           echo "✅ DMG signed"
 
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            echo "🍎 Notarizing DMG for macOS 15.6+ compatibility..."
+            xcrun notarytool submit "Orca (Mac).dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "92HMJ7DFHF" \
+              --wait --timeout 30m
+            
+            # Staple the notarization ticket to the DMG
+            xcrun stapler staple "Orca (Mac).dmg"
+            xcrun stapler validate "Orca (Mac).dmg"
+            
+            # Final verification
+            spctl -a -vvv "Orca (Mac).dmg"
+            echo "✅ DMG notarized and stapled - Compatible with macOS 15.6+ Safari"
+          else
+            echo "⚠️  Skipping DMG notarization (credentials not available)"
+          fi
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
