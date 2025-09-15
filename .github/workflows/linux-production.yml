@@ -136,22 +136,22 @@ jobs:
           echo "Platform: Linux x86_64" >> dist/VERSION
           
           # Create simple README
-          cat > dist/README.txt << 'EOF'
-# Orca Engine - Linux Distribution
-
-## Installation:
-1. Extract this archive to your desired location
-2. Make sure the 'Orca' binary is executable: chmod +x Orca
-3. Run: ./Orca
-
-## Requirements:
-- Linux x86_64 (Ubuntu 18.04+ or equivalent)
-- OpenGL 3.3+ support
-- ALSA or PulseAudio for audio
-
-## Support:
-Visit: https://github.com/Simplifine-gamedev/orca-engine
-EOF
+          cat > dist/README.txt << 'READMEEOF'
+          Orca Engine - Linux Distribution
+          
+          Installation:
+          1. Extract this archive to your desired location
+          2. Make sure the 'Orca' binary is executable: chmod +x Orca
+          3. Run: ./Orca
+          
+          Requirements:
+          - Linux x86_64 (Ubuntu 18.04+ or equivalent)
+          - OpenGL 3.3+ support
+          - ALSA or PulseAudio for audio
+          
+          Support:
+          Visit: https://github.com/Simplifine-gamedev/orca-engine
+          READMEEOF
           
           echo "✅ Distribution binary prepared"
 
@@ -190,15 +190,15 @@ EOF
           cp dist/Orca Orca.AppDir/usr/bin/
           
           # Create desktop file
-          cat > Orca.AppDir/usr/share/applications/orca.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=Orca Engine
-Comment=Game Engine
-Exec=Orca
-Icon=orca
-Categories=Development;
-EOF
+          cat > Orca.AppDir/usr/share/applications/orca.desktop << 'DESKTOPEOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Orca Engine
+          Comment=Game Engine
+          Exec=Orca
+          Icon=orca
+          Categories=Development;
+          DESKTOPEOF
           
           # Copy icon if available
           if [ -f "icon.png" ]; then
@@ -206,13 +206,13 @@ EOF
           fi
           
           # Create AppRun
-          cat > Orca.AppDir/AppRun << 'EOF'
-#!/bin/bash
-SELF=$(readlink -f "$0")
-HERE=${SELF%/*}
-export PATH="${HERE}/usr/bin/:${PATH}"
-exec "${HERE}/usr/bin/Orca" "$@"
-EOF
+          cat > Orca.AppDir/AppRun << 'APPRUNEOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin/:${PATH}"
+          exec "${HERE}/usr/bin/Orca" "$@"
+          APPRUNEOF
           chmod +x Orca.AppDir/AppRun
           
           # Create symlinks
