@@ -159,6 +159,12 @@ jobs:
         run: |
           hdiutil create -volname "Orca Engine" -srcfolder "Orca.app" -ov -format UDZO "Orca (Mac).dmg"
           echo "✅ DMG created"
+          
+          # Sign the DMG as well
+          IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
+          /usr/bin/codesign --force --sign "$IDENTITY" "Orca (Mac).dmg"
+          /usr/bin/codesign --verify --deep --strict "Orca (Mac).dmg"
+          echo "✅ DMG signed"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
