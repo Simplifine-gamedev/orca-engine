@@ -14,6 +14,8 @@ env:
   BUNDLE_ID: com.orca.engine
   TEAM_ID: 92HMJ7DFHF
   VERSION_BASE: "0.01"
+  # Use date-based version for consistent releases across platforms
+  RELEASE_VERSION: "0.01.${{ github.run_number }}"
 
 jobs:
   build-sign-notarize:
@@ -211,10 +213,10 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v${{ env.VERSION_BASE }}.${{ github.run_number }}
-          name: Orca Engine v${{ env.VERSION_BASE }}.${{ github.run_number }}
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: Orca Engine v${{ env.RELEASE_VERSION }}
           body: |
-            🚀 **Orca Engine Release v${{ env.VERSION_BASE }}.${{ github.run_number }}**
+            🚀 **Orca Engine Release v${{ env.RELEASE_VERSION }}**
             
             🍎 **Mac**: Automatically built, signed & notarized
             🏁 **Windows**: Automatically built & signed with SSL.com certificate  
