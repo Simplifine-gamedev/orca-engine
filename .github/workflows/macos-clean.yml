@@ -165,6 +165,7 @@ jobs:
       - name: Create DMG
         run: |
           # Create proper DMG structure with Applications shortcut
+          # IMPORTANT: Copy the app AFTER notarization to include the stapled ticket
           mkdir -p dmg-staging
           cp -R "Orca.app" dmg-staging/
           ln -sf /Applications dmg-staging/Applications
