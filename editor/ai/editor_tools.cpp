@@ -7,12 +7,21 @@
 
 // Add core includes early so they're available to helper functions below
 #include "core/crypto/crypto.h"
+#include "core/core_bind.h"
+#include "core/object/message_queue.h"
 #include "core/os/time.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
+#include "core/io/dir_access.h"
+#include "editor/file_system/editor_file_system.h"
+#include "editor/docks/import_dock.h"
+#include "core/io/config_file.h"
+#include "core/object/script_language.h"
+#include "editor/run/game_view_plugin.h"
 #include "core/config/project_settings.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
@@ -21,6 +30,8 @@
 #include "core/io/image.h"
 #include "editor/settings/editor_settings.h"
 #include "core/variant/typed_array.h"
+#include "core/input/input_map.h"
+#include "core/input/input_event.h"
 #include "editor/editor_string_names.h"
 #include "editor/docks/scene_tree_dock.h"
 #include "editor/docks/ai_chat_dock.h"
@@ -152,6 +163,212 @@ Dictionary EditorTools::get_runtime_errors(const Dictionary &p_args) {
     result["errors"] = out;
     result["count"] = out.size();
     return result;
+}
+
+// --- Introspection & Readiness ---
+
+Dictionary EditorTools::resource_info(const Dictionary &p_args) {
+    Dictionary out;
+    String res_path = p_args.get("resource_path", "");
+    if (res_path.is_empty()) {
+        out["ok"] = false;
+        out["error_code"] = "INVALID_ARGUMENT";
+        out["error"] = "resource_path is required";
+        return out;
+    }
+
+    bool exists = ResourceLoader::exists(res_path);
+    out["exists"] = exists;
+    out["loadable"] = false;
+    out["type"] = String();
+    out["import_status"] = String("unknown");
+
+    if (exists) {
+        String rtype = ResourceLoader::get_resource_type(res_path);
+        out["type"] = rtype;
+        Ref<Resource> res = ResourceLoader::load(res_path);
+        out["loadable"] = res.is_valid();
+
+        // Determine import status via EditorFileSystem
+        if (EditorFileSystem::get_singleton()) {
+            int idx = -1;
+            EditorFileSystemDirectory *efd = EditorFileSystem::get_singleton()->find_file(res_path, &idx);
+            if (efd && idx >= 0) {
+                bool valid = efd->get_file_import_is_valid(idx);
+                out["import_status"] = valid ? String("ok") : String("broken");
+            }
+        }
+
+        // If an .import file exists but still loading fails, mark pending
+        if (!bool(out.get("loadable", false))) {
+            String import_sidecar = res_path + ".import";
+            if (FileAccess::exists(import_sidecar)) {
+                out["import_status"] = String("pending");
+            }
+        }
+    }
+
+    out["ok"] = true;
+    return out;
+}
+
+Dictionary EditorTools::script_info(const Dictionary &p_args) {
+    Dictionary out;
+    String script_path = p_args.get("script_path", "");
+    if (script_path.is_empty()) {
+        out["ok"] = false;
+        out["error_code"] = "INVALID_ARGUMENT";
+        out["error"] = "script_path is required";
+        return out;
+    }
+
+    Ref<Resource> res = ResourceLoader::load(script_path);
+    Ref<Script> script = res;
+    if (!script.is_valid()) {
+        out["ok"] = false;
+        out["error_code"] = "NOT_LOADABLE";
+        out["error"] = "Not a valid script or failed to load";
+        return out;
+    }
+
+    out["ok"] = true;
+    out["language"] = script->get_language() ? String(script->get_language()->get_name()) : String();
+    out["class_name"] = script->get_global_name();
+    out["base_class"] = script->get_base_script().is_valid() ? String(script->get_base_script()->get_class()) : String();
+
+    // Exported variables
+    Array exports;
+    List<PropertyInfo> props;
+    script->get_script_property_list(&props);
+    for (const PropertyInfo &pi : props) {
+        if (pi.usage & PROPERTY_USAGE_SCRIPT_VARIABLE) {
+            Dictionary e;
+            e["name"] = String(pi.name);
+            e["type"] = (int)pi.type;
+            exports.push_back(e);
+        }
+    }
+    out["exports"] = exports;
+
+    // Signals
+    Array signals;
+    List<MethodInfo> sigs;
+    script->get_script_signal_list(&sigs);
+    for (const MethodInfo &mi : sigs) {
+        signals.push_back(String(mi.name));
+    }
+    out["signals"] = signals;
+    return out;
+}
+
+// --- Import control ---
+
+Dictionary EditorTools::set_import_preset(const Dictionary &p_args) {
+    Dictionary out;
+    String res_path = p_args.get("resource_path", "");
+    Dictionary options = p_args.get("options", Dictionary());
+    if (res_path.is_empty()) {
+        out["ok"] = false;
+        out["error_code"] = "INVALID_ARGUMENT";
+        out["error"] = "resource_path is required";
+        return out;
+    }
+
+    Ref<ConfigFile> cfg;
+    cfg.instantiate();
+    Error e = cfg->load(res_path + ".import");
+    if (e != OK) {
+        out["ok"] = false;
+        out["error_code"] = "NOT_FOUND";
+        out["error"] = "No .import sidecar for resource";
+        return out;
+    }
+
+    // Write options into the remap/importer group if present; fall back to global root
+    String section = cfg->has_section("remap") ? String("remap") : String();
+    for (const Variant *k = options.next(); k; k = options.next(k)) {
+        if (section.is_empty()) {
+            cfg->set_value("", *k, options[*k]);
+        } else {
+            cfg->set_value(section, *k, options[*k]);
+        }
+    }
+    cfg->save(res_path + ".import");
+    out["ok"] = true;
+    return out;
+}
+
+Dictionary EditorTools::reimport_resource(const Dictionary &p_args) {
+    Dictionary out;
+    String res_path = p_args.get("resource_path", "");
+    int timeout_ms = (int)p_args.get("timeout_ms", 10000);
+    if (res_path.is_empty()) {
+        out["ok"] = false;
+        out["error_code"] = "INVALID_ARGUMENT";
+        out["error"] = "resource_path is required";
+        return out;
+    }
+
+    if (!EditorFileSystem::get_singleton()) {
+        out["ok"] = false;
+        out["error_code"] = "UNAVAILABLE";
+        out["error"] = "EditorFileSystem not available";
+        return out;
+    }
+
+    Vector<String> to_reimport;
+    to_reimport.push_back(res_path);
+    EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+
+    // Optionally wait
+    uint64_t start = OS::get_singleton()->get_ticks_msec();
+    while (EditorFileSystem::get_singleton()->is_importing()) {
+        OS::get_singleton()->delay_usec(1000 * 50); // 50ms
+        if ((int)(OS::get_singleton()->get_ticks_msec() - start) > timeout_ms) {
+            out["ok"] = false;
+            out["error_code"] = "IMPORT_TIMEOUT";
+            out["error"] = "Timed out waiting for reimport";
+            return out;
+        }
+    }
+
+    out["ok"] = true;
+    return out;
+}
+
+Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
+    Dictionary out;
+    String res_path = p_args.get("resource_path", "");
+    int timeout_ms = (int)p_args.get("timeout_ms", 10000);
+    int poll_ms = (int)p_args.get("poll_ms", 100);
+    if (res_path.is_empty()) {
+        out["ok"] = false;
+        out["error_code"] = "INVALID_ARGUMENT";
+        out["error"] = "resource_path is required";
+        return out;
+    }
+
+    uint64_t start = OS::get_singleton()->get_ticks_msec();
+    String status = "unknown";
+    while (true) {
+        Dictionary info;
+        info["resource_path"] = res_path;
+        Dictionary ri = resource_info(info);
+        status = String(ri.get("import_status", "unknown"));
+        if (status == "ok") {
+            out["ok"] = true;
+            out["status"] = status;
+            return out;
+        }
+        if ((int)(OS::get_singleton()->get_ticks_msec() - start) > timeout_ms) {
+            out["ok"] = false;
+            out["error_code"] = "IMPORT_TIMEOUT";
+            out["error"] = "Timed out waiting for import";
+            out["status"] = status;
+            return out;
+        }
+        OS::get_singleton()->delay_usec(1000 * poll_ms);
+    }
 }
 
 Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
@@ -342,6 +559,10 @@ EditorTools *EditorTools::tracer_instance = nullptr;
 Dictionary EditorTools::trace_registry;
 Dictionary EditorTools::property_watch_registry;
 
+// Static members for screenshot management
+Vector<int> EditorTools::_pending_screenshot_requests;
+Vector<Dictionary> EditorTools::_current_screenshot_results;
+
 EditorTools *EditorTools::ensure_tracer() {
     if (!tracer_instance) {
         tracer_instance = memnew(EditorTools);
@@ -524,6 +745,113 @@ Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error
 	return node;
 }
 
+Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
+	Dictionary result;
+	String operation = p_args.get("operation", "structure");
+	
+	if (operation == "structure") {
+		// Get overall project structure
+		Dictionary structure;
+		structure["project_name"] = ProjectSettings::get_singleton()->get_setting("application/config/name");
+		
+		// Get all scenes in project
+		Array scenes;
+		List<String> scene_files;
+		_get_all_project_files("res://", scene_files, HashSet<String>({ String("tscn"), String("scn") }));
+		for (const String &scene_path : scene_files) {
+			Dictionary scene_info;
+			scene_info["path"] = scene_path;
+			scene_info["name"] = scene_path.get_file().get_basename();
+			scene_info["folder"] = scene_path.get_base_dir();
+			scenes.append(scene_info);
+		}
+		structure["scenes"] = scenes;
+		
+		// Get all scripts
+		Array scripts;
+		List<String> script_files;
+		_get_all_project_files("res://", script_files, HashSet<String>({ "gd", "cs" }));
+		for (const String &script_path : script_files) {
+			Dictionary script_info;
+			script_info["path"] = script_path;
+			script_info["name"] = script_path.get_file().get_basename();
+			script_info["folder"] = script_path.get_base_dir();
+			scripts.append(script_info);
+		}
+		structure["scripts"] = scripts;
+		
+		// Get autoloads
+		Array autoloads;
+		List<PropertyInfo> props;
+		ProjectSettings::get_singleton()->get_property_list(&props);
+		for (const PropertyInfo &E : props) {
+			if (!E.name.begins_with("autoload/")) {
+				continue;
+			}
+			String name = E.name.get_slice("/", 1);
+			String path = ProjectSettings::get_singleton()->get_setting(E.name);
+			if (path.begins_with("*")) {
+				path = path.substr(1, path.length());
+			}
+			Dictionary autoload;
+			autoload["name"] = name;
+			autoload["path"] = path;
+			autoloads.append(autoload);
+		}
+		structure["autoloads"] = autoloads;
+		
+		// Get input map actions
+		Dictionary input_map;
+		props.clear();
+		ProjectSettings::get_singleton()->get_property_list(&props);
+		for (const PropertyInfo &E : props) {
+			if (!E.name.begins_with("input/")) {
+				continue;
+			}
+			String action_name = E.name.get_slice("/", 1);
+			input_map[action_name] = true;
+		}
+		structure["input_map"] = input_map;
+		
+		// Statistics
+		Dictionary stats;
+		stats["total_scenes"] = scenes.size();
+		stats["total_scripts"] = scripts.size();
+		structure["statistics"] = stats;
+		
+		result["success"] = true;
+		result["context"] = structure;
+		
+	} else if (operation == "find_scenes") {
+		// Find existing scenes matching pattern
+		String pattern = String(p_args.get("pattern", "")).to_lower();
+		Array matching_scenes;
+		
+		List<String> scene_files;
+		_get_all_project_files("res://", scene_files, HashSet<String>({ "tscn", "scn" }));
+		
+		for (const String &scene_path : scene_files) {
+			String scene_name = String(scene_path.get_file().get_basename()).to_lower();
+			if (pattern.is_empty() || scene_name.contains(pattern)) {
+				Dictionary match;
+				match["name"] = scene_path.get_file().get_basename();
+				match["path"] = scene_path;
+				match["exact_match"] = (scene_name == pattern);
+				matching_scenes.append(match);
+			}
+		}
+		
+		result["success"] = true;
+		result["existing_scenes"] = matching_scenes;
+		
+	} else {
+		result["success"] = false;
+		result["error"] = "Unknown operation: " + operation;
+	}
+	
+	return result;
+}
+
 Dictionary EditorTools::get_scene_info(const Dictionary &p_args) {
 	Dictionary result;
 	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
@@ -630,15 +958,84 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 	List<PropertyInfo> properties;
 	node->get_property_list(&properties);
 
-	Dictionary props_dict;
+	Dictionary props_dict; // name -> value
+	Array props_info; // [{name,type,hint,hint_string,class_name,usage}]
 	for (const PropertyInfo &prop_info : properties) {
+		// Collect property metadata for introspection
+		Dictionary pi;
+		pi["name"] = String(prop_info.name);
+		pi["type"] = (int)prop_info.type;
+		pi["hint"] = (int)prop_info.hint;
+		pi["hint_string"] = String(prop_info.hint_string);
+#ifdef TOOLS_ENABLED
+		pi["class_name"] = String(prop_info.class_name);
+#endif
+		pi["usage"] = (int)prop_info.usage;
+		props_info.push_back(pi);
+		// Include values for editor-visible props
 		if (prop_info.usage & PROPERTY_USAGE_EDITOR) {
 			props_dict[prop_info.name] = node->get(prop_info.name);
 		}
 	}
 
+	// Optionally include script-defined properties (exported vars) from attached script
+	bool include_script_props = p_args.get("include_script_properties", true);
+	if (include_script_props) {
+		Variant sv = node->get("script");
+		Ref<Script> script = sv;
+		if (script.is_valid()) {
+			// Get script properties from the script instance
+			List<PropertyInfo> sprops;
+			script->get_script_property_list(&sprops);
+			for (const PropertyInfo &pi : sprops) {
+				StringName pn = pi.name;
+				if (!props_dict.has(pn) && (pi.usage & PROPERTY_USAGE_SCRIPT_VARIABLE)) {
+					// Try to get the value; some @export vars may not be accessible until script is properly initialized
+					Variant val = node->get(pn);
+					props_dict[pn] = val;
+				}
+			}
+			
+			// Also try getting script method list to show available methods
+			List<MethodInfo> methods;
+			script->get_script_method_list(&methods);
+			Array method_names;
+			for (const MethodInfo &mi : methods) {
+				method_names.push_back(String(mi.name));
+			}
+			if (!method_names.is_empty()) {
+				props_dict["_script_methods"] = method_names;
+			}
+			
+			// Include script class name if it's a global class
+			String script_path = script->get_path();
+			if (!script_path.is_empty()) {
+				List<StringName> global_classes;
+				ScriptServer::get_global_class_list(&global_classes);
+				for (const StringName &class_name : global_classes) {
+					if (ScriptServer::get_global_class_path(class_name) == script_path) {
+						props_dict["_script_class_name"] = String(class_name);
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	// Collect signals available on this node (native + script)
+	List<MethodInfo> signal_list;
+	node->get_signal_list(&signal_list);
+	Array signals;
+	for (const MethodInfo &si : signal_list) {
+		signals.push_back(String(si.name));
+	}
+
 	result["success"] = true;
-	result["properties"] = props_dict;
+	result["ok"] = true;
+	result["class"] = String(node->get_class());
+	result["property_values"] = props_dict;
+	result["property_info"] = props_info;
+	result["signals"] = signals;
 	return result;
 }
 
@@ -653,6 +1050,7 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 	String type = p_args["type"];
 	String name = p_args["name"];
 	Node *parent = nullptr;
+    bool unique = p_args.get("unique", false);
 
 	if (p_args.has("parent")) {
 		parent = _get_node_from_path(p_args["parent"], result);
@@ -671,6 +1069,19 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 			result["success"] = false;
 			result["message"] = "No scene is currently being edited to add a root node.";
 			return result;
+		}
+	}
+
+	// If unique requested, return existing child if found.
+	if (parent && unique) {
+		for (int i = 0; i < parent->get_child_count(); i++) {
+			Node *c = parent->get_child(i);
+			if (c && String(c->get_name()) == name) {
+				result["success"] = true;
+				result["node_path"] = c->is_inside_tree() ? c->get_path() : NodePath();
+				result["message"] = "Existing node returned (unique=true).";
+				return result;
+			}
 		}
 	}
 
@@ -766,6 +1177,865 @@ Dictionary EditorTools::delete_node(const Dictionary &p_args) {
 	result["message"] = "Node '" + node_name + "' queued for deletion.";
 	result["deleted_path"] = node_path;
 	return result;
+}
+
+// DISABLED: This tool causes crashes due to complex ownership issues
+Dictionary EditorTools::change_node_type(const Dictionary &p_args) {
+    Dictionary result;
+    result["success"] = false;
+    result["message"] = "change_node_type is disabled due to stability issues. Use set_node_type with script_path instead, or create_node + delete_node for safer node replacement.";
+    return result;
+}
+
+// Create a Resource by type and optional properties; optionally save to disk.
+Dictionary EditorTools::create_resource(const Dictionary &p_args) {
+    Dictionary result;
+    if (!p_args.has("type")) { result["success"] = false; result["message"] = "Missing 'type'"; return result; }
+    String type = p_args["type"];
+    if (!ClassDB::can_instantiate(type) || !ClassDB::is_parent_class(type, "Resource")) {
+        result["success"] = false; result["message"] = "Invalid resource type: " + type; return result;
+    }
+    Object *obj = ClassDB::instantiate(type);
+    Resource *res = Object::cast_to<Resource>(obj);
+    if (!res) { if (obj) memdelete(obj); result["success"] = false; result["message"] = "Failed to instantiate resource"; return result; }
+
+    // Apply properties (enhanced for Curve)
+    Dictionary props = p_args.get("properties", Dictionary());
+    if (!props.is_empty()) {
+        for (const Variant *k = props.next(); k; k = props.next(k)) {
+            StringName key = *k;
+            Variant value = props[*k];
+            
+            // Special handling for Curve points
+            if (type == "Curve" && key == StringName("points")) {
+                Curve *curve = Object::cast_to<Curve>(res);
+                if (curve && value.get_type() == Variant::ARRAY) {
+                    Array points = value;
+                    curve->clear_points();
+                    for (int i = 0; i < points.size(); i++) {
+                        Dictionary point = points[i];
+                        if (point.has("x") && point.has("y")) {
+                            float x = point.get("x", 0.0f);
+                            float y = point.get("y", 0.0f);
+                            float left_tangent = point.get("left_tangent", 0.0f);
+                            float right_tangent = point.get("right_tangent", 0.0f);
+                            curve->add_point(Vector2(x, y), left_tangent, right_tangent);
+                        }
+                    }
+                    continue; // Skip normal property setting
+                }
+            }
+            
+            // Normal property setting
+            res->set(key, value);
+        }
+    }
+
+    String save_path = p_args.get("save_path", String());
+    if (!save_path.is_empty()) {
+        Ref<Resource> res_ref = Ref<Resource>(res);
+        Error e = ResourceSaver::save(res_ref, save_path);
+        if (e != OK) {
+            result["success"] = false; result["message"] = "Failed to save resource to " + save_path; return result;
+        }
+        result["path"] = save_path;
+    }
+
+    // Provide a lightweight handle back; we cannot send raw pointer, so return a temp path-less id
+    result["success"] = true;
+    result["resource_type"] = type;
+    result["rid"] = (int64_t)res; // For same-process subsequent calls; not persisted
+    return result;
+}
+
+// Assign a resource to a node property. Resource can be provided by path, by RID (from create_resource), or by inline spec.
+Dictionary EditorTools::assign_resource_to_node_property(const Dictionary &p_args) {
+    Dictionary result;
+    if (!p_args.has("path") || !p_args.has("property") || !p_args.has("resource")) {
+        result["success"] = false; result["message"] = "Missing 'path', 'property', or 'resource'"; return result;
+    }
+    Dictionary err; Node *node = _get_node_from_path(p_args["path"], err); if (!node) return err;
+    StringName prop = p_args["property"];
+    Variant res_spec = p_args["resource"];
+    Ref<Resource> res;
+    if (res_spec.get_type() == Variant::DICTIONARY) {
+        Dictionary d = res_spec;
+        if (d.has("path")) {
+            res = ResourceLoader::load(d["path"]);
+        } else if (d.has("rid")) {
+            // Unsafe across sessions; only works within current editor session
+            int64_t rid = (int64_t)d["rid"];
+            Resource *raw = (Resource*)rid;
+            if (Object::cast_to<Resource>(raw)) {
+                res = Ref<Resource>(raw);
+            }
+        } else if (d.has("type")) {
+            // Inline creation
+            Dictionary create_args; create_args["type"] = d["type"]; create_args["properties"] = d.get("properties", Dictionary());
+            Dictionary cr = create_resource(create_args);
+            if (cr.get("success", false)) {
+                int64_t rid = (int64_t)cr.get("rid", (int64_t)0);
+                Resource *raw = (Resource*)rid;
+                if (Object::cast_to<Resource>(raw)) res = Ref<Resource>(raw);
+            }
+        }
+    } else if (res_spec.get_type() == Variant::STRING) {
+        res = ResourceLoader::load((String)res_spec);
+    }
+    if (res.is_null()) { result["success"] = false; result["message"] = "Could not resolve resource"; return result; }
+    node->set(prop, res);
+    Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+    if (root && node->get_owner() == root) {
+        // Mark scene dirty by touching owner; editor will handle actual save
+        // No-op here; Godot tracks property changes automatically
+    }
+    result["success"] = true; result["message"] = "Resource assigned"; return result;
+}
+
+// Create a new scene with a specific root type and optionally attach current root under it.
+Dictionary EditorTools::create_new_scene_with_root(const Dictionary &p_args) {
+    Dictionary result;
+    if (!p_args.has("new_root_type") || !p_args.has("new_scene_path")) {
+        result["success"] = false; result["message"] = "Missing 'new_root_type' or 'new_scene_path'"; return result;
+    }
+    String root_type = p_args["new_root_type"];
+    String scene_path = p_args["new_scene_path"];
+    bool include_current_as_child = p_args.get("include_current_as_child", false);
+    if (!ClassDB::can_instantiate(root_type) || !ClassDB::is_parent_class(root_type, "Node")) {
+        result["success"] = false; result["message"] = "Invalid root type: " + root_type; return result;
+    }
+    Object *obj = ClassDB::instantiate(root_type);
+    Node *new_root = Object::cast_to<Node>(obj);
+    if (!new_root) { if (obj) memdelete(obj); result["success"] = false; result["message"] = "Failed to instantiate root"; return result; }
+    new_root->set_name("Root");
+
+    Node *current_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+    if (include_current_as_child && current_root) {
+        // Instance the current scene under the new root as a child
+        new_root->add_child(current_root);
+        current_root->set_owner(new_root);
+    }
+
+    // Set as edited scene root and save
+    EditorNode::get_singleton()->set_edited_scene_root(new_root, true);
+    EditorInterface::get_singleton()->save_scene_as(scene_path);
+    result["success"] = true; result["scene_path"] = scene_path; result["message"] = "New scene created and save requested"; return result;
+}
+
+// --- File system and project structure tools ---
+
+static bool _is_within_project(const String &p_path) {
+    String proj = ProjectSettings::get_singleton()->get_resource_path();
+    String abs = p_path;
+    if (p_path.begins_with("res://")) {
+        abs = ProjectSettings::get_singleton()->globalize_path(p_path);
+    }
+    return abs.begins_with(proj);
+}
+
+Dictionary EditorTools::create_directory(const Dictionary &p_args) {
+    Dictionary result;
+    String path = p_args.get("path", "");
+    if (path.is_empty()) { result["success"] = false; result["message"] = "path required"; return result; }
+    if (!_is_within_project(path)) { result["success"] = false; result["message"] = "Path must be within project"; return result; }
+    Error e = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path));
+    if (e != OK) { result["success"] = false; result["message"] = "Failed to create directory"; return result; }
+    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    result["success"] = true; return result;
+}
+
+Dictionary EditorTools::copy_file(const Dictionary &p_args) {
+    Dictionary result; String src = p_args.get("source", ""); String dst = p_args.get("destination", ""); bool overwrite = p_args.get("overwrite", false);
+    if (src.is_empty() || dst.is_empty()) { result["success"] = false; result["message"] = "source and destination required"; return result; }
+    if (!_is_within_project(src) || !_is_within_project(dst)) { result["success"] = false; result["message"] = "Paths must be within project"; return result; }
+    String abs_src = ProjectSettings::get_singleton()->globalize_path(src);
+    String abs_dst = ProjectSettings::get_singleton()->globalize_path(dst);
+    if (!overwrite && FileAccess::exists(abs_dst)) { result["success"] = false; result["message"] = "Destination exists"; return result; }
+    Error e = DirAccess::copy_absolute(abs_src, abs_dst);
+    if (e != OK) { result["success"] = false; result["message"] = "Copy failed"; return result; }
+    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    result["success"] = true; return result;
+}
+
+Dictionary EditorTools::move_file(const Dictionary &p_args) {
+    Dictionary result; String src = p_args.get("source", ""); String dst = p_args.get("destination", ""); bool overwrite = p_args.get("overwrite", false);
+    if (src.is_empty() || dst.is_empty()) { result["success"] = false; result["message"] = "source and destination required"; return result; }
+    if (!_is_within_project(src) || !_is_within_project(dst)) { result["success"] = false; result["message"] = "Paths must be within project"; return result; }
+    String abs_src = ProjectSettings::get_singleton()->globalize_path(src);
+    String abs_dst = ProjectSettings::get_singleton()->globalize_path(dst);
+    if (!overwrite && FileAccess::exists(abs_dst)) { result["success"] = false; result["message"] = "Destination exists"; return result; }
+    Error e = DirAccess::rename_absolute(abs_src, abs_dst);
+    if (e != OK) { result["success"] = false; result["message"] = "Move failed"; return result; }
+    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    result["success"] = true; return result;
+}
+
+Dictionary EditorTools::delete_file(const Dictionary &p_args) {
+    Dictionary result; String path = p_args.get("path", ""); if (path.is_empty()) { result["success"] = false; result["message"] = "path required"; return result; }
+    if (!_is_within_project(path)) { result["success"] = false; result["message"] = "Path must be within project"; return result; }
+    String abs = ProjectSettings::get_singleton()->globalize_path(path);
+    Error e = DirAccess::remove_absolute(abs);
+    if (e != OK) { result["success"] = false; result["message"] = "Delete failed"; return result; }
+    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    result["success"] = true; return result;
+}
+
+Dictionary EditorTools::create_symlink(const Dictionary &p_args) {
+    Dictionary result; String target = p_args.get("target", ""); String link_path = p_args.get("link_path", "");
+    if (target.is_empty() || link_path.is_empty()) { result["success"] = false; result["message"] = "target and link_path required"; return result; }
+    if (!_is_within_project(target) || !_is_within_project(link_path)) { result["success"] = false; result["message"] = "Paths must be within project"; return result; }
+    Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+    Error e = da->create_link(ProjectSettings::get_singleton()->globalize_path(link_path), ProjectSettings::get_singleton()->globalize_path(target));
+    if (e != OK) { result["success"] = false; result["message"] = "Symlink creation failed"; return result; }
+    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    result["success"] = true; return result;
+}
+
+Dictionary EditorTools::refresh_filesystem(const Dictionary &p_args) {
+    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    Dictionary result; result["success"] = true; return result;
+}
+
+void EditorTools::_on_game_screenshot_ready(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
+    // This callback is triggered when GameView captures a screenshot
+    // The screenshot is automatically attached to AI Chat by GameView::_on_snapshot_ready
+    print_line("AI Chat: Game screenshot ready - " + String::num_int64(p_w) + "x" + String::num_int64(p_h) + " saved to: " + p_path);
+}
+
+void EditorTools::_on_game_screenshot_ready_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
+    // This callback processes screenshot data for the AI tool system
+    print_line("AI Chat: Tool screenshot ready - " + String::num_int64(p_w) + "x" + String::num_int64(p_h) + " at: " + p_path);
+    
+    if (p_path.is_empty()) {
+        print_line("AI Chat: Screenshot path is empty, cannot process");
+        return;
+    }
+    
+    // Load the screenshot file and convert to base64 for AI processing
+    Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
+    if (file.is_null()) {
+        print_line("AI Chat: Cannot open screenshot file: " + p_path);
+        return;
+    }
+    
+    PackedByteArray data = file->get_buffer(file->get_length());
+    file->close();
+    
+    if (data.is_empty()) {
+        print_line("AI Chat: Screenshot file is empty: " + p_path);
+        return;
+    }
+    
+    // Load and potentially downscale the image to prevent token explosions
+    Ref<Image> image = memnew(Image);
+    Error load_err = image->load(p_path);
+    if (load_err != OK) {
+        print_line("AI Chat: Failed to load screenshot image: " + p_path);
+        return;
+    }
+    
+    Vector2i original_size = Vector2i(image->get_width(), image->get_height());
+    Vector2i final_size = original_size;
+    bool was_downsampled = false;
+    
+    // Downscale if too large - aim for reasonable size to prevent token explosion
+    const int MAX_DIMENSION = 800; // Keep images under 800px on any side
+    const int MAX_PIXELS = 400000; // Keep total pixels reasonable (~640x625)
+    
+    int total_pixels = original_size.x * original_size.y;
+    if (original_size.x > MAX_DIMENSION || original_size.y > MAX_DIMENSION || total_pixels > MAX_PIXELS) {
+        float scale_x = (float)MAX_DIMENSION / original_size.x;
+        float scale_y = (float)MAX_DIMENSION / original_size.y; 
+        float pixel_scale = sqrt((float)MAX_PIXELS / total_pixels);
+        
+        float scale = MIN(MIN(scale_x, scale_y), pixel_scale);
+        if (scale < 1.0f) {
+            final_size.x = (int)(original_size.x * scale);
+            final_size.y = (int)(original_size.y * scale);
+            
+            image->resize(final_size.x, final_size.y, Image::INTERPOLATE_LANCZOS);
+            was_downsampled = true;
+            
+            print_line(vformat("AI Chat: Screenshot downscaled from %dx%d to %dx%d (scale: %.2f)", 
+                              original_size.x, original_size.y, final_size.x, final_size.y, scale));
+        }
+    }
+    
+    // Convert to PNG bytes for consistent base64 encoding
+    PackedByteArray png_data = image->save_png_to_buffer();
+    String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_data);
+    
+    // Store the screenshot result for later retrieval
+    Dictionary screenshot_result;
+    screenshot_result["source"] = "game";
+    screenshot_result["width"] = final_size.x;
+    screenshot_result["height"] = final_size.y; 
+    screenshot_result["size"] = final_size;
+    screenshot_result["original_size"] = original_size;
+    screenshot_result["was_downsampled"] = was_downsampled;
+    screenshot_result["path"] = p_path;
+    screenshot_result["base64"] = base64_data;
+    screenshot_result["success"] = true;
+    screenshot_result["timestamp"] = Time::get_singleton()->get_ticks_msec();
+    
+    _current_screenshot_results.push_back(screenshot_result);
+    
+    print_line("AI Chat: Screenshot processed successfully, final base64 length: " + String::num_int64(base64_data.length()));
+    
+    // Store the screenshot for tool result attachment instead of chat input
+    print_line("AI Chat: Screenshot processed and stored for tool result attachment");
+}
+
+// === UNIVERSAL SMART TOOLS ===
+
+Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
+    Dictionary result;
+    String operation = p_args.get("operation", "");
+    if (operation.is_empty()) { result["success"] = false; result["message"] = "Missing operation"; return result; }
+    
+    if (operation == "create") {
+        return create_resource(p_args);
+    } else if (operation == "assign") {
+        return assign_resource_to_node_property(p_args);
+    } else if (operation == "inspect") {
+        String target = p_args.get("target", "");
+        if (target.is_empty()) { result["success"] = false; result["message"] = "Missing target"; return result; }
+        Ref<Resource> res = ResourceLoader::load(target);
+        if (!res.is_valid()) { result["success"] = false; result["message"] = "Resource not found"; return result; }
+        
+        Dictionary props;
+        List<PropertyInfo> plist;
+        res->get_property_list(&plist);
+        for (const PropertyInfo &pi : plist) {
+            if (pi.usage & PROPERTY_USAGE_EDITOR) {
+                props[pi.name] = res->get(pi.name);
+            }
+        }
+        
+        // Special handling for Curve
+        if (res->get_class() == "Curve") {
+            Curve *curve = Object::cast_to<Curve>(res.ptr());
+            if (curve) {
+                Array points_data;
+                for (int i = 0; i < curve->get_point_count(); i++) {
+                    Dictionary pt;
+                    Vector2 pos = curve->get_point_position(i);
+                    pt["x"] = pos.x;
+                    pt["y"] = pos.y;
+                    pt["left_tangent"] = curve->get_point_left_tangent(i);
+                    pt["right_tangent"] = curve->get_point_right_tangent(i);
+                    points_data.push_back(pt);
+                }
+                props["curve_points"] = points_data;
+            }
+        }
+        
+        result["success"] = true;
+        result["resource_type"] = res->get_class();
+        result["properties"] = props;
+        return result;
+    } else if (operation == "modify") {
+        String target = p_args.get("target", "");
+        Dictionary properties = p_args.get("properties", Dictionary());
+        if (target.is_empty()) { result["success"] = false; result["message"] = "Missing target"; return result; }
+        
+        Ref<Resource> res = ResourceLoader::load(target);
+        if (!res.is_valid()) { result["success"] = false; result["message"] = "Resource not found"; return result; }
+        
+        // Apply properties with type-aware handling
+        for (const Variant *k = properties.next(); k; k = properties.next(k)) {
+            StringName key = *k;
+            Variant value = properties[*k];
+            
+            // Special handling for Curve points
+            if (res->get_class() == "Curve" && key == StringName("points")) {
+                Curve *curve = Object::cast_to<Curve>(res.ptr());
+                if (curve && value.get_type() == Variant::ARRAY) {
+                    Array points = value;
+                    curve->clear_points();
+                    for (int i = 0; i < points.size(); i++) {
+                        Dictionary point = points[i];
+                        if (point.has("x") && point.has("y")) {
+                            float x = point.get("x", 0.0f);
+                            float y = point.get("y", 0.0f);
+                            float left_tangent = point.get("left_tangent", 0.0f);
+                            float right_tangent = point.get("right_tangent", 0.0f);
+                            curve->add_point(Vector2(x, y), left_tangent, right_tangent);
+                        }
+                    }
+                    continue;
+                }
+            }
+            res->set(key, value);
+        }
+        
+        Error e = ResourceSaver::save(res, target);
+        if (e != OK) { result["success"] = false; result["message"] = "Failed to save modified resource"; return result; }
+        result["success"] = true; result["message"] = "Resource modified"; return result;
+    } else if (operation == "copy_from_template") {
+        String source_template = p_args.get("source_template", "");
+        String target = p_args.get("target", "");
+        if (source_template.is_empty() || target.is_empty()) { result["success"] = false; result["message"] = "Missing source_template or target"; return result; }
+        
+        Ref<Resource> template_res = ResourceLoader::load(source_template);
+        if (!template_res.is_valid()) { result["success"] = false; result["message"] = "Template resource not found"; return result; }
+        
+        Ref<Resource> new_res = template_res->duplicate();
+        Error e = ResourceSaver::save(new_res, target);
+        if (e != OK) { result["success"] = false; result["message"] = "Failed to save copied resource"; return result; }
+        result["success"] = true; result["message"] = "Resource copied from template"; return result;
+    }
+    
+    result["success"] = false; result["message"] = "Unknown operation: " + operation; return result;
+}
+
+Dictionary EditorTools::universal_scene_manager(const Dictionary &p_args) {
+    Dictionary result;
+    String operation = p_args.get("operation", "");
+    if (operation.is_empty()) { result["success"] = false; result["message"] = "Missing operation"; return result; }
+    
+    if (operation == "analyze") {
+        Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+        if (!root) { result["success"] = false; result["message"] = "No scene"; return result; }
+        
+        Dictionary analysis;
+        analysis["root_type"] = root->get_class();
+        analysis["root_name"] = root->get_name();
+        analysis["total_nodes"] = 0;
+        
+        Dictionary type_counts;
+        std::function<void(Node*)> count_nodes = [&](Node *n) {
+            if (!n) return;
+            analysis["total_nodes"] = (int)analysis["total_nodes"] + 1;
+            String type = n->get_class();
+            type_counts[type] = (int)type_counts.get(type, 0) + 1;
+            for (int i = 0; i < n->get_child_count(); i++) {
+                count_nodes(n->get_child(i));
+            }
+        };
+        count_nodes(root);
+        
+        analysis["type_distribution"] = type_counts;
+        result["success"] = true; result["analysis"] = analysis; return result;
+    } else if (operation == "bulk_configure") {
+        Array targets = p_args.get("targets", Array());
+        Dictionary transformations = p_args.get("transformations", Dictionary());
+        // bool validation = p_args.get("validation", true); // Unused for now
+        
+        Array successes, failures;
+        for (int i = 0; i < targets.size(); i++) {
+            String path = targets[i];
+            Dictionary err;
+            Node *node = _get_node_from_path(path, err);
+            if (!node) {
+                failures.push_back(Dictionary{{"path", path}, {"error", err.get("message", "Node not found")}});
+                continue;
+            }
+            
+            bool success = true;
+            for (const Variant *k = transformations.next(); k; k = transformations.next(k)) {
+                StringName prop = *k;
+                Variant val = transformations[*k];
+                // Use error checking instead of exceptions (Godot doesn't use exceptions)
+                bool prop_exists = false;
+                List<PropertyInfo> check_props;
+                node->get_property_list(&check_props);
+                for (const PropertyInfo &pi : check_props) {
+                    if (pi.name == prop) {
+                        prop_exists = true;
+                        break;
+                    }
+                }
+                if (prop_exists) {
+                    node->set(prop, val);
+                } else {
+                    success = false;
+                    break;
+                }
+            }
+            
+            if (success) {
+                successes.push_back(path);
+            } else {
+                failures.push_back(Dictionary{{"path", path}, {"error", "Property assignment failed"}});
+            }
+        }
+        
+        result["success"] = failures.is_empty();
+        result["successes"] = successes;
+        result["failures"] = failures;
+        result["message"] = String::num_int64(successes.size()) + " succeeded, " + String::num_int64(failures.size()) + " failed";
+        return result;
+    } else if (operation == "copy_configuration") {
+        String source = p_args.get("source", "");
+        Array targets = p_args.get("targets", Array());
+        if (source.is_empty() || targets.is_empty()) { result["success"] = false; result["message"] = "Missing source or targets"; return result; }
+        
+        Dictionary err;
+        Node *source_node = _get_node_from_path(source, err);
+        if (!source_node) return err;
+        
+        // Extract source configuration
+        List<PropertyInfo> props;
+        source_node->get_property_list(&props);
+        Dictionary config;
+        for (const PropertyInfo &pi : props) {
+            if (pi.usage & PROPERTY_USAGE_EDITOR && !String(pi.name).begins_with("_")) {
+                config[pi.name] = source_node->get(pi.name);
+            }
+        }
+        
+        // Apply to targets
+        Array applied;
+        for (int i = 0; i < targets.size(); i++) {
+            String target_path = targets[i];
+            Node *target_node = _get_node_from_path(target_path, err);
+            if (target_node) {
+                for (const Variant *k = config.next(); k; k = config.next(k)) {
+                    target_node->set(*k, config[*k]);
+                }
+                applied.push_back(target_path);
+            }
+        }
+        
+        result["success"] = true;
+        result["applied_to"] = applied;
+        result["copied_properties"] = config.keys();
+        return result;
+    }
+    
+    result["success"] = false; result["message"] = "Unknown operation: " + operation; return result;
+}
+
+Dictionary EditorTools::universal_project_manager(const Dictionary &p_args) {
+    Dictionary result;
+    String operation = p_args.get("operation", "");
+    if (operation.is_empty()) { result["success"] = false; result["message"] = "Missing operation"; return result; }
+    
+    if (operation == "analyze_directory") {
+        String target_path = p_args.get("target_path", "");
+        if (target_path.is_empty()) { result["success"] = false; result["message"] = "Missing target_path"; return result; }
+        
+        Dictionary analysis;
+        analysis["target_path"] = target_path;
+        
+        // Analyze directory structure
+        Dictionary file_types;
+        Array scripts_with_classes, config_files, scene_files, resource_files;
+        
+        std::function<void(const String&)> scan_recursive = [&](const String &dir_path) {
+            Ref<DirAccess> da = DirAccess::open(dir_path);
+            if (!da.is_valid()) return;
+            
+            da->list_dir_begin();
+            String item = da->get_next();
+            while (!item.is_empty()) {
+                if (item != "." && item != "..") {
+                    String full_path = dir_path + "/" + item;
+                    
+                    if (da->current_is_dir()) {
+                        scan_recursive(full_path);
+                    } else {
+                        String ext = item.get_extension().to_lower();
+                        file_types[ext] = (int)file_types.get(ext, 0) + 1;
+                        
+                        if (ext == "gd" || ext == "cs") {
+                            String content = FileAccess::get_file_as_string(full_path);
+                            if (content.contains("class_name")) {
+                                scripts_with_classes.push_back(full_path);
+                            }
+                        } else if (ext == "cfg" || ext == "ini") {
+                            config_files.push_back(full_path);
+                        } else if (ext == "tscn") {
+                            scene_files.push_back(full_path);
+                        } else if (ext == "tres" || ext == "res") {
+                            resource_files.push_back(full_path);
+                        }
+                    }
+                }
+                item = da->get_next();
+            }
+        };
+        
+        scan_recursive(target_path);
+        
+        analysis["file_types"] = file_types;
+        analysis["scripts_with_classes"] = scripts_with_classes;
+        analysis["config_files"] = config_files;
+        analysis["scene_files"] = scene_files;
+        analysis["resource_files"] = resource_files;
+        result["success"] = true;
+        result["analysis"] = analysis;
+        return result;
+    } else if (operation == "copy_directory") {
+        String source_path = p_args.get("source_addon", "");
+        String target_path = p_args.get("target_addon", "");
+        if (source_path.is_empty() || target_path.is_empty()) { result["success"] = false; result["message"] = "Missing source_addon or target_addon"; return result; }
+        
+        // Create target directory
+        Error e = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(target_path));
+        if (e != OK) { result["success"] = false; result["message"] = "Failed to create target directory"; return result; }
+        
+        // Copy all files recursively
+        Ref<DirAccess> source_da = DirAccess::open(source_path);
+        if (!source_da.is_valid()) { result["success"] = false; result["message"] = "Source directory not found"; return result; }
+        
+        Array copied_files;
+        std::function<void(const String&, const String&)> copy_recursive = [&](const String &src_dir, const String &dst_dir) {
+            Ref<DirAccess> src_da = DirAccess::open(src_dir);
+            if (!src_da.is_valid()) return;
+            
+            DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(dst_dir));
+            
+            src_da->list_dir_begin();
+            String item = src_da->get_next();
+            while (!item.is_empty()) {
+                if (item != "." && item != "..") {
+                    String src_path = src_dir + "/" + item;
+                    String dst_path = dst_dir + "/" + item;
+                    
+                    if (src_da->current_is_dir()) {
+                        copy_recursive(src_path, dst_path);
+                    } else {
+                        Error copy_err = DirAccess::copy_absolute(
+                            ProjectSettings::get_singleton()->globalize_path(src_path),
+                            ProjectSettings::get_singleton()->globalize_path(dst_path)
+                        );
+                        if (copy_err == OK) {
+                            copied_files.push_back(dst_path);
+                        }
+                    }
+                }
+                item = src_da->get_next();
+            }
+        };
+        
+        copy_recursive(source_path, target_path);
+        
+        if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+        
+        result["success"] = true;
+        result["copied_files"] = copied_files;
+        result["message"] = String::num_int64(copied_files.size()) + " files copied";
+        return result;
+    } else if (operation == "update_references") {
+        String old_path = p_args.get("old_path", "");
+        String new_path = p_args.get("new_path", "");
+        Array file_patterns = p_args.get("file_patterns", Array{"*.tscn", "*.tres", "*.gd"});
+        
+        if (old_path.is_empty() || new_path.is_empty()) { result["success"] = false; result["message"] = "Missing old_path or new_path"; return result; }
+        
+        Array updated_files;
+        String project_root = ProjectSettings::get_singleton()->get_resource_path();
+        
+        // Simple recursive scan and replace
+        std::function<void(const String&)> scan_and_update = [&](const String &dir_path) {
+            Ref<DirAccess> da = DirAccess::open(dir_path);
+            if (!da.is_valid()) return;
+            
+            da->list_dir_begin();
+            String item = da->get_next();
+            while (!item.is_empty()) {
+                if (item != "." && item != "..") {
+                    String full_path = dir_path + "/" + item;
+                    
+                    if (da->current_is_dir()) {
+                        scan_and_update(full_path);
+                    } else {
+                        // Check if file matches patterns
+                        bool matches = false;
+                        for (int i = 0; i < file_patterns.size(); i++) {
+                            String pattern = file_patterns[i];
+                            if (pattern.begins_with("*.")) {
+                                String ext = pattern.substr(2);
+                                if (full_path.ends_with("." + ext)) {
+                                    matches = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (matches) {
+                            String content = FileAccess::get_file_as_string(full_path);
+                            if (content.contains(old_path)) {
+                                String updated_content = content.replace(old_path, new_path);
+                                Ref<FileAccess> f = FileAccess::open(full_path, FileAccess::WRITE);
+                                if (f.is_valid()) {
+                                    f->store_string(updated_content);
+                                    updated_files.push_back(full_path);
+                                }
+                            }
+                        }
+                    }
+                }
+                item = da->get_next();
+            }
+        };
+        
+        scan_and_update(project_root);
+        
+        result["success"] = true;
+        result["updated_files"] = updated_files;
+        result["message"] = String::num_int64(updated_files.size()) + " files updated";
+        return result;
+    }
+    
+    result["success"] = false; result["message"] = "Unknown operation: " + operation; return result;
+}
+
+Dictionary EditorTools::detach_script(const Dictionary &p_args) {
+    Dictionary result;
+    if (!p_args.has("path")) {
+        result["success"] = false;
+        result["message"] = "Missing 'path' argument.";
+        return result;
+    }
+    Dictionary err; 
+    Node *node = _get_node_from_path(p_args["path"], err); 
+    if (!node) return err;
+    node->set("script", Variant());
+    result["success"] = true; 
+    result["message"] = "Script detached"; 
+    return result;
+}
+
+Dictionary EditorTools::reload_script(const Dictionary &p_args) {
+    Dictionary result;
+    String script_path = p_args.get("script_path", "");
+    String node_path = p_args.get("path", "");
+    if (script_path.is_empty() && node_path.is_empty()) {
+        result["success"] = false; 
+        result["message"] = "Provide 'script_path' or 'path'"; 
+        return result;
+    }
+    Ref<Script> script;
+    if (!script_path.is_empty()) {
+        script = ResourceLoader::load(script_path);
+    } else {
+        Dictionary err; 
+        Node *node = _get_node_from_path(node_path, err); 
+        if (!node) return err;
+        Variant sv = node->get("script"); 
+        script = sv;
+    }
+    if (!script.is_valid()) { 
+        result["success"] = false; 
+        result["message"] = "Script not found"; 
+        return result; 
+    }
+    script->reload(true);
+    ScriptEditor *se = ScriptEditor::get_singleton(); 
+    if (se) se->reload_scripts(false);
+    result["success"] = true; 
+    result["message"] = "Script reloaded"; 
+    return result;
+}
+
+Dictionary EditorTools::refresh_global_classes(const Dictionary &p_args) {
+    Dictionary result;
+    // Trigger a broad scripts reload to refresh class_name registrations
+    ScriptEditor *se = ScriptEditor::get_singleton();
+    if (se) {
+        se->reload_scripts(true);
+    }
+    if (EditorFileSystem::get_singleton()) {
+        EditorFileSystem::get_singleton()->scan_changes();
+    }
+    result["success"] = true; 
+    result["message"] = "Global classes refreshed"; 
+    return result;
+}
+
+Dictionary EditorTools::get_custom_classes(const Dictionary &p_args) {
+    Dictionary result;
+    Array out;
+    // Get all registered global classes
+    List<StringName> global_classes;
+    ScriptServer::get_global_class_list(&global_classes);
+    
+    String pattern = p_args.get("pattern", "");
+    for (const StringName &class_name : global_classes) {
+        if (pattern.is_empty() || String(class_name).containsn(pattern)) {
+            Dictionary class_info;
+            class_info["name"] = String(class_name);
+            class_info["path"] = ScriptServer::get_global_class_path(class_name);
+            class_info["base"] = ScriptServer::get_global_class_native_base(class_name);
+            out.push_back(class_info);
+        }
+    }
+    result["success"] = true; 
+    result["classes"] = out; 
+    return result;
+}
+
+Dictionary EditorTools::set_node_type(const Dictionary &p_args) {
+    Dictionary result;
+    if (!p_args.has("path")) { 
+        result["success"] = false; 
+        result["message"] = "Missing 'path'"; 
+        return result; 
+    }
+    Dictionary err; 
+    Node *node = _get_node_from_path(p_args["path"], err); 
+    if (!node) return err;
+    
+    String type_name = p_args.get("type_name", "");
+    String script_path = p_args.get("script_path", "");
+    
+    if (!script_path.is_empty()) {
+        Ref<Script> scr = ResourceLoader::load(script_path);
+        if (scr.is_valid()) {
+            node->set("script", scr);
+            result["success"] = true; 
+            result["message"] = "Script attached to set type"; 
+            return result;
+        }
+        result["success"] = false; 
+        result["message"] = "Failed to load script"; 
+        return result;
+    }
+    
+	if (!type_name.is_empty()) {
+		// Check if it's a custom global class first
+		List<StringName> global_classes;
+		ScriptServer::get_global_class_list(&global_classes);
+		String script_for_class;
+		for (const StringName &class_name : global_classes) {
+			if (String(class_name) == type_name) {
+				script_for_class = ScriptServer::get_global_class_path(class_name);
+				break;
+			}
+		}
+		
+		if (!script_for_class.is_empty()) {
+			// Attach the script for this custom class
+			Ref<Script> scr = ResourceLoader::load(script_for_class);
+			if (scr.is_valid()) {
+				node->set("script", scr);
+				result["success"] = true; 
+				result["message"] = "Custom class script attached: " + type_name; 
+				return result;
+			}
+		}
+		
+		// Fall back to native class change
+		if (ClassDB::class_exists(type_name)) {
+			Dictionary args; 
+			args["path"] = p_args["path"]; 
+			args["new_type"] = type_name; 
+			args["preserve_children"] = true; 
+			args["strategy"] = "wrap_root";
+			return change_node_type(args);
+		}
+		
+		result["success"] = false; 
+		result["message"] = "Unknown type: " + type_name; 
+		return result;
+	}
+    
+    result["success"] = false; 
+    result["message"] = "Provide 'type_name' or 'script_path'"; 
+    return result;
 }
 
 Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
@@ -1136,10 +2406,22 @@ Dictionary EditorTools::call_node_method(const Dictionary &p_args) {
 	}
 
 	StringName method = p_args["method"];
-	Array args = p_args.has("args") ? (Array)p_args["args"] : Array();
-	// Accept both "args" and "method_args" from different backends/schemas.
-	if (args.is_empty() && p_args.has("method_args")) {
-		args = (Array)p_args["method_args"];
+	Array args;
+	if (p_args.has("args")) {
+		Variant v = p_args["args"];
+		if (v.get_type() == Variant::ARRAY) {
+			args = (Array)v;
+		} else if (v.get_type() != Variant::NIL) {
+			// Wrap single non-array arg into array
+			args.push_back(v);
+		}
+	} else if (p_args.has("method_args")) {
+		Variant v = p_args["method_args"];
+		if (v.get_type() == Variant::ARRAY) {
+			args = (Array)v;
+		} else if (v.get_type() != Variant::NIL) {
+			args.push_back(v);
+		}
 	}
 
 	// If the node doesn't implement the method, return a structured error so the agent can self-correct.
@@ -1178,6 +2460,7 @@ Dictionary EditorTools::call_node_method(const Dictionary &p_args) {
 	}
 
 	result["success"] = call_success;
+	result["ok"] = call_success;
 	result["return_value"] = ret;
 	result["node_path"] = String(node->get_path());
 	result["node_class"] = String(node->get_class());
@@ -1201,6 +2484,16 @@ Dictionary EditorTools::get_available_classes(const Dictionary &p_args) {
 	for (const StringName &E : class_list) {
 		if (ClassDB::can_instantiate(E) && ClassDB::is_parent_class(E, "Node")) {
 			classes.push_back(String(E));
+		}
+	}
+	
+	// Also include custom global classes
+	List<StringName> global_classes;
+	ScriptServer::get_global_class_list(&global_classes);
+	for (const StringName &class_name : global_classes) {
+		String base = ScriptServer::get_global_class_native_base(class_name);
+		if (base == "Node" || ClassDB::is_parent_class(base, "Node")) {
+			classes.push_back(String(class_name));
 		}
 	}
 
@@ -1385,6 +2678,158 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 	return result;
 }
 
+// --- Project configuration helpers ---
+
+static void _apply_project_setting_kv(const String &key, const Variant &value, List<String> &applied, List<String> &skipped) {
+    ProjectSettings *ps = ProjectSettings::get_singleton();
+    if (!ps) return;
+    Variant oldv = ps->get_setting(key);
+    if (oldv == value) {
+        skipped.push_back(key);
+        return;
+    }
+    ps->set_setting(key, value);
+    applied.push_back(key);
+}
+
+Dictionary EditorTools::enable_plugin(const Dictionary &p_args) {
+    Dictionary out;
+    String plugin = p_args.get("plugin_name", "");
+    if (plugin.is_empty()) {
+        out["ok"] = false;
+        out["error_code"] = "INVALID_ARGUMENT";
+        out["error"] = "plugin_name is required";
+        return out;
+    }
+    bool already = EditorInterface::get_singleton()->is_plugin_enabled(plugin);
+    if (!already) {
+        EditorInterface::get_singleton()->set_plugin_enabled(plugin, true);
+    }
+    out["ok"] = true;
+    out["requires_restart"] = false; // Godot enables without restart generally
+    return out;
+}
+
+Dictionary EditorTools::ensure_project_settings(const Dictionary &p_args) {
+    Dictionary out;
+    Dictionary settings = p_args.get("settings", Dictionary());
+    List<String> applied; List<String> skipped;
+    for (const Variant *k = settings.next(); k; k = settings.next(k)) {
+        _apply_project_setting_kv(String(*k), settings[*k], applied, skipped);
+    }
+    out["ok"] = true;
+    Array a; for (const String &s : applied) a.push_back(s); out["applied"] = a;
+    Array sk; for (const String &s : skipped) sk.push_back(s); out["skipped"] = sk;
+    ProjectSettings::get_singleton()->save();
+    return out;
+}
+
+Dictionary EditorTools::ensure_input_actions(const Dictionary &p_args) {
+    Dictionary out;
+    Array actions = p_args.get("actions", Array());
+    Array created; Array updated;
+    for (int i = 0; i < actions.size(); i++) {
+        Dictionary a = actions[i];
+        String name = a.get("name", "");
+        if (name.is_empty()) continue;
+        if (!InputMap::get_singleton()->has_action(name)) {
+            InputMap::get_singleton()->add_action(name);
+            created.push_back(name);
+        }
+        // Replace events if provided
+        if (a.has("events")) {
+            InputMap::get_singleton()->action_erase_events(name);
+            Array evs = a["events"];
+            for (int j = 0; j < evs.size(); j++) {
+                Dictionary ed = evs[j];
+                Ref<InputEvent> ev;
+                // Minimal support: keycode
+                if (ed.has("keycode")) {
+                    Ref<InputEventKey> k; k.instantiate();
+                    k->set_keycode((Key)int(ed["keycode"]));
+                    ev = k;
+                }
+                if (ev.is_valid()) {
+                    InputMap::get_singleton()->action_add_event(name, ev);
+                }
+            }
+            updated.push_back(name);
+        }
+    }
+    out["ok"] = true;
+    out["created"] = created;
+    out["updated"] = updated;
+    ProjectSettings::get_singleton()->save();
+    return out;
+}
+
+Dictionary EditorTools::ensure_autoload(const Dictionary &p_args) {
+    Dictionary out;
+    Array entries = p_args.get("entries", Array());
+    Array added; Array updated;
+    for (int i = 0; i < entries.size(); i++) {
+        Dictionary e = entries[i];
+        String name = e.get("name", "");
+        String path = e.get("path", "");
+        bool singleton = e.get("singleton", true);
+        if (name.is_empty() || path.is_empty()) continue;
+        String setting_key = String("autoload/") + name;
+        String value = singleton ? String("*") + path : path;
+        Variant oldv = ProjectSettings::get_singleton()->get_setting(setting_key);
+        if (oldv.get_type() == Variant::STRING && String(oldv) == value) {
+            continue;
+        }
+        ProjectSettings::get_singleton()->set_setting(setting_key, value);
+        if (oldv.get_type() == Variant::NIL) added.push_back(name); else updated.push_back(name);
+    }
+    ProjectSettings::get_singleton()->save();
+    out["ok"] = true;
+    out["added"] = added;
+    out["updated"] = updated;
+    return out;
+}
+
+// --- Creation, calls, batching ---
+
+Dictionary EditorTools::ensure_node(const Dictionary &p_args) {
+    // Wrap create_node with unique semantics and deterministic parent
+    Dictionary args = p_args.duplicate();
+    args["unique"] = true;
+    return create_node(args);
+}
+
+Dictionary EditorTools::batch_scene_ops(const Dictionary &p_args) {
+    Dictionary out;
+    Array ops = p_args.get("ops", Array());
+    bool stop_on_error = p_args.get("stop_on_error", true);
+    Array results;
+    for (int i = 0; i < ops.size(); i++) {
+        Dictionary op = ops[i];
+        String type = op.get("op", op.get("type", ""));
+        Dictionary r;
+        if (type == "ensure_node") {
+            r = ensure_node(op);
+        } else if (type == "set_property") {
+            r = set_node_property(op);
+        } else if (type == "load_and_assign_resource") {
+            r = load_and_assign_resource(op);
+        } else if (type == "call_method") {
+            r = call_node_method(op);
+        } else {
+            r["success"] = false;
+            r["error_code"] = "UNKNOWN_OP";
+            r["error"] = String("Unknown op: ") + type;
+        }
+        results.push_back(r);
+        if (stop_on_error && !(bool)r.get("success", false)) {
+            break;
+        }
+    }
+    out["ok"] = true;
+    out["results"] = results;
+    return out;
+}
+
 Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 	Dictionary result;
 	if (!p_args.has("resource_path") || !p_args.has("node_path") || !p_args.has("property")) {
@@ -1396,8 +2841,21 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 	String resource_path = p_args["resource_path"];
 	String node_path = p_args["node_path"];
 	String property = p_args["property"];
+	bool validate = p_args.get("validate", true);
+	bool await_import = p_args.get("await_import", true);
+	int timeout_ms = (int)p_args.get("timeout_ms", 10000);
 	
 	// Load the resource
+	if (await_import) {
+		Dictionary wi_args; wi_args["resource_path"] = resource_path; wi_args["timeout_ms"] = timeout_ms; wi_args["poll_ms"] = 100;
+		Dictionary waited = wait_for_import(wi_args);
+		if (!waited.get("ok", false)) {
+			result["success"] = false;
+			result["error_code"] = String(waited.get("error_code", "IMPORT_PENDING"));
+			result["message"] = String(waited.get("error", "Import not ready"));
+			return result;
+		}
+	}
 	Ref<Resource> resource = ResourceLoader::load(resource_path);
 	if (resource.is_null()) {
 		result["success"] = false;
@@ -1411,16 +2869,45 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 		return result;
 	}
 	
+	// Optional type validation
+	String actual_type = resource->get_class();
+	String expected_type;
+	if (validate) {
+		List<PropertyInfo> plist;
+		node->get_property_list(&plist);
+		for (const PropertyInfo &pi : plist) {
+			if (String(pi.name) == property) {
+				if (!String(pi.class_name).is_empty()) {
+					expected_type = String(pi.class_name);
+				}
+				break;
+			}
+		}
+		if (!expected_type.is_empty() && !ClassDB::is_parent_class(actual_type, expected_type)) {
+			result["success"] = false;
+			result["ok"] = false;
+			result["error_code"] = "TYPE_MISMATCH";
+			result["error"] = String("Property '") + property + "' expects " + expected_type + ", got " + actual_type;
+			result["actual_resource_type"] = actual_type;
+			result["expected_property_type"] = expected_type;
+			return result;
+		}
+	}
+
 	// Set the property
 	bool valid = false;
 	node->set(property, resource, &valid);
 	
 	if (valid) {
 		result["success"] = true;
+		result["ok"] = true;
 		result["message"] = "Resource loaded and assigned: " + resource_path + " -> " + node_path + "." + property;
-		result["resource_type"] = resource->get_class();
+		result["actual_resource_type"] = actual_type;
+		if (!expected_type.is_empty()) result["expected_property_type"] = expected_type;
 	} else {
 		result["success"] = false;
+		result["ok"] = false;
+		result["error_code"] = "INVALID_PROPERTY";
 		result["message"] = "Failed to assign resource to property '" + property + "' on node: " + node_path;
 	}
 	
@@ -1443,50 +2930,66 @@ Dictionary EditorTools::add_collision_shape(const Dictionary &p_args) {
 		return result;
 	}
 
-	// Check if it's a physics body that needs collision
-	if (!node->is_class("CharacterBody2D") && !node->is_class("RigidBody2D") && !node->is_class("StaticBody2D") && !node->is_class("Area2D")) {
+	// 2D bodies
+	bool is_2d = node->is_class("CharacterBody2D") || node->is_class("RigidBody2D") || node->is_class("StaticBody2D") || node->is_class("Area2D");
+	bool is_3d = node->is_class("CharacterBody3D") || node->is_class("RigidBody3D") || node->is_class("StaticBody3D") || node->is_class("Area3D");
+	if (!is_2d && !is_3d) {
 		result["success"] = false;
-		result["message"] = "Node is not a physics body that can have collision shapes.";
+		result["message"] = "Node is not a physics body (2D or 3D).";
 		return result;
 	}
 
-	// Create CollisionShape2D
 	Node *collision_shape = nullptr;
-	if (ClassDB::can_instantiate("CollisionShape2D")) {
+	Variant shape_resource;
+
+	if (is_2d) {
+		if (!ClassDB::can_instantiate("CollisionShape2D")) {
+			result["success"] = false;
+			result["message"] = "Cannot instantiate CollisionShape2D.";
+			return result;
+		}
 		collision_shape = (Node *)ClassDB::instantiate("CollisionShape2D");
-	} else {
-		result["success"] = false;
-		result["message"] = "Cannot instantiate CollisionShape2D.";
-		return result;
+		if (shape_type == "rectangle") {
+			if (ClassDB::can_instantiate("RectangleShape2D")) shape_resource = ClassDB::instantiate("RectangleShape2D");
+		} else if (shape_type == "circle") {
+			if (ClassDB::can_instantiate("CircleShape2D")) shape_resource = ClassDB::instantiate("CircleShape2D");
+		} else if (shape_type == "capsule") {
+			if (ClassDB::can_instantiate("CapsuleShape2D")) shape_resource = ClassDB::instantiate("CapsuleShape2D");
+		}
+	} else if (is_3d) {
+		if (!ClassDB::can_instantiate("CollisionShape3D")) {
+			result["success"] = false;
+			result["message"] = "Cannot instantiate CollisionShape3D.";
+			return result;
+		}
+		collision_shape = (Node *)ClassDB::instantiate("CollisionShape3D");
+		if (shape_type == "box3d" || shape_type == "box") {
+			if (ClassDB::can_instantiate("BoxShape3D")) shape_resource = ClassDB::instantiate("BoxShape3D");
+		} else if (shape_type == "sphere3d" || shape_type == "sphere") {
+			if (ClassDB::can_instantiate("SphereShape3D")) shape_resource = ClassDB::instantiate("SphereShape3D");
+		} else if (shape_type == "capsule3d" || shape_type == "capsule") {
+			if (ClassDB::can_instantiate("CapsuleShape3D")) shape_resource = ClassDB::instantiate("CapsuleShape3D");
+		} else if (shape_type == "convex3d" || shape_type == "convex") {
+			if (ClassDB::can_instantiate("ConvexPolygonShape3D")) shape_resource = ClassDB::instantiate("ConvexPolygonShape3D");
+		} else if (shape_type == "trimesh3d" || shape_type == "trimesh") {
+			if (ClassDB::can_instantiate("ConcavePolygonShape3D")) shape_resource = ClassDB::instantiate("ConcavePolygonShape3D");
+		}
 	}
 
-	// Create the actual shape resource based on type
-	Variant shape_resource;
-	if (shape_type == "rectangle") {
-		if (ClassDB::can_instantiate("RectangleShape2D")) {
-			shape_resource = ClassDB::instantiate("RectangleShape2D");
-		}
-	} else if (shape_type == "circle") {
-		if (ClassDB::can_instantiate("CircleShape2D")) {
-			shape_resource = ClassDB::instantiate("CircleShape2D");
-		}
-	} else if (shape_type == "capsule") {
-		if (ClassDB::can_instantiate("CapsuleShape2D")) {
-			shape_resource = ClassDB::instantiate("CapsuleShape2D");
-		}
+	// Allow providing a custom_shape_resource directly
+	if (p_args.has("custom_shape_resource")) {
+		shape_resource = p_args["custom_shape_resource"]; // access returns Variant
 	}
 
 	if (shape_resource.get_type() == Variant::NIL) {
-		collision_shape->queue_free();
+		if (collision_shape) collision_shape->queue_free();
 		result["success"] = false;
 		result["message"] = "Failed to create shape resource of type: " + shape_type;
 		return result;
 	}
 
-	// Set the shape on the collision node
 	collision_shape->set("shape", shape_resource);
-	
-	// Add as child safely
+
 	if (node && collision_shape) {
 		node->add_child(collision_shape);
 		collision_shape->set_owner(node->get_owner() ? node->get_owner() : node);
@@ -1498,7 +3001,7 @@ Dictionary EditorTools::add_collision_shape(const Dictionary &p_args) {
 	}
 
 	result["success"] = true;
-	result["message"] = "CollisionShape2D with " + shape_type + " shape added to " + node_path;
+	result["message"] = String("CollisionShape") + (is_2d ? String("2D") : String("3D")) + " with " + shape_type + " added to " + node_path;
 	return result;
 }
 
@@ -3568,38 +5071,210 @@ Dictionary EditorTools::get_camera_info(const Dictionary &p_args) {
 Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 	Dictionary result;
 	String filename = p_args.get("filename", "screenshot_debug.png");
+	String target = p_args.get("target", "editor"); // "editor", "game", "both"
+	bool return_base64 = p_args.get("return_base64", false);
 	
-	// Try to get the main viewport
-	Viewport *viewport = EditorNode::get_singleton()->get_viewport();
-	if (!viewport) {
-		result["success"] = false;
-		result["message"] = "Could not access viewport";
-		return result;
+	Array screenshots;
+	bool captured_any = false;
+	
+	// Helper to capture and process a viewport
+	auto capture_viewport = [&](Viewport *viewport, const String &source_name) -> bool {
+		if (!viewport) return false;
+		
+		Ref<Image> screenshot = viewport->get_texture()->get_image();
+		if (screenshot.is_null() || screenshot->is_empty()) return false;
+		
+		Vector2i original_size = Vector2i(screenshot->get_width(), screenshot->get_height());
+		
+		// CRITICAL: Downscale for chat to prevent token explosion
+		if (return_base64) {
+			// Limit to 128px max dimension for chat display - tiny to prevent token explosion
+			const int MAX_CHAT_SIZE = 128;
+			if (original_size.x > MAX_CHAT_SIZE || original_size.y > MAX_CHAT_SIZE) {
+				float aspect = (float)original_size.x / (float)original_size.y;
+				Vector2i new_size;
+				if (original_size.x > original_size.y) {
+					new_size.x = MAX_CHAT_SIZE;
+					new_size.y = (int)(MAX_CHAT_SIZE / aspect);
+				} else {
+					new_size.y = MAX_CHAT_SIZE;
+					new_size.x = (int)(MAX_CHAT_SIZE * aspect);
+				}
+				screenshot->resize(new_size.x, new_size.y, Image::INTERPOLATE_LANCZOS);
+			}
+		}
+		
+		Dictionary capture_info;
+		capture_info["source"] = source_name;
+		capture_info["size"] = original_size;
+		capture_info["display_size"] = Vector2i(screenshot->get_width(), screenshot->get_height());
+		
+		if (return_base64) {
+			// Convert to base64 for immediate use in chat
+			Vector<uint8_t> png_buffer = screenshot->save_png_to_buffer();
+			if (png_buffer.size() > 0) {
+				String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_buffer);
+				capture_info["base64"] = base64_data;
+				capture_info["mime_type"] = "image/png";
+				print_line("AI Chat: Screenshot downscaled to " + String::num_int64(screenshot->get_width()) + "x" + String::num_int64(screenshot->get_height()) + " for chat (base64 size: " + String::num_int64(base64_data.length()) + " chars)");
+			}
+		} else {
+			// Save to file at original resolution
+			String save_name = source_name + "_" + filename;
+			String full_path = ProjectSettings::get_singleton()->globalize_path("res://") + save_name;
+			Error save_result = screenshot->save_png(full_path);
+			if (save_result == OK) {
+				capture_info["path"] = full_path;
+			} else {
+				return false;
+			}
+		}
+		
+		screenshots.push_back(capture_info);
+		return true;
+	};
+	
+	// Capture editor viewport
+	if (target == "editor" || target == "both") {
+		Viewport *editor_viewport = EditorNode::get_singleton()->get_viewport();
+		if (capture_viewport(editor_viewport, "editor")) {
+			captured_any = true;
+		}
 	}
 	
-	// Take screenshot
-	Ref<Image> screenshot = viewport->get_texture()->get_image();
-	if (screenshot.is_null()) {
-		result["success"] = false;
-		result["message"] = "Failed to capture screenshot";
-		return result;
+	// Capture game viewport using existing GameView functionality  
+	if (target == "game" || target == "both") {
+		bool game_running = false;
+		EditorRunBar *run_bar = EditorRunBar::get_singleton();
+		if (run_bar) {
+			game_running = run_bar->is_playing();
+		}
+		
+		if (game_running) {
+			// Use the exact same approach as the working "Snap to Chat" button
+			// This mirrors GameView::_snap_to_chat_pressed() implementation precisely
+			GameView *game_view = GameView::get_singleton();
+			bool requested = false;
+			Callable screenshot_callback = callable_mp_static(&EditorTools::_on_game_screenshot_ready_for_tool);
+			
+			if (game_view) {
+				// First, try embedded screenshot (works when game is embedded in editor)
+				requested = game_view->request_game_screenshot(screenshot_callback);
+				print_line(String("AI Chat: Embedded screenshot request = ") + (requested ? "success" : "failed"));
+				
+				if (!requested) {
+					// Fallback for floating/non-embedded game windows: use debugger directly
+					// This is the same fallback logic as GameView::_snap_to_chat_pressed()
+					Ref<GameViewDebugger> debugger = game_view->debugger;
+					if (!debugger.is_null()) {
+						requested = debugger->add_screenshot_callback(screenshot_callback, Rect2i());
+						print_line(String("AI Chat: Debugger fallback screenshot request = ") + (requested ? "success" : "failed"));
+					}
+				}
+			} else {
+				print_line("AI Chat: GameView singleton not available");
+			}
+			
+			if (requested) {
+				// Wait a reasonable time for the screenshot to be processed
+				uint64_t start_time = Time::get_singleton()->get_ticks_msec();
+				uint64_t max_wait_time = 2000; // 2 seconds max
+				
+				print_line("AI Chat: Waiting for screenshot to be processed...");
+				
+				// Process messages to allow the callback to execute
+				while ((Time::get_singleton()->get_ticks_msec() - start_time) < max_wait_time && 
+					   _current_screenshot_results.is_empty()) {
+					// Allow message processing without blocking the UI
+					MessageQueue::get_singleton()->flush();
+					OS::get_singleton()->delay_usec(50000); // Wait 50ms
+				}
+				
+				if (!_current_screenshot_results.is_empty()) {
+					uint64_t elapsed = Time::get_singleton()->get_ticks_msec() - start_time;
+					print_line("AI Chat: Screenshot completed successfully after " + String::num_int64(elapsed) + "ms");
+					// Screenshot completed - it will be processed below
+					captured_any = true;
+				} else {
+					uint64_t elapsed = Time::get_singleton()->get_ticks_msec() - start_time;
+					print_line("AI Chat: Screenshot timed out after " + String::num_int64(elapsed) + "ms");
+					Dictionary game_capture;
+					game_capture["source"] = "game";
+					game_capture["message"] = "Game screenshot requested but timed out - try again in a moment";
+					game_capture["running"] = true;
+					game_capture["success"] = false;
+					game_capture["method"] = "gameview_with_timeout";
+					screenshots.push_back(game_capture);
+				}
+			} else {
+				Dictionary game_capture;
+				game_capture["source"] = "game"; 
+				game_capture["message"] = "Game screenshot request failed - no active debugger sessions or embedded game process";
+				game_capture["running"] = true;
+				game_capture["success"] = false;
+				screenshots.push_back(game_capture);
+			}
+		} else {
+			Dictionary game_capture;
+			game_capture["source"] = "game";
+			game_capture["message"] = "No game running";
+			game_capture["running"] = false;
+			game_capture["success"] = false;
+			screenshots.push_back(game_capture);
+		}
 	}
 	
-	// Save to project directory
-	String project_path = ProjectSettings::get_singleton()->globalize_path("res://");
-	String full_path = project_path + "/" + filename;
-	
-	Error save_result = screenshot->save_png(full_path);
-	if (save_result != OK) {
-		result["success"] = false;
-		result["message"] = "Failed to save screenshot: " + String::num_int64(save_result);
-		return result;
+	// Check for any completed screenshots from previous async requests
+	Array processed_screenshots;
+	for (int i = 0; i < _current_screenshot_results.size(); i++) {
+		Dictionary screenshot_data = _current_screenshot_results[i];
+		// Convert to the expected format for tool results
+		Dictionary processed_shot;
+		processed_shot["source"] = screenshot_data.get("source", "game");
+		processed_shot["success"] = true;
+		processed_shot["width"] = screenshot_data.get("width", 0);
+		processed_shot["height"] = screenshot_data.get("height", 0);
+		processed_shot["size"] = screenshot_data.get("size", Vector2i(0, 0));
+		processed_shot["base64"] = screenshot_data.get("base64", "");
+		processed_shot["was_downsampled"] = screenshot_data.get("was_downsampled", false);
+		processed_shot["original_size"] = screenshot_data.get("original_size", Vector2i(0, 0));
+		processed_shot["timestamp"] = screenshot_data.get("timestamp", 0);
+		processed_shot["message"] = "Screenshot processed and ready";
+		
+		processed_screenshots.push_back(processed_shot);
+		screenshots.push_back(processed_shot);
+		
+		print_line("AI Chat: Including completed screenshot in tool result, base64 length: " + String::num_int64(String(screenshot_data.get("base64", "")).length()));
 	}
 	
-	result["success"] = true;
-	result["message"] = "Screenshot saved";
-	result["filename"] = filename;
-	result["path"] = full_path;
+	// Clear processed screenshots so they don't accumulate
+	_current_screenshot_results.clear();
+	
+	// Check if any screenshots actually succeeded
+	bool any_actually_captured = false;
+	for (int i = 0; i < screenshots.size(); i++) {
+		Dictionary shot = screenshots[i];
+		bool shot_success = shot.get("success", true);
+		String shot_base64 = shot.get("base64", "");
+		if (shot_success && !shot_base64.is_empty()) {
+			any_actually_captured = true;
+			break;
+		}
+	}
+	
+	result["success"] = any_actually_captured;
+	result["screenshots"] = screenshots;
+	result["count"] = screenshots.size();
+	result["message"] = captured_any ? "Screenshot(s) captured" : "No viewports captured";
+	
+	// For backward compatibility, include single screenshot data
+	if (screenshots.size() > 0) {
+		Dictionary first = screenshots[0];
+		result["path"] = first.get("path", "");
+		result["base64"] = first.get("base64", "");
+		result["filename"] = filename;
+	}
+	
 	return result;
 }
 

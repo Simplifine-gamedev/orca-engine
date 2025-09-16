@@ -16,6 +16,7 @@
 #include "core/io/marshalls.h"
 #include "core/core_bind.h"
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
 #include "scene/resources/image_texture.h"
 #include "editor/editor_node.h"
 #include "editor/file_system/editor_paths.h"
@@ -83,6 +84,8 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_edit_message_send_pressed"), &AIChatDock::_on_edit_message_send_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_send_button_pressed"), &AIChatDock::_on_edit_send_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_message_cancel_pressed"), &AIChatDock::_on_edit_message_cancel_pressed);
+	ClassDB::bind_method(D_METHOD("_on_checkpoint_message_pressed"), &AIChatDock::_on_checkpoint_message_pressed);
+	ClassDB::bind_method(D_METHOD("_on_restore_checkpoint_confirmed"), &AIChatDock::_on_restore_checkpoint_confirmed);
 	ClassDB::bind_method(D_METHOD("_on_edit_field_gui_input"), &AIChatDock::_on_edit_field_gui_input);
 	ClassDB::bind_method(D_METHOD("_process_send_request_async"), &AIChatDock::_process_send_request_async);
 	ClassDB::bind_method(D_METHOD("_save_conversations_async"), &AIChatDock::_save_conversations_async);
@@ -92,6 +95,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_populate_tree_recursive"), &AIChatDock::_populate_tree_recursive);
 	ClassDB::bind_method(D_METHOD("_on_at_mention_item_selected"), &AIChatDock::_on_at_mention_item_selected);
 	ClassDB::bind_method(D_METHOD("_on_input_field_gui_input"), &AIChatDock::_on_input_field_gui_input);
+	ClassDB::bind_method(D_METHOD("_handle_clipboard_paste"), &AIChatDock::_handle_clipboard_paste);
 	ClassDB::bind_method(D_METHOD("_on_model_selected"), &AIChatDock::_on_model_selected);
 	ClassDB::bind_method(D_METHOD("_populate_cerebras_models"), &AIChatDock::_populate_cerebras_models);
 	ClassDB::bind_method(D_METHOD("_on_models_request_completed"), &AIChatDock::_on_models_request_completed);
@@ -266,6 +270,13 @@ void AIChatDock::_notification(int p_notification) {
 		image_warning_dialog = memnew(AcceptDialog);
 		image_warning_dialog->set_title("Image Downsampled");
 		add_child(image_warning_dialog);
+		
+		// Restore checkpoint confirmation dialog
+		restore_checkpoint_dialog = memnew(ConfirmationDialog);
+		restore_checkpoint_dialog->set_title("Restore Checkpoint");
+		restore_checkpoint_dialog->set_text("This will restore the conversation to the selected user message and remove all newer messages. This action cannot be undone.\n\nDo you want to continue?");
+		restore_checkpoint_dialog->connect("confirmed", callable_mp(this, &AIChatDock::_on_restore_checkpoint_confirmed));
+		add_child(restore_checkpoint_dialog);
 
 		// Create save image dialog
 		save_image_dialog = memnew(EditorFileDialog);
@@ -574,6 +585,7 @@ void AIChatDock::_notification(int p_notification) {
             // Prefer storing in project settings dir to avoid per-app-name drift and ensure portability with the project
             if (EditorPaths::get_singleton() && EditorPaths::get_singleton()->are_paths_valid()) {
                 String new_path = EditorPaths::get_singleton()->get_project_settings_dir().path_join("ai_chat_conversations.simplifine");
+                // checkpoints_dir_path removed (using project git directly)
                 // Migrate from legacy location if needed
                 String legacy_path = OS::get_singleton()->get_user_data_dir().path_join("ai_chat_conversations.simplifine");
                 if (FileAccess::exists(legacy_path) && !FileAccess::exists(new_path)) {
@@ -600,8 +612,23 @@ void AIChatDock::_notification(int p_notification) {
                 conversations_file_path = new_path;
             } else {
                 conversations_file_path = OS::get_singleton()->get_user_data_dir().path_join("ai_chat_conversations.simplifine");
+                // checkpoints_dir_path removed (using project git directly)
             }
             _load_conversations();
+            _init_checkpoints_repo();
+
+            // Restore last active conversation if available
+            if (!conversations.is_empty() && EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/last_active_conversation_id")) {
+                String last_active_id = EditorSettings::get_singleton()->get_setting("ai_chat/last_active_conversation_id");
+                if (!last_active_id.is_empty()) {
+                    for (int i = 0; i < conversations.size(); i++) {
+                        if (conversations[i].id == last_active_id) {
+                            current_conversation_index = i;
+                            break;
+                        }
+                    }
+                }
+            }
 
 			// Ensure a valid selection immediately to avoid emergency-conversation creation
 			if (!conversations.is_empty()) {
@@ -627,7 +654,7 @@ void AIChatDock::_notification(int p_notification) {
 				_execute_delayed_save(); // start background save immediately
             } else {
 				// Switch to the most recent conversation with a small delay to ensure UI is ready
-				call_deferred("_switch_to_conversation", conversations.size() - 1);
+				call_deferred("_switch_to_conversation", current_conversation_index);
 			}
 			
 			_update_conversation_dropdown();
@@ -676,8 +703,15 @@ void AIChatDock::_notification(int p_notification) {
                         }
                     }
 
-                    // If we still have async tool tasks running (e.g., apply_edit), keep the UI in 'waiting' state  
-                    is_waiting_for_response = has_async_work ? true : false;
+                    // CRITICAL FIX: Don't change streaming state on HTTP disconnect if tools are still running
+                    // The assistant stream may have ended but we should preserve the waiting state for tools
+                    if (!has_async_work && !stream_completed_successfully) {
+                        // Only clear waiting state if no async work AND stream didn't complete successfully
+                        is_waiting_for_response = false;
+                        print_line("AI Chat: HTTP disconnected with no async work and no successful completion - clearing waiting state");
+                    } else {
+                        print_line("AI Chat: HTTP disconnected but preserving waiting state. async_work=" + String(has_async_work ? "true" : "false") + ", stream_completed=" + String(stream_completed_successfully ? "true" : "false"));
+                    }
                     
                     // CRITICAL FIX: Don't clear request_id if we still have async work - keeps stop button functional
                     if (!has_async_work) {
@@ -810,9 +844,120 @@ void AIChatDock::_on_send_button_pressed() {
 	msg.attached_files = current_attached_files;
 	
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	
+	// AUTO-INJECT PROJECT CONTEXT: If this is the first user message in the conversation, 
+	// automatically gather and include project structure context
+	bool is_first_user_message = true;
+	for (int i = 0; i < chat_history.size(); i++) {
+		if (chat_history[i].role == "user") {
+			is_first_user_message = false;
+			break;
+		}
+	}
+	
+	if (is_first_user_message) {
+		print_line("AI Chat: First user message detected - gathering project context automatically");
+		print_line("AI Chat: Chat history size before adding message: " + String::num_int64(chat_history.size()));
+		
+		// Gather project structure using existing EditorTools function
+		Dictionary context_args;
+		context_args["operation"] = "structure";
+		Dictionary project_structure = EditorTools::get_project_context(context_args);
+		
+		Array keys = project_structure.keys();
+		print_line("AI Chat: get_project_context returned " + String::num_int64(keys.size()) + " keys");
+		print_line("AI Chat: get_project_context success: " + String(project_structure.get("success", false) ? "true" : "false"));
+		
+		if (project_structure.has("success") && project_structure["success"]) {
+			// Create a formatted project overview for the AI (not shown in UI)
+			String project_context = "📁 CURRENT PROJECT OVERVIEW:\n";
+			
+			// Add project name
+			if (project_structure.has("context")) {
+				Dictionary structure = project_structure["context"];
+				if (structure.has("project_name")) {
+					String project_name = structure["project_name"];
+					if (!project_name.is_empty()) {
+						project_context += "Project: " + project_name + "\n";
+					}
+				}
+				
+				// Add scenes
+				if (structure.has("scenes")) {
+					Array scenes = structure["scenes"];
+					if (scenes.size() > 0) {
+						project_context += "\n🎬 SCENES (" + String::num_int64(scenes.size()) + "):\n";
+						for (int i = 0; i < MIN(scenes.size(), 10); i++) { // Limit to 10 scenes for brevity
+							Dictionary scene = scenes[i];
+							String scene_path = scene.get("path", "");
+							String scene_name = scene.get("name", "");
+							project_context += "- " + scene_name + " (" + scene_path + ")\n";
+						}
+						if (scenes.size() > 10) {
+							project_context += "... and " + String::num_int64(scenes.size() - 10) + " more scenes\n";
+						}
+					}
+				}
+				
+				// Add scripts
+				if (structure.has("scripts")) {
+					Array scripts = structure["scripts"];
+					if (scripts.size() > 0) {
+						project_context += "\n📜 SCRIPTS (" + String::num_int64(scripts.size()) + "):\n";
+						for (int i = 0; i < MIN(scripts.size(), 10); i++) { // Limit to 10 scripts for brevity
+							Dictionary script = scripts[i];
+							String script_path = script.get("path", "");
+							String script_name = script.get("name", "");
+							project_context += "- " + script_name + " (" + script_path + ")\n";
+						}
+						if (scripts.size() > 10) {
+							project_context += "... and " + String::num_int64(scripts.size() - 10) + " more scripts\n";
+						}
+					}
+				}
+				
+				// Add assets overview
+				if (structure.has("assets") || structure.has("folders")) {
+					project_context += "\n🎨 PROJECT STRUCTURE:\n";
+					// Add folder structure if available
+					if (structure.has("folders")) {
+						Array folders = structure["folders"];
+						for (int i = 0; i < MIN(folders.size(), 15); i++) {
+							String folder = folders[i];
+							project_context += "- " + folder + "/\n";
+						}
+						if (folders.size() > 15) {
+							project_context += "... and " + String::num_int64(folders.size() - 15) + " more folders\n";
+						}
+					}
+				}
+			}
+			
+			project_context += "\nUSER'S QUESTION: ";
+			
+			// Store the project context separately - this will be sent to backend but not displayed in UI
+			msg.project_context = project_context;
+			// Keep the original user message as-is for UI display
+			msg.content = message;
+			
+			print_line("AI Chat: Added project context to first message (" + String::num_int64(project_context.length()) + " chars)");
+			print_line("AI Chat: Project context preview: " + project_context.substr(0, 200) + "...");
+		} else {
+			print_line("AI Chat: Failed to gather project context: " + String(project_structure.get("error", "Unknown error")));
+			if (project_structure.has("context")) {
+				Dictionary structure = project_structure["context"];
+				Array structure_keys = structure.keys();
+				print_line("AI Chat: Structure data has " + String::num_int64(structure_keys.size()) + " keys");
+			}
+		}
+	}
+	
 	chat_history.push_back(msg);
 	_create_message_bubble(msg, chat_history.size() - 1);
 	call_deferred("_scroll_to_bottom");
+	
+	// Auto-create checkpoint for user message
+	_create_checkpoint(message, chat_history.size() - 1);
 	
 	// Safe conversation access with bounds checking
 	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
@@ -917,6 +1062,18 @@ void AIChatDock::_on_stop_request_completed(int p_result, int p_code, const Pack
 	
 	if (p_code == 200) {
 		print_line("AI Chat: Stop request successful");
+		// Treat success as terminal
+		stop_requested = false;
+		current_request_id = "";
+		is_waiting_for_response = false;
+		_update_ui_state();
+	} else if (p_code == 404) {
+		// Idempotent server: consider already completed
+		print_line("AI Chat: Stop request treated as completed (404)");
+		stop_requested = false;
+		current_request_id = "";
+		is_waiting_for_response = false;
+		_update_ui_state();
 	} else {
 		print_line("AI Chat: Stop request failed with code: " + String::num(p_code));
 	}
@@ -1257,7 +1414,6 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 	}
 }
 // Embedding system code moved to ai_chat_dock_embeddings.cpp
-
 // Authentication Implementation
 
 void AIChatDock::_setup_authentication_ui() {
@@ -1704,13 +1860,15 @@ void AIChatDock::_save_conversations_chunked(int p_start_index) {
         for (int j = 0; j < conv.messages.size(); j++) {
             const ChatMessage &msg = conv.messages[j];
             Dictionary msg_dict;
-            msg_dict["role"] = msg.role;
-            msg_dict["content"] = msg.content;
-            msg_dict["timestamp"] = msg.timestamp;
-            msg_dict["tool_calls"] = msg.tool_calls;
-            msg_dict["tool_call_id"] = msg.tool_call_id;
-            msg_dict["name"] = msg.name;
-            msg_dict["tool_results"] = msg.tool_results;
+		msg_dict["role"] = msg.role;
+		msg_dict["content"] = msg.content;
+		msg_dict["timestamp"] = msg.timestamp;
+		msg_dict["tool_calls"] = msg.tool_calls;
+		msg_dict["tool_call_id"] = msg.tool_call_id;
+		msg_dict["name"] = msg.name;
+        msg_dict["tool_results"] = msg.tool_results;
+        msg_dict["project_context"] = msg.project_context;
+            msg_dict["project_context"] = msg.project_context;
 
             // Attached files
             Array attached_files_array;
@@ -1850,13 +2008,14 @@ void AIChatDock::_background_save(void *p_data_ptr) {
 		Array messages_array;
 		for (const ChatMessage &msg : conv.messages) {
 			Dictionary msg_dict;
-			msg_dict["role"] = msg.role;
-			msg_dict["content"] = msg.content;
-			msg_dict["timestamp"] = msg.timestamp;
-			msg_dict["tool_calls"] = msg.tool_calls;
-			msg_dict["tool_call_id"] = msg.tool_call_id;
-			msg_dict["name"] = msg.name;
-            msg_dict["tool_results"] = msg.tool_results;
+		msg_dict["role"] = msg.role;
+		msg_dict["content"] = msg.content;
+		msg_dict["timestamp"] = msg.timestamp;
+		msg_dict["tool_calls"] = msg.tool_calls;
+		msg_dict["tool_call_id"] = msg.tool_call_id;
+		msg_dict["name"] = msg.name;
+        msg_dict["tool_results"] = msg.tool_results;
+        msg_dict["project_context"] = msg.project_context;
 			
             // Handle attached files
 			Array files_array;
@@ -2041,7 +2200,8 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 }
 
 void AIChatDock::_on_input_text_changed() {
-	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
+	// Keep send-button enablement consistent with global busy logic
+	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || _is_busy());
 }
 // --- At-Mention Implementation ---
 // This is actually not working rn! :/ 
@@ -2145,9 +2305,44 @@ void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
 			}
 			// Shift+Enter: let the TextEdit handle it normally to create a new line
 			// (don't call set_input_as_handled() so the event propagates to TextEdit)
+		} else if (key_event->get_keycode() == Key::V && key_event->is_command_or_control_pressed()) {
+			// Cmd+V (Mac) or Ctrl+V: Check for image in clipboard
+			_handle_clipboard_paste();
 		}
 	}
 }
+
+void AIChatDock::_handle_clipboard_paste() {
+	DisplayServer *ds = DisplayServer::get_singleton();
+	if (!ds) return;
+	
+	// Check if clipboard has image data
+	if (ds->clipboard_has_image()) {
+		Ref<Image> clipboard_image = ds->clipboard_get_image();
+		if (clipboard_image.is_valid() && !clipboard_image->is_empty()) {
+			print_line("AI Chat: Clipboard image detected, adding as attachment");
+			
+			// Create temporary file for the clipboard image
+			String temp_name = "clipboard_image_" + String::num_int64(Time::get_singleton()->get_ticks_msec()) + ".png";
+			String temp_path = OS::get_singleton()->get_user_data_dir().path_join("ai_chat_temp").path_join(temp_name);
+			
+			// Ensure temp directory exists
+			DirAccess::make_dir_recursive_absolute(temp_path.get_base_dir());
+			
+			// Save clipboard image
+			Error err = clipboard_image->save_png(temp_path);
+			if (err == OK) {
+				// Attach the image
+				Vector<String> files;
+				files.push_back(temp_path);
+				_on_files_selected(files);
+			} else {
+				print_line("AI Chat: Failed to save clipboard image");
+			}
+		}
+	}
+}
+
 
 void AIChatDock::_on_model_selected(int p_index) {
 	if (model_dropdown) {
@@ -3069,6 +3264,69 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		return; // Stop further processing for this line
 	}
 
+	// Handle tool progress updates (e.g. installing assets, long-running backend work)
+	if (data.has("status") && data["status"] == "tool_progress") {
+		String tool_name = data.get("tool_name", "unknown_tool");
+		String tool_id = data.get("tool_id", "");
+		int64_t current_step = (int64_t)data.get("current", 0);
+		int64_t total_steps = (int64_t)data.get("total", 0);
+		String message = data.get("message", "Working");
+		float percent = 0.0f;
+		if (total_steps > 0) {
+			percent = (float)current_step * 100.0f / (float)total_steps;
+		}
+
+		print_line("AI Chat: Tool progress - " + tool_name + " (ID: " + tool_id + ") " + String::num_int64(current_step) + "/" + String::num_int64(total_steps));
+
+		if (chat_container && !tool_id.is_empty()) {
+			PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tool_id, true, false));
+			if (!placeholder) {
+				// Ensure a placeholder exists if backend streams progress before executing_tools
+				_create_backend_tool_placeholder(tool_id, tool_name);
+				placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tool_id, true, false));
+			}
+			if (placeholder) {
+				HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(placeholder->get_child(0));
+				if (tool_hbox) {
+					// First child is the status label added at creation time
+					Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+					if (tool_label) {
+						String status_text;
+						if (total_steps > 0) {
+							status_text = message + " (" + String::num_int64(current_step) + "/" + String::num_int64(total_steps) + ")";
+						} else {
+							status_text = message + (percent > 0.0f ? " (" + String::num(percent, 1) + "%)" : "");
+						}
+						tool_label->set_text(status_text);
+					}
+					// Add or update a simple progress indicator label as second child
+					Label *progress_label = nullptr;
+					if (tool_hbox->get_child_count() > 1) {
+						progress_label = Object::cast_to<Label>(tool_hbox->get_child(1));
+					}
+					if (!progress_label) {
+						progress_label = memnew(Label);
+						tool_hbox->add_child(progress_label);
+					}
+					String bar;
+					if (total_steps > 0) {
+						int filled = (int)CLAMP(Math::round((float)current_step * 20.0f / MAX(1.0f, (float)total_steps)), 0, 20);
+						for (int i = 0; i < 20; i++) {
+							bar += (i < filled) ? "█" : "░";
+						}
+					} else {
+						int filled = (int)CLAMP(Math::round(percent / 5.0f), 0, 20);
+						for (int i = 0; i < 20; i++) {
+							bar += (i < filled) ? "█" : "░";
+						}
+					}
+					progress_label->set_text("  [" + bar + "]");
+				}
+			}
+		}
+		return; // Stop further processing for this line
+	}
+
 	if (data.has("status") && data["status"] == "executing_tools") {
 		if (data.has("assistant_message")) {
 			Dictionary assistant_message = data["assistant_message"];
@@ -3432,7 +3690,9 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		int pre_error_count = pre_execution_errors.get("count", 0);
 
 		// Execute the tool
-		if (function_name == "get_scene_info") {
+		if (function_name == "get_project_context") {
+			result = EditorTools::get_project_context(args);
+		} else if (function_name == "get_scene_info") {
 			result = EditorTools::get_scene_info(args);
 		} else if (function_name == "get_all_nodes") {
 			result = EditorTools::get_all_nodes(args);
@@ -3442,10 +3702,8 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::get_editor_selection(args);
 		} else if (function_name == "get_node_properties") {
 			result = EditorTools::get_node_properties(args);
-        } else if (function_name == "save_scene") {
-            // Tool removed for safety - return explicit error so models stop calling it
-            result["success"] = false;
-            result["message"] = "Tool 'save_scene' has been removed. Please save scenes manually.";
+		} else if (function_name == "change_node_type") {
+			result = EditorTools::change_node_type(args);
 		} else if (function_name == "get_available_classes") {
 			result = EditorTools::get_available_classes(args);
 		} else if (function_name == "create_node") {
@@ -3460,15 +3718,43 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::move_node(args);
 		} else if (function_name == "call_node_method") {
 			result = EditorTools::call_node_method(args);
+		} else if (function_name == "create_directory") {
+			result = EditorTools::create_directory(args);
+		} else if (function_name == "copy_file") {
+			result = EditorTools::copy_file(args);
+		} else if (function_name == "move_file") {
+			result = EditorTools::move_file(args);
+		} else if (function_name == "delete_file") {
+			result = EditorTools::delete_file(args);
+		} else if (function_name == "create_symlink") {
+			result = EditorTools::create_symlink(args);
+		} else if (function_name == "refresh_filesystem") {
+			result = EditorTools::refresh_filesystem(args);
+		} else if (function_name == "create_resource") {
+			result = EditorTools::create_resource(args);
+		} else if (function_name == "assign_resource_to_node_property") {
+			result = EditorTools::assign_resource_to_node_property(args);
+		} else if (function_name == "create_new_scene_with_root") {
+			result = EditorTools::create_new_scene_with_root(args);
 		} else if (function_name == "get_node_script") {
 			result = EditorTools::get_node_script(args);
-		} else if (function_name == "attach_script") {
-			result = EditorTools::attach_script(args);
+		} else if (function_name == "detach_script") {
+			result = EditorTools::detach_script(args);
+		} else if (function_name == "reload_script") {
+			result = EditorTools::reload_script(args);
+		} else if (function_name == "refresh_global_classes") {
+			result = EditorTools::refresh_global_classes(args);
+		} else if (function_name == "get_custom_classes") {
+			result = EditorTools::get_custom_classes(args);
+		} else if (function_name == "set_node_type") {
+			result = EditorTools::set_node_type(args);
 		} else if (function_name == "manage_scene") {
 			result = EditorTools::manage_scene(args);
-		} else if (function_name == "load_and_assign_resource") {
-			result = EditorTools::load_and_assign_resource(args);
-        } else if (function_name == "add_collision_shape") {
+        } else if (function_name == "save_scene") {
+            // Tool removed for safety - return explicit error so models stop calling it
+            result["success"] = false;
+            result["message"] = "Tool 'save_scene' has been removed. Please save scenes manually.";
+		} else if (function_name == "add_collision_shape") {
 			result = EditorTools::add_collision_shape(args);
 		} else if (function_name == "list_project_files") {
 			result = EditorTools::list_project_files(args);
@@ -3668,10 +3954,18 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         } else if (function_name == "get_runtime_errors_detailed") {
             // Get detailed error information with filtering
             result = EditorTools::get_runtime_errors_detailed(args);
-        } else {
-            result["success"] = false;
-            result["message"] = "Unknown tool: " + function_name;
-        }
+		} else if (function_name == "attach_script") {
+			result = EditorTools::attach_script(args);
+		} else if (function_name == "universal_resource_manager") {
+			result = EditorTools::universal_resource_manager(args);
+		} else if (function_name == "universal_scene_manager") {
+			result = EditorTools::universal_scene_manager(args);
+		} else if (function_name == "universal_project_manager") {
+			result = EditorTools::universal_project_manager(args);
+		} else {
+			result["success"] = false;
+			result["message"] = "Unknown tool: " + function_name;
+		}
 
         // Capture any new runtime errors that occurred during tool execution
         Dictionary post_execution_errors = EditorTools::get_runtime_errors(Dictionary());
@@ -3852,7 +4146,28 @@ void AIChatDock::_on_apply_edit_thread_done() {
         ai_busy_mutex.lock();
         busy = ai_busy_count > 0;
         ai_busy_mutex.unlock();
-        is_waiting_for_response = busy || pending_tool_tasks > 0;
+        // CRITICAL FIX: Check if this was the last async tool and stream has completed
+        if (pending_tool_tasks == 0 && stream_completed_successfully && is_waiting_for_response) {
+            // All async tools completed AND stream completed - now we can clear waiting state
+            is_waiting_for_response = false;
+            stop_requested = false;
+            current_request_id = "";
+            
+            print_line("AI Chat: Last async tool completed after stream ended - clearing waiting state");
+            
+            // Clear input field now that everything is truly complete
+            if (input_field && input_field->is_inside_tree()) {
+                input_field->set_text("");
+                print_line("AI Chat: Cleared input field after last async tool completion");
+            }
+            
+            // Update UI to show send button instead of stop button
+            _update_ui_state();
+        } else {
+            print_line("AI Chat: Tool completed. pending_tools=" + String::num_int64(pending_tool_tasks) + 
+                      ", stream_completed=" + String(stream_completed_successfully ? "true" : "false") + 
+                      ", waiting=" + String(is_waiting_for_response ? "true" : "false"));
+        }
         const String tool_name = "apply_edit";
         _update_tool_placeholder_status(task->tool_call_id, tool_name, "completed");
         _add_tool_response_to_chat(task->tool_call_id, tool_name, task->args, task->result);
@@ -4250,10 +4565,10 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	Color role_color;
 
 	if (p_message.role == "user") {
-		// User messages: subtle blue background like modern chat apps
-		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.08));
+		// User messages: clearer light blue background for better distinction
+		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
 		panel_style->set_border_width_all(1);
-		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.2));
+		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
 		// Assistant messages: clean subtle background
@@ -4279,7 +4594,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	role_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	role_container->add_child(role_label);
 	
-    // Add edit button for user messages only
+    // Add edit and checkpoint buttons for user messages only
     if (p_message.role == "user" && p_message_index >= 0) {
         Button *edit_button = memnew(Button);
 		edit_button->set_text("Edit");
@@ -4288,6 +4603,15 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		
 		edit_button->connect("pressed", callable_mp(this, &AIChatDock::_on_edit_message_pressed).bind(p_message_index));
 		role_container->add_child(edit_button);
+		
+		Button *checkpoint_button = memnew(Button);
+		checkpoint_button->set_text("Restore");
+		checkpoint_button->set_custom_minimum_size(Size2(80, 20));
+		checkpoint_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
+		checkpoint_button->set_tooltip_text("Restore conversation to this user message (will lose newer messages)");
+		
+		checkpoint_button->connect("pressed", callable_mp(this, &AIChatDock::_on_checkpoint_message_pressed).bind(p_message_index));
+		role_container->add_child(checkpoint_button);
 	}
 
 	// Always create a content label for assistant to allow streaming.
@@ -4431,10 +4755,10 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	Color role_color;
 
 	if (p_message.role == "user") {
-		// User messages: subtle blue background like modern chat apps
-		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.08));
+		// User messages: clearer light blue background for better distinction
+		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
 		panel_style->set_border_width_all(1);
-		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.2));
+		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
 		// Assistant messages: clean subtle background
@@ -4460,7 +4784,7 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	role_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	role_container->add_child(role_label);
 	
-    // Add edit button for user messages only
+    // Add edit and checkpoint buttons for user messages only
     if (p_message.role == "user" && p_message_index >= 0) {
         Button *edit_button = memnew(Button);
 		edit_button->set_text("Edit");
@@ -4469,6 +4793,15 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 		
 		edit_button->connect("pressed", callable_mp(this, &AIChatDock::_on_edit_message_pressed).bind(p_message_index));
 		role_container->add_child(edit_button);
+		
+		Button *checkpoint_button = memnew(Button);
+		checkpoint_button->set_text("Restore");
+		checkpoint_button->set_custom_minimum_size(Size2(80, 20));
+		checkpoint_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
+		checkpoint_button->set_tooltip_text("Restore conversation to this user message (will lose newer messages)");
+		
+		checkpoint_button->connect("pressed", callable_mp(this, &AIChatDock::_on_checkpoint_message_pressed).bind(p_message_index));
+		role_container->add_child(checkpoint_button);
 	}
 
 	// Always create a content label for assistant to allow streaming.
@@ -5329,20 +5662,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         Array comp_errors = p_result.get("compilation_errors", Array());
         bool has_errors = p_result.get("has_errors", false);
         
-        // DEBUG: Check what we got from backend
-        Array keys = p_result.keys();
-        String keys_str = "";
-        for (int i = 0; i < keys.size(); i++) {
-            keys_str += String(keys[i]);
-            if (i < keys.size() - 1) keys_str += ", ";
-        }
-        print_line("AI Chat: Backend response keys: " + keys_str);
-        print_line("AI Chat: inline_diff from backend - length: " + itos(inline_diff.length()));
-        if (!inline_diff.is_empty()) {
-            print_line("AI Chat: inline_diff preview: " + inline_diff.left(200).replace("\n", "\\n"));
-        } else {
-            print_line("AI Chat: WARNING - inline_diff is EMPTY from backend!");
-        }
+        // (Debug logging of backend keys and inline_diff removed to reduce console noise during conversation reload.)
         
         // Get the tool call ID for proper tracking
         String tool_call_id;
@@ -5367,14 +5687,9 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             String ext = file_path.get_extension().to_lower();
             bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
             if (is_script_like) {
-                print_line("=== DEBUG: Checking if should show diff for " + file_path + " ===");
-                print_line("Original content preview: " + original_content.left(200) + "...");
-                print_line("Edited content preview: " + edited_content.left(200) + "...");
-                
-                // CRITICAL: Check and clean edited_content if it contains diff markers
+                // Check and clean edited_content if it contains diff markers
                 if (edited_content.contains("\n+ ") || edited_content.contains("\n- ") ||
                     edited_content.begins_with("+ ") || edited_content.begins_with("- ")) {
-                    print_line("ERROR: edited_content from AI contains diff markers! Cleaning...");
                     Vector<String> lines = edited_content.split("\n");
                     String cleaned;
                     for (const String &line : lines) {
@@ -5388,37 +5703,10 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                         cleaned = cleaned.substr(0, cleaned.length() - 1);
                     }
                     edited_content = cleaned;
-                    print_line("Cleaned edited_content from AI");
-                    
                     // Update the preview overlay with cleaned content
                     EditorTools::set_preview_overlay(file_path, edited_content);
                 }
-                
-                // Check if there are other tools actively editing this file
-                bool other_tools_pending = false;
-                if (active_edit_tools.has(file_path)) {
-                    Array active_tool_ids = active_edit_tools[file_path];
-                    print_line("AI Chat: Found " + itos(active_tool_ids.size()) + " active tools editing " + file_path);
-                    
-                    // Count how many other tools are still running for this file
-                    int other_active_count = 0;
-                    for (int i = 0; i < active_tool_ids.size(); i++) {
-                        String check_tool_id = active_tool_ids[i];
-                        if (check_tool_id != tool_call_id) {
-                            other_active_count++;
-                        }
-                    }
-                    other_tools_pending = (other_active_count > 0);
-                    print_line("AI Chat: " + itos(other_active_count) + " other tools still active for " + file_path);
-                }
-                
-                // Note: Diff display is now handled centrally in _on_apply_edit_thread_done
-                // to ensure we show cumulative diffs only after ALL tools for a file complete
-                if (!other_tools_pending) {
-                    print_line("AI Chat: This is the last tool editing " + file_path + " - diff will be shown by completion handler");
-                } else {
-                    print_line("AI Chat: Other tools still editing " + file_path + ", deferring diff display");
-                }
+                // Diff display handled in completion handler after all tools finish
             }
         }
 
@@ -5728,16 +6016,40 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		VBoxContainer *screenshot_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(screenshot_vbox);
 
-		String image_path = p_result.get("image_path", "");
+		Array screenshots = p_result.get("screenshots", Array());
+		int count = p_result.get("count", 0);
 		
-		HBoxContainer *screenshot_hbox = memnew(HBoxContainer);
-		screenshot_vbox->add_child(screenshot_hbox);
+		Label *header_label = memnew(Label);
+		header_label->set_text("Screenshots captured: " + String::num_int64(count));
+		header_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		header_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		screenshot_vbox->add_child(header_label);
 		
-		Label *screenshot_label = memnew(Label);
-		screenshot_label->set_text("Screenshot saved: " + image_path);
-		screenshot_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Image"), SNAME("EditorIcons")));
-		screenshot_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
-		screenshot_hbox->add_child(screenshot_label);
+		// Display each screenshot
+		for (int i = 0; i < screenshots.size(); i++) {
+			Dictionary screenshot = screenshots[i];
+			String source = screenshot.get("source", "unknown");
+			String base64_data = screenshot.get("base64", "");
+			String message = screenshot.get("message", "");
+			bool shot_success = screenshot.get("success", true);
+			
+			HBoxContainer *shot_hbox = memnew(HBoxContainer);
+			screenshot_vbox->add_child(shot_hbox);
+			
+			Label *source_label = memnew(Label);
+			source_label->set_text(source.capitalize() + ": " + message);
+			source_label->add_theme_icon_override("icon", get_theme_icon(shot_success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+			source_label->add_theme_color_override("font_color", shot_success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+			shot_hbox->add_child(source_label);
+			
+			// If we have base64 data, display the image
+			if (!base64_data.is_empty()) {
+				Dictionary metadata;
+				metadata["name"] = "screenshot_" + source;
+				metadata["source"] = source;
+				_display_image_unified(screenshot_vbox, base64_data, metadata);
+			}
+		}
 
 	} else if (p_tool_name == "create_script_file" && p_success) {
 		VBoxContainer *script_vbox = memnew(VBoxContainer);
@@ -6984,6 +7296,53 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	String message = result.get("message", "");
 	String status_text = success ? "SUCCESS" : "ERROR";
 	
+	// Special handling for take_screenshot with base64 data
+	if (p_tool_name == "take_screenshot" && success) {
+		Array screenshots = result.get("screenshots", Array());
+		print_line("AI Chat: Processing " + String::num_int64(screenshots.size()) + " screenshots from take_screenshot result");
+		for (int i = 0; i < screenshots.size(); i++) {
+			Dictionary screenshot = screenshots[i];
+			String base64_data = screenshot.get("base64", "");
+			String source = screenshot.get("source", "unknown");
+			print_line("AI Chat: Screenshot " + String::num_int64(i) + " - source: " + source + ", base64 length: " + String::num_int64(base64_data.length()));
+			
+			if (!base64_data.is_empty()) {
+				// Add the screenshot as an attached file to the current assistant message
+				AttachedFile screenshot_file;
+				screenshot_file.name = "screenshot_" + source + "_" + String::num_int64(Time::get_singleton()->get_ticks_msec()) + ".png";
+				screenshot_file.path = ""; // No file path for base64 screenshots
+				screenshot_file.content = "";
+				screenshot_file.is_image = true;
+				screenshot_file.mime_type = "image/png";
+				screenshot_file.base64_data = base64_data;
+				
+				Vector2i size = screenshot.get("size", Vector2i(0, 0));
+				screenshot_file.original_size = size;
+				screenshot_file.display_size = size;
+				screenshot_file.was_downsampled = false;
+				
+				// Add to the current assistant message
+				Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+				if (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role == "assistant") {
+					chat_history.write[chat_history.size() - 1].attached_files.push_back(screenshot_file);
+					
+					// Also add to tool results for backend context
+					Dictionary tool_result;
+					tool_result["name"] = screenshot_file.name;
+					tool_result["mime_type"] = screenshot_file.mime_type;
+					tool_result["base64_data"] = screenshot_file.base64_data;
+					tool_result["original_size"] = Vector2(screenshot_file.original_size.x, screenshot_file.original_size.y);
+					
+					Array existing_results = chat_history[chat_history.size() - 1].tool_results;
+					existing_results.push_back(tool_result);
+					chat_history.write[chat_history.size() - 1].tool_results = existing_results;
+					
+					print_line("AI Chat: Added screenshot as attached image to assistant message");
+				}
+			}
+		}
+	}
+
 	// Special formatting for apply_edit to highlight the file name
 	if (p_tool_name == "apply_edit" && success) {
 		String file_path = args.has("path") ? args.get("path", "") : args.get("file_path", "");
@@ -7309,11 +7668,20 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			// Use the new multi-modal format for images
 			Array content_array;
 			
-			// Add text content
-			if (!p_msg.content.is_empty()) {
+			// Add text content (with project context if this is a user message)
+			if (!p_msg.content.is_empty() || !p_msg.project_context.is_empty()) {
 				Dictionary text_part;
 				text_part["type"] = "text";
-				text_part["text"] = p_msg.content;
+				
+				String text_content;
+				// For user messages with project context, prepend it
+				if (p_msg.role == "user" && !p_msg.project_context.is_empty()) {
+					text_content = p_msg.project_context + p_msg.content;
+				} else {
+					text_content = p_msg.content;
+				}
+				
+				text_part["text"] = text_content;
 				content_array.push_back(text_part);
 			}
 			
@@ -7344,7 +7712,13 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			api_msg["content"] = content_array;
 		} else {
 			// Legacy format for text-only attachments
-			String combined_content = p_msg.content;
+			String combined_content;
+			// For user messages with project context, prepend it
+			if (p_msg.role == "user" && !p_msg.project_context.is_empty()) {
+				combined_content = p_msg.project_context + p_msg.content;
+			} else {
+				combined_content = p_msg.content;
+			}
 			combined_content += "\n\n**Attached Files:**\n";
 			
 			for (const AttachedFile &file : p_msg.attached_files) {
@@ -7400,7 +7774,12 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 				api_msg["content"] = p_msg.content;
 			}
 		} else {
-			api_msg["content"] = p_msg.content;
+			// For user messages with project context, prepend it to content for AI
+			if (p_msg.role == "user" && !p_msg.project_context.is_empty()) {
+				api_msg["content"] = p_msg.project_context + p_msg.content;
+			} else {
+				api_msg["content"] = p_msg.content;
+			}
 		}
 	}
 	
@@ -7414,10 +7793,11 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			file_dict["content"] = file.content;
 			file_dict["is_image"] = file.is_image;
 			file_dict["mime_type"] = file.mime_type;
-            // Only include raw base64 for user attachments (inputs), never for assistant/tool outputs
-            if (p_msg.role == "user") {
-                file_dict["base64_data"] = file.base64_data;
-            }
+            // NEVER include base64 data in API messages to prevent token explosion
+            // The backend will use image references instead
+            // if (p_msg.role == "user") {
+            //     file_dict["base64_data"] = file.base64_data;
+            // }
 			file_dict["original_size_x"] = file.original_size.x;
 			file_dict["original_size_y"] = file.original_size.y;
 			file_dict["display_size_x"] = file.display_size.x;
@@ -7445,14 +7825,39 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			json_min.instantiate();
 			api_msg["content"] = json_min->stringify(raw);
 		} else {
-			api_msg["content"] = p_msg.content;
+			// Sanitize heavy fields from tool results before sending to backend
+			Dictionary raw;
+			bool parsed = false;
+			if (!String(p_msg.content).is_empty()) {
+				Ref<JSON> json_tool;
+				json_tool.instantiate();
+				if (json_tool->parse(p_msg.content) == OK) {
+					raw = json_tool->get_data();
+					parsed = true;
+				}
+			}
+			if (parsed) {
+				// Known large payload keys
+				raw.erase("asset_data");
+				raw.erase("glb_data");
+				raw.erase("frames");
+				// Remove any fields that look like base64 payloads
+				for (const Variant *k = raw.next(); k; k = raw.next(k)) {
+					String key = *k;
+					if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes")) {
+						raw.erase(key);
+					}
+				}
+				Ref<JSON> json_min2;
+				json_min2.instantiate();
+				api_msg["content"] = json_min2->stringify(raw);
+			} else {
+				api_msg["content"] = p_msg.content;
+			}
 		}
 	}
 	
-	// Save tool results
-	if (!p_msg.tool_results.is_empty()) {
-		api_msg["tool_results"] = p_msg.tool_results;
-	}
+	// Intentionally omit tool_results from outgoing API to avoid massive payloads
 	
 	// Save timestamp
 	if (!p_msg.timestamp.is_empty()) {
@@ -7466,6 +7871,180 @@ void AIChatDock::_finalize_chat_request() {
 	Dictionary request_data;
 	request_data["messages"] = _chunked_messages;
 	request_data["model"] = model;
+
+	// Build comprehensive editor context pack with project structure
+	Dictionary context;
+	context["project_root"] = _get_project_root_path();
+	context["machine_id"] = get_machine_id();
+	
+	// Add comprehensive project structure to context
+	Dictionary context_args;
+	context_args["operation"] = "structure";
+	Dictionary project_structure = EditorTools::get_project_context(context_args);
+	
+	if (project_structure.has("success") && project_structure["success"] && project_structure.has("context")) {
+		Dictionary structure = project_structure["context"];
+		
+		// Add project metadata
+		if (structure.has("project_name")) {
+			context["project_name"] = structure["project_name"];
+		}
+		
+		// Add scenes overview
+		if (structure.has("scenes")) {
+			Array scenes = structure["scenes"];
+			Array scene_summary;
+			for (int i = 0; i < MIN(scenes.size(), 15); i++) { // Limit for payload size
+				Dictionary scene = scenes[i];
+				Dictionary scene_info;
+				scene_info["name"] = scene.get("name", "");
+				scene_info["path"] = scene.get("path", "");
+				scene_summary.push_back(scene_info);
+			}
+			context["scenes"] = scene_summary;
+			context["scenes_count"] = scenes.size();
+		}
+		
+		// Add scripts overview  
+		if (structure.has("scripts")) {
+			Array scripts = structure["scripts"];
+			Array script_summary;
+			for (int i = 0; i < MIN(scripts.size(), 15); i++) { // Limit for payload size
+				Dictionary script = scripts[i];
+				Dictionary script_info;
+				script_info["name"] = script.get("name", "");
+				script_info["path"] = script.get("path", "");
+				script_summary.push_back(script_info);
+			}
+			context["scripts"] = script_summary;
+			context["scripts_count"] = scripts.size();
+		}
+		
+		// Add folder structure
+		if (structure.has("folders")) {
+			Array folders = structure["folders"];
+			Array folder_summary;
+			for (int i = 0; i < MIN(folders.size(), 20); i++) { // Limit for payload size
+				folder_summary.push_back(folders[i]);
+			}
+			context["folders"] = folder_summary;
+			context["folders_count"] = folders.size();
+		}
+		
+		// Add autoloads if available
+		if (structure.has("autoloads")) {
+			context["autoloads"] = structure["autoloads"];
+		}
+		
+		// Add input actions if available
+		if (structure.has("input_actions")) {
+			context["input_actions"] = structure["input_actions"];
+		}
+		
+		// Add a trimmed scene hierarchy for the currently edited scene (depth-limited)
+		Dictionary scene_info_args;
+		Dictionary scene_info = EditorTools::get_scene_info(scene_info_args);
+		if (scene_info.get("success", false) && scene_info.has("root_node")) {
+			Dictionary root = scene_info["root_node"];
+			// Summarize recursively with depth and child caps to avoid large payloads
+			int max_depth = 2; // root + two levels
+			int max_children = 25; // cap children per node
+			std::function<Dictionary(const Dictionary&, int)> summarize_node = [&](const Dictionary &node, int depth) -> Dictionary {
+				Dictionary out;
+				out["name"] = node.get("name", "");
+				out["type"] = node.get("type", "");
+				Array children = node.get("children", Array());
+				out["children_count"] = children.size();
+				if (depth > 0 && children.size() > 0) {
+					Array out_children;
+					int limit = MIN(children.size(), max_children);
+					for (int i = 0; i < limit; i++) {
+						Variant v = children[i];
+						if (v.get_type() == Variant::DICTIONARY) {
+							Dictionary child = v;
+							out_children.push_back(summarize_node(child, depth - 1));
+						}
+					}
+					out["children"] = out_children;
+				}
+				return out;
+			};
+			context["scene_hierarchy"] = summarize_node(root, max_depth);
+		}
+		
+		print_line("AI Chat: Enhanced context with project structure data");
+	} else {
+		print_line("AI Chat: Could not gather project structure for context: " + String(project_structure.get("error", "No error info")));
+	}
+	// Current script, caret position, and selected text
+	String current_file_path;
+	Dictionary cursor;
+	String selected_text;
+	{
+		ScriptEditor *script_editor = ScriptEditor::get_singleton();
+		if (script_editor) {
+			ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(script_editor->get_current_editor());
+			if (ste) {
+				Ref<Script> script = ste->get_edited_resource();
+				if (script.is_valid()) {
+					current_file_path = script->get_path();
+				}
+				CodeTextEditor *code_editor = ste->get_code_editor();
+				if (code_editor) {
+					CodeEdit *text_editor = code_editor->get_text_editor();
+					if (text_editor) {
+						cursor["line"] = text_editor->get_caret_line();
+						cursor["column"] = text_editor->get_caret_column();
+						String sel = text_editor->get_selected_text();
+						// Truncate to keep payload small
+						if (sel.length() > 4000) {
+							selected_text = sel.left(4000);
+						} else {
+							selected_text = sel;
+						}
+					}
+				}
+			}
+		}
+	}
+	if (!current_file_path.is_empty()) {
+		context["current_file"] = current_file_path;
+	}
+	if (!cursor.is_empty()) {
+		context["cursor"] = cursor;
+	}
+	if (!selected_text.is_empty()) {
+		context["selected_text"] = selected_text;
+	}
+	// Open scripts
+	{
+		PackedStringArray open_files;
+		ScriptEditor *script_editor = ScriptEditor::get_singleton();
+		if (script_editor) {
+			const Vector<Ref<Script>> &open_scripts = script_editor->get_open_scripts();
+			for (int i = 0; i < open_scripts.size(); i++) {
+				const Ref<Script> &scr = open_scripts[i];
+				if (scr.is_valid()) {
+					String p = scr->get_path();
+					if (!p.is_empty()) {
+						open_files.push_back(p);
+					}
+				}
+			}
+		}
+		if (open_files.size() > 0) {
+			context["open_files"] = open_files;
+		}
+	}
+	// Scene selection snapshot
+	{
+		Dictionary args;
+		Dictionary sel = EditorTools::get_editor_selection(args);
+		if (!sel.is_empty()) {
+			context["selected_nodes"] = sel.get("selected_nodes", Array());
+		}
+	}
+	request_data["context"] = context;
 
 	// Debug summary of conversation structure for tool debugging
 	int assistant_tool_count = 0;
@@ -7520,7 +8099,7 @@ void AIChatDock::_finalize_chat_request() {
 			}
 			print_line("AI Chat: ERROR - Unmatched tool call IDs: " + unmatched_ids);
 		} else {
-			print_line("AI Chat: All tool calls have matching responses ✓");
+			print_line("AI Chat: All tool calls have matching responses");
 		}
 	}
 
@@ -7625,7 +8204,7 @@ void AIChatDock::_update_ui_state() {
 		// Enable stop if we have an active request, requested stop, or pending work
 		bool has_active_request = !current_request_id.is_empty();
 		bool has_pending_work = pending_tool_tasks > 0;
-		bool should_enable_stop = has_active_request || has_pending_work;
+		bool should_enable_stop = stop_requested || has_active_request || has_pending_work;
 		stop_button->set_disabled(!should_enable_stop);
 
 		// Ensure red styling remains applied even when disabled
@@ -7684,13 +8263,22 @@ void AIChatDock::_request_completed() {
 		_queue_delayed_save();
 	}
 
-	// If async frontend tools (e.g., apply_edit) are still running, keep UI in waiting state
+	// CRITICAL FIX: _request_completed() means the backend stream has ended,
+	// but we should only clear the waiting state if there are no async tools running.
+	// The assistant streaming is complete when we reach this point.
 	bool has_async_work = pending_tool_tasks > 0;
-	is_waiting_for_response = has_async_work ? true : false;
-	// Preserve the last valid request_id if async work is running so the Stop button stays enabled.
-	if (!has_async_work) {
+	
+	if (has_async_work) {
+		// Keep UI in waiting state while async tools finish, but assistant streaming is done
+		print_line("AI Chat: Assistant stream completed, but " + String::num_int64(pending_tool_tasks) + " async tools still running");
+		// Don't change is_waiting_for_response - let async tools complete first
+	} else {
+		// No async work, so we can fully complete the request
+		is_waiting_for_response = false;
 		stop_requested = false;
 		current_request_id = "";
+		
+		print_line("AI Chat: Request fully completed - clearing waiting state");
 		
 		// NOW clear the input field since the conversation is truly complete
 		if (input_field && input_field->is_inside_tree()) {
@@ -8073,6 +8661,7 @@ void AIChatDock::_load_conversations() {
             msg.tool_calls = msg_dict.get("tool_calls", Array());
             msg.tool_call_id = msg_dict.get("tool_call_id", "");
             msg.name = msg_dict.get("name", "");
+            msg.project_context = msg_dict.get("project_context", "");
 
             // Load attached files
             Array attached_files_array = msg_dict.get("attached_files", Array());
@@ -8152,13 +8741,15 @@ void AIChatDock::_save_conversations() {
         for (int j = 0; j < conv.messages.size(); j++) {
             const ChatMessage &msg = conv.messages[j];
             Dictionary msg_dict;
-            msg_dict["role"] = msg.role;
-            msg_dict["content"] = msg.content;
-            msg_dict["timestamp"] = msg.timestamp;
-            msg_dict["tool_calls"] = msg.tool_calls;
-            msg_dict["tool_call_id"] = msg.tool_call_id;
-            msg_dict["name"] = msg.name;
-            msg_dict["tool_results"] = msg.tool_results;
+		msg_dict["role"] = msg.role;
+		msg_dict["content"] = msg.content;
+		msg_dict["timestamp"] = msg.timestamp;
+		msg_dict["tool_calls"] = msg.tool_calls;
+		msg_dict["tool_call_id"] = msg.tool_call_id;
+		msg_dict["name"] = msg.name;
+        msg_dict["tool_results"] = msg.tool_results;
+        msg_dict["project_context"] = msg.project_context;
+            msg_dict["project_context"] = msg.project_context;
 
             // Save attached files
             Array attached_files_array;
@@ -8383,6 +8974,17 @@ void AIChatDock::_switch_to_conversation(int p_index) {
 	_rebuild_conversation_ui(messages);
 	
 	call_deferred("_scroll_to_bottom");
+	
+	// Persist last active conversation ID for next session
+	if (EditorSettings::get_singleton()) {
+		EditorSettings::get_singleton()->set_setting("ai_chat/last_active_conversation_id", conversations[p_index].id);
+	}
+	
+	// Queue a save to persist any pending edit map changes from previous convo
+	_queue_delayed_save();
+	
+	// Keep dropdown selection in sync
+	_update_conversation_dropdown();
 }
 
 void AIChatDock::_update_conversation_dropdown() {
@@ -9734,6 +10336,12 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 			if (p_status == "starting") {
 				tool_label->set_text("Executing: " + p_tool_name + "...");
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
+			} else if (p_status == "running") {
+				tool_label->set_text("Running: " + p_tool_name + "...");
+				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			} else if (p_status == "completed") {
+				tool_label->set_text("Completed: " + p_tool_name);
+				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
 		}
 	}
@@ -11698,6 +12306,10 @@ void AIChatDock::_remove_pending_edits_for_file(const String &p_file_path) {
 	
 	// Clear the file mapping
 	file_to_tool_ids.erase(p_file_path);
+
+	// Persist and refresh after removing all entries for this file
+	_update_pending_edits_banner();
+	_queue_delayed_save();
 }
 void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const String &p_content) {
 	print_line("AI Chat: Unified accept handler for file: " + p_file_path);
@@ -12206,6 +12818,276 @@ bool AIChatDock::_save_glb_model_to_path(const String &p_glb_data, const String 
 	}
 	
 	return true;
+}
+
+// Git checkpoints system implementation
+void AIChatDock::_init_checkpoints_repo() {
+    // Deprecated: internal checkpoints dir no longer used
+}
+
+bool AIChatDock::_create_checkpoint(const String &p_message, int p_message_index) {
+    String project_root = _get_project_root_path();
+    String checkpoint_name = _get_checkpoint_name(p_message_index);
+    
+    print_line("AI Chat: Creating project checkpoint: " + checkpoint_name);
+    
+    // Change to project root directory for Git operations
+    String old_cwd = OS::get_singleton()->get_environment("PWD");
+    OS::get_singleton()->set_cwd(project_root);
+    
+    // Check if project has Git repo, if not initialize it
+    String git_dir = project_root.path_join(".git");
+    if (!DirAccess::exists(git_dir)) {
+        List<String> init_args;
+        init_args.push_back("init");
+        String output;
+        int exitcode;
+        Error err = OS::get_singleton()->execute("git", init_args, &output, &exitcode, false, nullptr, false);
+        if (err != OK || exitcode != 0) {
+            print_line("AI Chat: Failed to initialize project Git repo: " + output);
+            if (!old_cwd.is_empty()) {
+                OS::get_singleton()->set_cwd(old_cwd);
+            }
+            return false;
+        }
+        print_line("AI Chat: Initialized Git repository in project root");
+        
+        // Set git config for AI checkpoints
+        List<String> config_args;
+        config_args.push_back("config");
+        config_args.push_back("user.name");
+        config_args.push_back("AI Chat Checkpoints");
+        OS::get_singleton()->execute("git", config_args, &output, &exitcode, false, nullptr, false);
+        
+        config_args.clear();
+        config_args.push_back("config");
+        config_args.push_back("user.email");
+        config_args.push_back("ai-chat@godot.local");
+        OS::get_singleton()->execute("git", config_args, &output, &exitcode, false, nullptr, false);
+    }
+    
+    // Add all files to Git (stage everything)
+    List<String> add_args;
+    add_args.push_back("add");
+    add_args.push_back("-A"); // Add all files including deletions
+    
+    String output;
+    int exitcode;
+    Error git_err = OS::get_singleton()->execute("git", add_args, &output, &exitcode, false, nullptr, false);
+    
+    if (git_err == OK && exitcode == 0) {
+        // Create commit with checkpoint tag
+        List<String> commit_args;
+        commit_args.push_back("commit");
+        commit_args.push_back("-m");
+        commit_args.push_back("AI Chat Checkpoint: " + checkpoint_name + " - " + p_message.substr(0, 50) + (p_message.length() > 50 ? "..." : ""));
+        
+        git_err = OS::get_singleton()->execute("git", commit_args, &output, &exitcode, false, nullptr, false);
+        if (git_err == OK && exitcode == 0) {
+            // Create a tag for easy reference
+            List<String> tag_args;
+            tag_args.push_back("tag");
+            tag_args.push_back(checkpoint_name);
+            tag_args.push_back("-m");
+            tag_args.push_back("AI Chat checkpoint for message " + String::num_int64(p_message_index));
+            
+            OS::get_singleton()->execute("git", tag_args, &output, &exitcode, false, nullptr, false);
+            
+            print_line("AI Chat: Created project checkpoint: " + checkpoint_name);
+            
+            // Restore original directory
+            if (!old_cwd.is_empty()) {
+                OS::get_singleton()->set_cwd(old_cwd);
+            }
+            return true;
+        } else {
+            print_line("AI Chat: Failed to commit checkpoint: " + output);
+        }
+    } else {
+        print_line("AI Chat: Failed to add files for checkpoint: " + output);
+    }
+    
+    // Restore original directory
+    if (!old_cwd.is_empty()) {
+        OS::get_singleton()->set_cwd(old_cwd);
+    }
+    
+    return false;
+}
+
+String AIChatDock::_get_checkpoint_name(int p_message_index) {
+    String timestamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "-").replace(" ", "_");
+    return "msg_" + String::num_int64(p_message_index) + "_" + timestamp;
+}
+
+void AIChatDock::_on_checkpoint_message_pressed(int p_message_index) {
+    Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+    if (p_message_index < 0 || p_message_index >= chat_history.size()) {
+        print_line("AI Chat: Invalid message index for restore: " + String::num(p_message_index));
+        return;
+    }
+    
+    const ChatMessage &message = chat_history[p_message_index];
+    if (message.role != "user") {
+        print_line("AI Chat: Can only restore to user messages, but got role: " + message.role);
+        return;
+    }
+    
+    // Check if there are newer messages that would be lost
+    bool has_newer_messages = (p_message_index < chat_history.size() - 1);
+    if (!has_newer_messages) {
+        print_line("AI Chat: No newer messages to restore from - already at this point");
+        return;
+    }
+    
+    // Store the message index for the confirmation callback
+    pending_restore_message_index = p_message_index;
+    
+    // Show confirmation dialog
+    int messages_to_lose = chat_history.size() - 1 - p_message_index;
+    String dialog_text = "This will restore the conversation to this user message and remove " + String::num_int64(messages_to_lose) + " newer message" + (messages_to_lose > 1 ? "s" : "") + ".\n\nThis action cannot be undone. Do you want to continue?";
+    restore_checkpoint_dialog->set_text(dialog_text);
+    restore_checkpoint_dialog->popup_centered();
+}
+
+void AIChatDock::_on_restore_checkpoint_confirmed() {
+    if (pending_restore_message_index < 0) {
+        return;
+    }
+    
+    // Restore from the actual Git checkpoint
+    bool success = _restore_from_checkpoint(pending_restore_message_index);
+    if (!success) {
+        print_line("AI Chat: Failed to restore from checkpoint");
+    }
+    
+    // Reset pending index
+    pending_restore_message_index = -1;
+}
+
+bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
+    String project_root = _get_project_root_path();
+    String checkpoint_name = _get_checkpoint_name(p_message_index);
+    
+    print_line("AI Chat: Restoring project to checkpoint: " + checkpoint_name);
+    
+    // Change to project root directory for Git operations
+    String old_cwd = OS::get_singleton()->get_environment("PWD");
+    OS::get_singleton()->set_cwd(project_root);
+    
+    // Check if the tag exists
+    List<String> tag_args;
+    tag_args.push_back("tag");
+    tag_args.push_back("-l");
+    tag_args.push_back("msg_" + String::num_int64(p_message_index) + "_*");
+    
+    String output;
+    int exitcode;
+    Error git_err = OS::get_singleton()->execute("git", tag_args, &output, &exitcode, false, nullptr, false);
+    
+    if (git_err != OK || exitcode != 0 || output.strip_edges().is_empty()) {
+        print_line("AI Chat: No checkpoint tag found for message index " + String::num_int64(p_message_index));
+        if (!old_cwd.is_empty()) {
+            OS::get_singleton()->set_cwd(old_cwd);
+        }
+        return false;
+    }
+    
+    // Get the first matching tag
+    PackedStringArray tags = output.strip_edges().split("\n");
+    if (tags.is_empty() || tags[0].is_empty()) {
+        print_line("AI Chat: No checkpoint tags found for message index " + String::num_int64(p_message_index));
+        if (!old_cwd.is_empty()) {
+            OS::get_singleton()->set_cwd(old_cwd);
+        }
+        return false;
+    }
+    
+    String target_tag = tags[0];
+    print_line("AI Chat: Found checkpoint tag: " + target_tag);
+    
+    // Reset project to the checkpoint (hard reset)
+    List<String> reset_args;
+    reset_args.push_back("reset");
+    reset_args.push_back("--hard");
+    reset_args.push_back(target_tag);
+    
+    git_err = OS::get_singleton()->execute("git", reset_args, &output, &exitcode, false, nullptr, false);
+    
+    // Restore original directory
+    if (!old_cwd.is_empty()) {
+        OS::get_singleton()->set_cwd(old_cwd);
+    }
+    
+    if (git_err != OK || exitcode != 0) {
+        print_line("AI Chat: Failed to reset project to checkpoint: " + output);
+        return false;
+    }
+    
+    print_line("AI Chat: Successfully restored project to checkpoint: " + target_tag);
+    
+    // Force Godot to reload all changed files and editor state immediately
+    if (EditorFileSystem::get_singleton()) {
+        EditorFileSystem::get_singleton()->scan_changes();
+    }
+    if (ScriptEditor::get_singleton()) {
+        ScriptEditor *se = ScriptEditor::get_singleton();
+        const Vector<Ref<Script>> &open_scripts = se->get_open_scripts();
+        for (int i = 0; i < open_scripts.size(); i++) {
+            Ref<Script> script = open_scripts[i];
+            if (script.is_valid()) {
+                String spath = script->get_path();
+                if (!spath.is_empty()) {
+                    se->trigger_live_script_reload(spath);
+                }
+            }
+        }
+        // Light-weight reload to refresh editors without dialog
+        se->reload_scripts(false);
+    }
+    if (EditorNode::get_singleton()) {
+        Node *edited_scene = EditorNode::get_singleton()->get_edited_scene();
+        if (edited_scene) {
+            String scene_path = edited_scene->get_scene_file_path();
+            if (!scene_path.is_empty()) {
+                EditorNode::get_singleton()->reload_scene(scene_path);
+            }
+        }
+    }
+    
+    // Also restore conversation to match the checkpoint
+    Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+    
+    // Remove all messages after the checkpoint message
+    while (chat_history.size() > p_message_index + 1) {
+        chat_history.remove_at(chat_history.size() - 1);
+    }
+    
+    print_line("AI Chat: Restored conversation to " + String::num_int64(chat_history.size()) + " messages");
+    
+    // Clear the existing UI first
+    if (chat_container != nullptr) {
+        for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+            Node *child = chat_container->get_child(i);
+            if (child != nullptr && child != pending_edits_banner) {
+                child->queue_free();
+            }
+        }
+    }
+    
+    // Rebuild the UI to reflect the restored conversation
+    _rebuild_conversation_ui(chat_history);
+    
+    // Force scroll to bottom after restore
+    call_deferred("_scroll_to_bottom");
+    
+    // Save the modified conversation
+    if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+        conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+        _queue_delayed_save();
+    }
+    
+    return true;
 }
 
 AIChatDock::~AIChatDock() {

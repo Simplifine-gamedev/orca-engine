@@ -145,6 +145,42 @@ def _estimate_token_count(text: str) -> int:
     """Rough estimation of token count (approximately 4 characters per token)"""
     return len(text) // 4
 
+def _estimate_message_tokens(msg: dict) -> int:
+    """Smart token estimation that handles images separately"""
+    if not isinstance(msg, dict):
+        return 0
+    
+    content = msg.get('content', '')
+    base_tokens = 0
+    
+    # Handle different content types
+    if isinstance(content, str):
+        # Check for massive base64 data in content and cap it
+        if 'base64' in content and len(content) > 50000:
+            # This is likely a message with embedded base64 - cap at reasonable estimate
+            base_tokens = 1000  # Fixed cost for large base64 content
+        else:
+            base_tokens = _estimate_token_count(content)
+    elif isinstance(content, list):
+        # Multi-modal content (text + images)
+        for item in content:
+            if isinstance(item, dict):
+                if item.get('type') == 'text':
+                    base_tokens += _estimate_token_count(item.get('text', ''))
+                elif item.get('type') == 'image_url':
+                    # Images are ~85 tokens each in GPT-4V, regardless of size
+                    base_tokens += 85
+    
+    # Check for images field (frontend format)
+    if 'images' in msg and isinstance(msg['images'], list):
+        base_tokens += 85 * len(msg['images'])  # 85 tokens per image
+    
+    # Add tokens for other fields
+    if msg.get('tool_calls'):
+        base_tokens += 50 * len(msg['tool_calls'])  # ~50 tokens per tool call
+    
+    return base_tokens
+
 def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     """Manage conversation length to prevent token limit exceeded errors"""
     # Model-specific token limits (leaving safety margin)
@@ -158,12 +194,10 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     
     limit = TOKEN_LIMITS.get(model, 100000)  # Default conservative limit
     
-    # Calculate current token usage
+    # Calculate current token usage with smart image handling
     total_tokens = 0
     for msg in messages:
-        if isinstance(msg, dict):
-            content = str(msg.get('content', ''))
-            total_tokens += _estimate_token_count(content)
+        total_tokens += _estimate_message_tokens(msg)
     
     if total_tokens <= limit:
         return messages  # No pruning needed
@@ -193,7 +227,7 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     pruned_messages.extend(recent_messages)
     
     # Verify we're under the limit
-    pruned_tokens = sum(_estimate_token_count(str(msg.get('content', ''))) for msg in pruned_messages)
+    pruned_tokens = sum(_estimate_message_tokens(msg) for msg in pruned_messages)
     print(f"CONVERSATION_PRUNE: Reduced from {total_tokens} to {pruned_tokens} tokens ({len(messages)} to {len(pruned_messages)} messages)")
     
     return pruned_messages
@@ -1803,6 +1837,7 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     elif function_name == "check_for_app_updates":
         return check_for_app_updates_internal(arguments)
     # Note: Game testing tools (start_game, stop_game, etc.) are frontend-only and not executed in backend
+    # Note: get_project_context is also frontend-only and provides structure data directly
     else:
         # This shouldn't happen if we filter correctly
         print(f"WARNING: Unknown backend tool called: {function_name}")
@@ -1814,12 +1849,251 @@ godot_tools = [
     {
         "type": "function",
         "function": {
+            "name": "get_project_context",
+            "description": "Get comprehensive project structure and context. ALWAYS use this FIRST before creating scenes, nodes, or scripts to understand what already exists in the project. This prevents duplicates and naming conflicts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["structure", "hierarchy", "find_scenes", "patterns"],
+                        "description": "Operation type: 'structure' for full project overview, 'hierarchy' for specific scene details, 'find_scenes' to check existing scenes, 'patterns' to understand project conventions"
+                    },
+                    "project_root": {
+                        "type": "string",
+                        "description": "Project root path (optional, uses current project by default)"
+                    },
+                    "scene_path": {
+                        "type": "string",
+                        "description": "Scene path for 'hierarchy' operation"
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Search pattern for 'find_scenes' operation"
+                    },
+                    "include_details": {
+                        "type": "boolean",
+                        "description": "Include detailed analysis (default true)"
+                    }
+                },
+                "required": ["operation"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_scene_info",
             "description": "Get information about the current scene including root node and structure",
             "parameters": {
                 "type": "object",
                 "properties": {},
                 "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "change_node_type",
+            "description": "Safely change a node's type by creating a replacement and reparenting children",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to node to replace"},
+                    "new_type": {"type": "string", "description": "New node type (e.g., 'Node3D')"},
+                    "preserve_children": {"type": "boolean", "default": True},
+                    "strategy": {"type": "string", "enum": ["wrap_root", "swap"], "default": "wrap_root"}
+                },
+                "required": ["path", "new_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_resource",
+            "description": "Create a Resource (e.g., BoxMesh, StandardMaterial3D) with optional properties and optional save path",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string"},
+                    "properties": {"type": "object"},
+                    "save_path": {"type": "string"}
+                },
+                "required": ["type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assign_resource_to_node_property",
+            "description": "Assign a resource (by path, RID from create_resource, or inline spec) to a node property",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "property": {"type": "string"},
+                    "resource": {}
+                },
+                "required": ["path", "property", "resource"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_new_scene_with_root",
+            "description": "Create a new scene with a specific root type and save it; optionally attach current scene under it",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "new_root_type": {"type": "string"},
+                    "new_scene_path": {"type": "string"},
+                    "include_current_as_child": {"type": "boolean", "default": False}
+                },
+                "required": ["new_root_type", "new_scene_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_directory",
+            "description": "Create a directory within the project",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "copy_file",
+            "description": "Copy a file within the project",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "overwrite": {"type": "boolean", "default": False}
+                },
+                "required": ["source", "destination"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_file",
+            "description": "Move/rename a file within the project",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "overwrite": {"type": "boolean", "default": False}
+                },
+                "required": ["source", "destination"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": "Delete a file within the project",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_symlink",
+            "description": "Create a symlink within the project (platform dependent)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "link_path": {"type": "string"}
+                },
+                "required": ["target", "link_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "refresh_filesystem",
+            "description": "Refresh the editor's file system view",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "universal_resource_manager",
+            "description": "Smart resource operations: create, inspect, modify, copy_from_template with type-aware handling",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["create", "inspect", "modify", "assign", "copy_from_template"]},
+                    "type": {"type": "string"},
+                    "target": {"type": "string"},
+                    "properties": {"type": "object"},
+                    "source_template": {"type": "string"},
+                    "path": {"type": "string"},
+                    "property": {"type": "string"},
+                    "resource": {"type": "object"},
+                    "save_path": {"type": "string"}
+                },
+                "required": ["operation"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "universal_scene_manager",
+            "description": "Smart scene operations: analyze, bulk_configure, copy_configuration with validation",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["analyze", "bulk_configure", "copy_configuration"]},
+                    "scope": {"type": "string"},
+                    "targets": {"type": "array", "items": {"type": "string"}},
+                    "transformations": {"type": "object"},
+                    "validation": {"type": "boolean", "default": True},
+                    "source": {"type": "string"}
+                },
+                "required": ["operation"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "universal_project_manager",
+            "description": "Smart project operations: analyze_directory, copy_directory, update_references with dependency awareness",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["analyze_directory", "copy_directory", "update_references"]},
+                    "target_path": {"type": "string"},
+                    "source_addon": {"type": "string"},
+                    "target_addon": {"type": "string"},
+                    "old_path": {"type": "string"},
+                    "new_path": {"type": "string"},
+                    "file_patterns": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["operation"]
             }
         }
     },
@@ -2047,6 +2321,71 @@ godot_tools = [
                     }
                 },
                 "required": ["path", "script_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "detach_script",
+            "description": "Remove script from a node",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the node"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reload_script",
+            "description": "Reload a script to refresh class_name registration",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "script_path": {"type": "string"},
+                    "path": {"type": "string"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "refresh_global_classes",
+            "description": "Force refresh of global class registrations",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_custom_classes",
+            "description": "List custom global classes with class_name",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_node_type",
+            "description": "Set node type via script or class replacement",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "type_name": {"type": "string"},
+                    "script_path": {"type": "string"}
+                },
+                "required": ["path"]
             }
         }
     },
@@ -2441,12 +2780,37 @@ godot_tools = [
         "type": "function",
         "function": {
             "name": "search_across_godot_docs",
-            "description": "Search the latest Godot documentation (tutorials and class reference) using semantic similarity.",
+            "description": "Search the latest Godot documentation with multiple modes and intelligent filtering. Perfect for learning Godot patterns and finding working code examples.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "What to find in the docs (natural language)."},
-                    "max_results": {"type": "integer", "description": "Maximum results (default 5)", "default": 5}
+                    "query": {"type": "string", "description": "What to find in the docs (natural language or specific terms)."},
+                    "max_results": {"type": "integer", "description": "Maximum results (default 5)", "default": 5},
+                    "search_mode": {
+                        "type": "string", 
+                        "enum": ["auto", "semantic", "keyword", "hybrid"],
+                        "description": "Search mode: 'auto' (best mode detection), 'semantic' (meaning-based), 'keyword' (exact terms), 'hybrid' (both)",
+                        "default": "auto"
+                    },
+                    "section_filter": {
+                        "type": "string",
+                        "enum": ["overview", "methods", "properties", "signals"],
+                        "description": "Filter by documentation section"
+                    },
+                    "class_filter": {
+                        "type": "string",
+                        "description": "Filter by specific class (e.g., 'CharacterBody3D', 'Camera3D')"
+                    },
+                    "difficulty": {
+                        "type": "string",
+                        "enum": ["beginner", "intermediate", "advanced"],
+                        "description": "Filter by difficulty level"
+                    },
+                    "code_examples_only": {
+                        "type": "boolean",
+                        "description": "Only return documentation with code examples",
+                        "default": False
+                    }
                 },
                 "required": ["query"]
             }
@@ -2650,6 +3014,35 @@ godot_tools = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": "Take a screenshot of the editor or running game with multiple capture modes",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename for the screenshot",
+                        "default": "screenshot_debug.png"
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["editor", "game", "both"],
+                        "description": "What to capture: editor viewport, game viewport, or both",
+                        "default": "editor"
+                    },
+                    "return_base64": {
+                        "type": "boolean",
+                        "description": "Return base64 data instead of saving to file (for immediate chat display)",
+                        "default": False
+                    }
+                },
+                "required": []
+            }
+        }
+    },
     # {
     #     "type": "function",
     #     "function": {
@@ -2718,8 +3111,9 @@ def stop_chat():
             print(f"STOP_REQUEST: Marked request {request_id} for stopping")
             return jsonify({"success": True, "message": "Stop signal sent"})
         else:
-            print(f"STOP_REQUEST: Request {request_id} not found in active requests")
-            return jsonify({"success": False, "message": "Request not found or already completed"}), 404
+            # Idempotent behavior: treat missing as already stopped/completed
+            print(f"STOP_REQUEST: Request {request_id} not found; treating as already completed")
+            return jsonify({"success": True, "message": "Already completed"}), 200
 
 @app.route('/clear_conversation', methods=['POST'])
 def clear_conversation():
@@ -2938,6 +3332,7 @@ def chat():
         return jsonify({"error": "Invalid request body"}), 400
 
     messages = data.get('messages', [])
+    context = data.get('context') or {}
     requested_model = data.get('model')
     model = get_validated_chat_model(requested_model)  # Restrict to allowed models
 
@@ -2975,6 +3370,9 @@ def chat():
             
             # Filter out any None or invalid messages from the start
             conversation_messages = []
+            # Track tool usage and simple per-request caching to avoid infinite loops
+            tool_call_counts: dict[str, int] = {}
+            tool_result_cache: dict[str, dict] = {}
             for msg in messages:
                 if msg is not None and isinstance(msg, dict) and msg.get('role'):
                     conversation_messages.append(msg)
@@ -2996,6 +3394,55 @@ def chat():
                     g.project_root = prj_hdr
             except Exception:
                 pass
+
+            # Attach editor-provided context as a high-signal system message early
+            if isinstance(context, dict) and context:
+                try:
+                    # Keep it compact and explicit; avoid leaking huge blobs
+                    minimized = {
+                        'type': 'godot_editor_context',
+                        'project_root': context.get('project_root'),
+                        'current_file': context.get('current_file'),
+                        'cursor': context.get('cursor'),
+                        'open_files': context.get('open_files'),
+                        'selected_nodes': context.get('selected_nodes'),
+                        'selected_text': context.get('selected_text')[:4000] if isinstance(context.get('selected_text'), str) else None,
+                    }
+
+                    # Include optional project structure fields if present (frontend may include these)
+                    try:
+                        def _copy_if_present(key, limiter=None):
+                            if key in context and context.get(key) is not None:
+                                val = context.get(key)
+                                if limiter and isinstance(val, list):
+                                    minimized[key] = val[:limiter]
+                                else:
+                                    minimized[key] = val
+
+                        # Basic metadata
+                        _copy_if_present('project_name')
+
+                        # Summaries (cap list sizes just in case)
+                        _copy_if_present('scenes', limiter=50)
+                        _copy_if_present('scenes_count')
+                        _copy_if_present('scripts', limiter=50)
+                        _copy_if_present('scripts_count')
+                        _copy_if_present('folders', limiter=100)
+                        _copy_if_present('folders_count')
+
+                        # Optional configuration blocks
+                        _copy_if_present('autoloads')
+                        _copy_if_present('input_actions')
+                    except Exception as ie:
+                        print(f"CONTEXT_MINIMIZE_WARN: Failed copying project structure fields: {ie}")
+
+                    # Prepend as a system message for routing, before the main system prompt
+                    conversation_messages = [{
+                        'role': 'system',
+                        'content': json.dumps(minimized, ensure_ascii=False)
+                    }] + conversation_messages
+                except Exception as e:
+                    print(f"CONTEXT_ATTACH_WARN: Failed to attach context: {e}")
 
             # Helper to ensure tool call arguments are valid JSON strings.
             # Prevents downstream provider adapters (e.g., Gemini) from failing to parse
@@ -3040,25 +3487,8 @@ def chat():
                     yield json.dumps({"status": "stopped", "message": "Request stopped"}) + '\n'
                     return
                 
-                # Check and manage conversation length before making API call
-                # Note: With frontend-managed conversations, we use a simpler fallback approach
-                # Frontend can call /summarize_conversation endpoint for intelligent summarization
-                if conversation_memory and conversation_memory.enabled:
-                    user_id = user.get('id', 'unknown') if user else 'unknown'
-                    try:
-                        import asyncio
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        conversation_messages = loop.run_until_complete(
-                            conversation_memory.manage_conversation_length(conversation_messages, model, user_id)
-                        )
-                        loop.close()
-                    except Exception as e:
-                        print(f"CONVERSATION_MANAGE_ERROR: Failed intelligent management, using fallback: {e}")
-                        conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
-                else:
-                    # Use simple fallback when conversation memory is not available
-                    conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
+                # Always use fallback for now - the intelligent memory is broken
+                conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
                 
                 print(f"CONVERSATION_LOOP: Starting OpenAI call with {len(conversation_messages)} messages")
                 if conversation_messages:
@@ -3070,37 +3500,68 @@ def chat():
                     
                 # Debug logs for OpenAI messages have been quieted to reduce console noise.
                 
-                # Clean messages for OpenAI (preserve vision content, remove custom fields)
+                # Clean messages for OpenAI with intelligent image management
                 openai_messages = []
-                # Only forward tool-role messages if there's a preceding assistant message with tool_calls
+                recent_images = []  # Track recent images for context
                 prior_assistant_with_tools = False
-                for msg in conversation_messages:
-                    if msg is None:
-                        # print(f"CLEAN_MESSAGES: Skipping None message")
-                        continue
-                    if not isinstance(msg, dict):
-                        # print(f"CLEAN_MESSAGES: Skipping non-dict message: {type(msg)}")
+                
+                for i, msg in enumerate(conversation_messages):
+                    if msg is None or not isinstance(msg, dict):
                         continue
                         
                     role = msg['role']
                     if role == 'tool' and not prior_assistant_with_tools:
-                        # Skip stray tool messages that are not responses to assistant tool_calls
                         continue
+                    
                     clean_msg = {
                         'role': role,
-                        'content': msg.get('content') # Use .get for safety
+                        'content': msg.get('content')
                     }
-                    # Include standard OpenAI fields
+                    
+                    # Handle images intelligently - AGGRESSIVE filtering to prevent token explosion
+                    if 'images' in msg and isinstance(msg['images'], list):
+                        images = msg['images']
+                        # Only include images from the LAST message and only if it's a user message
+                        is_last_message = i == len(conversation_messages) - 1
+                        
+                        if is_last_message and role == 'user' and len(images) <= 1:
+                            # Only send 1 most recent user image to avoid token explosion
+                            content_array = []
+                            
+                            if clean_msg['content']:
+                                content_array.append({
+                                    "type": "text", 
+                                    "text": clean_msg['content']
+                                })
+                            
+                            # Add ONLY the first image
+                            if len(images) > 0 and images[0].get('base64_data'):
+                                img = images[0]
+                                content_array.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{img.get('mime_type', 'image/png')};base64,{img['base64_data']}"
+                                    }
+                                })
+                                recent_images.append(img.get('name', 'recent_image'))
+                            
+                            clean_msg['content'] = content_array
+                        else:
+                            # For ALL other cases, strip images completely and just reference
+                            image_names = [img.get('name', 'image') for img in images[:3]]  # Max 3 names
+                            if clean_msg['content']:
+                                clean_msg['content'] += f"\n[Referenced images: {', '.join(image_names)}]"
+                            else:
+                                clean_msg['content'] = f"[Images: {', '.join(image_names)}]"
+                    
+                    # Handle tool calls
                     if 'tool_calls' in msg:
-                        # Ensure tool calls have required 'type' field for OpenAI
                         fixed_tool_calls = []
                         for tool_call in msg['tool_calls']:
                             if isinstance(tool_call, dict):
                                 fixed_tool_call = tool_call.copy()
-                                # Add 'type' field if missing
                                 if 'type' not in fixed_tool_call:
                                     fixed_tool_call['type'] = 'function'
-                                # Sanitize function.arguments to valid JSON string if present
                                 try:
                                     fn = fixed_tool_call.get('function') or {}
                                     if isinstance(fn, dict) and 'arguments' in fn:
@@ -3113,13 +3574,12 @@ def chat():
                         clean_msg['tool_calls'] = fixed_tool_calls
                         if role == 'assistant' and fixed_tool_calls:
                             prior_assistant_with_tools = True
+                    
                     if 'tool_call_id' in msg:
                         clean_msg['tool_call_id'] = msg['tool_call_id']
                     if 'name' in msg:
                         clean_msg['name'] = msg['name']
                     
-                    # Remove custom frontend fields that may contain large data
-                    # Keep only standard OpenAI message format
                     openai_messages.append(clean_msg)
 
                 # Prepend system prompt if available
@@ -3127,12 +3587,15 @@ def chat():
                     system_msg = {"role": "system", "content": SYSTEM_PROMPT}
                     openai_messages = [system_msg] + openai_messages
                 
-                # Debug: Check total token usage
+                # Debug: Check total token usage with smart counting
+                total_tokens = sum(_estimate_message_tokens(msg) for msg in openai_messages)
                 total_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages)
                 model_friendly = get_model_friendly_name(model)
-                print(f"LITELLM_PREP: Sending {len(openai_messages)} messages to {model_friendly} ({model}), total chars: {total_chars}")
-                if total_chars > 100000:
-                    print(f"LITELLM_PREP: WARNING - Very large message content ({total_chars} chars), may hit token limits!")
+                print(f"LITELLM_PREP: Sending {len(openai_messages)} messages to {model_friendly} ({model}), estimated tokens: {total_tokens}, total chars: {total_chars}")
+                if total_tokens > 150000:
+                    print(f"LITELLM_PREP: WARNING - High token count ({total_tokens} tokens), may hit limits!")
+                if total_chars > 500000:
+                    print(f"LITELLM_PREP: CRITICAL - Massive char count ({total_chars} chars), likely has unprocessed base64!")
                 
                 # Resilient model call with 5 retries (1 second each) then fallback to GPT-5
                 attempts = 0
@@ -3321,19 +3784,35 @@ def chat():
                 ]
                 print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
                 
-                if any(
-                    func.get("name") in [
-                        "image_operation",
-                        "search_across_project",
-                        "search_across_godot_docs",
-                        "slice_spritesheet",
-                        "search_godot_assets",
-                        "install_godot_asset",
-                        "generate_3d_model",
-                        # Note: Game testing tools are frontend-only, not backend
-                    ]
-                    for func in tool_call_aggregator.values()
-                ):
+                # Identify backend-only tools strictly; ignore frontend tools here
+                backend_only_names = [
+                    "image_operation",
+                    "search_across_project",
+                    "search_across_godot_docs",
+                    "slice_spritesheet",
+                    "search_godot_assets",
+                    "install_godot_asset",
+                    "generate_3d_model",
+                ]
+                backend_calls = {k: v for k, v in tool_call_aggregator.items() if v.get("name") in backend_only_names}
+                
+                # Simple guardrails to prevent infinite repeated backend calls
+                # Build a canonical cache key from tool name and normalized arguments
+                def _make_tool_cache_key(name: str, args_raw: str) -> str:
+                    try:
+                        a = json.loads(args_raw) if args_raw else {}
+                    except Exception:
+                        a = {"raw": str(args_raw)}
+                    # Only include stable fields
+                    canonical = {
+                        "name": name,
+                        "query": a.get("query"),
+                        "pattern": a.get("pattern"),
+                        "operation": a.get("operation"),
+                        "max_results": a.get("max_results"),
+                    }
+                    return json.dumps(canonical, sort_keys=True)
+                if backend_calls:
                     # This is a backend-only tool call, so we will execute it,
                     # add the results to the conversation, and loop again for the AI's final response.
                     
@@ -3343,7 +3822,7 @@ def chat():
                     # Execute image operation
                     tool_results_for_history = []
                     
-                    for i, func in tool_call_aggregator.items():
+                    for i, func in backend_calls.items():
                         tool_id = tool_ids[i]
                         original_tool_calls_for_history.append({
                             "id": tool_id,
@@ -3524,6 +4003,39 @@ def chat():
                                     return
                                 time.sleep(0.05)
                             docs_result = _tool_result_holder["result"] or {"success": False, "error": "search_across_godot_docs returned no result"}
+                            # Normalize failure into minimal contract-compliant payload
+                            if not docs_result.get('success', False):
+                                msg = docs_result.get('error') or docs_result.get('message') or 'Docs search failed'
+                                docs_result = {
+                                    'success': False,
+                                    'query': arguments.get('query'),
+                                    'results': [],
+                                    'message': f"search_across_godot_docs error: {msg}"
+                                }
+
+                            # Check for stop after tool execution
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+
+                            # Yield result to frontend immediately
+                            yield json.dumps({"tool_executed": "search_across_godot_docs", "tool_result": docs_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
+
+                            # Prepare compact tool result for model history
+                            tool_result_for_openai = {
+                                "success": docs_result.get("success"),
+                                "query": arguments.get('query'),
+                                "source": docs_result.get("source"),
+                                "top": docs_result.get("results", [])[:3]
+                            }
+
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "search_across_godot_docs",
+                                "content": json.dumps(tool_result_for_openai),
+                            })
                         elif func["name"] == "slice_spritesheet":
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
@@ -5336,37 +5848,193 @@ def _search_godot_docs_bq(query: str, max_results: int = 5) -> list[dict]:
         print(f"DOCS_SEARCH_FALLBACK: {e}")
         return []
 
-def search_across_godot_docs_internal(arguments: dict) -> dict:
+def search_across_godot_docs_internal(arguments: dict, use_enhanced: bool = True) -> dict:
+    """Search the production Godot docs using enhanced search if available"""
     try:
         query = arguments.get('query', '')
         if not query:
             return {"success": False, "error": "Query parameter is required"}
+        
+        # Try enhanced search first if available
+        if use_enhanced:
+            try:
+                from enhanced_docs_search import EnhancedGodotDocsSearch
+                weaviate_url = os.getenv('WEAVIATE_URL')
+                weaviate_key = os.getenv('WEAVIATE_API_KEY')
+                
+                if weaviate_url and weaviate_key:
+                    searcher = EnhancedGodotDocsSearch(weaviate_url, weaviate_key)
+                    
+                    # Determine search mode from query
+                    mode = "auto"
+                    if "how" in query.lower() or "tutorial" in query.lower():
+                        mode = "semantic"
+                    elif any(keyword in query.lower() for keyword in ["func", "class", "signal", "property", "constant", "enum", "mode_"]):
+                        mode = "keyword"
+                    
+                    # Boost search for specific class queries
+                    class_filter = None
+                    if "input" in query.lower() and ("mouse" in query.lower() or "capture" in query.lower()):
+                        class_filter = "Input"
+                    elif "characterbody3d" in query.lower().replace(" ", ""):
+                        class_filter = "CharacterBody3D"
+                    
+                    # Extract filters from query
+                    section_filter = None
+                    if "tutorial" in query.lower():
+                        section_filter = "tutorials"
+                    elif "class" in query.lower() or "reference" in query.lower():
+                        section_filter = "classes"
+                        
+                    result = searcher.search_godot_docs_enhanced(
+                        query=query,
+                        mode=mode,
+                        section_filter=section_filter,
+                        max_results=arguments.get('max_results', 5)
+                    )
+                    
+                    if result.get("results"):
+                        return {"success": True, "results": result["results"], "source": "enhanced"}
+            except Exception as e:
+                print(f"Enhanced search failed, falling back: {e}")
+        
         max_results = int(arguments.get('max_results', 5))
-        results = _search_godot_docs_bq(query, max_results)
-        formatted = []
-        for r in results:
-            fp = r.get('file_path', '')
-            # Prefer plain content; fall back to content_preview from search, then nested chunk content
-            raw_content = (
-                r.get('content')
-                or r.get('content_preview')
-                or (r.get('chunk', {}) or {}).get('content')
-                or ''
+        section_filter = arguments.get('section_filter')
+        class_filter = arguments.get('class_filter')
+        
+        print(f"DOCS_SEARCH: Searching production docs for: '{query}'")
+        
+        # Connect to our production docs collection
+        if not (WEAVIATE_URL and WEAVIATE_API_KEY and api_key):
+            return {"success": False, "error": "Docs search unavailable - missing configuration"}
+        
+        try:
+            import weaviate
+            import weaviate.classes as wvc
+            
+            os.environ['OPENAI_API_KEY'] = api_key
+            client = weaviate.connect_to_weaviate_cloud(
+                cluster_url=WEAVIATE_URL,
+                auth_credentials=weaviate.auth.AuthApiKey(WEAVIATE_API_KEY),
+                headers={'X-OpenAI-Api-Key': api_key}
             )
-            formatted.append({
-                'title': fp,
-                'snippet': raw_content[:400],
-                'full_content': raw_content,
-                'similarity': r.get('similarity', 0.0),
-                'source': 'godot_docs',
-                'file_path': fp,
-            })
-        return {
-            'success': True,
-            'query': query,
-            'results': formatted,
-            'file_count': len(formatted)
-        }
+            
+            # Use our production collection
+            collection_name = "GodotDocs_Production"
+            if not client.collections.exists(collection_name):
+                return {
+                    "success": False, 
+                    "error": f"Production docs not indexed yet. Run production_docs_indexer.py first."
+                }
+            
+            collection = client.collections.get(collection_name)
+            
+            # Generate query embedding manually (same as production indexer)
+            openai_client = openai.OpenAI(api_key=api_key)
+            query_response = openai_client.embeddings.create(
+                input=[query],
+                model="text-embedding-3-small"  # Same model as indexing
+            )
+            query_vector = query_response.data[0].embedding
+            
+            # Search using manual embeddings (old client - no where filter support)
+            search_results = collection.query.near_vector(
+                near_vector=query_vector,
+                limit=max_results * 2,  # Get more results for manual filtering
+                return_metadata=["distance"]
+            )
+            
+            # Manual filtering if needed (since old client doesn't support where in near_vector)
+            filtered_objects = search_results.objects
+            if section_filter or class_filter:
+                filtered_objects = []
+                for obj in search_results.objects:
+                    props = obj.properties
+                    
+                    # Apply section filter
+                    if section_filter and props.get('section') != section_filter:
+                        continue
+                    
+                    # Apply class filter
+                    if class_filter and props.get('class_name') != class_filter:
+                        continue
+                    
+                    filtered_objects.append(obj)
+                
+                # Limit to requested results after filtering
+                filtered_objects = filtered_objects[:max_results]
+            else:
+                # No filtering needed, just limit results
+                filtered_objects = filtered_objects[:max_results]
+            
+            # Format results for AI tool
+            formatted_results = []
+            for obj in filtered_objects:
+                props = obj.properties
+                distance = obj.metadata.distance if obj.metadata else 1.0
+                similarity = 1.0 - distance  # Convert distance to similarity
+                
+                formatted_results.append({
+                    'title': props.get('title', 'Unknown'),
+                    'snippet': props.get('content', '')[:400] + '...' if len(props.get('content', '')) > 400 else props.get('content', ''),
+                    'full_content': props.get('content', ''),
+                    'similarity': similarity,
+                    'source': 'production_docs',
+                    'file_path': f"docs/{props.get('class_name', 'unknown')}/{props.get('section', 'unknown')}",
+                    'class_name': props.get('class_name', ''),
+                    'section': props.get('section', ''),
+                    'url': props.get('url', ''),
+                    'keywords': props.get('keywords', []),
+                    'search_mode': 'production_semantic'
+                })
+            
+            client.close()
+            
+            print(f"DOCS_SEARCH: Found {len(formatted_results)} results with similarity scores")
+            
+            return {
+                'success': True,
+                'query': query,
+                'search_mode': 'production_semantic',
+                'results': formatted_results,
+                'file_count': len(formatted_results),
+                'collection': collection_name,
+                'embedding_model': 'text-embedding-3-small'
+            }
+            
+        except Exception as e:
+            print(f"DOCS_SEARCH: Production search failed: {e}")
+            
+            # Fallback to old system if production search fails
+            print("DOCS_SEARCH: Falling back to legacy search...")
+            results = _search_godot_docs_bq(query, max_results)
+            formatted = []
+            for r in results:
+                fp = r.get('file_path', '')
+                raw_content = (
+                    r.get('content')
+                    or r.get('content_preview')
+                    or (r.get('chunk', {}) or {}).get('content')
+                    or ''
+                )
+                formatted.append({
+                    'title': fp,
+                    'snippet': raw_content[:400],
+                    'full_content': raw_content,
+                    'similarity': r.get('similarity', 0.0),
+                    'source': 'legacy_docs',
+                    'file_path': fp,
+                    'search_mode': 'legacy_fallback'
+                })
+            
+            return {
+                'success': True,
+                'query': query,
+                'search_mode': 'legacy_fallback',
+                'results': formatted,
+                'file_count': len(formatted)
+            }
+        
     except Exception as e:
         print(f"DOCS_SEARCH_ERROR: {e}")
         return {"success": False, "error": f"Docs search failed: {str(e)}"}
@@ -5598,13 +6266,25 @@ def install_godot_asset_internal(arguments: dict) -> dict:
             file_list = zip_file.namelist()
             print(f"ASSET_INSTALL: Extracting {len(file_list)} files")
             
+            # Some assets already include an 'addons/' root in the archive.
+            # If so, extract at the project root to avoid 'addons/addons/...'.
+            has_addons_root = any(
+                (name.startswith('addons/') or name.startswith('addons\\')) and not name.endswith('/')
+                for name in file_list
+            )
+            extract_base = project_path if has_addons_root else install_path
+            if has_addons_root:
+                print(f"ASSET_INSTALL: Detected 'addons/' root in archive; extracting to project root: {project_path}")
+            else:
+                print(f"ASSET_INSTALL: Extracting to install path: {install_path}")
+            
             for file_info in zip_file.infolist():
                 # Skip directories and hidden files
                 if file_info.is_dir() or file_info.filename.startswith('.'):
                     continue
                     
-                # Extract file
-                extracted_path = zip_file.extract(file_info, install_path)
+                # Extract file to computed base
+                extracted_path = zip_file.extract(file_info, extract_base)
                 extracted_files.append(extracted_path)
             
         # Verify installation
@@ -5618,12 +6298,14 @@ def install_godot_asset_internal(arguments: dict) -> dict:
                 plugin_cfg_path = file_path
                 break
         
+        # Report the effective install directory users should look in
+        final_install_root = os.path.join(project_path, 'addons') if has_addons_root else install_path
         installation_info = {
             "asset_id": asset_id,
             "asset_name": asset_name,
             "version": asset_data.get('version', '1.0'),
             "author": asset_data.get('author', 'Unknown'),
-            "installed_to": install_path,
+            "installed_to": final_install_root,
             "files_extracted": len(extracted_files),
             "is_plugin": plugin_cfg_path is not None,
             "plugin_config": plugin_cfg_path,
@@ -5637,7 +6319,9 @@ def install_godot_asset_internal(arguments: dict) -> dict:
         return {
             "success": True,
             "message": f"Successfully installed {asset_name}",
-            "installation_info": installation_info
+            "installation_info": installation_info,
+            "installed_paths": [installation_info.get("installed_to")] if installation_info.get("installed_to") else [],
+            "enabled_plugins": []
         }
         
     except Exception as e:
@@ -5649,8 +6333,8 @@ def install_godot_asset_internal(arguments: dict) -> dict:
 
 @app.route('/search_docs', methods=['POST'])
 def search_docs():
-    """HTTP endpoint to search across the shared Godot docs corpus.
-    Thin wrapper around search_across_godot_docs_internal.
+    """HTTP endpoint to search across the production Godot docs corpus.
+    Uses the new production docs collection with working embeddings.
     """
     # Optional server key gate
     gate = verify_server_key_if_required()
@@ -5666,12 +6350,52 @@ def search_docs():
         result = search_across_godot_docs_internal({
             'query': query,
             'max_results': max_results,
+            'section_filter': data.get('section_filter'),
+            'class_filter': data.get('class_filter')
         })
         return jsonify(result)
     except Exception as e:
         return jsonify({
             'success': False,
             'error': str(e)
+        }), 500
+
+@app.route('/docs/index', methods=['POST'])
+def index_docs():
+    """Trigger production Godot docs indexing"""
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    try:
+        # Import and run the production indexer
+        import subprocess
+        import sys
+        
+        # Run the production indexer as a subprocess
+        result = subprocess.run([
+            sys.executable, 
+            'production_docs_indexer.py'
+        ], capture_output=True, text=True, timeout=300)  # 5 minute timeout
+        
+        if result.returncode == 0:
+            return jsonify({
+                "success": True,
+                "message": "Godot docs indexed successfully",
+                "output": result.stdout,
+                "collection": "GodotDocs_Production"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Docs indexing failed",
+                "output": result.stderr
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to trigger docs indexing: {str(e)}"
         }), 500
 
 # --- Optional 3D Model Generation Endpoints ---
@@ -5859,6 +6583,139 @@ def list_user_3d_models(user_id: str):
         'models': [],
         'message': 'Model listing not supported by Point-E service'
     })
+
+# --- JSON RPC Router for deterministic, idempotent tools ---
+@app.route('/rpc', methods=['POST'])
+def json_rpc_router():
+    start = time.time()
+    data = request.json or {}
+    tool = data.get('tool') or data.get('method') or data.get('function_name')
+    args = data.get('params') or data.get('arguments') or {}
+
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+
+    def _telemetry(ok: bool, error_code: str | None):
+        return {
+            'tool': tool,
+            'duration_ms': int((time.time() - start) * 1000),
+            'ok': ok,
+            'error_code': error_code
+        }
+
+    if not tool or not isinstance(args, dict):
+        resp = {'ok': False, 'error_code': 'INVALID_ARGUMENT', 'error': 'Missing tool or invalid params'}
+        resp['telemetry'] = _telemetry(False, 'INVALID_ARGUMENT')
+        return jsonify(resp), 400
+
+    editor_tools = {
+        'resource_info', 'script_info', 'set_import_preset', 'reimport_resource', 'wait_for_import',
+        'enable_plugin', 'ensure_project_settings', 'ensure_input_actions', 'ensure_autoload',
+        'ensure_node', 'batch_scene_ops', 'load_and_assign_resource', 'call_node_method'
+    }
+
+    try:
+        if tool in editor_tools:
+            r = requests.post('http://127.0.0.1:8001', json={'function_name': tool, 'arguments': args}, timeout=30)
+            r.raise_for_status()
+            payload = r.json()
+            ok = bool(payload.get('ok', payload.get('success', False)))
+            payload['ok'] = ok
+            payload['telemetry'] = _telemetry(ok, payload.get('error_code'))
+            return jsonify(payload)
+
+        if tool == 'install_godot_asset':
+            result = install_godot_asset_internal(args)
+            ok = result.get('success', False)
+            result['ok'] = ok
+            result['telemetry'] = _telemetry(ok, None if ok else 'ASSET_INSTALL_ERROR')
+            return jsonify(result)
+
+        if tool == 'recipe_install_asset_and_instance':
+            asset_id = args.get('asset_id')
+            instance_scene_path = args.get('instance_scene_path')
+            if not asset_id or not instance_scene_path:
+                resp = {'ok': False, 'error_code': 'INVALID_ARGUMENT', 'error': 'asset_id and instance_scene_path required'}
+                resp['telemetry'] = _telemetry(False, 'INVALID_ARGUMENT')
+                return jsonify(resp), 400
+            checklist = []
+            enable_plugin_flag = bool(args.get('enable_plugin', True))
+            auto_configure_flag = bool(args.get('auto_configure', True))
+
+            install_res = install_godot_asset_internal({
+                'asset_id': asset_id,
+                'project_path': args.get('project_path', ''),
+                'install_location': args.get('install_location', 'addons/'),
+                'create_backup': args.get('create_backup', True)
+            })
+            if not install_res.get('success'):
+                resp = {'ok': False, 'error_code': 'ASSET_INSTALL_ERROR', 'error': install_res.get('error', 'install failed'), 'checklist': checklist}
+                resp['telemetry'] = _telemetry(False, 'ASSET_INSTALL_ERROR')
+                return jsonify(resp), 500
+            checklist.append('installed')
+
+            enabled_plugins = []
+            if enable_plugin_flag and install_res.get('installation_info', {}).get('is_plugin'):
+                plugin_name = os.path.basename(install_res['installation_info']['installed_to']).strip()
+                try:
+                    r = requests.post('http://127.0.0.1:8001', json={'function_name': 'enable_plugin', 'arguments': {'plugin_name': plugin_name}}, timeout=20)
+                    if r.ok and r.json().get('ok'):
+                        enabled_plugins.append(plugin_name)
+                        checklist.append('plugin_enabled')
+                except Exception:
+                    pass
+
+            if args.get('await_imports', True):
+                try:
+                    requests.post('http://127.0.0.1:8001', json={'function_name': 'wait_for_import', 'arguments': {'resource_path': instance_scene_path, 'timeout_ms': args.get('timeout_ms', 10000)}}, timeout=30)
+                    checklist.append('imports_ready')
+                except Exception:
+                    pass
+
+            post_config = args.get('post_config', {}) or {}
+            if auto_configure_flag and post_config:
+                settings = post_config.get('project_settings') or {}
+                if settings:
+                    requests.post('http://127.0.0.1:8001', json={'function_name': 'ensure_project_settings', 'arguments': {'settings': settings}}, timeout=20)
+                    checklist.append('project_settings')
+                actions = post_config.get('input_actions') or []
+                if actions:
+                    requests.post('http://127.0.0.1:8001', json={'function_name': 'ensure_input_actions', 'arguments': {'actions': actions}}, timeout=20)
+                    checklist.append('input_actions')
+                autoloads = post_config.get('autoloads') or []
+                if autoloads:
+                    requests.post('http://127.0.0.1:8001', json={'function_name': 'ensure_autoload', 'arguments': {'entries': autoloads}}, timeout=20)
+                    checklist.append('autoloads')
+
+            r = requests.post('http://127.0.0.1:8001', json={'function_name': 'manage_scene', 'arguments': {'operation': 'instantiate', 'scene_path': instance_scene_path, 'parent_path': args.get('target_parent', '')}}, timeout=30)
+            if r.ok:
+                payload = r.json()
+                if payload.get('success'):
+                    resp = {'ok': True, 'instance_path': payload.get('instance_path'), 'enabled_plugins': enabled_plugins, 'checklist': checklist}
+                    resp['telemetry'] = _telemetry(True, None)
+                    return jsonify(resp)
+
+            resp = {'ok': True, 'enabled_plugins': enabled_plugins, 'checklist': checklist}
+            resp['telemetry'] = _telemetry(True, None)
+            return jsonify(resp)
+
+        resp = {'ok': False, 'error_code': 'UNKNOWN_TOOL', 'error': f'Unknown tool {tool}'}
+        resp['telemetry'] = _telemetry(False, 'UNKNOWN_TOOL')
+        return jsonify(resp), 404
+
+    except requests.exceptions.Timeout:
+        resp = {'ok': False, 'error_code': 'TIMEOUT', 'error': 'Timed out calling editor'}
+        resp['telemetry'] = _telemetry(False, 'TIMEOUT')
+        return jsonify(resp), 504
+    except requests.exceptions.RequestException as e:
+        resp = {'ok': False, 'error_code': 'EDITOR_UNAVAILABLE', 'error': str(e)}
+        resp['telemetry'] = _telemetry(False, 'EDITOR_UNAVAILABLE')
+        return jsonify(resp), 502
+    except Exception as e:
+        resp = {'ok': False, 'error_code': 'INTERNAL', 'error': str(e)}
+        resp['telemetry'] = _telemetry(False, 'INTERNAL')
+        return jsonify(resp), 500
 
 if __name__ == '__main__':
     # Print 3D service status on startup

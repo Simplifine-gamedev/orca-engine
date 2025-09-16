@@ -202,6 +202,28 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		// Forward to editor_introspect with slice_spritesheet operation
 		args["operation"] = "slice_spritesheet";
 		result = EditorTools::editor_introspect(args);
+	} else if (function_name == "resource_info") {
+		result = EditorTools::resource_info(args);
+	} else if (function_name == "script_info") {
+		result = EditorTools::script_info(args);
+	} else if (function_name == "set_import_preset") {
+		result = EditorTools::set_import_preset(args);
+	} else if (function_name == "reimport_resource") {
+		result = EditorTools::reimport_resource(args);
+	} else if (function_name == "wait_for_import") {
+		result = EditorTools::wait_for_import(args);
+	} else if (function_name == "enable_plugin") {
+		result = EditorTools::enable_plugin(args);
+	} else if (function_name == "ensure_project_settings") {
+		result = EditorTools::ensure_project_settings(args);
+	} else if (function_name == "ensure_input_actions") {
+		result = EditorTools::ensure_input_actions(args);
+	} else if (function_name == "ensure_autoload") {
+		result = EditorTools::ensure_autoload(args);
+	} else if (function_name == "ensure_node") {
+		result = EditorTools::ensure_node(args);
+	} else if (function_name == "batch_scene_ops") {
+		result = EditorTools::batch_scene_ops(args);
 	} else {
 		result["error"] = "Unknown function: " + function_name;
 	}
