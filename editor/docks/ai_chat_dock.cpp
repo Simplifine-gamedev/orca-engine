@@ -2124,9 +2124,14 @@ void AIChatDock::_on_at_mention_item_selected() {
 void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventKey> key_event = p_event;
 	if (key_event.is_valid() && key_event->is_pressed() && !key_event->is_echo()) {
-		if (key_event->get_keycode() == Key::ENTER && !key_event->is_shift_pressed()) {
-			_on_send_button_pressed();
-			get_viewport()->set_input_as_handled(); // Consume the event to prevent the default newline behavior
+		if (key_event->get_keycode() == Key::ENTER || key_event->get_keycode() == Key::KP_ENTER) {
+			if (!key_event->is_shift_pressed()) {
+				// Enter without Shift: send the message
+				_on_send_button_pressed();
+				get_viewport()->set_input_as_handled(); // Consume the event to prevent the default newline behavior
+			}
+			// Shift+Enter: let the TextEdit handle it normally to create a new line
+			// (don't call set_input_as_handled() so the event propagates to TextEdit)
 		}
 	}
 }
