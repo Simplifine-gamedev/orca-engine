@@ -162,18 +162,42 @@ jobs:
             echo "✅ Notarization ticket stapled and validated"
           fi
 
+      - name: Install create-dmg
+        run: |
+          brew install create-dmg
+          echo "✅ create-dmg installed"
+
       - name: Create DMG
         run: |
           # Create proper DMG structure with Applications shortcut
           # IMPORTANT: Copy the app AFTER notarization to include the stapled ticket
           mkdir -p dmg-staging
           cp -R "Orca.app" dmg-staging/
-          ln -sf /Applications dmg-staging/Applications
           
-          hdiutil create -volname "Orca Engine" -srcfolder dmg-staging -ov -format UDZO "Orca (Mac).dmg"
+          # Use create-dmg library for professional DMG creation
+          if command -v create-dmg >/dev/null 2>&1 && [ -f "misc/dmg-resources/dmg-background.png" ]; then
+            echo "🎨 Creating beautiful DMG with create-dmg library..."
+            create-dmg \
+              --volname "Orca Engine" \
+              --background "misc/dmg-resources/dmg-background.png" \
+              --window-pos 200 120 \
+              --window-size 640 400 \
+              --icon-size 128 \
+              --icon "Orca.app" 160 200 \
+              --hide-extension "Orca.app" \
+              --app-drop-link 480 200 \
+              --skip-jenkins \
+              "Orca (Mac).dmg" \
+              "dmg-staging"
+          else
+            echo "📦 Creating standard DMG..."
+            ln -sf /Applications dmg-staging/Applications
+            hdiutil create -volname "Orca Engine" -srcfolder dmg-staging -ov -format UDZO "Orca (Mac).dmg"
+          fi
+          
           echo "✅ DMG created with Applications shortcut"
           
-          # Sign the DMG as well
+          # Sign the DMG
           IDENTITY="Developer ID Application: Simplifine Corp (92HMJ7DFHF)"
           /usr/bin/codesign --force --sign "$IDENTITY" "Orca (Mac).dmg"
           /usr/bin/codesign --verify --deep --strict "Orca (Mac).dmg"
