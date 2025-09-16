@@ -1,9 +1,10 @@
 short_name = "orca"
 name = "Orca"
-major = 4
-minor = 5
+major = 1
+minor = 0
 patch = 0
 status = "beta"
 module_config = ""
 website = "https://orcaengine.ai"
 docs = "latest"
+version = "1.0.0"  # Orca version for auto-updater
