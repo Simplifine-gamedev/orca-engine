@@ -199,14 +199,14 @@ jobs:
           if "%SSL_COM_USERNAME%"=="" (
             echo "⚠️ SSL_COM_USERNAME not set - will create unsigned binary"
             echo "📋 Creating unsigned distribution binary..."
-            copy bin\signed\orca-windows-production.exe "Orca (Windows).exe"
+            copy bin\signed\orca-windows-production.exe "Orca.Windows.exe"
             echo "✅ Unsigned binary created for distribution"
             goto :eof
           )
           if "%SSL_COM_PASSWORD%"=="" (
             echo "⚠️ SSL_COM_PASSWORD not set - will create unsigned binary"
             echo "📋 Creating unsigned distribution binary..."
-            copy bin\signed\orca-windows-production.exe "Orca (Windows).exe"
+            copy bin\signed\orca-windows-production.exe "Orca.Windows.exe"
             echo "✅ Unsigned binary created for distribution"
             goto :eof
           )
@@ -287,23 +287,24 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v${{ env.RELEASE_VERSION }}-windows
-          name: 🏁 Orca Engine Windows v${{ env.RELEASE_VERSION }}
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: Orca Engine v${{ env.RELEASE_VERSION }}
           body: |
-            🚀 **Orca Engine Windows Release v${{ env.RELEASE_VERSION }}**
+            🚀 **Orca Engine Release v${{ env.RELEASE_VERSION }}**
+
+            ## Download for Your Platform:
             
-            🏁 **Windows Only**: Automatically built${{ steps.sign_binary.outcome == 'success' && ' & signed with SSL.com certificate' || ' (unsigned - signing failed)' }}
-            
-            **Installation:**
-            - Download the .exe file
-            - Run the executable directly
-            - No installation required
-            
-            **Changes in this build:**
+            🍎 **Mac**: Download `Orca.Mac.dmg` → Open DMG → Drag to Applications  
+            🏁 **Windows**: Download `Orca.Windows.exe` → Run directly  
+            🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`
+
+            ## What's New:
             ${{ github.event.head_commit.message }}
-            - **Windows**: Download EXE${{ steps.sign_binary.outcome == 'success' && ', run directly (no security warnings)' || ' (may show security warning - unsigned)' }}
+
+            ---
+            **Build Info**: Mac ⏳ | Windows ✅${{ steps.sign_binary.outcome == 'success' && ' Signed' || ' Unsigned' }} | Linux ⏳
           files: |
-            Orca (Windows).exe
+            Orca.Windows.exe
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -334,5 +335,5 @@ jobs:
         with:
           name: Orca-Windows-Production
           path: |
-            Orca (Windows).exe
+            Orca.Windows.exe
             bin/signed/orca-windows-production.exe

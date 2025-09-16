@@ -252,24 +252,26 @@ jobs:
             Orca.app
             Orca (Mac).dmg
 
-      - name: Create or Update Release
+      - name: Create or Update Unified Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
-          tag_name: v${{ env.RELEASE_VERSION }}-mac
-          name: 🍎 Orca Engine Mac v${{ env.RELEASE_VERSION }}
+          tag_name: v${{ env.RELEASE_VERSION }}
+          name: Orca Engine v${{ env.RELEASE_VERSION }}
           body: |
-            🚀 **Orca Engine Mac Release v${{ env.RELEASE_VERSION }}**
+            🚀 **Orca Engine Release v${{ env.RELEASE_VERSION }}**
+
+            ## Download for Your Platform:
             
-            🍎 **Mac Only**: Automatically built, signed & notarized
-            
-            **Installation:**
-            - Download the DMG file
-            - Open DMG and drag Orca.app to Applications folder
-            - Launch from Applications
-            
-            **Changes in this build:**
+            🍎 **Mac**: Download `Orca.Mac.dmg` → Open DMG → Drag to Applications  
+            🏁 **Windows**: Download `Orca.Windows.exe` → Run directly  
+            🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`
+
+            ## What's New:
             ${{ github.event.head_commit.message }}
+
+            ---
+            **Build Info**: Mac ✅ Signed & Notarized | Windows ⏳ | Linux ⏳
           files: |
             Orca (Mac).dmg
           prerelease: false
