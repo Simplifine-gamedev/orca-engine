@@ -231,12 +231,7 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 		background_panel->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SNAME("Background"), EditorStringName(EditorStyles)));
 		main_view_container->add_theme_style_override(SceneStringName(panel), get_theme_stylebox(SceneStringName(panel), SNAME("TabContainer")));
 
-		// We replaced the clickable button with a static panel. Ensure no theme overrides try to set its icon/text.
-		if (title_bar_logo) {
-			title_bar_logo->set_text("");
-			title_bar_logo->set_button_icon(Ref<Texture2D>());
-			title_bar_logo->add_theme_icon_override(SNAME("icon"), Ref<Texture2D>());
-		}
+		// No logo panel - clean title bar without branding elements.
 
 		_set_main_view_icon(MAIN_VIEW_PROJECTS, get_editor_theme_icon(SNAME("ProjectList")));
 		_set_main_view_icon(MAIN_VIEW_ASSETLIB, get_editor_theme_icon(SNAME("AssetLib")));
@@ -1366,65 +1361,7 @@ ProjectManager::ProjectManager() {
 			title_bar->add_child(left_menu_spacer);
 		}
 
-		HBoxContainer *left_hbox = memnew(HBoxContainer);
-		left_hbox->set_alignment(BoxContainer::ALIGNMENT_BEGIN);
-		left_hbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		left_hbox->set_stretch_ratio(1.0);
-		title_bar->add_child(left_hbox);
-
-		// Replace clickable logo button with a non-interactive white panel containing icons.
-		PanelContainer *logo_panel = memnew(PanelContainer);
-		left_hbox->add_child(logo_panel);
-		Ref<StyleBoxFlat> sb_logo;
-		sb_logo.instantiate();
-		sb_logo->set_bg_color(Color(1, 1, 1));
-		sb_logo->set_draw_center(true);
-		logo_panel->add_theme_style_override(SNAME("panel"), sb_logo);
-		logo_panel->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-		logo_panel->set_custom_minimum_size(Size2(96, 24) * EDSCALE);
-
-		HBoxContainer *logo_hbox = memnew(HBoxContainer);
-		logo_hbox->set_h_size_flags(Control::SIZE_SHRINK_CENTER);
-		logo_hbox->set_alignment(BoxContainer::ALIGNMENT_BEGIN);
-		logo_panel->add_child(logo_hbox);
-
-		auto load_texture = [](const Vector<String> &candidates) -> Ref<Texture2D> {
-			for (const String &p : candidates) {
-				Ref<Image> img = Image::load_from_file(p);
-				if (img.is_valid() && !img->is_empty()) {
-					return ImageTexture::create_from_image(img);
-				}
-			}
-			return Ref<Texture2D>();
-		};
-
-		String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-		Vector<String> dock_icon_candidates;
-		dock_icon_candidates.push_back("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
-		dock_icon_candidates.push_back(exe_dir.path_join("..").path_join("orcabranding/dock icon.png"));
-
-		Vector<String> text_icon_candidates;
-		text_icon_candidates.push_back("/Users/egekaanduman/orca/orca-engine/orcabranding/orca_black_transparent.png");
-		text_icon_candidates.push_back(exe_dir.path_join("..").path_join("orcabranding/orca_black_transparent.png"));
-
-		Ref<Texture2D> dock_tex = load_texture(dock_icon_candidates);
-		Ref<Texture2D> text_tex = load_texture(text_icon_candidates);
-
-		TextureRect *dock_tr = memnew(TextureRect);
-		dock_tr->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		dock_tr->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
-		dock_tr->set_custom_minimum_size(Size2(18, 18) * EDSCALE);
-		dock_tr->set_texture(dock_tex);
-		logo_hbox->add_child(dock_tr);
-
-		TextureRect *text_tr = memnew(TextureRect);
-		text_tr->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-		text_tr->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
-		text_tr->set_custom_minimum_size(Size2(56, 18) * EDSCALE);
-		text_tr->set_texture(text_tex);
-		logo_hbox->add_child(text_tr);
-
-		// No clickable behavior: remove old button reference.
+		// No logo panel - clean title bar layout.
 		title_bar_logo = nullptr;
 
 		// Recursively remove any leftover buttons/labels that say GODOT (defensive against upstream changes).
