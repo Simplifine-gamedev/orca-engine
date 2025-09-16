@@ -29,6 +29,13 @@ class ConversationMemoryManager:
         self.summarization_models = MemoryConfig.get_summarization_models()
         self.TOKEN_LIMITS = MemoryConfig.TOKEN_LIMITS
         self.enabled = MemoryConfig.is_enabled()
+        # Lightweight in-process cache to avoid re-summarizing the same middle section repeatedly
+        self._summary_cache: Dict[str, Dict[str, Any]] = {}
+        # key: f"{user_id}:{conversation_hash}" or f"{user_id}:fuzzy:{fuzzy_hash}" -> {"summary": str, "ts": float}
+        try:
+            self._CACHE_TTL_SECONDS = int(os.getenv('MEMORY_SUMMARY_CACHE_TTL', '600'))  # 10 minutes default
+        except Exception:
+            self._CACHE_TTL_SECONDS = 600
         
         # Initialize Weaviate collections if manager provided
         if self.weaviate_manager and self.enabled:
@@ -117,6 +124,28 @@ class ConversationMemoryManager:
             try:
                 print(f"MEMORY_SUMMARY: Attempting summarization with {model}")
                 
+                # Use gpt-5-mini with minimal reasoning for speed, or fallback to configured model
+                if model == "openai/gpt-5-mini":
+                    # Use new gpt-5-mini reasoning API for faster summarization
+                    try:
+                        import openai
+                        client = openai.OpenAI()
+                        response = client.responses.create(
+                            model="gpt-5-mini",
+                            input=[{"role": "user", "content": summary_prompt}],
+                            text={"format": {"type": "text"}, "verbosity": "medium"},
+                            reasoning={"effort": "minimal", "summary": "auto"}
+                        )
+                        summary = response.text.strip()
+                        if summary:
+                            print(f"MEMORY_SUMMARY: Successfully created summary with {model} (reasoning API) ({len(summary)} chars)")
+                            await self._store_summary(user_id, messages, summary, model)
+                            self._cache_summary(user_id, messages, summary)
+                            return summary
+                    except Exception as e:
+                        print(f"MEMORY_SUMMARY: Reasoning API failed for {model}: {e}, falling back to completion")
+                
+                # Standard completion API
                 response = await acompletion(
                     model=model,
                     messages=[
@@ -134,6 +163,8 @@ class ConversationMemoryManager:
                     
                     # Store summary in Weaviate
                     await self._store_summary(user_id, messages, summary, model)
+                    # Also cache locally
+                    self._cache_summary(user_id, messages, summary)
                     
                     return summary
                     
@@ -250,6 +281,11 @@ class ConversationMemoryManager:
     
     def get_summary(self, user_id: str, conversation_hash: str) -> Optional[str]:
         """Retrieve existing summary if available"""
+        # Check local cache first
+        cached = self._get_cached_summary_by_hash(user_id, conversation_hash)
+        if cached:
+            return cached
+
         if not self.weaviate_manager:
             return None
             
@@ -257,17 +293,28 @@ class ConversationMemoryManager:
             from weaviate.classes.query import Filter
             
             collection = self.weaviate_manager.client.collections.get("ConversationSummary")
-            
-            # First try exact hash match
-            result = collection.query.fetch_objects(
-                where=Filter.by_property("user_id").equal(user_id) &
-                      Filter.by_property("conversation_hash").equal(conversation_hash),
-                limit=1,
-                sort=collection.query.Sort.by_property("created_at", ascending=False)
-            )
+            # First try exact hash match; prefer sorted by created_at desc when API supports it
+            try:
+                from weaviate.classes.query import SortByProperty, SortOrder
+                result = collection.query.fetch_objects(
+                    filters=Filter.by_property("user_id").equal(user_id) &
+                            Filter.by_property("conversation_hash").equal(conversation_hash),
+                    limit=1,
+                    sort=[SortByProperty(path=["created_at"], order=SortOrder.DESC)]
+                )
+            except Exception:
+                result = collection.query.fetch_objects(
+                    filters=Filter.by_property("user_id").equal(user_id) &
+                            Filter.by_property("conversation_hash").equal(conversation_hash),
+                    limit=1
+                )
             
             if result.objects:
-                return result.objects[0].properties["summary"]
+                summary = result.objects[0].properties.get("summary")
+                if summary:
+                    # Populate cache for subsequent calls
+                    self._cache_summary_by_hash(user_id, conversation_hash, summary)
+                return summary
             return None
                 
         except Exception as e:
@@ -279,7 +326,7 @@ class ConversationMemoryManager:
         if not self.weaviate_manager:
             return None
             
-        # Try exact hash first
+        # Try exact hash first (cached + DB)
         exact_hash = self.hash_messages(messages)
         summary = self.get_summary(user_id, exact_hash)
         if summary:
@@ -293,33 +340,62 @@ class ConversationMemoryManager:
             fuzzy_hash = self._create_fuzzy_hash(messages)
             collection = self.weaviate_manager.client.collections.get("ConversationSummary")
             
+            # Check local cache for fuzzy key
+            cached = self._get_cached_summary_by_fuzzy(user_id, fuzzy_hash)
+            if cached:
+                return cached
+
             # First try fuzzy_hash match (for edited messages with similar structure)
-            fuzzy_result = collection.query.fetch_objects(
-                where=Filter.by_property("user_id").equal(user_id) &
-                      Filter.by_property("fuzzy_hash").equal(fuzzy_hash),
-                limit=1,
-                sort=collection.query.Sort.by_property("created_at", ascending=False)
-            )
+            try:
+                from weaviate.classes.query import SortByProperty, SortOrder
+                fuzzy_result = collection.query.fetch_objects(
+                    filters=Filter.by_property("user_id").equal(user_id) &
+                            Filter.by_property("fuzzy_hash").equal(fuzzy_hash),
+                    limit=1,
+                    sort=[SortByProperty(path=["created_at"], order=SortOrder.DESC)]
+                )
+            except Exception:
+                fuzzy_result = collection.query.fetch_objects(
+                    filters=Filter.by_property("user_id").equal(user_id) &
+                            Filter.by_property("fuzzy_hash").equal(fuzzy_hash),
+                    limit=1
+                )
             
             if fuzzy_result.objects:
                 print("MEMORY_RETRIEVE: Found fuzzy hash match for edited messages")
-                return fuzzy_result.objects[0].properties["summary"]
+                summary_val = fuzzy_result.objects[0].properties.get("summary")
+                if summary_val:
+                    self._cache_summary_by_fuzzy(user_id, fuzzy_hash, summary_val)
+                return summary_val
             
             # Fallback: search by structure similarity (message count ±2)
             similar_count_range = max(1, len(messages) - 2)  # Allow ±2 messages difference
             
-            count_result = collection.query.fetch_objects(
-                where=Filter.by_property("user_id").equal(user_id) &
-                      Filter.by_property("original_message_count").greater_than(similar_count_range) &
-                      Filter.by_property("original_message_count").less_than(len(messages) + 3),
-                limit=5,
-                sort=collection.query.Sort.by_property("created_at", ascending=False)
-            )
+            try:
+                from weaviate.classes.query import SortByProperty, SortOrder
+                count_result = collection.query.fetch_objects(
+                    filters=Filter.by_property("user_id").equal(user_id) &
+                            Filter.by_property("original_message_count").greater_than(similar_count_range) &
+                            Filter.by_property("original_message_count").less_than(len(messages) + 3),
+                    limit=5,
+                    sort=[SortByProperty(path=["created_at"], order=SortOrder.DESC)]
+                )
+            except Exception:
+                count_result = collection.query.fetch_objects(
+                    filters=Filter.by_property("user_id").equal(user_id) &
+                            Filter.by_property("original_message_count").greater_than(similar_count_range) &
+                            Filter.by_property("original_message_count").less_than(len(messages) + 3),
+                    limit=5
+                )
             
             if count_result.objects:
                 # Return the most recent similar summary
                 print(f"MEMORY_RETRIEVE: Found count-based match with {count_result.objects[0].properties['original_message_count']} messages")
-                return count_result.objects[0].properties["summary"]
+                summary_val = count_result.objects[0].properties.get("summary")
+                if summary_val:
+                    # Cache under fuzzy for future similar edits
+                    self._cache_summary_by_fuzzy(user_id, fuzzy_hash, summary_val)
+                return summary_val
                 
         except Exception as e:
             print(f"MEMORY_RETRIEVE: Fuzzy search failed: {e}")
@@ -349,18 +425,51 @@ class ConversationMemoryManager:
         if len(messages) <= MemoryConfig.MIN_MESSAGES_TO_PRUNE:
             return messages
         
-        # Identify sections to preserve and summarize
-        system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
-        recent_count = min(MemoryConfig.KEEP_RECENT_MESSAGES, len(messages) // 3)  # Keep more recent messages
-        recent_messages = messages[-recent_count:]
+        # Check if we already have a summary in the conversation (avoid re-summarizing)
+        has_existing_summary = any(
+            msg.get('role') == 'assistant' and 
+            '[CONVERSATION CONTEXT SUMMARY]' in str(msg.get('content', ''))
+            for msg in messages
+        )
         
-        # Messages to summarize (middle section)
+        if has_existing_summary:
+            # Already has summary - just keep recent messages after the summary
+            summary_idx = -1
+            for i, msg in enumerate(messages):
+                if (msg.get('role') == 'assistant' and 
+                    '[CONVERSATION CONTEXT SUMMARY]' in str(msg.get('content', ''))):
+                    summary_idx = i
+                    break
+            
+            if summary_idx >= 0:
+                # Keep system message + summary + recent messages after summary
+                system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
+                summary_msg = messages[summary_idx]
+                recent_start = max(summary_idx + 1, len(messages) - MemoryConfig.KEEP_RECENT_MESSAGES)
+                recent_messages = messages[recent_start:]
+                
+                managed_messages = []
+                if system_msg and summary_idx > 0:
+                    managed_messages.append(system_msg)
+                managed_messages.append(summary_msg)
+                managed_messages.extend(recent_messages)
+                
+                final_tokens = sum(self.estimate_tokens(str(msg.get('content', ''))) for msg in managed_messages)
+                print(f"MEMORY_MANAGE: Reused existing summary, reduced from {total_tokens} to {final_tokens} tokens ({len(messages)} to {len(managed_messages)} messages)")
+                return managed_messages
+        
+        # No existing summary - create one using STABLE boundaries
+        system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
+        recent_count = MemoryConfig.KEEP_RECENT_MESSAGES
+        
+        # Use FIXED boundary: summarize everything except system + last N messages
         start_idx = 1 if system_msg else 0
-        end_idx = len(messages) - recent_count
+        end_idx = max(start_idx, len(messages) - recent_count)
         messages_to_summarize = messages[start_idx:end_idx]
+        recent_messages = messages[end_idx:]
         
         if messages_to_summarize:
-            # Check if we already have a summary for this content (with fuzzy fallback for edited messages)
+            # Check cache/DB for this EXACT range (stable hash)
             existing_summary = self.get_summary_with_fuzzy_fallback(user_id, messages_to_summarize)
             
             if existing_summary:
@@ -455,10 +564,14 @@ Previous conversation context has been intelligently summarized to manage length
             
             # Try to get recent summaries for more detailed stats
             try:
-                recent_summaries = collection.query.fetch_objects(
-                    limit=100,
-                    sort=collection.query.Sort.by_property("created_at", ascending=False)
-                )
+                try:
+                    from weaviate.classes.query import SortByProperty, SortOrder
+                    recent_summaries = collection.query.fetch_objects(
+                        limit=100,
+                        sort=[SortByProperty(path=["created_at"], order=SortOrder.DESC)]
+                    )
+                except Exception:
+                    recent_summaries = collection.query.fetch_objects(limit=100)
                 
                 if recent_summaries.objects:
                     # Calculate averages from recent summaries
@@ -478,6 +591,45 @@ Previous conversation context has been intelligently summarized to manage length
         except Exception as e:
             print(f"MEMORY_STATS: Failed to get stats: {e}")
             return {"error": str(e), "weaviate_connected": False}
+
+    # ---- Internal cache helpers ----
+    def _cache_summary(self, user_id: str, messages: List[Dict], summary: str):
+        try:
+            exact_hash = self.hash_messages(messages)
+            fuzzy_hash = self._create_fuzzy_hash(messages)
+            self._cache_summary_by_hash(user_id, exact_hash, summary)
+            self._cache_summary_by_fuzzy(user_id, fuzzy_hash, summary)
+        except Exception:
+            pass
+
+    def _cache_summary_by_hash(self, user_id: str, exact_hash: str, summary: str):
+        key = f"{user_id}:{exact_hash}"
+        self._summary_cache[key] = {"summary": summary, "ts": time.time()}
+
+    def _cache_summary_by_fuzzy(self, user_id: str, fuzzy_hash: str, summary: str):
+        key = f"{user_id}:fuzzy:{fuzzy_hash}"
+        self._summary_cache[key] = {"summary": summary, "ts": time.time()}
+
+    def _get_cached_summary_by_hash(self, user_id: str, exact_hash: str) -> Optional[str]:
+        key = f"{user_id}:{exact_hash}"
+        return self._get_cached_summary_common(key)
+
+    def _get_cached_summary_by_fuzzy(self, user_id: str, fuzzy_hash: str) -> Optional[str]:
+        key = f"{user_id}:fuzzy:{fuzzy_hash}"
+        return self._get_cached_summary_common(key)
+
+    def _get_cached_summary_common(self, key: str) -> Optional[str]:
+        try:
+            data = self._summary_cache.get(key)
+            if not data:
+                return None
+            if (time.time() - data.get("ts", 0)) > self._CACHE_TTL_SECONDS:
+                # Expired
+                self._summary_cache.pop(key, None)
+                return None
+            return data.get("summary")
+        except Exception:
+            return None
 
     def _extract_topic_from_summary(self, summary: str) -> str:
         """Extract a topic/category from the summary for organization"""

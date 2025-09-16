@@ -67,6 +67,7 @@ public:
 	static Dictionary search_nodes_by_type(const Dictionary &p_args);
 	static Dictionary get_editor_selection(const Dictionary &p_args);
 	static Dictionary get_node_properties(const Dictionary &p_args);
+	// Enhanced: include_script_properties (bool)
 	static Dictionary create_node(const Dictionary &p_args);
 	static Dictionary delete_node(const Dictionary &p_args);
 	static Dictionary set_node_property(const Dictionary &p_args);
@@ -76,6 +77,8 @@ public:
 	static Dictionary get_available_classes(const Dictionary &p_args);
 	static Dictionary get_node_script(const Dictionary &p_args);
 	static Dictionary attach_script(const Dictionary &p_args);
+	static Dictionary detach_script(const Dictionary &p_args);
+	static Dictionary reload_script(const Dictionary &p_args);
 	static Dictionary manage_scene(const Dictionary &p_args);
 	static Dictionary load_and_assign_resource(const Dictionary &p_args);
 	static Dictionary add_collision_shape(const Dictionary &p_args);
@@ -111,4 +114,56 @@ public:
 
 	// Multiplexed introspection/debug tool
 	static Dictionary editor_introspect(const Dictionary &p_args);
+	
+	// GameView screenshot callbacks  
+	static void _on_game_screenshot_ready(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	static void _on_game_screenshot_ready_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
+	
+	// Screenshot management for AI tools
+	static Vector<int> _pending_screenshot_requests;
+	static Vector<Dictionary> _current_screenshot_results;
+
+	// New capabilities for structural edits and resources
+	static Dictionary change_node_type(const Dictionary &p_args); // { path:String, new_type:String, preserve_children:bool=true, strategy:String="wrap_root" }
+	static Dictionary create_resource(const Dictionary &p_args); // { type:String, properties:Dictionary, save_path:String? }
+	static Dictionary assign_resource_to_node_property(const Dictionary &p_args); // { path:String, property:String, resource:Dictionary{ resource_id|path|{type,properties} } }
+	static Dictionary create_new_scene_with_root(const Dictionary &p_args); // { new_root_type:String, new_scene_path:String, include_current_as_child:bool=false }
+
+	// Global class and custom type utilities
+	static Dictionary refresh_global_classes(const Dictionary &p_args); // {}
+	static Dictionary get_custom_classes(const Dictionary &p_args); // {pattern?:String}
+	static Dictionary set_node_type(const Dictionary &p_args); // { path:String, type_name?:String, script_path?:String }
+
+	// Universal smart tools (type-aware, bulk-capable)
+	static Dictionary universal_resource_manager(const Dictionary &p_args); // { operation:String, type?:String, target?:String, properties?:Dict, source_template?:String }
+	static Dictionary universal_scene_manager(const Dictionary &p_args); // { operation:String, scope?:String, targets?:Array, transformations?:Dict, validation?:bool }
+	static Dictionary universal_project_manager(const Dictionary &p_args); // { operation:String, assets?:Array, dependencies?:Dict, validation_rules?:Dict }
+
+	// File system and project structure tools (project-root constrained)
+	static Dictionary create_directory(const Dictionary &p_args); // { path:String }
+	static Dictionary copy_file(const Dictionary &p_args); // { source:String, destination:String, overwrite:bool=false }
+	static Dictionary move_file(const Dictionary &p_args); // { source:String, destination:String, overwrite:bool=false }
+	static Dictionary delete_file(const Dictionary &p_args); // { path:String }
+	static Dictionary create_symlink(const Dictionary &p_args); // { target:String, link_path:String }
+	static Dictionary refresh_filesystem(const Dictionary &p_args); // {}
+
+	// Introspection & readiness
+	static Dictionary resource_info(const Dictionary &p_args); // { resource_path:String }
+	static Dictionary script_info(const Dictionary &p_args);   // { script_path:String }
+
+	// Import control
+	static Dictionary set_import_preset(const Dictionary &p_args);   // { resource_path:String, importer?:String, options?:Dictionary }
+	static Dictionary reimport_resource(const Dictionary &p_args);   // { resource_path:String, timeout_ms?:int }
+	static Dictionary wait_for_import(const Dictionary &p_args);     // { resource_path:String, timeout_ms?:int, poll_ms?:int }
+
+	// Project configuration helpers
+	static Dictionary enable_plugin(const Dictionary &p_args);             // { plugin_name:String }
+	static Dictionary ensure_project_settings(const Dictionary &p_args);   // { settings:Dictionary }
+	static Dictionary ensure_input_actions(const Dictionary &p_args);      // { actions:Array<ActionSpec> }
+	static Dictionary ensure_autoload(const Dictionary &p_args);           // { entries:Array<AutoloadSpec> }
+	static Dictionary get_project_context(const Dictionary &p_args);       // { operation:String }
+
+	// Creation, calls, batching
+	static Dictionary ensure_node(const Dictionary &p_args);               // { type:String, name:String, parent?:String, unique?:bool }
+	static Dictionary batch_scene_ops(const Dictionary &p_args);           // { ops:Array<Dict>, stop_on_error?:bool }
 }; 

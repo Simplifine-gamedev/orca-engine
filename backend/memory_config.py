@@ -13,9 +13,9 @@ class MemoryConfig:
     
     # Default summarization models in order of preference
     DEFAULT_SUMMARIZATION_MODELS = [
-        "cerebras/gpt-oss-120b",              # Fast, efficient for summarization
-        "cerebras/qwen-3-coder-480b",         # Good for code context (Cerebras version)
-        "openai/gpt-4o-mini",                 # Fallback - cost effective
+        "cerebras/llama3.1-70b",              # Fast, reliable for summarization
+        "cerebras/gpt-oss-120b",              # Secondary fast option
+        "openai/gpt-4o-mini",                 # Fallback - avoid gpt-5-mini timeout issues
     ]
     
     # Storage configuration (cloud-native)
@@ -91,7 +91,7 @@ Summary:""")
 ENABLE_INTELLIGENT_MEMORY=true
 
 # Custom summarization models (comma-separated, in order of preference)
-MEMORY_SUMMARIZATION_MODELS=cerebras/gpt-oss-120b,cerebras/qwen-3-coder-480b,openai/gpt-4o-mini
+MEMORY_SUMMARIZATION_MODELS=openai/gpt-4o-mini,cerebras/gpt-oss-120b,cerebras/qwen-3-coder-480b
 
 # Weaviate configuration (reuses existing WEAVIATE_URL and WEAVIATE_API_KEY)
 # WEAVIATE_URL=https://your-cluster.weaviate.cloud

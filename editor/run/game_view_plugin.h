@@ -129,6 +129,9 @@ class GameView : public VBoxContainer {
 	};
 
 	inline static GameView *singleton = nullptr;
+	
+public:
+	static GameView *get_singleton() { return singleton; }
 
 	Ref<GameViewDebugger> debugger;
 	WindowWrapper *window_wrapper = nullptr;
@@ -190,6 +193,10 @@ class GameView : public VBoxContainer {
 	void _instance_starting(int p_idx, List<String> &r_arguments);
 	static bool _instance_rq_screenshot_static(const Callable &p_callback);
 	bool _instance_rq_screenshot(const Callable &p_callback);
+	
+public:
+	// Public method for AI tools to request game screenshots
+	bool request_game_screenshot(const Callable &p_callback) { return _instance_rq_screenshot(p_callback); }
 	void _stop_pressed();
 	void _embedding_completed();
 	void _embedding_failed();

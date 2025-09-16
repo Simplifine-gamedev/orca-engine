@@ -1794,7 +1794,11 @@ class WeaviateVectorManager:
                                 print(f"WeaviateGraph: Found edge {source_file} -> {target_file} ({props.get('relationship_type')})")
                     
                 except Exception as e:
-                    print(f"WeaviateGraph: Error fetching graph edges: {e}")
+                    # Suppress noisy connection errors during network issues
+                    if "tcp handshaker shutdown" in str(e) or "ipv4:" in str(e):
+                        pass  # Silent fail for network issues
+                    else:
+                        print(f"WeaviateGraph: Error fetching graph edges: {e}")
                 
                 # Add the file itself as a node if not already present
                 if {'id': file_path, 'type': 'file'} not in nodes:

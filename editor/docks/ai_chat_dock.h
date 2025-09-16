@@ -122,6 +122,8 @@ private:
 		Vector<AttachedFile> attached_files;
 		// For storing tool execution results (like generated images)
 		Array tool_results;
+		// For automatic project context injection (not displayed in UI)
+		String project_context;
 	};
 
 	// Track pending apply_edit operations: path -> {bubble_node_path, status_label_path, bubble_container}
@@ -156,6 +158,7 @@ private:
 	EditorFileDialog *save_image_dialog = nullptr;
 	EditorFileDialog *save_3d_model_dialog = nullptr;
 	AcceptDialog *image_warning_dialog = nullptr;
+	ConfirmationDialog *restore_checkpoint_dialog = nullptr;
 
 	// Embedding system state
 	HTTPRequest *embedding_request = nullptr;
@@ -262,6 +265,7 @@ private:
 	int current_conversation_index = -1;
 	Vector<AttachedFile> current_attached_files;
 	String conversations_file_path;
+	int pending_restore_message_index = -1; // For restore confirmation dialog
 	String api_key;
     // Default API endpoint; will be overridden at runtime based on IS_DEV env
     String api_endpoint = "http://127.0.0.1:8000/chat";
@@ -290,6 +294,8 @@ private:
 	void _on_edit_message_send_pressed(int p_message_index, const String &p_new_content);
 	void _on_edit_send_button_pressed(Button *p_button);
 	void _on_edit_message_cancel_pressed(int p_message_index);
+	void _on_checkpoint_message_pressed(int p_message_index);
+	void _on_restore_checkpoint_confirmed();
 	void _on_edit_field_gui_input(const Ref<InputEvent> &p_event, Button *p_send_button);
   // Build-only helper that constructs an edit bubble panel for a message without
   // adding spacers or attaching it to the chat container.
@@ -320,6 +326,9 @@ private:
 	void _on_reindex_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_scene_tree_node_selected();
 	void _on_files_selected(const Vector<String> &p_files);
+	
+	// Clipboard support
+	void _handle_clipboard_paste();
 	void _on_remove_attachment(const String &p_path);
 	void _on_conversation_selected(int p_index);
 	void _on_new_conversation_pressed();
@@ -621,6 +630,12 @@ public:
 	String get_current_user_id() const { return current_user_id; }
 	String get_machine_id() const;
 	String get_auth_token() const { return auth_token; }
+	
+    // Git checkpoints system (uses project git directly)
+    void _init_checkpoints_repo();
+	bool _create_checkpoint(const String &p_message, int p_message_index);
+	String _get_checkpoint_name(int p_message_index);
+	bool _restore_from_checkpoint(int p_message_index);
 
 	// Attach an external file (e.g., screenshot) to the current chat input attachments.
 	void attach_external_file(const String &p_file_path);
