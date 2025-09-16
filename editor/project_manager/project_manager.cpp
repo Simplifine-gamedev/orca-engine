@@ -1672,18 +1672,7 @@ ProjectManager::ProjectManager() {
 		asset_library_toggle->set_tooltip_text(TTRC("Asset Library not available (due to using Web editor, or because SSL support disabled)."));
 	}
 
-	// Footer bar.
-	{
-		HBoxContainer *footer_bar = memnew(HBoxContainer);
-		footer_bar->set_alignment(BoxContainer::ALIGNMENT_END);
-		footer_bar->add_theme_constant_override("separation", 20 * EDSCALE);
-		main_vbox->add_child(footer_bar);
-
-		EditorVersionButton *version_btn = memnew(EditorVersionButton(EditorVersionButton::FORMAT_WITH_BUILD));
-		// Fade the version label to be less prominent, but still readable.
-		version_btn->set_self_modulate(Color(1, 1, 1, 0.6));
-		footer_bar->add_child(version_btn);
-	}
+	// Footer bar removed - clean interface without version/update information.
 
 	// Dialogs.
 	{
