@@ -14,8 +14,6 @@ env:
   BUNDLE_ID: com.orca.engine
   TEAM_ID: 92HMJ7DFHF
   VERSION_BASE: "0.01"
-  # Use commit hash for consistent releases across platforms
-  RELEASE_VERSION: "0.01.${{ github.run_id }}"
 
 jobs:
   build-sign-notarize:
@@ -26,6 +24,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set Release Version
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short=8 HEAD)
+          echo "RELEASE_VERSION=0.01.$SHORT_SHA" >> $GITHUB_ENV
+          echo "release_version=0.01.$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Install dependencies
         run: |
@@ -277,4 +282,4 @@ jobs:
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: false
-          append_body: false
+          append_body: true

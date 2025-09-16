@@ -12,8 +12,6 @@ permissions:
 env:
   APP_NAME: Orca
   VERSION_BASE: "0.01"
-  # Use commit hash for consistent releases across platforms
-  RELEASE_VERSION: "0.01.${{ github.run_id }}"
 
 jobs:
   build-package-release:
@@ -27,6 +25,13 @@ jobs:
         with:
           submodules: false
           fetch-depth: 1
+
+      - name: Set Release Version
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short=8 HEAD)
+          echo "RELEASE_VERSION=0.01.$SHORT_SHA" >> $GITHUB_ENV
+          echo "release_version=0.01.$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Free disk space on runner
         run: |
@@ -269,6 +274,8 @@ jobs:
             Orca-Linux-x86_64.AppImage
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_unmatched_files: false
+          append_body: true
 
       - name: Build Summary
         run: |
