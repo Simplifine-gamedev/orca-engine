@@ -91,14 +91,14 @@ jobs:
       - name: Setup CodeSignTool
         shell: powershell
         run: |
-          Write-Host "🔧 Setting up SSL.com CodeSignTool..."
+          Write-Host "Setting up SSL.com CodeSignTool..."
           
           # Check if CodeSignTool JAR already exists in repo
           if (Test-Path "jar/code_sign_tool-1.3.2.jar") {
               $fileSize = (Get-Item "jar/code_sign_tool-1.3.2.jar").Length
-              Write-Host "✅ CodeSignTool JAR found in repository - Size: $fileSize bytes"
+              Write-Host "CodeSignTool JAR found in repository - Size: $fileSize bytes"
           } else {
-              Write-Host "❌ CodeSignTool JAR not found in repository"
+              Write-Host "CodeSignTool JAR not found in repository"
               Write-Host "Expected location: jar/code_sign_tool-1.3.2.jar"
               Write-Host "Current directory: $(Get-Location)"
               Write-Host "Directory contents:"
@@ -114,7 +114,7 @@ jobs:
           "CSC_API_ENDPOINT=https://cs.ssl.com" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
           "TSA_URL=http://ts.ssl.com" | Add-Content -Path "conf\code_sign_tool.properties" -Encoding ASCII
           
-          Write-Host "✅ CodeSignTool setup complete"
+          Write-Host "CodeSignTool setup complete"
           Write-Host "SUCCESS: Config file created"
 
       - name: Verify Code Signing Tools
