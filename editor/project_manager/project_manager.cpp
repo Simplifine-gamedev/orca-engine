@@ -43,7 +43,6 @@
 #include "editor/gui/editor_file_dialog.h"
 #include "editor/gui/editor_title_bar.h"
 #include "editor/gui/editor_version_button.h"
-#include "editor/project_manager/engine_update_label.h"
 #include "editor/project_manager/project_dialog.h"
 #include "editor/project_manager/project_list.h"
 #include "editor/project_manager/project_tag.h"
@@ -1742,12 +1741,6 @@ ProjectManager::ProjectManager() {
 		footer_bar->set_alignment(BoxContainer::ALIGNMENT_END);
 		footer_bar->add_theme_constant_override("separation", 20 * EDSCALE);
 		main_vbox->add_child(footer_bar);
-
-#ifdef ENGINE_UPDATE_CHECK_ENABLED
-		EngineUpdateLabel *update_label = memnew(EngineUpdateLabel);
-		footer_bar->add_child(update_label);
-		update_label->connect("offline_clicked", callable_mp(this, &ProjectManager::_show_quick_settings));
-#endif
 
 		EditorVersionButton *version_btn = memnew(EditorVersionButton(EditorVersionButton::FORMAT_WITH_BUILD));
 		// Fade the version label to be less prominent, but still readable.
