@@ -5,7 +5,7 @@ eSigner_CKA.zip
 CodeSignTool.zip
 CodeSignTool.bat
 CodeSignTool.sh
-jar/
+# jar/ - REMOVED: Need CodeSignTool JAR for Windows builds
 *_Build*Release*Windows*/
 windows_build_logs.zip
 0_Build*Sign*Release*Windows*.txt
@@ -53,6 +53,7 @@ bin
 *.pem
 *.key
 *.p12
+ssl_cert.pem
 compile_commands.json
 platform/windows/godot_res.res
 
