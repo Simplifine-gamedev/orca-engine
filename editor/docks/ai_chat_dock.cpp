@@ -169,6 +169,10 @@ void AIChatDock::_bind_methods() {
 	// _on_chat_scroll_changed already bound above with parameter
 	ClassDB::bind_method(D_METHOD("_on_chat_content_min_size_changed"), &AIChatDock::_on_chat_content_min_size_changed);
 	ClassDB::bind_method(D_METHOD("_scroll_to_bottom_smooth"), &AIChatDock::_scroll_to_bottom_smooth);
+	
+	// Export functionality
+	ClassDB::bind_method(D_METHOD("_on_export_button_pressed"), &AIChatDock::_on_export_button_pressed);
+	ClassDB::bind_method(D_METHOD("_on_export_file_selected", "file_path"), &AIChatDock::_on_export_file_selected);
 
 	ADD_SIGNAL(MethodInfo("chat_gui_input", PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent")));
 }
@@ -544,6 +548,14 @@ void AIChatDock::_notification(int p_notification) {
 		save_image_dialog->add_filter("*.jpg", "JPEG Images");
 		save_image_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_save_image_location_selected));
 		add_child(save_image_dialog);
+
+		// Export conversation dialog
+		export_dialog = memnew(EditorFileDialog);
+		export_dialog->set_file_mode(EditorFileDialog::FILE_MODE_SAVE_FILE);
+		export_dialog->set_access(EditorFileDialog::ACCESS_RESOURCES);
+		export_dialog->add_filter("*.json", "JSON Files");
+		export_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_export_file_selected));
+		add_child(export_dialog);
 
 		// --- At-Mention Popup ---
 		at_mention_popup = memnew(PopupPanel);
@@ -1712,6 +1724,14 @@ void AIChatDock::_setup_authentication_ui() {
 	login_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Key"), SNAME("EditorIcons")));
 	login_button->connect("pressed", callable_mp(this, &AIChatDock::_on_login_button_pressed));
 	auth_container->add_child(login_button);
+	
+	// Export conversation button
+	export_button = memnew(Button);
+	export_button->set_text("Export");
+	export_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Save"), SNAME("EditorIcons")));
+	export_button->connect("pressed", callable_mp(this, &AIChatDock::_on_export_button_pressed));
+	export_button->set_tooltip_text("Export current conversation to JSON file");
+	auth_container->add_child(export_button);
 	
 	// Create HTTP request for authentication
 	auth_request = memnew(HTTPRequest);
@@ -10493,6 +10513,122 @@ void AIChatDock::_on_save_image_location_selected(const String &p_file_path) {
 	// Clear pending data
 	pending_save_image_data = "";
 	pending_save_image_format = "";
+}
+
+void AIChatDock::_on_export_button_pressed() {
+	// Check if there's a current conversation to export
+	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
+		print_line("AI Chat: No conversation to export");
+		return;
+	}
+	
+	const Conversation &conv = conversations[current_conversation_index];
+	
+	// Generate a default filename based on conversation title and timestamp
+	String safe_title = conv.title.replace(" ", "_").replace("/", "_").replace("\\", "_");
+	safe_title = safe_title.replace(":", "_").replace("*", "_").replace("?", "_");
+	safe_title = safe_title.replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_");
+	
+	String default_filename = "conversation_" + safe_title + "_" + conv.created_timestamp.replace(":", "-").replace(" ", "_") + ".json";
+	
+	// Show file dialog
+	export_dialog->set_current_file(default_filename);
+	export_dialog->popup_centered(Size2(800, 600));
+}
+
+void AIChatDock::_on_export_file_selected(const String &p_file_path) {
+	// Check if there's a current conversation to export
+	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
+		print_line("AI Chat: No conversation to export");
+		return;
+	}
+	
+	const Conversation &conv = conversations[current_conversation_index];
+	
+	// Create JSON structure for export
+	Dictionary export_data;
+	export_data["conversation_id"] = conv.id;
+	export_data["title"] = conv.title;
+	export_data["created_timestamp"] = conv.created_timestamp;
+	export_data["last_modified_timestamp"] = conv.last_modified_timestamp;
+	export_data["exported_at"] = _get_timestamp();
+	export_data["godot_ai_chat_version"] = "1.0";
+	
+	// Export messages
+	Array messages_array;
+	for (const ChatMessage &msg : conv.messages) {
+		Dictionary msg_dict;
+		msg_dict["role"] = msg.role;
+		msg_dict["content"] = msg.content;
+		msg_dict["timestamp"] = msg.timestamp;
+		
+		// Include tool calls if present
+		if (msg.tool_calls.size() > 0) {
+			msg_dict["tool_calls"] = msg.tool_calls;
+		}
+		
+		// Include tool response data if present
+		if (!msg.tool_call_id.is_empty()) {
+			msg_dict["tool_call_id"] = msg.tool_call_id;
+			msg_dict["name"] = msg.name;
+		}
+		
+		// Include attached files info (without binary data)
+		if (msg.attached_files.size() > 0) {
+			Array files_info;
+			for (const AttachedFile &file : msg.attached_files) {
+				Dictionary file_info;
+				file_info["path"] = file.path;
+				file_info["name"] = file.name;
+				file_info["is_image"] = file.is_image;
+				file_info["mime_type"] = file.mime_type;
+				file_info["is_node"] = file.is_node;
+				if (file.is_node) {
+					file_info["node_path"] = file.node_path;
+					file_info["node_type"] = file.node_type;
+				}
+				files_info.push_back(file_info);
+			}
+			msg_dict["attached_files"] = files_info;
+		}
+		
+		// Include tool results if present
+		if (msg.tool_results.size() > 0) {
+			msg_dict["tool_results"] = msg.tool_results;
+		}
+		
+		// Include reasoning content if present (thinking mode)
+		if (!msg.reasoning_content.is_empty()) {
+			msg_dict["reasoning_content"] = msg.reasoning_content;
+		}
+		
+		if (msg.thinking_blocks.size() > 0) {
+			msg_dict["thinking_blocks"] = msg.thinking_blocks;
+		}
+		
+		messages_array.push_back(msg_dict);
+	}
+	export_data["messages"] = messages_array;
+	
+	// Convert to JSON string
+	String json_string = JSON::stringify(export_data, "\t");
+	
+	// Save to file
+	Ref<FileAccess> file = FileAccess::open(p_file_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		print_line("AI Chat: Failed to open file for writing: " + p_file_path);
+		return;
+	}
+	
+	file->store_string(json_string);
+	file->close();
+	
+	print_line("AI Chat: Conversation exported to: " + p_file_path);
+	
+	// Show success notification if available
+	if (status_notification_panel) {
+		_show_status_notification("success", "Conversation exported successfully", "Save", 2.0);
+	}
 }
 
 // Asset Library callback implementations
