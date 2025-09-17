@@ -37,8 +37,9 @@ EditorUpdater::EditorUpdater() {
     // vb->add_child(progress);
 
     action_button = memnew(Button);
-    action_button->set_text(TTR("Download"));
+    action_button->set_text(TTR("Install and Restart"));
     action_button->connect("pressed", callable_mp(this, &EditorUpdater::_on_pressed));
+    action_button->set_visible(false); // Hide until download is complete
     vb->add_child(action_button);
 
     http = memnew(HTTPRequest);
@@ -55,6 +56,8 @@ void EditorUpdater::start_check() {
     if (feed_url.is_empty()) {
         status_label->set_text(TTR("No update feed configured."));
         stage = STAGE_ERROR;
+        action_button->set_text(TTR("Close"));
+        action_button->set_visible(true);
         return;
     }
 
@@ -109,6 +112,8 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             }
             status_label->set_text(TTR("Failed to check updates."));
             stage = STAGE_ERROR;
+            action_button->set_text(TTR("Close"));
+            action_button->set_visible(true);
             return;
         }
         Ref<XMLParser> parser;
@@ -140,6 +145,7 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             status_label->set_text(TTR("No update available."));
             stage = STAGE_IDLE;
             action_button->set_text(TTR("Close"));
+            action_button->set_visible(true);
             return;
         }
         download_url = found_url;
@@ -168,6 +174,8 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             print_line("EditorUpdater: Failed to start download, error: " + itos(download_err));
             status_label->set_text(TTR("Failed to start download."));
             stage = STAGE_ERROR;
+            action_button->set_text(TTR("Close"));
+            action_button->set_visible(true);
         } else {
             status_label->set_text(TTR("Starting download..."));
         }
@@ -178,11 +186,14 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
         if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
             status_label->set_text(TTR("Download failed."));
             stage = STAGE_ERROR;
+            action_button->set_text(TTR("Close"));
+            action_button->set_visible(true);
             return;
         }
         stage = STAGE_DOWNLOADED;
         status_label->set_text(TTR("Download complete. Ready to install."));
         action_button->set_text(TTR("Install and Restart"));
+        action_button->set_visible(true);
     }
 }
 
@@ -190,6 +201,8 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
     if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
         status_label->set_text(TTR("Failed to check GitHub releases."));
         stage = STAGE_ERROR;
+        action_button->set_text(TTR("Close"));
+        action_button->set_visible(true);
         return;
     }
     String s = String::utf8((const char *)p_body.ptr(), p_body.size());
@@ -418,6 +431,8 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
         print_line("EditorUpdater: " + error_msg);
         status_label->set_text(error_msg);
         stage = STAGE_ERROR;
+        action_button->set_text(TTR("Close"));
+        action_button->set_visible(true);
         return;
     }
     download_url = best_url;
