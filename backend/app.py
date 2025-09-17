@@ -3929,7 +3929,13 @@ def chat():
                             attempts = 0  # Reset attempts for new provider
                             continue
 
-                        # No retries/fallbacks left – bubble up to main handler
+                        # No retries/fallbacks left – send clear error status then bubble up to main handler
+                        yield json.dumps({
+                            "status": "error",
+                            "error_type": "provider_exhausted",
+                            "message": f"All AI providers failed after {max_attempts} attempts. Please try again later.",
+                            "providers_tried": list(providers_tried)
+                        }) + '\n'
                         raise
 
                 # Now that we've processed all chunks, handle the results
@@ -4574,7 +4580,36 @@ def chat():
         
         except Exception as e:
             print(f"ERROR: Exception in stream generation: {e}")
-            yield json.dumps({"error": str(e), "status": "error"}) + '\n'
+            
+            # Send detailed error information for better frontend handling
+            error_type = e.__class__.__name__
+            error_str = str(e)
+            
+            # Categorize errors for better user experience
+            if "rate limit" in error_str.lower() or "RateLimitError" in error_type:
+                error_category = "rate_limit"
+                user_message = "Rate limit exceeded. The system will automatically retry with a different provider."
+            elif "tool_calls" in error_str.lower() and "tool_call_id" in error_str.lower():
+                error_category = "tool_call_error"
+                user_message = "Tool execution was interrupted. Your conversation has been recovered and you can continue."
+            elif "connection" in error_str.lower() or "timeout" in error_str.lower():
+                error_category = "connection_error"
+                user_message = "Connection issue detected. Please check your internet connection and try again."
+            elif "overloaded" in error_str.lower() or "unavailable" in error_str.lower():
+                error_category = "service_overloaded"
+                user_message = "AI service is currently overloaded. Please try again in a moment."
+            else:
+                error_category = "unknown_error"
+                user_message = "An unexpected error occurred. Please try your request again."
+            
+            yield json.dumps({
+                "error": error_str, 
+                "status": "error",
+                "error_category": error_category,
+                "user_message": user_message,
+                "error_type": error_type,
+                "recoverable": error_category in ["rate_limit", "tool_call_error", "connection_error", "service_overloaded"]
+            }) + '\n'
         
         finally:
             # Clean up this request from active requests

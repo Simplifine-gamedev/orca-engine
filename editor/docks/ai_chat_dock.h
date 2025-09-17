@@ -586,6 +586,9 @@ private:
 	void _on_tool_result_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_path);
 	void _on_tool_result_reject_pressed(const String &p_tool_call_id, const String &p_file_path, const NodePath &p_btns_path, const NodePath &p_status_path);
 	
+	// Windows-compatible helper function (replaces lambda for scene node summarization)
+	Dictionary _summarize_scene_node_for_context(const Dictionary &p_node, int p_max_depth, int p_max_children);
+	
 public:
 	// Unified accept/reject system for all sources (tool call, diff editor, script save)
 	void _handle_apply_edit_accepted(const String &p_file_path, const String &p_content);
