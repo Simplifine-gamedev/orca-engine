@@ -209,13 +209,7 @@ class ConversationMemoryManager:
             if 'res://' in content or '.gd' in content or '.tscn' in content:
                 files_mentioned.append("file operations")
             
-            # Extract common topics
-            if any(keyword in content.lower() for keyword in ['error', 'fix', 'problem']):
-                topics.append("debugging/fixes")
-            if any(keyword in content.lower() for keyword in ['node', 'scene', 'script']):
-                topics.append("scene/node work")
-            if any(keyword in content.lower() for keyword in ['asset', 'install', 'addon']):
-                topics.append("asset management")
+            # No hardcoded topic extraction - let natural language processing handle this
         
         summary_parts = []
         if topics:
@@ -633,23 +627,8 @@ Previous conversation context has been intelligently summarized to manage length
 
     def _extract_topic_from_summary(self, summary: str) -> str:
         """Extract a topic/category from the summary for organization"""
-        summary_lower = summary.lower()
-        
-        # Simple keyword-based topic extraction
-        if any(word in summary_lower for word in ['error', 'debug', 'fix', 'problem']):
-            return "debugging"
-        elif any(word in summary_lower for word in ['asset', 'install', 'addon', 'plugin']):
-            return "asset_management"
-        elif any(word in summary_lower for word in ['scene', 'node', 'script']):
-            return "scene_development"
-        elif any(word in summary_lower for word in ['animation', 'tween', 'movement']):
-            return "animation"
-        elif any(word in summary_lower for word in ['physics', 'collision', 'body']):
-            return "physics"
-        elif any(word in summary_lower for word in ['ui', 'interface', 'button', 'control']):
-            return "ui_development"
-        else:
-            return "general"
+        # Return generic topic - no hardcoded categorization
+        return "general"
     
     async def summarize_conversation_chunk(self, messages: List[Dict], user_id: str = "unknown") -> str:
         """Public API endpoint for frontend to request conversation summarization"""

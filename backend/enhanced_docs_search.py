@@ -142,19 +142,8 @@ class EnhancedGodotDocsSearch:
                 props = obj.properties
                 score = obj.metadata.score if obj.metadata else 0.0
                 
-                # Boost score for FPS-relevant content
-                content = props.get('content', '').lower()
-                title = props.get('title', '').lower()
-                
-                boost = 0.0
-                if any(term in content or term in title for term in ['fps', 'first person', 'movement', 'camera', 'mouse']):
-                    boost += 0.2
-                if any(term in content or term in title for term in ['characterbody3d', 'raycast3d', 'camera3d']):
-                    boost += 0.3
-                if props.get('code_examples'):
-                    boost += 0.1
-                
-                enhanced_score = min(1.0, score + boost)
+                # Use original score without hardcoded boosts
+                enhanced_score = score
                 
                 formatted_results.append({
                     'title': props.get('title', ''),
@@ -166,7 +155,7 @@ class EnhancedGodotDocsSearch:
                     'url': props.get('url', ''),
                     'similarity': enhanced_score,
                     'original_score': score,
-                    'boost_applied': boost,
+                    'boost_applied': 0.0,
                     'keywords': props.get('keywords', []),
                     'code_examples': props.get('code_examples', False),
                     'difficulty': props.get('difficulty', 'intermediate')

@@ -124,6 +124,9 @@ private:
 		Array tool_results;
 		// For automatic project context injection (not displayed in UI)
 		String project_context;
+		// For thinking mode (reasoning content)
+		String reasoning_content;
+		Array thinking_blocks;
 	};
 
 	// Track pending apply_edit operations: path -> {bubble_node_path, status_label_path, bubble_container}
@@ -574,6 +577,16 @@ private:
 	void _on_status_notification_timer_timeout();
 	PanelContainer *status_notification_panel = nullptr;
 	Timer *status_notification_timer = nullptr;
+	
+	// Thinking mode support
+	void _handle_thinking_content_delta(const String &p_reasoning_delta);
+	void _handle_thinking_blocks_delta(const Array &p_thinking_blocks_delta);
+	void _create_thinking_section_for_current_message();
+	void _create_saved_thinking_section(VBoxContainer *p_message_vbox, const ChatMessage &p_message);
+	void _on_thinking_section_toggled(Control *p_content_panel);
+	VBoxContainer *current_thinking_section = nullptr;
+	RichTextLabel *current_thinking_label = nullptr;
+	String current_thinking_content;
 	
 	// Apply edit tool call button handling
 	void _on_tool_call_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content);

@@ -173,6 +173,260 @@ void AIChatDock::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("chat_gui_input", PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent")));
 }
 
+
+// Thinking mode implementation
+void AIChatDock::_handle_thinking_content_delta(const String &p_reasoning_delta) {
+	// Get or create thinking section for the current assistant message
+	if (!current_thinking_section) {
+		_create_thinking_section_for_current_message();
+	}
+	
+	if (!current_thinking_label) {
+		print_line("AI Chat: Warning - no thinking label available for reasoning delta");
+		return;
+	}
+	
+	// Accumulate thinking content
+	current_thinking_content += p_reasoning_delta;
+	
+	// Update the current assistant message with reasoning content
+	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	if (!chat_history.is_empty()) {
+		ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
+		if (last_msg.role == "assistant") {
+			last_msg.reasoning_content = current_thinking_content;
+		}
+	}
+	
+	// Update the thinking label with formatted content
+	String formatted_thinking = _markdown_to_bbcode(current_thinking_content);
+	current_thinking_label->set_text(formatted_thinking);
+	
+	// Auto-scroll if user is at the bottom
+	if (auto_scroll_at_bottom) {
+		call_deferred("_scroll_to_bottom");
+	}
+}
+
+void AIChatDock::_handle_thinking_blocks_delta(const Array &p_thinking_blocks_delta) {
+	// Handle Anthropic-specific thinking blocks
+	if (!current_thinking_section) {
+		_create_thinking_section_for_current_message();
+	}
+	
+	if (!current_thinking_label) {
+		print_line("AI Chat: Warning - no thinking label available for thinking blocks");
+		return;
+	}
+	
+	// Process each thinking block
+	for (int i = 0; i < p_thinking_blocks_delta.size(); i++) {
+		Dictionary block = p_thinking_blocks_delta[i];
+		String thinking_text = block.get("thinking", "");
+		String block_type = block.get("type", "thinking");
+		
+		if (!thinking_text.is_empty()) {
+			current_thinking_content += thinking_text;
+		}
+	}
+	
+	// Update the current assistant message with thinking blocks
+	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	if (!chat_history.is_empty()) {
+		ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
+		if (last_msg.role == "assistant") {
+			last_msg.reasoning_content = current_thinking_content;
+			last_msg.thinking_blocks = p_thinking_blocks_delta;
+		}
+	}
+	
+	// Update the thinking label
+	String formatted_thinking = _markdown_to_bbcode(current_thinking_content);
+	current_thinking_label->set_text(formatted_thinking);
+	
+	// Auto-scroll if user is at the bottom
+	if (auto_scroll_at_bottom) {
+		call_deferred("_scroll_to_bottom");
+	}
+}
+
+void AIChatDock::_create_thinking_section_for_current_message() {
+	// Find the current assistant message panel
+	if (!chat_container) {
+		print_line("AI Chat: Warning - no chat container for thinking section");
+		return;
+	}
+	
+	// Find the most recent assistant message panel
+	PanelContainer *assistant_panel = nullptr;
+	for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+		Node *child = chat_container->get_child(i);
+		PanelContainer *panel = Object::cast_to<PanelContainer>(child);
+		if (panel && String(panel->get_name()).begins_with("message_panel_")) {
+			assistant_panel = panel;
+			break;
+		}
+	}
+	
+	if (!assistant_panel) {
+		print_line("AI Chat: Warning - no assistant message panel found for thinking section");
+		return;
+	}
+	
+	// Get the message VBox container
+	VBoxContainer *message_vbox = nullptr;
+	if (assistant_panel->get_child_count() > 0) {
+		message_vbox = Object::cast_to<VBoxContainer>(assistant_panel->get_child(0));
+	}
+	
+	if (!message_vbox) {
+		print_line("AI Chat: Warning - no message VBox found for thinking section");
+		return;
+	}
+	
+	// Create thinking section container
+	current_thinking_section = memnew(VBoxContainer);
+	message_vbox->add_child(current_thinking_section);
+	
+	// Create toggle button for thinking section
+	Button *thinking_toggle = memnew(Button);
+	thinking_toggle->set_text("Show Thinking Process");
+	thinking_toggle->set_flat(false);
+	thinking_toggle->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	thinking_toggle->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	thinking_toggle->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+	current_thinking_section->add_child(thinking_toggle);
+	
+	// Create collapsible content panel
+	PanelContainer *thinking_content_panel = memnew(PanelContainer);
+	thinking_content_panel->set_visible(false); // Collapsed by default
+	current_thinking_section->add_child(thinking_content_panel);
+	
+	// Style the thinking content panel
+	Ref<StyleBoxFlat> thinking_style = memnew(StyleBoxFlat);
+	thinking_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
+	thinking_style->set_border_width_all(1);
+	thinking_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	thinking_style->set_content_margin_all(8);
+	thinking_style->set_corner_radius_all(4);
+	thinking_content_panel->add_theme_style_override("panel", thinking_style);
+	
+	// Create scrollable thinking content
+	ScrollContainer *thinking_scroll = memnew(ScrollContainer);
+	thinking_scroll->set_custom_minimum_size(Size2(0, 150)); // Max height
+	thinking_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	thinking_content_panel->add_child(thinking_scroll);
+	
+	// Create thinking text label
+	current_thinking_label = memnew(RichTextLabel);
+	current_thinking_label->set_fit_content(true);
+	current_thinking_label->set_selection_enabled(true);
+	current_thinking_label->set_use_bbcode(true);
+	current_thinking_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	current_thinking_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+	thinking_scroll->add_child(current_thinking_label);
+	
+	// Connect toggle button
+	thinking_toggle->connect("pressed", callable_mp(this, &AIChatDock::_on_thinking_section_toggled).bind(thinking_content_panel));
+	
+	// Reset thinking content
+	current_thinking_content = "";
+	
+	print_line("AI Chat: Created thinking section for current assistant message");
+}
+
+void AIChatDock::_create_saved_thinking_section(VBoxContainer *p_message_vbox, const ChatMessage &p_message) {
+	if (!p_message_vbox) {
+		return;
+	}
+	
+	// Create thinking section container
+	VBoxContainer *thinking_section = memnew(VBoxContainer);
+	p_message_vbox->add_child(thinking_section);
+	
+	// Create toggle button for thinking section
+	Button *thinking_toggle = memnew(Button);
+	thinking_toggle->set_text("Show Thinking Process");
+	thinking_toggle->set_flat(false);
+	thinking_toggle->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	thinking_toggle->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	thinking_toggle->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+	thinking_section->add_child(thinking_toggle);
+	
+	// Create collapsible content panel
+	PanelContainer *thinking_content_panel = memnew(PanelContainer);
+	thinking_content_panel->set_visible(false); // Collapsed by default
+	thinking_section->add_child(thinking_content_panel);
+	
+	// Style the thinking content panel
+	Ref<StyleBoxFlat> thinking_style = memnew(StyleBoxFlat);
+	thinking_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
+	thinking_style->set_border_width_all(1);
+	thinking_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	thinking_style->set_content_margin_all(8);
+	thinking_style->set_corner_radius_all(4);
+	thinking_content_panel->add_theme_style_override("panel", thinking_style);
+	
+	// Create scrollable thinking content
+	ScrollContainer *thinking_scroll = memnew(ScrollContainer);
+	thinking_scroll->set_custom_minimum_size(Size2(0, 150)); // Max height
+	thinking_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	thinking_content_panel->add_child(thinking_scroll);
+	
+	// Create thinking text label with saved content
+	RichTextLabel *thinking_label = memnew(RichTextLabel);
+	thinking_label->set_fit_content(true);
+	thinking_label->set_selection_enabled(true);
+	thinking_label->set_use_bbcode(true);
+	thinking_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	thinking_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+	
+	// Set the saved reasoning content
+	String thinking_content = p_message.reasoning_content;
+	if (!thinking_content.is_empty()) {
+		String formatted_thinking = _markdown_to_bbcode(thinking_content);
+		thinking_label->set_text(formatted_thinking);
+	}
+	
+	thinking_scroll->add_child(thinking_label);
+	
+	// Connect toggle button
+	thinking_toggle->connect("pressed", callable_mp(this, &AIChatDock::_on_thinking_section_toggled).bind(thinking_content_panel));
+	
+	print_line("AI Chat: Created saved thinking section with " + String::num_int64(thinking_content.length()) + " chars of reasoning content");
+}
+
+void AIChatDock::_on_thinking_section_toggled(Control *p_content_panel) {
+	if (!p_content_panel) {
+		return;
+	}
+	
+	bool is_visible = p_content_panel->is_visible();
+	p_content_panel->set_visible(!is_visible);
+	
+	// Update button text
+	Button *toggle_button = nullptr;
+	if (p_content_panel->get_parent()) {
+		VBoxContainer *parent = Object::cast_to<VBoxContainer>(p_content_panel->get_parent());
+		if (parent && parent->get_child_count() > 0) {
+			toggle_button = Object::cast_to<Button>(parent->get_child(0));
+		}
+	}
+	
+	if (toggle_button) {
+		if (!is_visible) {
+			toggle_button->set_text("Hide Thinking Process");
+		} else {
+			toggle_button->set_text("Show Thinking Process");
+		}
+	}
+	
+	// Auto-scroll if expanding
+	if (!is_visible && auto_scroll_at_bottom) {
+		call_deferred("_scroll_to_bottom");
+	}
+}
+
 void AIChatDock::attach_external_file(const String &p_file_path) {
     if (p_file_path.is_empty()) {
         return;
@@ -223,13 +477,16 @@ void AIChatDock::_notification(int p_notification) {
 			top_container->add_child(model_label);
 
             model_dropdown = memnew(OptionButton);
-            // Add multi-provider models
+            // Add multi-provider models with thinking variants
             model_dropdown->add_item("gpt-5");
+            model_dropdown->add_item("gpt-5 (thinking)");
 			model_dropdown->add_item("gpt-4o");
+			model_dropdown->add_item("gpt-4o (thinking)");
 			model_dropdown->add_item("claude-4");
+			model_dropdown->add_item("claude-4 (thinking)");
 			model_dropdown->add_item("gemini-2.5");
+			model_dropdown->add_item("gemini-2.5 (thinking)");
 			// Add Cerebras models (high-speed inference) - will be populated dynamically
-			// Using [FAST] prefix to avoid emoji encoding issues
 			_populate_cerebras_models();
 			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
@@ -480,9 +737,9 @@ void AIChatDock::_notification(int p_notification) {
 
 			input_field = memnew(TextEdit);
 					
-			// Enable word wrapping and disable horizontal scrolling
+			// Enable word wrapping and disable auto-height expansion
 			input_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-			input_field->set_fit_content_height_enabled(true);
+			input_field->set_fit_content_height_enabled(false); // Disable auto-expand to enable scrolling
 			
 			// Remove border from input field since panel provides it
 			Ref<StyleBoxFlat> input_style = memnew(StyleBoxFlat);
@@ -722,6 +979,10 @@ void AIChatDock::_notification(int p_notification) {
                     _update_ui_state();
                     http_status = STATUS_DONE;
                     current_assistant_message_label = nullptr;
+                    // Reset thinking section state
+                    current_thinking_section = nullptr;
+                    current_thinking_label = nullptr;
+                    current_thinking_content = "";
                     // Stop HTTP polling; async tasks will resume the chat when done
                     set_process(false);
 
@@ -1014,6 +1275,11 @@ void AIChatDock::_on_stop_button_pressed() {
 
 	// Drop any pending assistant label reference to avoid UI deadlocks.
 	current_assistant_message_label = nullptr;
+	
+	// Reset thinking section state
+	current_thinking_section = nullptr;
+	current_thinking_label = nullptr;
+	current_thinking_content = "";
 
 	// Clear input field when manually stopped
 	if (input_field && input_field->is_inside_tree()) {
@@ -1175,7 +1441,9 @@ void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_me
 	edit_field->set_text(p_message.content);
 	edit_field->set_custom_minimum_size(Size2(0, 100));
 	edit_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	// TextEdit wrapping might have different method name in Godot 4
+	// Enable word wrapping and disable auto-height expansion
+	edit_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
+	edit_field->set_fit_content_height_enabled(false); // Disable auto-expand to enable scrolling
 	message_vbox->add_child(edit_field);
 
 	// Buttons
@@ -1232,6 +1500,9 @@ PanelContainer *AIChatDock::_build_edit_message_panel(const AIChatDock::ChatMess
     edit_field->set_text(p_message.content);
     edit_field->set_custom_minimum_size(Size2(0, 100));
     edit_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    // Enable word wrapping and disable auto-height expansion
+    edit_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
+    edit_field->set_fit_content_height_enabled(false); // Disable auto-expand to enable scrolling
     message_vbox->add_child(edit_field);
 
     HBoxContainer *button_container = memnew(HBoxContainer);
@@ -1348,6 +1619,11 @@ void AIChatDock::_on_edit_message_send_pressed(int p_message_index, const String
 	
 	// Reset the assistant message label so streaming can create a new one
 	current_assistant_message_label = nullptr;
+	
+	// Reset thinking section for new message
+	current_thinking_section = nullptr;
+	current_thinking_label = nullptr;
+	current_thinking_content = "";
 	
 	// Queue a delayed save instead of immediate save
 	_queue_delayed_save();
@@ -3623,6 +3899,20 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		}
 	}
 
+	// Handle reasoning content deltas (thinking mode)
+	if (response_data.has("reasoning_delta")) {
+		String reasoning_delta = response_data["reasoning_delta"];
+		_handle_thinking_content_delta(reasoning_delta);
+		return;
+	}
+	
+	// Handle thinking blocks (Anthropic-specific)
+	if (response_data.has("thinking_blocks_delta")) {
+		Array thinking_blocks_delta = response_data["thinking_blocks_delta"];
+		_handle_thinking_blocks_delta(thinking_blocks_delta);
+		return;
+	}
+
 	// This handles the final message of a stream.
 	if (response_data.has("assistant_message")) {
 		Dictionary assistant_message = response_data["assistant_message"];
@@ -4158,6 +4448,11 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     // or finds the correct existing one.
     current_assistant_message_label = nullptr;
     
+    // Reset thinking section state
+    current_thinking_section = nullptr;
+    current_thinking_label = nullptr;
+    current_thinking_content = "";
+    
     // Send the conversation with tool results back to backend to continue processing
     // This is expected by the backend after frontend tool execution
     _send_chat_request();
@@ -4334,9 +4629,8 @@ void AIChatDock::_on_apply_edit_thread_done() {
                     original_disk_content = "";
                 }
                 
-                // Generate the correct cumulative inline diff from original disk content to final content
-                String cumulative_inline_diff = _generate_inline_diff(original_disk_content, final_content);
-                
+                // Do not pass inline diff markers; let ScriptEditor compute display-only diff internally
+                String cumulative_inline_diff = String();
                 call_deferred("_show_cumulative_diff_for_file", file_path, original_disk_content, final_content, cumulative_inline_diff);
             }
         }
@@ -4349,6 +4643,10 @@ void AIChatDock::_on_apply_edit_thread_done() {
         is_waiting_for_response = true;
         _update_ui_state();
         current_assistant_message_label = nullptr;
+        // Reset thinking section state
+        current_thinking_section = nullptr;
+        current_thinking_label = nullptr;
+        current_thinking_content = "";
         _send_chat_request();
     }
 }
@@ -4936,6 +5234,11 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
+		
+		// Create thinking section if this assistant message has reasoning content
+		if (!p_message.reasoning_content.is_empty() || !p_message.thinking_blocks.is_empty()) {
+			_create_saved_thinking_section(message_vbox, p_message);
+		}
 	}
 
 	if (!p_message.content.strip_edges().is_empty()) {
@@ -5809,26 +6112,9 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             String ext = file_path.get_extension().to_lower();
             bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
             if (is_script_like) {
-                // Check and clean edited_content if it contains diff markers
-                if (edited_content.contains("\n+ ") || edited_content.contains("\n- ") ||
-                    edited_content.begins_with("+ ") || edited_content.begins_with("- ")) {
-                    Vector<String> lines = edited_content.split("\n");
-                    String cleaned;
-                    for (const String &line : lines) {
-                        if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
-                            cleaned += line.substr(2) + "\n";
-                        } else {
-                            cleaned += line + "\n";
-                        }
-                    }
-                    if (cleaned.ends_with("\n")) {
-                        cleaned = cleaned.substr(0, cleaned.length() - 1);
-                    }
-                    edited_content = cleaned;
-                    // Update the preview overlay with cleaned content
-                    EditorTools::set_preview_overlay(file_path, edited_content);
-                }
-                // Diff display handled in completion handler after all tools finish
+                // Do not pre-process content here. If backend provided inline_diff,
+                // we will render it in the ScriptEditor and apply the clean final content there.
+                // Any attempt to strip leading prefixes here risks corrupting indentation.
             }
         }
 
@@ -7986,6 +8272,14 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 		api_msg["timestamp"] = p_msg.timestamp;
 	}
 	
+	// Save reasoning content (thinking mode)
+	if (!p_msg.reasoning_content.is_empty()) {
+		api_msg["reasoning_content"] = p_msg.reasoning_content;
+	}
+	if (!p_msg.thinking_blocks.is_empty()) {
+		api_msg["thinking_blocks"] = p_msg.thinking_blocks;
+	}
+	
 	return api_msg;
 }
 void AIChatDock::_finalize_chat_request() {
@@ -8422,6 +8716,10 @@ void AIChatDock::_request_completed() {
 		http_client->close();
 	}
 	current_assistant_message_label = nullptr;
+	// Reset thinking section state
+	current_thinking_section = nullptr;
+	current_thinking_label = nullptr;
+	current_thinking_content = "";
 	set_process(false);
 
 	// Subtle audio cue to indicate completion
@@ -8603,7 +8901,9 @@ void AIChatDock::clear_chat_history() {
 	pending_apply_edits.clear();
 	file_to_tool_ids.clear();
 	active_edit_tools.clear();
-	_update_pending_edits_banner();
+    if (pending_edits_banner && !pending_edits_banner->is_queued_for_deletion()) {
+        call_deferred("_update_pending_edits_banner");
+    }
 
 	// Clear UI (preserve pending edits banner)
 	if (chat_container != nullptr) {
@@ -8627,7 +8927,9 @@ void AIChatDock::clear_current_conversation() {
 
 		// Clear pending edits
 		pending_edits.clear();
-		_update_pending_edits_banner();
+    if (pending_edits_banner && !pending_edits_banner->is_queued_for_deletion()) {
+        call_deferred("_update_pending_edits_banner");
+    }
 
 		// Clear UI (preserve pending edits banner)
 		if (chat_container != nullptr) {
@@ -11758,17 +12060,39 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 		print_line("AI Chat: Removed " + String::num_int64(items_to_remove) + " old Cerebras models");
 	}
 	
-	// Add new models to dropdown
+	// Add new models to dropdown with thinking variants grouped
 	int added_models = 0;
+	Array thinking_models;
+	Array base_models;
+	
 	for (int i = 0; i < models.size(); i++) {
 		Dictionary model_info = models[i];
 		String model_name = model_info.get("name", "");
 		String provider = model_info.get("provider", "");
+		bool is_thinking = model_info.get("is_thinking_variant", false);
 		
-		if (provider == "cerebras") {
-			model_dropdown->add_item(model_name);
-			added_models++;
+		if (provider == "cerebras" || model_name.begins_with("[FAST]")) {
+			if (is_thinking) {
+				thinking_models.push_back(model_info);
+			} else {
+				base_models.push_back(model_info);
+			}
 		}
+	}
+	
+	// Add models in groups: base first, then thinking variants
+	for (int i = 0; i < base_models.size(); i++) {
+		Dictionary model_info = base_models[i];
+		String model_name = model_info.get("name", "");
+		model_dropdown->add_item(model_name);
+		added_models++;
+	}
+	
+	for (int i = 0; i < thinking_models.size(); i++) {
+		Dictionary model_info = thinking_models[i];
+		String model_name = model_info.get("name", "");
+		model_dropdown->add_item(model_name);
+		added_models++;
 	}
 	
 	print_line("AI Chat: Added " + String::num_int64(added_models) + " Cerebras models to dropdown");
@@ -12385,7 +12709,10 @@ void AIChatDock::_add_pending_edit(const String &p_tool_call_id, const String &p
 	tool_ids.push_back(p_tool_call_id);
 	file_to_tool_ids[p_file_path] = tool_ids;
 	
-	_update_pending_edits_banner();
+    // Only update banner if UI is available and in-tree
+    if (pending_edits_banner && !pending_edits_banner->is_queued_for_deletion()) {
+        call_deferred("_update_pending_edits_banner");
+    }
 	_queue_delayed_save(); // Save conversation with updated pending edits
 	print_line("AI Chat: Added pending edit for " + p_file_path + " (ID: " + p_tool_call_id + ") - consolidated");
 }
@@ -12628,28 +12955,39 @@ void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
 }
 
 void AIChatDock::_update_pending_edits_banner() {
-	if (!pending_edits_banner || !pending_edits_label) return;
-	
-	int unique_files = file_to_tool_ids.size();
-	int total_edits = pending_apply_edits.size();
-	
-	if (unique_files == 0) {
-		pending_edits_banner->set_visible(false);
-	} else {
-		pending_edits_banner->set_visible(true);
-		String text;
-		if (unique_files == 1) {
-			text = "1 file pending review";
-		} else {
-			text = String::num_int64(unique_files) + " files pending review";
-		}
-		
-		if (total_edits > unique_files) {
-			text += " (" + String::num_int64(total_edits) + " edits)";
-		}
-		
-		pending_edits_label->set_text(text);
-	}
+    // Defensive: verify objects are valid and in-tree before touching UI
+    if (!pending_edits_banner || !pending_edits_label) return;
+    if (pending_edits_banner->is_queued_for_deletion() || pending_edits_label->is_queued_for_deletion()) return;
+    if (!pending_edits_banner->is_inside_tree() || !pending_edits_label->is_inside_tree()) return;
+
+    const int unique_files = file_to_tool_ids.size();
+    const int total_edits = pending_apply_edits.size();
+
+    if (unique_files <= 0 || total_edits <= 0) {
+        if (pending_edits_banner->is_visible()) {
+            pending_edits_banner->set_visible(false);
+        }
+        return;
+    }
+
+    // Build banner text
+    String text;
+    if (unique_files == 1) {
+        text = "1 file pending review";
+    } else {
+        text = String::num_int64(unique_files) + " files pending review";
+    }
+    if (total_edits > unique_files) {
+        text += " (" + String::num_int64(total_edits) + " edits)";
+    }
+
+    // Apply UI only if there is usable text
+    if (!text.is_empty()) {
+        pending_edits_label->set_text(text);
+        if (!pending_edits_banner->is_visible()) {
+            pending_edits_banner->set_visible(true);
+        }
+    }
 }
 
 void AIChatDock::_on_banner_clicked() {

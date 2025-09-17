@@ -3070,13 +3070,7 @@ void ScriptTextEditor::set_diff(const String &p_original_content, const String &
 		print_line("Inline diff preview: " + p_inline_diff.left(200).replace("\n", "\\n") + "...");
 	}
 	
-	// Check for diff markers in input
-	if (p_original_content.contains("+ ") || p_original_content.contains("- ")) {
-		print_line("WARNING: Original content contains diff markers!");
-	}
-	if (p_modified_content.contains("+ ") || p_modified_content.contains("- ")) {
-		print_line("WARNING: Modified content contains diff markers!");
-	}
+    // Avoid depending on external diff markers in inputs; we render our own display diff
 	
 	_clear_diff_data();
 	// Only normalize line endings, don't strip edges as that changes the content
@@ -3134,8 +3128,8 @@ void ScriptTextEditor::_build_diff_hunks(const String &p_original, const String 
 	diff_hunks.clear();
 	line_to_hunk_map.clear();
 	
-	// If we have inline diff from backend, build hunks based on that
-	if (has_inline_diff && !inline_diff_text.is_empty()) {
+    // If we have inline diff from backend, build hunks based on that
+    if (has_inline_diff && !inline_diff_text.is_empty()) {
 		Vector<String> diff_lines = inline_diff_text.split("\n");
 		
 		// Identify contiguous blocks of changes as separate hunks
@@ -3210,22 +3204,57 @@ void ScriptTextEditor::_build_diff_hunks(const String &p_original, const String 
 		}
 		
 		print_line("Built " + itos(diff_hunks.size()) + " diff hunks from inline diff, mapped " + itos(line_to_hunk_map.size()) + " lines");
-	} else {
-		// Fallback to original logic
-		Vector<String> original_lines = p_original.split("\n");
-		Vector<String> modified_lines = p_modified.split("\n");
+    } else {
+        // Build hunks using internal dtl diff (no external markers)
+        Vector<String> original_lines = p_original.split("\n");
+        Vector<String> modified_lines = p_modified.split("\n");
 
-		// For now, create a single hunk encompassing all changes
-		// This is simpler and works better with our line-by-line diff
-		if (original_lines.size() > 0 || modified_lines.size() > 0) {
-			DiffHunk hunk;
-			hunk.start_line = 0;
-			hunk.end_line = MAX(original_lines.size(), modified_lines.size());
-			hunk.accepted = false;
-			hunk.rejected = false;
-			diff_hunks.push_back(hunk);
-		}
-	}
+        std::vector<std::string> orig_vec;
+        std::vector<std::string> mod_vec;
+        orig_vec.reserve(original_lines.size());
+        mod_vec.reserve(modified_lines.size());
+        for (const String &l : original_lines) orig_vec.push_back(l.utf8().get_data());
+        for (const String &l : modified_lines) mod_vec.push_back(l.utf8().get_data());
+
+        dtl::Diff<std::string> diff(orig_vec, mod_vec);
+        diff.compose();
+
+        // We simulate display-line iteration to create contiguous change hunks
+        auto ses = diff.getSes();
+        auto seq = ses.getSequence();
+
+        int display_line = 0;
+        int current_hunk_start = -1;
+        for (const auto &elem : seq) {
+            bool is_change = (elem.second.type == dtl::SES_ADD || elem.second.type == dtl::SES_DELETE);
+            if (is_change) {
+                if (current_hunk_start == -1) {
+                    current_hunk_start = display_line;
+                }
+            } else { // common
+                if (current_hunk_start != -1) {
+                    DiffHunk h;
+                    h.start_line = current_hunk_start;
+                    h.end_line = display_line - 1;
+                    h.accepted = false;
+                    h.rejected = false;
+                    diff_hunks.push_back(h);
+                    current_hunk_start = -1;
+                }
+            }
+
+            // Each SES element becomes one display line
+            display_line++;
+        }
+        if (current_hunk_start != -1) {
+            DiffHunk h;
+            h.start_line = current_hunk_start;
+            h.end_line = display_line - 1;
+            h.accepted = false;
+            h.rejected = false;
+            diff_hunks.push_back(h);
+        }
+    }
 }
 
 String ScriptTextEditor::_generate_unified_diff_text() {
@@ -3240,8 +3269,8 @@ String ScriptTextEditor::_generate_unified_diff_text() {
 		return "";
 	}
 	
-	// Check if we have cached inline diff from backend
-	if (has_inline_diff && !inline_diff_text.is_empty()) {
+    // Check if we have cached inline diff from backend
+    if (has_inline_diff && !inline_diff_text.is_empty()) {
 		print_line("Using inline diff from backend");
 		print_line("Inline diff length: " + itos(inline_diff_text.length()));
 		print_line("Inline diff preview: " + inline_diff_text.left(300).replace("\n", "\\n"));
@@ -3276,41 +3305,52 @@ String ScriptTextEditor::_generate_unified_diff_text() {
 		return clean_diff_text;
 	}
 	
-	// Fallback to simple line-by-line diff if no backend diff available
-	print_line("WARNING: No backend diff available, using simple fallback");
-	Vector<String> original_lines = original_content.split("\n");
-	Vector<String> modified_lines = modified_content.split("\n");
+    // Fallback to robust dtl-based diff if no backend diff available
+    print_line("No backend diff provided, generating internal display diff only (dtl)");
+    Vector<String> original_lines = original_content.split("\n");
+    Vector<String> modified_lines = modified_content.split("\n");
 
-	String diff_text;
-	line_to_hunk_map.clear();
-	int display_line_num = 0;
+    // Convert to std::vector for dtl
+    std::vector<std::string> orig_vec;
+    std::vector<std::string> mod_vec;
+    orig_vec.reserve(original_lines.size());
+    mod_vec.reserve(modified_lines.size());
+    for (const String &l : original_lines) orig_vec.push_back(l.utf8().get_data());
+    for (const String &l : modified_lines) mod_vec.push_back(l.utf8().get_data());
 
-	int max_lines = MAX(original_lines.size(), modified_lines.size());
-	for (int i = 0; i < max_lines; i++) {
-		if (i < original_lines.size() && i < modified_lines.size()) {
-			if (original_lines[i] == modified_lines[i]) {
-				diff_text += "  " + original_lines[i] + "\n";
-			} else {
-				// Show as changed
-				diff_text += "- " + original_lines[i] + "\n";
-				diff_text += "+ " + modified_lines[i] + "\n";
-				line_to_hunk_map[display_line_num] = 0;
-				line_to_hunk_map[display_line_num + 1] = 0;
-				display_line_num++;
-			}
-		} else if (i < original_lines.size()) {
-			// Deleted line
-			diff_text += "- " + original_lines[i] + "\n";
-			line_to_hunk_map[display_line_num] = 0;
-		} else {
-			// Added line
-			diff_text += "+ " + modified_lines[i] + "\n";
-			line_to_hunk_map[display_line_num] = 0;
-		}
-		display_line_num++;
-	}
+    dtl::Diff<std::string> diff(orig_vec, mod_vec);
+    diff.compose();
 
-	return diff_text;
+    String diff_text;
+    line_states.clear();
+    line_to_hunk_map.clear();
+
+    auto ses = diff.getSes();
+    auto seq = ses.getSequence();
+    int display_line_num = 0;
+    for (const auto &elem : seq) {
+        String content = String::utf8(elem.first.c_str());
+        switch (elem.second.type) {
+            case dtl::SES_ADD:
+                diff_text += "+ " + content + "\n";
+                line_states.push_back(LINE_STATE_ADDED);
+                line_to_hunk_map[display_line_num] = 0;
+                break;
+            case dtl::SES_DELETE:
+                diff_text += "- " + content + "\n";
+                line_states.push_back(LINE_STATE_REMOVED);
+                line_to_hunk_map[display_line_num] = 0;
+                break;
+            case dtl::SES_COMMON:
+            default:
+                diff_text += "  " + content + "\n";
+                line_states.push_back(LINE_STATE_NORMAL);
+                break;
+        }
+        display_line_num++;
+    }
+
+    return diff_text;
 }
 
 String ScriptTextEditor::_generate_smart_diff_text() {
@@ -3379,8 +3419,8 @@ void ScriptTextEditor::_update_diff_display() {
 	bool old_script_valid = script_is_valid;
 	script_is_valid = true; // Prevent validation from running
 	
-	// Generate and display the smart diff
-	String diff_text = _generate_smart_diff_text();
+    // Generate and display the smart diff (do not strip or normalize indentation)
+    String diff_text = _generate_smart_diff_text();
 	if (diff_text.is_empty()) {
 		te->set_text("No differences found.");
 		te->set_editable(false);
@@ -3388,7 +3428,7 @@ void ScriptTextEditor::_update_diff_display() {
 		return;
 	}
 	
-	te->set_text(diff_text);
+    te->set_text(diff_text);
 	te->set_editable(false);
 	
 	// Clear any existing errors/warnings since we're showing a diff, not actual code
@@ -3486,8 +3526,8 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	const int prev_caret_line = te->get_caret_line();
 	const int prev_caret_col = te->get_caret_column();
 
-	// Build the final content based on individual hunk decisions
-	String final_content;
+    // Build the final content based on individual hunk decisions
+    String final_content;
 	
 	// Check if we have individual hunk decisions
 	bool has_individual_decisions = false;
@@ -3521,9 +3561,9 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 		final_content = original_content;
 		print_line("Using original content (all hunks rejected)");
 	} else {
-		// Apply individual hunk decisions
-		// We need to build the final content by processing the diff line by line
-		if (has_inline_diff && !inline_diff_text.is_empty()) {
+        // Apply individual hunk decisions
+        // We need to build the final content by processing the diff line by line
+        if (has_inline_diff && !inline_diff_text.is_empty()) {
 			Vector<String> diff_lines = inline_diff_text.split("\n");
 			String result;
 			
@@ -3582,10 +3622,36 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 			}
 			
 			final_content = result;
-		} else {
-			// Fallback: use modified content if we can't process hunks individually
-			final_content = modified_content;
-		}
+        } else {
+            // Fallback: use dtl sequence to apply accepted/rejected portions without markers
+            std::vector<std::string> orig_vec;
+            std::vector<std::string> mod_vec;
+            for (const String &l : original_content.split("\n")) orig_vec.push_back(l.utf8().get_data());
+            for (const String &l : modified_content.split("\n")) mod_vec.push_back(l.utf8().get_data());
+            dtl::Diff<std::string> diff(orig_vec, mod_vec);
+            diff.compose();
+            auto ses = diff.getSes();
+            auto seq = ses.getSequence();
+            String result;
+            for (const auto &elem : seq) {
+                String content = String::utf8(elem.first.c_str());
+                switch (elem.second.type) {
+                    case dtl::SES_ADD:
+                        // Only include additions if any hunk is accepted (coarse-grained when no inline diff)
+                        if (any_hunks_accepted) result += content + "\n";
+                        break;
+                    case dtl::SES_DELETE:
+                        // Deletions are excluded by default
+                        break;
+                    case dtl::SES_COMMON:
+                    default:
+                        result += content + "\n";
+                        break;
+                }
+            }
+            if (result.ends_with("\n")) result = result.substr(0, result.length() - 1);
+            final_content = result;
+        }
 	}
 	
 	// CRITICAL: Ensure we NEVER apply content with diff markers
@@ -3594,24 +3660,25 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	print_line("any_hunks_accepted = " + String(any_hunks_accepted ? "true" : "false"));
 	print_line("has_individual_decisions = " + String(has_individual_decisions ? "true" : "false"));
 	
-	// Clean any remaining diff markers from final content
-	if (final_content.contains("\n+ ") || final_content.contains("\n- ") || 
-	    final_content.begins_with("+ ") || final_content.begins_with("- ")) {
-		print_line("WARNING: final_content still has diff markers! Cleaning...");
-		Vector<String> lines = final_content.split("\n");
-		String cleaned;
-		for (const String &line : lines) {
-			if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
-				cleaned += line.substr(2) + "\n";
-			} else {
-				cleaned += line + "\n";
-			}
-		}
-		if (cleaned.ends_with("\n")) {
-			cleaned = cleaned.substr(0, cleaned.length() - 1);
-		}
-		final_content = cleaned;
-	}
+    // Clean any remaining diff markers from final content WITHOUT altering indentation beyond markers
+    if (final_content.contains("\n+ ") || final_content.contains("\n- ") || 
+        final_content.begins_with("+ ") || final_content.begins_with("- ")) {
+        print_line("WARNING: final_content still has diff markers! Cleaning (prefix-only)...");
+        Vector<String> lines = final_content.split("\n");
+        String cleaned;
+        for (const String &line : lines) {
+            if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+                // Remove only the first two-character diff prefix, preserve all following whitespace verbatim
+                cleaned += line.substr(2) + "\n";
+            } else {
+                cleaned += line + "\n";
+            }
+        }
+        if (cleaned.ends_with("\n")) {
+            cleaned = cleaned.substr(0, cleaned.length() - 1);
+        }
+        final_content = cleaned;
+    }
 	
 	print_line("Final content preview: " + final_content.left(200) + "...");
 	print_line("=== END CHECKING ===");

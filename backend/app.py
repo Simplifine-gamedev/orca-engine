@@ -430,8 +430,45 @@ BASE_MODEL_MAP = {
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
 
-# Dynamic model map that includes base + cerebras models
-MODEL_MAP = BASE_MODEL_MAP.copy()
+# Import LiteLLM supports_reasoning for dynamic thinking model detection
+try:
+    import litellm
+    _litellm_supports_reasoning = getattr(litellm, 'supports_reasoning', None)
+except ImportError:
+    _litellm_supports_reasoning = None
+
+def _create_thinking_variants(base_models: dict) -> dict:
+    """Create thinking and non-thinking variants for models that support reasoning"""
+    expanded_models = {}
+    
+    if not _litellm_supports_reasoning:
+        print("WARNING: LiteLLM supports_reasoning not available - no thinking variants will be created")
+        return base_models.copy()
+    
+    for friendly_name, model_id in base_models.items():
+        try:
+            if _litellm_supports_reasoning(model_id):
+                # Add thinking variant
+                thinking_name = f"{friendly_name} (thinking)"
+                expanded_models[thinking_name] = model_id
+                
+                # Keep the original name as non-thinking (no suffix)
+                expanded_models[friendly_name] = model_id
+                
+                print(f"THINKING_MODELS: Created variants for {friendly_name}: {thinking_name}, {friendly_name}")
+            else:
+                # Model doesn't support thinking, keep as-is
+                expanded_models[friendly_name] = model_id
+                print(f"THINKING_MODELS: No thinking support for {friendly_name}, keeping original")
+        except Exception as e:
+            print(f"WARNING: Failed to check reasoning support for {model_id}: {e}")
+            # On error, keep the original model
+            expanded_models[friendly_name] = model_id
+    
+    return expanded_models
+
+# Dynamic model map that includes base + cerebras models + thinking variants
+MODEL_MAP = _create_thinking_variants(BASE_MODEL_MAP)
 
 def fetch_cerebras_models():
     """Fetch available models from Cerebras API"""
@@ -464,9 +501,10 @@ def fetch_cerebras_models():
         print(f"WARNING: Failed to fetch Cerebras models: {e}")
         return {}
 
-# Load Cerebras models at startup
+# Load Cerebras models at startup and add thinking variants
 cerebras_models = fetch_cerebras_models()
-MODEL_MAP.update(cerebras_models)
+cerebras_with_thinking = _create_thinking_variants(cerebras_models)
+MODEL_MAP.update(cerebras_with_thinking)
 
 # Ensure LiteLLM has access to Cerebras API key
 cerebras_api_key = os.getenv('CEREBRAS_API_KEY')
@@ -519,6 +557,18 @@ def get_model_friendly_name(model_id: str) -> str:
     if model_id.startswith("cerebras/"):
         return f"[FAST] {model_id.replace('cerebras/', '')}"
     return model_id
+
+def _is_thinking_mode(model_friendly_name: str) -> bool:
+    """Check if a model name indicates thinking mode is enabled"""
+    return "(thinking)" in model_friendly_name.lower()
+
+def _get_reasoning_params(model_friendly_name: str) -> dict:
+    """Get reasoning parameters for LiteLLM based on model name"""
+    if not _is_thinking_mode(model_friendly_name):
+        return {}
+    
+    # Default to low effort for faster responses while still getting reasoning
+    return {"reasoning_effort": "low"}
 
 # Initialize Authentication Manager
 auth_manager = AuthManager()
@@ -1340,85 +1390,22 @@ def _calculate_relationship_score(file_path: str, all_files: list, graph_context
 
 def _calculate_godot_context_boost(file_path: str, query: str, all_files: list) -> float:
     """
-    GODOT-SPECIFIC INTELLIGENCE: Boost files based on patterns and HP system awareness
-    
-    Enhanced with SIGNAL FLOW INTELLIGENCE for HP system scenarios!
+    Simplified Godot context boost - only basic scene-script pairing
+    All hardcoded biases removed for neutral, predictable behavior
     """
     boost = 0.0
-    file_lower = file_path.lower()
-    query_lower = query.lower()
     
-    # HP SYSTEM INTELLIGENCE - Critical for adding HP to one-hit games!
-    hp_damage_terms = ['health', 'hp', 'damage', 'hit', 'hurt', 'collision', 'die', 'death', 'game_over', 'gameover']
-    if any(term in query_lower for term in hp_damage_terms):
-        print(f"HP_SYSTEM_QUERY: Analyzing {file_path} for HP system relevance")
-        
-        # PLAYER FILES - Central to HP systems
-        if 'player' in file_lower:
-            boost += 0.6  # Major boost - player files are critical for HP
-            print(f"HP_BOOST: Player file {file_path} +0.6")
-        
-        # ENEMY/DAMAGE SOURCES - Need to understand what currently kills player
-        if any(enemy in file_lower for enemy in ['enemy', 'bullet', 'projectile', 'hazard', 'trap']):
-            boost += 0.5  # Major boost - damage sources
-            print(f"HP_BOOST: Damage source {file_path} +0.5")
-        
-        # UI FILES - Need to add health bars/displays
-        if any(ui in file_lower for ui in ['ui', 'hud', 'health', 'bar', 'display', 'interface']):
-            boost += 0.4  # Important for HP display
-            print(f"HP_BOOST: UI file {file_path} +0.4")
-        
-        # GAME MANAGER - Handles game over logic that needs to change  
-        if any(mgr in file_lower for mgr in ['game', 'main', 'manager', 'controller']):
-            boost += 0.4  # Important for game state management
-            print(f"HP_BOOST: Game manager {file_path} +0.4")
-        
-        # COLLISION/DAMAGE LOGIC - The core of what needs to change
-        if any(col in file_lower for col in ['collision', 'damage', 'hit', 'area']):
-            boost += 0.5  # Critical - this is where one-hit logic likely lives
-            print(f"HP_BOOST: Collision/damage logic {file_path} +0.5")
-    
-    # Scene-Script pair detection
+    # Scene-Script pair detection (this is objective structural information)
     base_name = file_path.rsplit('.', 1)[0] if '.' in file_path else file_path
     script_pair = f"{base_name}.gd"
     scene_pair = f"{base_name}.tscn"
     
     if file_path.endswith('.gd') and scene_pair in all_files:
-        boost += 0.3  # Script with matching scene
+        boost += 0.1  # Script with matching scene - minimal boost
     elif file_path.endswith('.tscn') and script_pair in all_files:
-        boost += 0.3  # Scene with matching script
+        boost += 0.1  # Scene with matching script - minimal boost
     
-    # ENHANCED Query-specific boosting
-    if 'player' in query_lower:
-        if 'player' in file_lower:
-            boost += 0.4
-    elif 'movement' in query_lower or 'move' in query_lower:
-        if any(word in file_lower for word in ['movement', 'move', 'kinematic', 'character']):
-            boost += 0.3
-    elif 'ui' in query_lower or 'interface' in query_lower:
-        if any(word in file_lower for word in ['ui', 'menu', 'button', 'panel', 'interface', 'hud']):
-            boost += 0.3
-    elif 'audio' in query_lower or 'sound' in query_lower:
-        if any(word in file_lower for word in ['audio', 'sound', 'music', 'sfx']):
-            boost += 0.3
-    elif 'signal' in query_lower or 'connect' in query_lower:
-        # SIGNAL SYSTEM QUERIES - boost files likely to contain signal logic
-        if any(sig in file_lower for sig in ['player', 'game', 'manager', 'controller']):
-            boost += 0.4
-    
-    # File type relevance
-    if 'script' in query_lower and file_path.endswith('.gd'):
-        boost += 0.2
-    elif 'scene' in query_lower and file_path.endswith('.tscn'):
-        boost += 0.2
-    elif 'resource' in query_lower and file_path.endswith(('.tres', '.res')):
-        boost += 0.2
-    
-    # Architectural patterns
-    if any(pattern in file_lower for pattern in ['manager', 'controller', 'system', 'service']):
-        boost += 0.2  # Likely architectural components
-    
-    return min(1.0, boost)  # Cap at 1.0
+    return boost
 
 def _expand_with_multi_hop_context(enhanced_files: list, graph_context: dict, query: str) -> list:
     """
@@ -1618,53 +1605,14 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         if not project_id:
             project_id = hashlib.md5(project_root.encode()).hexdigest()
         
-        # Smart search mode detection with proper logging
+        # Use search mode as specified - no hardcoded auto-detection
         detected_mode = search_mode
-        if search_mode == 'semantic':
-            query_lower = query.lower()
-            
-            # Explicit keyword request detection
-            if any(word in query_lower for word in ['keyword', 'exact', 'literal', 'find exact']):
-                detected_mode = 'keyword'
-                print(f"SEARCH_MODE_DETECTION: User explicitly requested KEYWORD search: {query}")
-            
-            # Hybrid search detection (semantic + keyword)
-            elif (any(pattern in query_lower for pattern in ['func ', 'function ', 'def ', 'class ', 'signal ']) or
-                  any(api in query_lower for api in ['set_velocity', 'move_and_slide', 'get_node', 'emit_signal']) or
-                  '"' in query or "'" in query or
-                  # Common exact searches
-                  query_lower in ['_ready', '_process', '_physics_process', '_input', 'add_vectors', 'try_jump']):
-                detected_mode = 'hybrid'
-                print(f"SEARCH_MODE_DETECTION: Auto-detected HYBRID search: {query}")
-            else:
-                print(f"SEARCH_MODE_DETECTION: Using SEMANTIC search: {query}")
-        else:
-            print(f"SEARCH_MODE_DETECTION: Using explicit {detected_mode.upper()} search: {query}")
+        print(f"SEARCH_MODE: Using {detected_mode.upper()} search: {query}")
         
-        # Search using cloud vector manager with detected/selected mode
+        # Search using cloud vector manager with specified mode
         if detected_mode == 'keyword':
-            # Extract the actual search term from keyword requests
-            search_term = query
-            query_lower = query.lower()
-            
-            # Clean up keyword search queries
-            if 'keyword' in query_lower:
-                # Extract term after "keyword"
-                parts = query_lower.split('keyword')
-                if len(parts) > 1:
-                    search_term = parts[1].strip().split()[0] if parts[1].strip() else query
-            elif 'search for' in query_lower:
-                # Extract term after "search for"
-                parts = query_lower.split('search for')
-                if len(parts) > 1:
-                    remaining = parts[1].strip()
-                    if remaining.startswith('keyword'):
-                        remaining = remaining.replace('keyword', '').strip()
-                    search_term = remaining.split()[0] if remaining else query
-            
-            print(f"SEARCH_EXECUTION: Keyword search - extracted term '{search_term}' from query '{query}'")
-            initial_results = cloud_vector_manager.keyword_search(search_term, user['id'], project_id, max_results * 2)
-            print(f"SEARCH_EXECUTION: Performed pure KEYWORD search")
+            initial_results = cloud_vector_manager.keyword_search(query, user['id'], project_id, max_results * 2)
+            print(f"SEARCH_EXECUTION: Performed KEYWORD search")
         elif detected_mode == 'hybrid' and hasattr(cloud_vector_manager, 'hybrid_search'):
             initial_results = cloud_vector_manager.hybrid_search(query, user['id'], project_id, max_results * 2)
             print(f"SEARCH_EXECUTION: Performed HYBRID search")
@@ -3730,16 +3678,38 @@ def chat():
                 # We need to retry the ENTIRE streaming process, not just the initial call
                 while True:
                     try:
-                        response = completion(
-                            model=model_try,
-                            messages=openai_messages,
-                            tools=godot_tools,
-                            tool_choice="auto",
-                            stream=True
+                        # Get reasoning parameters based on model name
+                        model_friendly = get_model_friendly_name(model_try)
+                        reasoning_params = _get_reasoning_params(model_friendly)
+                        
+                        completion_params = {
+                            "model": model_try,
+                            "messages": openai_messages,
+                            "tools": godot_tools,
+                            "tool_choice": "auto",
+                            "stream": True
+                        }
+                        
+                        # CRITICAL FIX: Disable thinking mode when tools are present
+                        # Anthropic requires specific message structure for thinking + tools
+                        # For now, only enable thinking for pure text conversations
+                        has_tool_calls_in_history = any(
+                            msg.get('role') == 'assistant' and msg.get('tool_calls')
+                            for msg in openai_messages
                         )
+                        
+                        if reasoning_params and not has_tool_calls_in_history:
+                            completion_params.update(reasoning_params)
+                            print(f"THINKING_MODE: Enabled for {model_friendly} with params: {reasoning_params}")
+                        elif reasoning_params and has_tool_calls_in_history:
+                            print(f"THINKING_MODE: Disabled for {model_friendly} due to tool calls in conversation")
+                        
+                        response = completion(**completion_params)
                         
                         # Process the stream inside the try block to catch streaming errors
                         full_text_response = ""
+                        full_reasoning_content = ""
+                        thinking_blocks = []
                         tool_call_aggregator = {}
                         tool_ids = {}
                         current_tool_index = None
@@ -3763,6 +3733,24 @@ def chat():
                                     yield json.dumps({
                                         "content_delta": content,
                                         "status": "streaming"
+                                    }) + '\n'
+                                
+                                # Handle reasoning content (thinking mode)
+                                reasoning_content = getattr(delta, 'reasoning_content', None) if hasattr(delta, 'reasoning_content') else delta.get('reasoning_content')
+                                if reasoning_content:
+                                    full_reasoning_content += reasoning_content
+                                    yield json.dumps({
+                                        "reasoning_delta": reasoning_content,
+                                        "status": "thinking"
+                                    }) + '\n'
+                                
+                                # Handle thinking blocks (Anthropic-specific)
+                                thinking_blocks_delta = getattr(delta, 'thinking_blocks', None) if hasattr(delta, 'thinking_blocks') else delta.get('thinking_blocks')
+                                if thinking_blocks_delta:
+                                    thinking_blocks.extend(thinking_blocks_delta)
+                                    yield json.dumps({
+                                        "thinking_blocks_delta": thinking_blocks_delta,
+                                        "status": "thinking_blocks"
                                     }) + '\n'
                                 
                                 # Handle tool calls (LiteLLM format)
@@ -3916,16 +3904,16 @@ def chat():
                             }) + '\n'
                         
                         # Always try GPT-5 after retries exhausted
-                        if MODEL_MAP.get("gpt-5") not in providers_tried:
-                            fallback = MODEL_MAP.get("gpt-5")
+                        fallback_model_id = MODEL_MAP.get("gpt-5 (fast)") or MODEL_MAP.get("gpt-5") or "openai/gpt-5"
+                        if fallback_model_id not in providers_tried:
                             yield json.dumps({
                                 "status": "switching_model",
                                 "from": get_model_friendly_name(model_try),
                                 "to": "gpt-5",
                                 "reason": f"Provider overloaded after {max_attempts} retries"
                             }) + '\n'
-                            print(f"SWITCHING: From {model_try} to {fallback} after {max_attempts} failed attempts")
-                            model_try = fallback
+                            print(f"SWITCHING: From {model_try} to {fallback_model_id} after {max_attempts} failed attempts")
+                            model_try = fallback_model_id
                             attempts = 0  # Reset attempts for new provider
                             continue
 
@@ -4495,6 +4483,13 @@ def chat():
                 
                     # Add the assistant's decision to call the tool to history
                     assistant_message = {"role": "assistant", "content": None, "tool_calls": original_tool_calls_for_history}
+                    
+                    # Add reasoning content if available (thinking mode)
+                    if full_reasoning_content:
+                        assistant_message["reasoning_content"] = full_reasoning_content
+                    if thinking_blocks:
+                        assistant_message["thinking_blocks"] = thinking_blocks
+                    
                     conversation_messages.append(assistant_message)
                     print(f"CONVERSATION_ADD: Added assistant message with tool calls")
                     
@@ -4522,6 +4517,12 @@ def chat():
                     "role": "assistant",
                     "content": full_text_response if full_text_response else None,
                 }
+                
+                # Add reasoning content if available (thinking mode)
+                if full_reasoning_content:
+                    assistant_message["reasoning_content"] = full_reasoning_content
+                if thinking_blocks:
+                    assistant_message["thinking_blocks"] = thinking_blocks
 
                 if tool_call_aggregator:
                     print(f"FRONTEND_PROCESSING: Processing {len(tool_call_aggregator)} frontend tool calls")
@@ -4673,10 +4674,17 @@ def generate_script():
 
         while True:
             try:
-                response = completion(
-                    model=get_validated_chat_model(model_for_script),
-                    messages=[{"role": "user", "content": script_prompt}]
-                )
+                model_id = get_validated_chat_model(model_for_script)
+                model_friendly = get_model_friendly_name(model_id)
+                reasoning_params = _get_reasoning_params(model_friendly)
+                
+                completion_params = {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": script_prompt}]
+                }
+                completion_params.update(reasoning_params)
+                
+                response = completion(**completion_params)
                 break
             except Exception as e:
                 err_name = e.__class__.__name__
@@ -5010,15 +5018,22 @@ def predict_code_edit():
                 if indentation_context:
                     system_prompt += f"\n\nCRITICAL INDENTATION REQUIREMENTS:\n{indentation_context}\n\nYou MUST preserve exact indentation. Copy the whitespace characters exactly as shown. This is non-negotiable."
                 
-                response = completion(
-                    model=get_validated_chat_model(model_for_edit),
-                    messages=[
+                model_id = get_validated_chat_model(model_for_edit)
+                model_friendly = get_model_friendly_name(model_id)
+                reasoning_params = _get_reasoning_params(model_friendly)
+                
+                completion_params = {
+                    "model": model_id,
+                    "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": full_prompt}
                     ],
-                    temperature=0.2,  # Even lower temperature for precise indentation
-                    max_tokens=16000  # Higher limit to ensure complete file generation
-                )
+                    "temperature": 0.2,  # Even lower temperature for precise indentation
+                    "max_tokens": 16000  # Higher limit to ensure complete file generation
+                }
+                completion_params.update(reasoning_params)
+                
+                response = completion(**completion_params)
                 break
             except Exception as e:
                 err_name = e.__class__.__name__
@@ -5050,23 +5065,16 @@ def predict_code_edit():
             print(f"WARNING: AI response ({len(raw)} chars) is much shorter than original file ({len(file_content)} chars)")
             print(f"This suggests the AI didn't complete the task properly")
 
-        # OPTIMIZATION: Simple response cleaning instead of complex JSON parsing
-        edited_content = raw.strip()
-        
-        # Remove markdown code fences if present
-        if edited_content.startswith('```'):
-            lines = edited_content.split('\n')
-            if lines[0].startswith('```'):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == '```':
-                lines = lines[:-1]
-            edited_content = '\n'.join(lines)
-        
-        # Remove any language-specific markdown markers
-        for marker in ['```python', '```py', '```gdscript', '```gd', '```csharp', '```cs', '```cpp', '```c++', '```json', '```javascript', '```js', '```typescript', '```ts', '```java', '```go', '```rust', '```ruby', '```php', '```swift', '```kotlin', '```scala', '```r', '```julia', '```matlab', '```perl', '```lua', '```dart', '```haskell', '```clojure', '```elixir', '```erlang', '```ocaml', '```fsharp', '```nim', '```crystal', '```zig', '```vlang', '```']:
-            edited_content = edited_content.replace(marker, '')
-        
-        edited_content = edited_content.strip()
+        # Preserve AI output exactly; only unwrap a top-level fenced code block if present
+        edited_content = raw
+        # Unwrap a single top-level code fence: ```<lang?>\n...\n```
+        try:
+            import re as _re
+            m = _re.match(r"^```[a-zA-Z0-9_+\-]*\n([\s\S]*?)\n```\s*$", edited_content)
+            if m:
+                edited_content = m.group(1)
+        except Exception:
+            pass
         
         # Build the full edited content based on edit mode
         import difflib
@@ -5192,8 +5200,8 @@ def predict_code_edit():
             "full_edited_content": full_edited_content,
             "edited_content": full_edited_content,  # For compatibility
             "diff": diff_text,
-            "inline_diff": inline_diff_text,  # New inline diff format
-            "inline_diff_data": inline_diff_lines,  # Structured diff data
+            "inline_diff": "",  # Frontend renders its own display-only diff
+            "inline_diff_data": [],
             "original_content": original_full  # Include for frontend diff display
         })
         
@@ -5823,8 +5831,11 @@ def get_available_models():
         # Refresh Cerebras models in case they changed
         global MODEL_MAP
         fresh_cerebras = fetch_cerebras_models()
-        MODEL_MAP = BASE_MODEL_MAP.copy()
-        MODEL_MAP.update(fresh_cerebras)
+        
+        # Rebuild MODEL_MAP with thinking variants
+        base_models_with_cerebras = BASE_MODEL_MAP.copy()
+        base_models_with_cerebras.update(fresh_cerebras)
+        MODEL_MAP = _create_thinking_variants(base_models_with_cerebras)
         
         # Update allowed models
         global ALLOWED_CHAT_MODELS
@@ -5836,7 +5847,10 @@ def get_available_models():
                 "id": friendly_name,
                 "name": friendly_name,
                 "provider": model_id.split('/')[0] if '/' in model_id else 'unknown',
-                "model_id": model_id
+                "model_id": model_id,
+                "supports_thinking": _is_thinking_mode(friendly_name),
+                "is_thinking_variant": "(thinking)" in friendly_name.lower(),
+                "is_fast_variant": False  # No more (fast) variants
             })
         
         return jsonify({

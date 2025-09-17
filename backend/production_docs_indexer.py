@@ -64,18 +64,10 @@ def parse_class_xml_standalone(xml_content, filename):
         if description and description.text:
             main_content += f"Description: {description.text.strip()}"
         
-        # Extract keywords
+        # Extract keywords - only use class name and inheritance, no hardcoded mappings
         keywords = [class_name.lower()]
         if inherits:
             keywords.append(inherits.lower())
-        if 'Body' in class_name:
-            keywords.extend(['physics', 'movement', 'collision'])
-        if 'Camera' in class_name:
-            keywords.extend(['view', 'perspective', 'look'])
-        if 'RayCast' in class_name:
-            keywords.extend(['collision', 'detection', 'shooting'])
-        if 'Input' in class_name:
-            keywords.extend(['controls', 'keyboard', 'mouse'])
         
         # Class overview doc
         docs.append({
