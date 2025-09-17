@@ -645,16 +645,16 @@ void AIChatDock::_notification(int p_notification) {
 				print_line("AI Chat: Skipping embedding initialization - not the active singleton instance");
 			}
 			
-			// Create first conversation if none exist
-            if (conversations.is_empty()) {
-                _create_new_conversation();
-                _update_conversation_dropdown();
-                // Ensure first auto-created conversation is persisted
+			// Now that UI is fully initialized, switch to the appropriate conversation
+			if (conversations.is_empty()) {
+				_create_new_conversation();
+				_update_conversation_dropdown();
+				// Ensure first auto-created conversation is persisted
 				_queue_delayed_save();
 				_execute_delayed_save(); // start background save immediately
-            } else {
-				// Switch to the most recent conversation with a small delay to ensure UI is ready
-				call_deferred("_switch_to_conversation", current_conversation_index);
+			} else {
+				// Switch to the selected conversation now that UI is ready
+				_switch_to_conversation(current_conversation_index);
 			}
 			
 			_update_conversation_dropdown();

@@ -181,6 +181,127 @@ def _estimate_message_tokens(msg: dict) -> int:
     
     return base_tokens
 
+def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> tuple[list, bool]:
+    """
+    CRITICAL RECOVERY MECHANISM: Detect orphaned tool calls and create placeholder results.
+    
+    PURPOSE:
+    When backend tool execution fails (due to network issues, service interruptions, etc.),
+    we may end up with an assistant message containing tool_calls but missing the corresponding
+    tool result messages. This violates OpenAI's API contract and causes the dreaded error:
+    
+    "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'"
+    
+    When this happens, users get completely stuck - they can't send new messages, stop the
+    conversation, or recover in any way. The UI becomes completely unresponsive.
+    
+    SOLUTION:
+    This function detects the specific error, extracts the missing tool_call_ids, and creates
+    placeholder tool result messages that gracefully explain what happened. This allows the
+    conversation to continue and users to try their request again.
+    
+    SAFETY:
+    - Only triggers on the exact error signature to avoid false positives
+    - Creates appropriate placeholder results based on tool type
+    - Limited to 2 recovery attempts per conversation to prevent infinite loops
+    - Logs recovery attempts for monitoring
+    
+    Args:
+        messages: The conversation messages list
+        error_message: The error message from LiteLLM
+        
+    Returns:
+        (fixed_messages, was_fixed): Fixed messages and whether recovery succeeded
+    """
+    try:
+        error_str = str(error_message).lower()
+        if "tool_calls" not in error_str or "tool_call_id" not in error_str:
+            return messages, False
+        
+        # Extract missing tool_call_ids from error message
+        import re
+        # Pattern matches: "The following tool_call_ids did not have response messages: tool_id1, tool_id2"
+        pattern = r"the following tool_call_ids did not have response messages:\s*([^\n]+)"
+        match = re.search(pattern, error_str, re.IGNORECASE)
+        
+        if not match:
+            return messages, False
+        
+        # Parse the missing tool call IDs
+        missing_ids_str = match.group(1).strip()
+        missing_tool_call_ids = [tid.strip() for tid in missing_ids_str.split(',')]
+        
+        print(f"TOOL_CALL_RECOVERY: Detected orphaned tool calls: {missing_tool_call_ids}")
+        
+        # Find the assistant messages with these tool calls to understand what tools were called
+        tool_call_details = {}
+        for msg in messages:
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                for tool_call in msg['tool_calls']:
+                    tc_id = tool_call.get('id')
+                    if tc_id in missing_tool_call_ids:
+                        tool_call_details[tc_id] = {
+                            'name': tool_call.get('function', {}).get('name', 'unknown_tool'),
+                            'arguments': tool_call.get('function', {}).get('arguments', '{}')
+                        }
+        
+        if not tool_call_details:
+            print(f"TOOL_CALL_RECOVERY: Could not find details for missing tool calls")
+            return messages, False
+        
+        # Create placeholder tool result messages for the missing tool calls
+        fixed_messages = messages.copy()
+        
+        for tool_call_id, details in tool_call_details.items():
+            tool_name = details['name']
+            
+            # Create an appropriate placeholder result based on the tool type
+            if tool_name == 'image_operation':
+                placeholder_result = {
+                    "success": False,
+                    "error": "Tool execution was interrupted. Please try the image operation again.",
+                    "recovery_mode": True
+                }
+            elif tool_name == 'search_across_project':
+                placeholder_result = {
+                    "success": False,
+                    "error": "Search was interrupted. Please try searching again.",
+                    "recovery_mode": True,
+                    "results": {"similar_files": [], "central_files": [], "graph_summary": {}}
+                }
+            elif tool_name == 'search_across_godot_docs':
+                placeholder_result = {
+                    "success": False,
+                    "error": "Docs search was interrupted. Please try searching again.",
+                    "recovery_mode": True,
+                    "results": []
+                }
+            else:
+                # Generic placeholder for any other tool
+                placeholder_result = {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' execution was interrupted. Please try again.",
+                    "recovery_mode": True
+                }
+            
+            # Add the placeholder tool result message
+            tool_result_msg = {
+                "tool_call_id": tool_call_id,
+                "role": "tool",
+                "name": tool_name,
+                "content": json.dumps(placeholder_result)
+            }
+            
+            fixed_messages.append(tool_result_msg)
+            print(f"TOOL_CALL_RECOVERY: Added placeholder result for {tool_name} (ID: {tool_call_id})")
+        
+        print(f"TOOL_CALL_RECOVERY: Successfully created {len(tool_call_details)} placeholder results")
+        return fixed_messages, True
+        
+    except Exception as recovery_error:
+        print(f"TOOL_CALL_RECOVERY: Failed to fix orphaned tool calls: {recovery_error}")
+        return messages, False
+
 def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     """Manage conversation length to prevent token limit exceeded errors"""
     # Model-specific token limits (leaving safety margin)
@@ -3373,6 +3494,9 @@ def chat():
             # Track tool usage and simple per-request caching to avoid infinite loops
             tool_call_counts: dict[str, int] = {}
             tool_result_cache: dict[str, dict] = {}
+            # Track recovery attempts to prevent infinite recovery loops
+            recovery_attempts = 0
+            max_recovery_attempts = 2
             for msg in messages:
                 if msg is not None and isinstance(msg, dict) and msg.get('role'):
                     conversation_messages.append(msg)
@@ -3700,6 +3824,49 @@ def chat():
                         err_name = e.__class__.__name__
                         overloaded = "Overloaded" in str(e)
                         transient = err_name in ("InternalServerError", "RateLimitError", "ServiceUnavailableError") or overloaded
+                        
+                        # SPECIAL CASE: Orphaned tool calls recovery
+                        # This specific error means tool calls exist but their results are missing
+                        error_str = str(e).lower()
+                        if (recovery_attempts < max_recovery_attempts and 
+                            "tool_calls" in error_str and "tool_call_id" in error_str and 
+                            "must be followed by tool messages" in error_str):
+                            
+                            recovery_attempts += 1
+                            print(f"TOOL_CALL_RECOVERY: Detected orphaned tool calls error (attempt {recovery_attempts}/{max_recovery_attempts}), attempting recovery...")
+                            
+                            # Try to fix the orphaned tool calls
+                            fixed_messages, was_fixed = _detect_and_fix_orphaned_tool_calls(openai_messages, str(e))
+                            
+                            if was_fixed:
+                                # Update messages and retry immediately with the fixed messages
+                                openai_messages = fixed_messages
+                                print(f"TOOL_CALL_RECOVERY: Fixed orphaned tool calls, retrying request...")
+                                
+                                # Send recovery status to frontend
+                                yield json.dumps({
+                                    "status": "recovering",
+                                    "message": f"Recovered from interrupted tool execution (attempt {recovery_attempts}), continuing...",
+                                    "recovery_type": "orphaned_tool_calls",
+                                    "recovery_attempt": recovery_attempts
+                                }) + '\n'
+                                
+                                # Log recovery event for analytics
+                                try:
+                                    log_event('tool_call_recovery', {
+                                        'attempt': recovery_attempts,
+                                        'model': get_model_friendly_name(model_try),
+                                        'error_snippet': str(e)[:100]
+                                    })
+                                except Exception:
+                                    pass
+                                
+                                # Retry immediately with fixed messages (don't increment attempts counter)
+                                continue
+                            else:
+                                print(f"TOOL_CALL_RECOVERY: Failed to fix orphaned tool calls, falling back to normal error handling")
+                        elif recovery_attempts >= max_recovery_attempts and "tool_calls" in error_str:
+                            print(f"TOOL_CALL_RECOVERY: Maximum recovery attempts ({max_recovery_attempts}) reached, giving up on recovery")
                         
                         # Check for stop during retry loop
                         if check_stop():
