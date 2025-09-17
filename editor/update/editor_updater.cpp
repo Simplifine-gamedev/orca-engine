@@ -7,6 +7,7 @@
 #include "core/io/dir_access.h"
 #include "core/os/os.h"
 #include "core/io/json.h"
+#include "core/string/translation_server.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/editor_node.h"
 #include "editor/themes/editor_scale.h"
@@ -26,13 +27,14 @@ EditorUpdater::EditorUpdater() {
     status_label->set_text(TTR("Checking for updates..."));
     vb->add_child(status_label);
 
-    progress = memnew(ProgressBar);
-    progress->set_min(0);
-    progress->set_max(100);
-    progress->set_step(0.1);
-    progress->set_value(0);
-    progress->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-    vb->add_child(progress);
+    // Remove progress bar - just use text updates
+    // progress = memnew(ProgressBar);
+    // progress->set_min(0);
+    // progress->set_max(100);
+    // progress->set_step(0.1);
+    // progress->set_value(0);
+    // progress->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    // vb->add_child(progress);
 
     action_button = memnew(Button);
     action_button->set_text(TTR("Download"));
@@ -49,7 +51,6 @@ EditorUpdater::EditorUpdater() {
 void EditorUpdater::start_check() {
     stage = STAGE_CHECKING;
     status_label->set_text(TTR("Checking for updates..."));
-    progress->set_indeterminate(true);
 
     if (feed_url.is_empty()) {
         status_label->set_text(TTR("No update feed configured."));
@@ -68,10 +69,12 @@ void EditorUpdater::start_check() {
                 add_child(http_release);
                 http_release->connect("request_completed", callable_mp(this, &EditorUpdater::_on_release_completed));
             }
-            String api = "https://api.github.com/repos/" + owner_repo + "/releases/latest";
+            // Use /releases instead of /releases/latest to get draft releases too
+            String api = "https://api.github.com/repos/" + owner_repo + "/releases";
             PackedStringArray headers;
             headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
             headers.push_back("Accept: application/vnd.github+json");
+            print_line("EditorUpdater: Requesting all releases from: " + api);
             Error e2 = http_release->request(api, headers);
             if (e2 == OK) {
                 return;
@@ -93,10 +96,12 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
                     add_child(http_release);
                     http_release->connect("request_completed", callable_mp(this, &EditorUpdater::_on_release_completed));
                 }
-                String api = "https://api.github.com/repos/" + owner_repo + "/releases/latest";
+                // Use /releases instead of /releases/latest to get draft releases too
+                String api = "https://api.github.com/repos/" + owner_repo + "/releases";
                 PackedStringArray headers;
                 headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
                 headers.push_back("Accept: application/vnd.github+json");
+                print_line("EditorUpdater: Requesting all releases from: " + api);
                 Error e2 = http_release->request(api, headers);
                 if (e2 == OK) {
                     return;
@@ -133,8 +138,6 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
         }
         if (found_url.is_empty()) {
             status_label->set_text(TTR("No update available."));
-            progress->set_indeterminate(false);
-            progress->set_value(0);
             stage = STAGE_IDLE;
             action_button->set_text(TTR("Close"));
             return;
@@ -156,10 +159,18 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
         downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
         http->set_download_file(downloaded_file_path);
         http->set_use_threads(true);
-        progress->set_indeterminate(false);
-        progress->set_value(0);
+        
         // Start actual download.
-        http->request(download_url);
+        print_line("EditorUpdater: Starting download from: " + download_url);
+        print_line("EditorUpdater: Saving to: " + downloaded_file_path);
+        Error download_err = http->request(download_url);
+        if (download_err != OK) {
+            print_line("EditorUpdater: Failed to start download, error: " + itos(download_err));
+            status_label->set_text(TTR("Failed to start download."));
+            stage = STAGE_ERROR;
+        } else {
+            status_label->set_text(TTR("Starting download..."));
+        }
         return;
     }
 
@@ -183,42 +194,229 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
     }
     String s = String::utf8((const char *)p_body.ptr(), p_body.size());
     Variant json_v = JSON::parse_string(s);
-    if (json_v.get_type() != Variant::DICTIONARY) {
+    
+    Dictionary d;
+    
+    if (json_v.get_type() == Variant::ARRAY) {
+        // We got an array of releases (from /releases endpoint)
+        Array releases = json_v;
+        print_line("EditorUpdater: Received array of " + itos(releases.size()) + " releases");
+        
+        if (releases.size() == 0) {
+            status_label->set_text(TTR("No releases found."));
+            stage = STAGE_ERROR;
+            return;
+        }
+        
+        // Pick the first release (most recent)
+        Variant first_release = releases[0];
+        if (first_release.get_type() != Variant::DICTIONARY) {
+            status_label->set_text(TTR("Invalid release data."));
+            stage = STAGE_ERROR;
+            return;
+        }
+        d = first_release;
+        
+    } else if (json_v.get_type() == Variant::DICTIONARY) {
+        // We got a single release (from /releases/latest endpoint)
+        print_line("EditorUpdater: Received single release object");
+        d = json_v;
+    } else {
         status_label->set_text(TTR("Invalid releases JSON."));
         stage = STAGE_ERROR;
         return;
     }
-    Dictionary d = json_v;
     String tag = d.get("tag_name", String());
+    bool is_draft = d.get("draft", false);
+    bool is_prerelease = d.get("prerelease", false);
     Array assets = d.get("assets", Array());
+    
+    // Debug: Print detailed release information
+    String platform = "unknown";
+    if (OS::get_singleton()->has_feature("windows")) {
+        platform = "windows";
+    } else if (OS::get_singleton()->has_feature("macos")) {
+        platform = "macos";
+    } else {
+        platform = "linux";
+    }
+    
+    print_line("EditorUpdater: Platform detected: " + platform);
+    print_line("EditorUpdater: Found release " + tag + " (draft: " + (is_draft ? "yes" : "no") + ", prerelease: " + (is_prerelease ? "yes" : "no") + ")");
+    print_line("EditorUpdater: API returned " + itos(assets.size()) + " assets for this release");
+    
+    // Debug: Print the raw JSON response (first 500 chars)
+    String json_str = s.substr(0, 500);
+    print_line("EditorUpdater: GitHub API Response (truncated): " + json_str);
+    
     String best_url;
     for (int i = 0; i < assets.size(); i++) {
         Dictionary a = assets[i];
         String name = a.get("name", String());
         String url = a.get("browser_download_url", String());
+        
+        // Debug: Print each asset
+        print_line("EditorUpdater: Asset " + itos(i) + ": " + name);
+        
         if (name.is_empty() || url.is_empty()) {
+            print_line("EditorUpdater: Skipping asset with empty name or URL");
             continue;
         }
+        
+        bool matches = false;
+        String name_lower = name.to_lower();
+        
         if (OS::get_singleton()->has_feature("windows")) {
-            if (name.ends_with(".exe") || name.ends_with(".msi")) {
-                best_url = url;
-                break;
+            // Windows: Look for .exe, .msi, or .zip files
+            // Also check for common Windows patterns like "win", "windows"
+            if (name_lower.ends_with(".exe") || 
+                name_lower.ends_with(".msi") ||
+                (name_lower.ends_with(".zip") && (name_lower.contains("win") || name_lower.contains("windows")))) {
+                matches = true;
             }
         } else if (OS::get_singleton()->has_feature("macos")) {
-            if (name.ends_with(".dmg") || name.ends_with(".zip")) {
+            // macOS: Look for .dmg, .zip files, or common macOS patterns
+            // Also check for "mac", "macos", "osx", "darwin" in filename
+            if (name_lower.ends_with(".dmg") || 
+                name_lower.ends_with(".zip") || 
+                name_lower.ends_with(".pkg") ||
+                name_lower.contains("mac") || 
+                name_lower.contains("macos") ||
+                name_lower.contains("osx") ||
+                name_lower.contains("darwin")) {
+                matches = true;
+            }
+        } else {
+            // Linux: Look for AppImage, tar.gz, deb, rpm, or common Linux patterns
+            if (name_lower.contains("appimage") || 
+                name_lower.ends_with(".tar.gz") || 
+                name_lower.ends_with(".tar.xz") || 
+                name_lower.ends_with(".deb") || 
+                name_lower.ends_with(".rpm") ||
+                (name_lower.ends_with(".zip") && (name_lower.contains("linux") || name_lower.contains("unix")))) {
+                matches = true;
+            }
+        }
+        
+        if (matches) {
+            print_line("EditorUpdater: Found matching asset: " + name);
+            best_url = url;
+            break;
+        }
+    }
+    
+    // If no platform-specific match found, try smart fallback patterns
+    if (best_url.is_empty()) {
+        print_line("EditorUpdater: No platform-specific asset found, trying smart fallback patterns...");
+        
+        // Fallback 1: Look for any .zip files (most universal)
+        for (int i = 0; i < assets.size(); i++) {
+            Dictionary a = assets[i];
+            String name = a.get("name", String());
+            String url = a.get("browser_download_url", String());
+            if (!name.is_empty() && !url.is_empty() && name.to_lower().ends_with(".zip")) {
+                print_line("EditorUpdater: Using fallback ZIP asset: " + name);
                 best_url = url;
                 break;
             }
-        } else {
-            // Linux: pick .AppImage/.tar.* if present
-            if (name.contains("AppImage") || name.ends_with(".tar.gz")) {
+        }
+        
+        // Fallback 2: For macOS, try to avoid Windows-specific files
+        if (best_url.is_empty() && OS::get_singleton()->has_feature("macos")) {
+            for (int i = 0; i < assets.size(); i++) {
+                Dictionary a = assets[i];
+                String name = a.get("name", String());
+                String url = a.get("browser_download_url", String());
+                String name_lower = name.to_lower();
+                
+                // Skip obviously Windows-only files
+                if (name_lower.ends_with(".exe") || name_lower.ends_with(".msi") || name_lower.contains("windows")) {
+                    print_line("EditorUpdater: Skipping Windows-only asset on macOS: " + name);
+                    continue;
+                }
+                
+                if (!name.is_empty() && !url.is_empty()) {
+                    print_line("EditorUpdater: Using non-Windows asset as macOS fallback: " + name);
+                    best_url = url;
+                    break;
+                }
+            }
+        }
+        
+        // Fallback 3: Similar logic for other platforms
+        if (best_url.is_empty() && !OS::get_singleton()->has_feature("windows")) {
+            for (int i = 0; i < assets.size(); i++) {
+                Dictionary a = assets[i];
+                String name = a.get("name", String());
+                String url = a.get("browser_download_url", String());
+                String name_lower = name.to_lower();
+                
+                // On non-Windows, avoid .exe and .msi files
+                if (name_lower.ends_with(".exe") || name_lower.ends_with(".msi")) {
+                    continue;
+                }
+                
+                if (!name.is_empty() && !url.is_empty()) {
+                    print_line("EditorUpdater: Using compatible asset as fallback: " + name);
+                    best_url = url;
+                    break;
+                }
+            }
+        }
+        
+        // Last resort: Only use first asset if it's at least potentially compatible
+        if (best_url.is_empty() && assets.size() > 0) {
+            Dictionary a = assets[0];
+            String name = a.get("name", String());
+            String url = a.get("browser_download_url", String());
+            String name_lower = name.to_lower();
+            
+            // Final compatibility check
+            bool compatible = true;
+            if (OS::get_singleton()->has_feature("macos") && (name_lower.ends_with(".exe") || name_lower.ends_with(".msi"))) {
+                compatible = false;
+                print_line("EditorUpdater: First asset (" + name + ") is not compatible with macOS");
+            } else if (OS::get_singleton()->has_feature("linux") && (name_lower.ends_with(".exe") || name_lower.ends_with(".msi") || name_lower.ends_with(".dmg"))) {
+                compatible = false;
+                print_line("EditorUpdater: First asset (" + name + ") is not compatible with Linux");
+            }
+            
+            if (compatible && !name.is_empty() && !url.is_empty()) {
+                print_line("EditorUpdater: Using first available compatible asset as last resort: " + name);
                 best_url = url;
-                break;
             }
         }
     }
+    
     if (best_url.is_empty()) {
-        status_label->set_text(TTR("No suitable asset found on latest release."));
+        String error_msg = "No compatible update found for " + platform + ".\n";
+        error_msg += "Release: " + tag + " has " + itos(assets.size()) + " assets\n";
+        
+        if (assets.size() > 0) {
+            error_msg += "Available assets:\n";
+            for (int i = 0; i < assets.size(); i++) {
+                Dictionary a = assets[i];
+                String name = a.get("name", String());
+                if (!name.is_empty()) {
+                    error_msg += "- " + name;
+                    // Add compatibility note
+                    String name_lower = name.to_lower();
+                    if (OS::get_singleton()->has_feature("macos")) {
+                        if (name_lower.ends_with(".exe") || name_lower.ends_with(".msi")) {
+                            error_msg += " (Windows only)";
+                        } else if (name_lower.ends_with(".dmg") || name_lower.contains("mac")) {
+                            error_msg += " (Compatible)";
+                        }
+                    }
+                    error_msg += "\n";
+                }
+            }
+            error_msg += "\nThis release doesn't have assets compatible with " + platform + ".\n";
+            error_msg += "Please check the project's GitHub releases page.";
+        }
+        
+        print_line("EditorUpdater: " + error_msg);
+        status_label->set_text(error_msg);
         stage = STAGE_ERROR;
         return;
     }
@@ -235,38 +433,70 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
     if (file_name.is_empty()) {
         file_name = "orca_update";
     }
-    downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
-    http->set_download_file(downloaded_file_path);
-    http->set_use_threads(true);
-    progress->set_indeterminate(false);
-    progress->set_value(0);
-    http->request(download_url);
+        downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
+        http->set_download_file(downloaded_file_path);
+        http->set_use_threads(true);
+        status_label->set_text(TTR("Starting download..."));
+        http->request(download_url);
 }
 
 void EditorUpdater::_process(double p_delta) {
     if (stage == STAGE_DOWNLOADING) {
         int downloaded = http->get_downloaded_bytes();
         int total = http->get_body_size();
+        
+        // Debug: Print progress values to track downloads
+        static int debug_counter = 0;
+        static int last_downloaded = 0;
+        debug_counter++;
+        
+        // Print every 30 frames (0.5 sec) OR when download progress changes significantly
+        if (debug_counter % 30 == 0 || (downloaded > 0 && abs(downloaded - last_downloaded) > 1024*1024)) { // Every 1MB change
+            print_line("EditorUpdater: Downloaded: " + String::humanize_size(downloaded) + " (raw: " + itos(downloaded) + " bytes)");
+            print_line("EditorUpdater: Total: " + String::humanize_size(total) + " (raw: " + itos(total) + " bytes)");
+            print_line("EditorUpdater: HTTP Status: " + itos((int)http->get_http_client_status()));
+            last_downloaded = downloaded;
+        }
 
-        switch (http->get_http_client_status()) {
-            case HTTPClient::STATUS_RESOLVING: status_label->set_text(TTR("Resolving...")); break;
-            case HTTPClient::STATUS_CONNECTING: status_label->set_text(TTR("Connecting...")); break;
-            case HTTPClient::STATUS_REQUESTING: status_label->set_text(TTR("Requesting...")); break;
-            case HTTPClient::STATUS_CONNECTED: status_label->set_text(TTR("Connected")); break;
+        HTTPClient::Status status = http->get_http_client_status();
+        switch (status) {
+            case HTTPClient::STATUS_RESOLVING: 
+                status_label->set_text(TTR("Resolving server..."));
+                break;
+            case HTTPClient::STATUS_CONNECTING: 
+                status_label->set_text(TTR("Connecting to server..."));
+                break;
+            case HTTPClient::STATUS_REQUESTING: 
+                status_label->set_text(TTR("Requesting download..."));
+                break;
+            case HTTPClient::STATUS_CONNECTED: 
+                status_label->set_text(TTR("Connected, starting download..."));
+                break;
             case HTTPClient::STATUS_BODY: {
-                if (total > 0) {
-                    double percent = (double)downloaded * 100.0 / (double)total;
-                    if (percent < 0.0) percent = 0.0;
-                    if (percent > 100.0) percent = 100.0;
-                    progress->set_indeterminate(false);
-                    progress->set_value(percent);
-                    status_label->set_text(TTR("Downloading ") + String::humanize_size(downloaded) + "/" + String::humanize_size(total));
-                } else if (downloaded >= 0) {
-                    progress->set_indeterminate(true);
-                    status_label->set_text(TTR("Downloading ") + String::humanize_size(downloaded));
+                // Show download progress in text only
+                if (downloaded > 0) {
+                    if (total > 0) {
+                        // We have both total and downloaded - show with percentage
+                        double percent = (double)downloaded * 100.0 / (double)total;
+                        if (percent < 0.0) percent = 0.0;
+                        if (percent > 100.0) percent = 100.0;
+                        status_label->set_text(TTR("Downloaded ") + String::humanize_size(downloaded) + " of " + String::humanize_size(total) + " (" + String::num(percent, 0) + "%)");
+                    } else {
+                        // No total size - just show downloaded amount
+                        status_label->set_text(TTR("Downloaded ") + String::humanize_size(downloaded) + "...");
+                    }
+                } else {
+                    status_label->set_text(TTR("Downloading..."));
                 }
             } break;
-            default: break;
+            case HTTPClient::STATUS_DISCONNECTED:
+                if (downloaded > 0) {
+                    status_label->set_text(TTR("Download finishing..."));
+                }
+                break;
+            default: 
+                status_label->set_text(TTR("Downloading... (Status: ") + itos((int)status) + ")");
+                break;
         }
     }
 }

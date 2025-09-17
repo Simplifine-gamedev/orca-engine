@@ -10,7 +10,7 @@
 #include "scene/gui/dialogs.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
-#include "scene/gui/progress_bar.h"
+// #include "scene/gui/progress_bar.h"  // Removed - not using progress bar
 #include "scene/gui/box_container.h"
 #include "scene/main/http_request.h"
 
@@ -18,7 +18,7 @@ class EditorUpdater : public AcceptDialog {
     GDCLASS(EditorUpdater, AcceptDialog);
 
     Label *status_label = nullptr;
-    ProgressBar *progress = nullptr;
+    // ProgressBar *progress = nullptr;  // Removed - using text-only updates
     Button *action_button = nullptr;
     Button *close_button = nullptr;
     HTTPRequest *http = nullptr;
