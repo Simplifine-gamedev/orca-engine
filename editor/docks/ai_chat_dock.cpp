@@ -871,7 +871,7 @@ void AIChatDock::_on_send_button_pressed() {
 		
 		if (project_structure.has("success") && project_structure["success"]) {
 			// Create a formatted project overview for the AI (not shown in UI)
-			String project_context = "📁 CURRENT PROJECT OVERVIEW:\n";
+			String project_context = "[PROJECT] CURRENT PROJECT OVERVIEW:\n";
 			
 			// Add project name
 			if (project_structure.has("context")) {
@@ -887,7 +887,7 @@ void AIChatDock::_on_send_button_pressed() {
 				if (structure.has("scenes")) {
 					Array scenes = structure["scenes"];
 					if (scenes.size() > 0) {
-						project_context += "\n🎬 SCENES (" + String::num_int64(scenes.size()) + "):\n";
+						project_context += "\n[SCENES] SCENES (" + String::num_int64(scenes.size()) + "):\n";
 						for (int i = 0; i < MIN(scenes.size(), 10); i++) { // Limit to 10 scenes for brevity
 							Dictionary scene = scenes[i];
 							String scene_path = scene.get("path", "");
@@ -904,7 +904,7 @@ void AIChatDock::_on_send_button_pressed() {
 				if (structure.has("scripts")) {
 					Array scripts = structure["scripts"];
 					if (scripts.size() > 0) {
-						project_context += "\n📜 SCRIPTS (" + String::num_int64(scripts.size()) + "):\n";
+						project_context += "\n[SCRIPTS] SCRIPTS (" + String::num_int64(scripts.size()) + "):\n";
 						for (int i = 0; i < MIN(scripts.size(), 10); i++) { // Limit to 10 scripts for brevity
 							Dictionary script_info = scripts[i];
 							String script_path = script_info.get("path", "");
@@ -919,7 +919,7 @@ void AIChatDock::_on_send_button_pressed() {
 				
 				// Add assets overview
 				if (structure.has("assets") || structure.has("folders")) {
-					project_context += "\n🎨 PROJECT STRUCTURE:\n";
+					project_context += "\n[STRUCTURE] PROJECT STRUCTURE:\n";
 					// Add folder structure if available
 					if (structure.has("folders")) {
 						Array folders = structure["folders"];
@@ -2423,7 +2423,7 @@ void AIChatDock::_on_reindex_project_pressed() {
 	// Show confirmation dialog
 	AcceptDialog *confirm_dialog = memnew(AcceptDialog);
 	confirm_dialog->set_title("Re-index Project");
-	confirm_dialog->set_text("This will clear the existing project index and rebuild it from scratch.\n\nThis is useful after:\n• Updating the AI system\n• Making major project changes\n• Experiencing search issues\n\nProceed with re-indexing?");
+	confirm_dialog->set_text("This will clear the existing project index and rebuild it from scratch.\n\nThis is useful after:\n- Updating the AI system\n- Making major project changes\n- Experiencing search issues\n\nProceed with re-indexing?");
 	
 	// Add custom buttons
 	confirm_dialog->add_cancel_button("Cancel");
@@ -2690,7 +2690,7 @@ void AIChatDock::_on_files_selected(const Vector<String> &p_files) {
 					attached_file.content = _truncate_text_for_context(EditorTools::smart_truncate_for_ai_context(content, file_path));
 					bool truncated = f->get_length() > to_read || content.length() > attached_file.content.length();
 					if (truncated) {
-						attached_file.content += "\n\n…\n[Truncated preview of large file. Only first " + String::num_int64(attached_file.content.length()) + " chars shown.]";
+						attached_file.content += "\n\n...\n[Truncated preview of large file. Only first " + String::num_int64(attached_file.content.length()) + " chars shown.]";
 					}
 					current_attached_files.push_back(attached_file);
 				} else {
@@ -2979,7 +2979,7 @@ void AIChatDock::_attach_external_files(const Vector<String> &p_files) {
 					attached_file.content = _truncate_text_for_context(EditorTools::smart_truncate_for_ai_context(content, file_path));
 					bool truncated = f->get_length() > to_read || content.length() > attached_file.content.length();
 					if (truncated) {
-						attached_file.content += "\n\n…\n[Truncated preview of large file. Only first " + String::num_int64(attached_file.content.length()) + " chars shown.]";
+						attached_file.content += "\n\n...\n[Truncated preview of large file. Only first " + String::num_int64(attached_file.content.length()) + " chars shown.]";
 					}
 					current_attached_files.push_back(attached_file);
 				} else {
@@ -3155,13 +3155,13 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		
 		// Show appropriate notification based on error category
 		if (error_category == "rate_limit") {
-			_show_status_notification("rate_limit", user_message, "⚠️", 5.0);
+			_show_status_notification("rate_limit", user_message, "[WARN]", 5.0);
 		} else if (error_category == "tool_call_error") {
-			_show_status_notification("recovery", user_message, "🔧", 6.0);
+			_show_status_notification("recovery", user_message, "[TOOL]", 6.0);
 		} else if (error_category == "connection_error") {
-			_show_status_notification("connection_error", user_message, "❌", 5.0);
+			_show_status_notification("connection_error", user_message, "[ERROR]", 5.0);
 		} else if (error_category == "service_overloaded") {
-			_show_status_notification("rate_limit", user_message, "⚠️", 5.0);
+			_show_status_notification("rate_limit", user_message, "[WARN]", 5.0);
 		} else {
 			// Fallback to connection error for unknown errors
 			_show_connection_status_notification("Backend error", display_message);
@@ -3298,7 +3298,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		print_line("AI Chat: Recovery in progress - " + recovery_type + " (attempt " + String::num_int64(recovery_attempt) + ")");
 		
 		// Show recovery notification to user
-		_show_status_notification("recovery", message, "🔧", 6.0);
+		_show_status_notification("recovery", message, "[TOOL]", 6.0);
 		
 		// CRITICAL: Maintain waiting state during recovery - the request is still active
 		print_line("AI Chat: Recovery notification shown, maintaining waiting state");
@@ -3315,7 +3315,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		print_line("AI Chat: Model switching from " + from_model + " to " + to_model + " - " + reason);
 		
 		// Show model switch notification
-		_show_status_notification("model_switch", "Switching from " + from_model + " to " + to_model + " due to " + reason, "🔄", 4.0);
+		_show_status_notification("model_switch", "Switching from " + from_model + " to " + to_model + " due to " + reason, "[SWITCH]", 4.0);
 		
 		// CRITICAL: Maintain waiting state during model switching
 		print_line("AI Chat: Model switch notification shown, maintaining waiting state");
@@ -3434,12 +3434,12 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					if (total_steps > 0) {
 						int filled = (int)CLAMP(Math::round((float)current_step * 20.0f / MAX(1.0f, (float)total_steps)), 0, 20);
 						for (int i = 0; i < 20; i++) {
-							bar += (i < filled) ? "█" : "░";
+							bar += (i < filled) ? "#" : "-";
 						}
 					} else {
 						int filled = (int)CLAMP(Math::round(percent / 5.0f), 0, 20);
 						for (int i = 0; i < 20; i++) {
-							bar += (i < filled) ? "█" : "░";
+							bar += (i < filled) ? "#" : "-";
 						}
 					}
 					progress_label->set_text("  [" + bar + "]");
@@ -4143,7 +4143,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		// Don't add system messages - they break OpenAI format!
 		// bool success = result.get("success", false);
 		// String message = result.get("message", "");
-		// String status_icon = success ? "✅" : "❌";
+		// String status_icon = success ? "[OK]" : "[ERROR]";
 		// _add_message_to_chat("system", status_icon + " " + function_name + ": " + message);
 	}
 
@@ -4302,10 +4302,10 @@ void AIChatDock::_on_apply_edit_thread_done() {
             bool fallback_used = task->result.get("fallback_used", false);
             String banner = msg;
             if (attempts > 1 || fallback_used) {
-                banner += String(" — retried ") + itos(attempts) + String(" time(s)");
+                banner += String(" - retried ") + itos(attempts) + String(" time(s)");
                 if (fallback_used) banner += String(" with model fallback");
             }
-            _show_status_notification("connection_error", banner, "⚠️", 4.0);
+            _show_status_notification("connection_error", banner, "[WARN]", 4.0);
         }
         
         // If this is the last tool for the file and it's a script file, show cumulative diff
@@ -4593,7 +4593,7 @@ String AIChatDock::_truncate_text_for_context(const String &p_text, int p_max_ch
     int tail = p_max_chars - head;
     String head_str = p_text.substr(0, head);
     String tail_str = p_text.substr(p_text.length() - tail, tail);
-    return head_str + "\n\n…\n[Middle omitted; content truncated to fit context]\n\n" + tail_str;
+    return head_str + "\n\n...\n[Middle omitted; content truncated to fit context]\n\n" + tail_str;
 }
 
 String AIChatDock::_convert_to_godot_path(const String &p_path) {
@@ -5103,7 +5103,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		tool_vbox->add_child(tool_hbox);
 
         Label *tool_label = memnew(Label);
-        tool_label->set_text("🔧 " + func_name + "...");
+        tool_label->set_text("[TOOL] " + func_name + "...");
 		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		tool_hbox->add_child(tool_label);
@@ -5490,7 +5490,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			t->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			hdr->add_child(t);
 			Label *score = memnew(Label);
-			score->set_text("  •  sim: " + String::num_real(sim).substr(0, 5));
+			score->set_text("  |  sim: " + String::num_real(sim).substr(0, 5));
 			score->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
 			hdr->add_child(score);
 
@@ -5698,7 +5698,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				Dictionary failure = failures[i];
 				String error_msg = failure.get("message", "Unknown error");
 				Label *error_label = memnew(Label);
-				error_label->set_text("• " + error_msg);
+				error_label->set_text("- " + error_msg);
 				error_label->add_theme_font_size_override("font_size", 10);
 				error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
 				batch_prop_vbox->add_child(error_label);
@@ -5868,7 +5868,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             status_text += " (lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + ")";
         }
         if (has_errors) {
-            status_text += " — Errors detected (" + String::num_int64(comp_errors.size()) + ")";
+            status_text += " - Errors detected (" + String::num_int64(comp_errors.size()) + ")";
         }
         status->set_text(status_text);
         status->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
@@ -6102,11 +6102,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             for (int i = 0; i < comp_errors.size() && shown < 5; i++) {
                 Dictionary e = comp_errors[i];
                 String line = String(e.get("type", "error")) + String(" @ ") + String::num_int64(int64_t(e.get("line", 0))) + ": " + String(e.get("message", ""));
-                errs->add_text("• " + line + "\n");
+                errs->add_text("- " + line + "\n");
                 shown++;
             }
             if (comp_errors.size() > shown) {
-                errs->add_text("… and more");
+                errs->add_text("... and more");
             }
             edit_vbox->add_child(errs);
         }
@@ -6240,9 +6240,9 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		} else {
 			if (mode == "output") {
-				status_label->set_text("✗ Found " + String::num_int64(errors.size()) + " errors/warnings in output");
+				status_label->set_text("[ERROR] Found " + String::num_int64(errors.size()) + " errors/warnings in output");
 			} else {
-				status_label->set_text("✗ Found " + String::num_int64(errors.size()) + " compilation errors");
+				status_label->set_text("[ERROR] Found " + String::num_int64(errors.size()) + " compilation errors");
 			}
 			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
 		}
@@ -6344,14 +6344,14 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			
 			if (generation_time > 0) {
 				Label *time_label = memnew(Label);
-				time_label->set_text(" • Time: " + String::num(generation_time, 1) + "s");
+				time_label->set_text(" | Time: " + String::num(generation_time, 1) + "s");
 				time_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
 				details_container->add_child(time_label);
 			}
 			
 			if (file_size > 0) {
 				Label *size_label = memnew(Label);
-				String size_text = " • Size: ";
+				String size_text = " | Size: ";
 				if (file_size < 1024) {
 					size_text += String::num_int64(file_size) + " B";
 				} else if (file_size < 1024 * 1024) {
@@ -6433,7 +6433,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         // Similar files section
 		if (similar_files.size() > 0) {
 			Label *similar_header = memnew(Label);
-			similar_header->set_text("📁 Similar Files (" + String::num_int64(similar_files.size()) + ")");
+			similar_header->set_text("[FILES] Similar Files (" + String::num_int64(similar_files.size()) + ")");
 			similar_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			search_vbox->add_child(similar_header);
 			
@@ -6493,7 +6493,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                         int start = name_idx + 6;
                                         int end = l.find("\"", start + 1);
                                         String name = end > start ? l.substr(start + 1, end - start - 1) : String("Node");
-                                        clean_hint = "🎯 " + name;
+                                        clean_hint = "[NODE] " + name;
                                     }
                                     
                                     if (type_idx != -1) {
@@ -6503,11 +6503,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                         if (!clean_hint.is_empty() && type != "Node") {
                                             clean_hint += " (" + type + ")";
                                         } else if (clean_hint.is_empty()) {
-                                            clean_hint = "🎯 " + type;
+                                            clean_hint = "[NODE] " + type;
                                         }
                                     }
                                     
-                                    node_hint = clean_hint.is_empty() ? "🎯 Scene Node" : clean_hint;
+                                    node_hint = clean_hint.is_empty() ? "[NODE] Scene Node" : clean_hint;
                                     break;
                                 } else if (l.begins_with("[sub_resource")) {
                                     // Clean display: extract just the resource type
@@ -6516,9 +6516,9 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                         int start = type_idx + 6; // after type="
                                         int end = l.find("\"", start + 1);
                                         String t = end > start ? l.substr(start + 1, end - start - 1) : String("Resource");
-                                        node_hint = "🔧 " + t + " Resource";
+                                        node_hint = "[RES] " + t + " Resource";
                                     } else {
-                                        node_hint = "🔧 Sub Resource";
+                                        node_hint = "[RES] Sub Resource";
                                     }
                                     break;
                                 } else if (l.begins_with("[ext_resource")) {
@@ -6528,13 +6528,13 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                         int start = type_idx + 6;
                                         int end = l.find("\"", start + 1);
                                         String t = end > start ? l.substr(start + 1, end - start - 1) : String("Resource");
-                                        node_hint = "📦 " + t + " (External)";
+                                        node_hint = "[EXT] " + t + " (External)";
                                     } else {
-                                        node_hint = "📦 External Resource";
+                                        node_hint = "[EXT] External Resource";
                                     }
                                     break;
                                 } else if (l.begins_with("[resource")) {
-                                    node_hint = "📄 Main Resource";
+                                    node_hint = "[RES] Main Resource";
                                     break;
                                 }
                             }
@@ -6650,7 +6650,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                 }
 
                                 Label *node_label = memnew(Label);
-                                String display_text = indent + "📄 " + nname;
+                                String display_text = indent + "[FILE] " + nname;
                                 if (!ntype.is_empty() && ntype != "Node") {
                                     display_text += " (" + ntype + ")";
                                 }
@@ -6661,7 +6661,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                 // Show script attachment
                                 if (node_scripts.has(node_id)) {
                                     Label *script_label = memnew(Label);
-                                    script_label->set_text(" 📜 " + node_scripts[node_id]);
+                                    script_label->set_text(" [SCRIPT] " + node_scripts[node_id]);
                                     script_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
                                     node_hbox->add_child(script_label);
                                 }
@@ -6674,7 +6674,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                                         node_vbox->add_child(conn_hbox);
                                         
                                         Label *conn_label = memnew(Label);
-                                        String conn_text = indent + "  ↳ signals to: ";
+                                        String conn_text = indent + "  -> signals to: ";
                                         for (int ti = 0; ti < targets.size(); ti++) {
                                             if (ti > 0) conn_text += ", ";
                                             conn_text += String(targets[ti]);
@@ -6705,7 +6705,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			search_vbox->add_child(memnew(HSeparator));
 			
 			Label *central_header = memnew(Label);
-			central_header->set_text("⭐ Central Files (" + String::num_int64(central_files.size()) + ")");
+			central_header->set_text("[CENTRAL] Central Files (" + String::num_int64(central_files.size()) + ")");
 			central_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			search_vbox->add_child(central_header);
 			
@@ -6741,7 +6741,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			search_vbox->add_child(memnew(HSeparator));
 			
 			Label *graph_header = memnew(Label);
-			graph_header->set_text("🔗 Project Graph Summary");
+			graph_header->set_text("[GRAPH] Project Graph Summary");
 			graph_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			search_vbox->add_child(graph_header);
 			
@@ -6749,7 +6749,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int total_connections = graph_summary.get("total_connections", 0);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("Files: " + String::num_int64(total_files) + " • Connections: " + String::num_int64(total_connections));
+			summary_label->set_text("Files: " + String::num_int64(total_files) + " | Connections: " + String::num_int64(total_connections));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
 			search_vbox->add_child(summary_label);
 		}
@@ -6765,7 +6765,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		// Header with query info
 		Label *query_label = memnew(Label);
-		String header_text = "🔍 Asset Library Search: \"" + query + "\"";
+		String header_text = "[SEARCH] Asset Library Search: \"" + query + "\"";
 		if (!category.is_empty()) {
 			header_text += " (Category: " + category + ")";
 		}
@@ -6812,7 +6812,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				asset_vbox->add_child(title_hbox);
 				
 				Label *title_label = memnew(Label);
-				title_label->set_text("📦 " + title);
+				title_label->set_text("[ASSET] " + title);
 				title_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 				title_hbox->add_child(title_label);
 				
@@ -6828,20 +6828,20 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				asset_vbox->add_child(meta_hbox);
 				
 				Label *author_label = memnew(Label);
-				author_label->set_text("👤 " + author);
+				author_label->set_text("[AUTHOR] " + author);
 				author_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
 				meta_hbox->add_child(author_label);
 				
 				if (!category_name.is_empty()) {
 					Label *category_label = memnew(Label);
-					category_label->set_text("📂 " + category_name);
+					category_label->set_text("[CAT] " + category_name);
 					category_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 					meta_hbox->add_child(category_label);
 				}
 				
 				if (!godot_version.is_empty()) {
 					Label *godot_label = memnew(Label);
-					godot_label->set_text("🎮 Godot " + godot_version);
+					godot_label->set_text("[GODOT] Godot " + godot_version);
 					godot_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 					meta_hbox->add_child(godot_label);
 				}
@@ -6853,14 +6853,14 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 					
 					if (cost != "Free") {
 						Label *cost_label = memnew(Label);
-						cost_label->set_text("💰 " + cost);
+						cost_label->set_text("[COST] " + cost);
 						cost_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 						info_hbox->add_child(cost_label);
 					}
 					
 					if (rating > 0) {
 						Label *rating_label = memnew(Label);
-						rating_label->set_text("⭐ " + String::num_int64(rating));
+						rating_label->set_text("[RATING] " + String::num_int64(rating));
 						rating_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 						info_hbox->add_child(rating_label);
 					}
@@ -6927,11 +6927,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		// Success header (different messaging for cloud vs local mode)
 		Label *success_label = memnew(Label);
 		if (is_cloud_mode) {
-			success_label->set_text("☁️ " + message);
+			success_label->set_text("[CLOUD] " + message);
 			success_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			success_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 		} else {
-			success_label->set_text("✅ " + message);
+			success_label->set_text("[OK] " + message);
 			success_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			success_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		}
@@ -6950,7 +6950,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		info_vbox->add_child(name_hbox);
 		
 		Label *name_label = memnew(Label);
-		name_label->set_text("📦 " + asset_name);
+		name_label->set_text("[ASSET] " + asset_name);
 		name_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		name_hbox->add_child(name_label);
 		
@@ -6964,7 +6964,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		// Author
 		if (!author.is_empty()) {
 			Label *author_label = memnew(Label);
-			author_label->set_text("👤 " + author);
+			author_label->set_text("[AUTHOR] " + author);
 			author_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
 			info_vbox->add_child(author_label);
 		}
@@ -6974,39 +6974,39 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		if (is_cloud_mode) {
 			Label *cloud_label = memnew(Label);
-			cloud_label->set_text("☁️ Asset downloaded from cloud backend");
+			cloud_label->set_text("[CLOUD] Asset downloaded from cloud backend");
 			cloud_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
 			info_vbox->add_child(cloud_label);
 			
 			Label *ready_label = memnew(Label);
 			String intended_path = installation_info.get("intended_path", installed_to);
-			ready_label->set_text("📁 Ready to install to: " + _convert_to_godot_path(intended_path));
+			ready_label->set_text("[DIR] Ready to install to: " + _convert_to_godot_path(intended_path));
 			info_vbox->add_child(ready_label);
 			
 			Label *action_needed_label = memnew(Label);
-			action_needed_label->set_text("⚠️ Click 'Install to Project' below to complete installation");
+			action_needed_label->set_text("[WARN] Click 'Install to Project' below to complete installation");
 			action_needed_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			info_vbox->add_child(action_needed_label);
 		} else {
 			Label *location_label = memnew(Label);
-			location_label->set_text("📁 Installed to: " + _convert_to_godot_path(installed_to));
+			location_label->set_text("[DIR] Installed to: " + _convert_to_godot_path(installed_to));
 			info_vbox->add_child(location_label);
 			
 			Label *files_label = memnew(Label);
-			files_label->set_text("📄 Files extracted: " + String::num_int64(files_extracted));
+			files_label->set_text("[FILES] Extracted: " + String::num_int64(files_extracted));
 			info_vbox->add_child(files_label);
 		}
 		
 		if (is_plugin) {
 			Label *plugin_label = memnew(Label);
-			plugin_label->set_text("🔌 This is a plugin - you may need to enable it in Project Settings");
+			plugin_label->set_text("[PLUGIN] This is a plugin - you may need to enable it in Project Settings");
 			plugin_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			info_vbox->add_child(plugin_label);
 		}
 		
 		if (!backup_created.is_empty()) {
 			Label *backup_label = memnew(Label);
-			backup_label->set_text("💾 Backup created at: " + backup_created.get_file());
+			backup_label->set_text("[BACKUP] Backup created at: " + backup_created.get_file());
 			backup_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 			info_vbox->add_child(backup_label);
 		}
@@ -7134,8 +7134,8 @@ void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String 
         if (!p_status_label_path.is_empty() && has_node(p_status_label_path)) {
             if (Label *lbl = Object::cast_to<Label>(get_node(p_status_label_path))) {
                 String t = lbl->get_text();
-                if (!t.ends_with(" — Accepted")) {
-                    lbl->set_text(t + " — Accepted");
+                if (!t.ends_with(" - Accepted")) {
+                    lbl->set_text(t + " - Accepted");
                 }
             }
         }
@@ -7214,8 +7214,8 @@ void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String 
     if (!p_status_label_path.is_empty() && has_node(p_status_label_path)) {
         if (Label *lbl = Object::cast_to<Label>(get_node(p_status_label_path))) {
             String t = lbl->get_text();
-            if (!t.ends_with(" — Accepted")) {
-                lbl->set_text(t + " — Accepted");
+            if (!t.ends_with(" - Accepted")) {
+                lbl->set_text(t + " - Accepted");
             }
         }
     }
@@ -7251,8 +7251,8 @@ void AIChatDock::_on_discard_preview(const String &p_path, const NodePath &p_btn
     if (!p_status_label_path.is_empty() && has_node(p_status_label_path)) {
         if (Label *lbl = Object::cast_to<Label>(get_node(p_status_label_path))) {
             String t = lbl->get_text();
-            if (!t.ends_with(" — Discarded")) {
-                lbl->set_text(t + " — Discarded");
+            if (!t.ends_with(" - Discarded")) {
+                lbl->set_text(t + " - Discarded");
             }
         }
     }
@@ -9277,7 +9277,7 @@ void AIChatDock::_populate_related_graph(const Dictionary &p_graph) {
 			TreeItem *ni = related_graph_tree->create_item(nodes_item);
 			String display = ntext;
 			if (!nkind.is_empty()) display += " [" + nkind + "]";
-			if (!npath.is_empty()) display += " — " + npath;
+			if (!npath.is_empty()) display += " - " + npath;
 			if (sline > 0) display += vformat(" :%d", (int)sline);
 			ni->set_text(0, display);
 		}
@@ -9366,7 +9366,7 @@ AIChatDock::AIChatDock() {
 	// Initialize rate limit popup
 	rate_limit_popup = memnew(AcceptDialog);
 	add_child(rate_limit_popup);
-	rate_limit_popup->set_title("⚠️ Rate Limit Notice");
+	rate_limit_popup->set_title("Rate Limit Notice");
 	rate_limit_popup->set_flag(Window::FLAG_RESIZE_DISABLED, true);
 	
 	// Initialize status notification system
@@ -9590,7 +9590,7 @@ void AIChatDock::_show_image_warning_dialog(const String &p_filename, const Vect
 		return;
 	}
 	
-	String message = String("Image '{0}' was downsampled from {1}×{2} to {3}×{4} to reduce file size for transmission.")
+	String message = String("Image '{0}' was downsampled from {1}x{2} to {3}x{4} to reduce file size for transmission.")
 		.format(varray(p_filename, p_original.x, p_original.y, p_new_size.x, p_new_size.y));
 	
 	image_warning_dialog->set_text(message);
@@ -9928,7 +9928,7 @@ void AIChatDock::_display_generated_image_in_tool_result(VBoxContainer *p_contai
 	
 	Label *model_label = memnew(Label);
 	String model_name = p_data.get("model", "DALL-E");
-	model_label->set_text(" • " + model_name);
+	model_label->set_text(" | " + model_name);
 	model_label->add_theme_font_size_override("font_size", 10);
 	model_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
 	tech_container->add_child(model_label);
@@ -10044,7 +10044,7 @@ void AIChatDock::_display_image_unified(VBoxContainer *p_container, const String
 	// Model info (for generated images)
 	if (!model_name.is_empty()) {
 		Label *model_label = memnew(Label);
-		model_label->set_text(" • " + model_name);
+		model_label->set_text(" | " + model_name);
 		model_label->add_theme_font_size_override("font_size", 10);
 		model_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
 		details_container->add_child(model_label);
@@ -10053,7 +10053,7 @@ void AIChatDock::_display_image_unified(VBoxContainer *p_container, const String
 	// File path button (for attached images)
 	if (!file_path.is_empty() && !is_generated) {
 		Button *file_link = memnew(Button);
-		file_link->set_text(" • " + file_path.get_file());
+		file_link->set_text(" | " + file_path.get_file());
 		file_link->set_flat(true);
 		file_link->add_theme_font_size_override("font_size", 10);
 		file_link->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
@@ -10261,7 +10261,7 @@ void AIChatDock::_on_asset_folder_open_requested(const String &p_path) {
 	// Also show a brief success message in the UI
 	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 	if (current_label) {
-		current_label->add_text("\n\n📁 Opened " + godot_path + " in FileSystem dock");
+		current_label->add_text("\n\n[DIR] Opened " + godot_path + " in FileSystem dock");
 	}
 }
 
@@ -10277,7 +10277,7 @@ void AIChatDock::_on_asset_plugin_settings_requested() {
 	// Show feedback in the chat
 	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 	if (current_label) {
-		current_label->add_text("\n\n🔌 Opened Project Settings. Navigate to the Plugins tab to enable your installed plugins.");
+		current_label->add_text("\n\n[PLUGIN] Opened Project Settings. Navigate to the Plugins tab to enable your installed plugins.");
 	}
 }
 
@@ -10289,7 +10289,7 @@ void AIChatDock::_on_cloud_asset_install_requested(const String &p_asset_data, c
 	if (p_asset_data.is_empty()) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: No asset data available for installation");
+			current_label->add_text("\n\n[ERROR] No asset data available for installation");
 		}
 		return;
 	}
@@ -10299,7 +10299,7 @@ void AIChatDock::_on_cloud_asset_install_requested(const String &p_asset_data, c
 	if (zip_data.size() == 0) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: Failed to decode asset data");
+			current_label->add_text("\n\n[ERROR] Failed to decode asset data");
 		}
 		return;
 	}
@@ -10312,7 +10312,7 @@ void AIChatDock::_on_cloud_asset_install_requested(const String &p_asset_data, c
 	if (dir.is_null()) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: Cannot access installation directory");
+			current_label->add_text("\n\n[ERROR] Cannot access installation directory");
 		}
 		return;
 	}
@@ -10329,7 +10329,7 @@ void AIChatDock::_on_cloud_asset_install_requested(const String &p_asset_data, c
 	if (zip_file.is_null()) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: Cannot save asset ZIP file");
+			current_label->add_text("\n\n[ERROR] Cannot save asset ZIP file");
 		}
 		return;
 	}
@@ -10352,7 +10352,7 @@ void AIChatDock::_on_cloud_asset_install_requested(const String &p_asset_data, c
 	// Show success message
 	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 	if (current_label) {
-		current_label->add_text(vformat("\n\n✅ Downloaded %s ZIP file to %s\n💡 Please extract the ZIP manually to complete installation", p_asset_name, p_install_path));
+		current_label->add_text(vformat("\n\n[OK] Downloaded %s ZIP file to %s\n[INFO] Please extract the ZIP manually to complete installation", p_asset_name, p_install_path));
 	}
 	
 	print_line("AI Chat: Successfully downloaded " + p_asset_name + " ZIP file");
@@ -10364,7 +10364,7 @@ void AIChatDock::_on_cloud_asset_manual_download(const String &p_asset_data, con
 	if (p_asset_data.is_empty()) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: No asset data available for download");
+			current_label->add_text("\n\n[ERROR] No asset data available for download");
 		}
 		return;
 	}
@@ -10374,7 +10374,7 @@ void AIChatDock::_on_cloud_asset_manual_download(const String &p_asset_data, con
 	if (zip_data.size() == 0) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: Failed to decode asset data");
+			current_label->add_text("\n\n[ERROR] Failed to decode asset data");
 		}
 		return;
 	}
@@ -10400,7 +10400,7 @@ void AIChatDock::_on_cloud_asset_manual_download(const String &p_asset_data, con
 	// Show feedback
 	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 	if (current_label) {
-		current_label->add_text("\n\n💾 Choose where to save " + p_asset_name + ".zip");
+		current_label->add_text("\n\n[SAVE] Choose where to save " + p_asset_name + ".zip");
 	}
 }
 
@@ -10416,7 +10416,7 @@ void AIChatDock::_on_manual_asset_save_location_selected(const String &p_file_pa
 	if (file.is_null()) {
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n❌ Error: Cannot save asset to " + p_file_path);
+			current_label->add_text("\n\n[ERROR] Cannot save asset to " + p_file_path);
 		}
 		return;
 	}
@@ -10431,7 +10431,7 @@ void AIChatDock::_on_manual_asset_save_location_selected(const String &p_file_pa
 	// Show success
 	RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 	if (current_label) {
-		current_label->add_text("\n\n✅ Asset saved to " + p_file_path);
+			current_label->add_text("\n\n[OK] Asset saved to " + p_file_path);
 	}
 	
 	print_line("AI Chat: Asset manually saved to " + p_file_path);
@@ -11329,7 +11329,7 @@ void AIChatDock::_send_file_batch(const Array &p_all_files, int p_start_index, i
 	current_batch_info["total_batches"] = p_total_batches;
 	current_batch_info["all_files"] = p_all_files;
 	
-	print_line("AI Chat: 📤 Sending batch " + String::num_int64(p_current_batch) + "/" + String::num_int64(p_total_batches) + " (" + String::num_int64(batch_files.size()) + " files)");
+	print_line("AI Chat: [BATCH] Sending batch " + String::num_int64(p_current_batch) + "/" + String::num_int64(p_total_batches) + " (" + String::num_int64(batch_files.size()) + " files)");
 	
 	_send_embedding_request("index_files", payload);
 }
@@ -11955,7 +11955,7 @@ void AIChatDock::_on_summarization_request_completed(int p_result, int p_code, c
 void AIChatDock::_show_rate_limit_popup(const String &p_provider, const String &p_message) {
 	if (!rate_limit_popup) return;
 	
-	String popup_text = "⚠️ Rate Limit Reached\n\n";
+	String popup_text = "[WARN] Rate Limit Reached\n\n";
 	popup_text += "Provider: " + p_provider + "\n";
 	popup_text += "Status: " + p_message + "\n\n";
 	popup_text += "The system will automatically retry and may switch to a different AI provider if needed.\n";
@@ -11971,7 +11971,7 @@ void AIChatDock::_show_rate_limit_popup(const String &p_provider, const String &
 void AIChatDock::_show_provider_switch_popup(const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
 	if (!rate_limit_popup) return;
 	
-	String popup_text = "🔄 AI Provider Switched\n\n";
+	String popup_text = "[SWITCH] AI Provider Switched\n\n";
 	popup_text += "From: " + p_from_provider + "\n";
 	popup_text += "To: " + p_to_provider + "\n";
 	popup_text += "Reason: " + p_reason + "\n\n";
@@ -12061,17 +12061,17 @@ void AIChatDock::_show_status_notification(const String &p_type, const String &p
 	String icon_text = p_icon;
 	if (icon_text.is_empty()) {
 		if (p_type == "summarization") {
-			icon_text = "🧠";
+			icon_text = "[INFO]";
 		} else if (p_type == "rate_limit") {
-			icon_text = "⚠️";
+			icon_text = "[WARN]";
 		} else if (p_type == "connection_error") {
-			icon_text = "❌";
+			icon_text = "[ERROR]";
 		} else if (p_type == "recovery") {
-			icon_text = "🔧";
+			icon_text = "[TOOL]";
 		} else if (p_type == "model_switch") {
-			icon_text = "🔄";
+			icon_text = "[SWITCH]";
 		} else {
-			icon_text = "ℹ️";
+			icon_text = "[INFO]";
 		}
 	}
 	icon_label->set_text(icon_text);
@@ -12094,7 +12094,7 @@ void AIChatDock::_show_status_notification(const String &p_type, const String &p
 	
 	// Close button
 	Button *close_button = memnew(Button);
-	close_button->set_text("×");
+	close_button->set_text("X");
 	close_button->add_theme_font_size_override("font_size", 18);
 	close_button->add_theme_color_override("font_color", text_color);
 	close_button->set_custom_minimum_size(Size2(24, 24));
@@ -12114,13 +12114,13 @@ void AIChatDock::_show_summarization_notification(int p_original_count, int p_su
 	Array format_args;
 	format_args.push_back(p_original_count);
 	format_args.push_back(p_summary_tokens);
-	String message = String("Conversation automatically summarized to manage context window ({0} messages → {1} tokens)").format(format_args);
-	_show_status_notification("summarization", message, "🧠", 4.0);
+	String message = String("Conversation automatically summarized to manage context window ({0} messages -> {1} tokens)").format(format_args);
+	_show_status_notification("summarization", message, "[INFO]", 4.0);
 }
 
 void AIChatDock::_show_connection_status_notification(const String &p_status, const String &p_message) {
 	String display_message = p_message.is_empty() ? p_status : p_message;
-	_show_status_notification("connection_error", display_message, "❌", 5.0);
+	_show_status_notification("connection_error", display_message, "[ERROR]", 5.0);
 }
 
 void AIChatDock::_show_rate_limit_notification(const String &p_provider, const String &p_message) {
@@ -12128,7 +12128,7 @@ void AIChatDock::_show_rate_limit_notification(const String &p_provider, const S
 	format_args.push_back(p_provider);
 	format_args.push_back(p_message);
 	String message = String("Rate limit reached for {0}. {1}").format(format_args);
-	_show_status_notification("rate_limit", message, "⚠️", 5.0);
+	_show_status_notification("rate_limit", message, "[WARN]", 5.0);
 }
 
 void AIChatDock::_show_model_switch_notification(const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
@@ -12137,7 +12137,7 @@ void AIChatDock::_show_model_switch_notification(const String &p_from_provider, 
 	format_args.push_back(p_to_provider);
 	format_args.push_back(p_reason);
 	String message = String("Switched from {0} to {1}. Reason: {2}").format(format_args);
-	_show_status_notification("model_switch", message, "🔄", 4.0);
+	_show_status_notification("model_switch", message, "[SWITCH]", 4.0);
 }
 
 void AIChatDock::_hide_status_notification() {
@@ -12218,8 +12218,8 @@ void AIChatDock::_on_tool_result_accept_pressed(const String &p_tool_call_id, co
 	if (!p_status_path.is_empty() && has_node(p_status_path)) {
 		if (Label *lbl = Object::cast_to<Label>(get_node(p_status_path))) {
 			String t = lbl->get_text();
-			if (!t.ends_with(" — Accepted")) {
-				lbl->set_text(t + " — Accepted");
+			if (!t.ends_with(" - Accepted")) {
+				lbl->set_text(t + " - Accepted");
 			}
 		}
 	}
@@ -12242,8 +12242,8 @@ void AIChatDock::_on_tool_result_reject_pressed(const String &p_tool_call_id, co
 	if (!p_status_path.is_empty() && has_node(p_status_path)) {
 		if (Label *lbl = Object::cast_to<Label>(get_node(p_status_path))) {
 			String t = lbl->get_text();
-			if (!t.ends_with(" — Discarded")) {
-				lbl->set_text(t + " — Discarded");
+			if (!t.ends_with(" - Discarded")) {
+				lbl->set_text(t + " - Discarded");
 			}
 		}
 	}
@@ -12530,8 +12530,8 @@ void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const St
 							Label *lbl = Object::cast_to<Label>(grandparent->get_child(j));
 							if (lbl && lbl->get_text().contains(_convert_to_godot_path(p_file_path))) {
 								String t = lbl->get_text();
-								if (!t.ends_with(" — Accepted")) {
-									lbl->set_text(t + " — Accepted");
+								if (!t.ends_with(" - Accepted")) {
+									lbl->set_text(t + " - Accepted");
 								}
 								break;
 							}
@@ -12614,8 +12614,8 @@ void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
 							Label *lbl = Object::cast_to<Label>(grandparent->get_child(j));
 							if (lbl && lbl->get_text().contains(_convert_to_godot_path(p_file_path))) {
 								String t = lbl->get_text();
-								if (!t.ends_with(" — Discarded")) {
-									lbl->set_text(t + " — Discarded");
+								if (!t.ends_with(" - Discarded")) {
+									lbl->set_text(t + " - Discarded");
 								}
 								break;
 							}
@@ -12657,7 +12657,7 @@ void AIChatDock::_on_banner_clicked() {
 	
 	// Create a simple popup showing pending files
 	AcceptDialog *details_popup = memnew(AcceptDialog);
-	details_popup->set_title("📝 Pending File Edits");
+	details_popup->set_title("Pending File Edits");
 	details_popup->set_min_size(Size2(400, 300));
 	
 	VBoxContainer *content = memnew(VBoxContainer);
@@ -12856,7 +12856,7 @@ void AIChatDock::_on_import_3d_model_to_scene_pressed(const String &p_glb_data, 
 			// Show success message in chat
 			RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 			if (current_label) {
-				current_label->add_text("\n\n✅ 3D model imported to scene as: " + node_name);
+				current_label->add_text("\n\n[OK] 3D model imported to scene as: " + node_name);
 			}
 		} else {
 			print_line("AI Chat: No current scene open for 3D model import");
@@ -12864,7 +12864,7 @@ void AIChatDock::_on_import_3d_model_to_scene_pressed(const String &p_glb_data, 
 			// Show message to user
 			RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 			if (current_label) {
-				current_label->add_text("\n\n⚠️ No scene open - 3D model saved to " + save_path + " (open a scene to import directly)");
+				current_label->add_text("\n\n[WARN] No scene open - 3D model saved to " + save_path + " (open a scene to import directly)");
 			}
 		}
 	} else {
@@ -12891,7 +12891,7 @@ void AIChatDock::_on_3d_model_save_location_selected(const String &p_file_path) 
 		// Show success in chat
 		RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
 		if (current_label) {
-			current_label->add_text("\n\n✅ 3D model saved to: " + p_file_path);
+			current_label->add_text("\n\n[OK] 3D model saved to: " + p_file_path);
 		}
 	} else {
 		print_line("AI Chat: Failed to save 3D model to: " + p_file_path);
