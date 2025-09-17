@@ -32,6 +32,7 @@
 
 #include "scene/gui/dialogs.h"
 
+class Button;
 class CreditsRoll;
 class ItemList;
 class Label;
@@ -56,9 +57,11 @@ private:
 	void _license_tree_selected();
 	void _item_activated(int p_idx, ItemList *p_il);
 	void _item_list_resized(ItemList *p_il);
+	void _discord_pressed();
 	Label *_create_section(Control *p_parent, const String &p_name, const char *const *p_src, BitField<SectionFlags> p_flags = 0);
 
 	Label *_about_text_label = nullptr;
+	Button *_discord_button = nullptr;
 	Label *_project_manager_label = nullptr;
 	Tree *_tpl_tree = nullptr;
 	RichTextLabel *license_text_label = nullptr;

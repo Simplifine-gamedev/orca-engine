@@ -241,7 +241,26 @@ void editor_copy_icons(const Ref<Theme> &p_theme, const Ref<Theme> &p_old_theme)
 
 // Returns the SVG code for the default project icon.
 String get_default_project_icon() {
-	// FIXME: This icon can probably be predefined in editor_icons.gen.h so we don't have to look up.
+	// Try to create SVG wrapper for Logo.png from orcabranding directory
+	String png_path = "orcabranding/Logo.png";
+	if (FileAccess::exists(png_path)) {
+		// Create an SVG that embeds the PNG as base64
+		Ref<FileAccess> f = FileAccess::open(png_path, FileAccess::READ);
+		if (f.is_valid()) {
+			PackedByteArray png_data = f->get_buffer(f->get_length());
+			String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_data);
+			
+			// Create SVG wrapper with embedded PNG
+			String svg_content = String(
+				"<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"128\" height=\"128\">"
+				"<image width=\"128\" height=\"128\" xlink:href=\"data:image/png;base64,") + base64_data + String("\"/>"
+				"</svg>");
+			
+			return svg_content;
+		}
+	}
+	
+	// Fallback to compiled DefaultProjectIcon
 	for (int i = 0; i < editor_icons_count; i++) {
 		if (strcmp(editor_icons_names[i], "DefaultProjectIcon") == 0) {
 			return String(editor_icons_sources[i]);

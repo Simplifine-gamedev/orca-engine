@@ -1,7 +1,7 @@
 short_name = "orca"
 name = "Orca"
-major = 1
-minor = 0
+major = 4
+minor = 5
 patch = 0
 status = "beta"
 module_config = ""
