@@ -3816,11 +3816,17 @@ void Main::setup_boot_logo() {
 
 #if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED)
 		if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON)) {
-			// Use dock icon.png with transparent background
-			Ref<Image> icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
+			// Try new Logo.png first, then fallback to dock icon.png
+			Ref<Image> icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/Logo.png");
+			if (icon.is_null() || icon->is_empty()) {
+				icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
+			}
 			if (icon.is_null() || icon->is_empty()) {
 				String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-				icon = Image::load_from_file(exe_dir.path_join("..").path_join("orcabranding/dock icon.png"));
+				icon = Image::load_from_file(exe_dir.path_join("..").path_join("orcabranding/Logo.png"));
+				if (icon.is_null() || icon->is_empty()) {
+					icon = Image::load_from_file(exe_dir.path_join("..").path_join("orcabranding/dock icon.png"));
+				}
 			}
 			
 			if (icon.is_valid() && !icon->is_empty()) {

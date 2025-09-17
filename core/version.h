@@ -76,9 +76,9 @@
 // Example: "3.1.4.stable.mono.double.official"
 #define GODOT_VERSION_FULL_BUILD GODOT_VERSION_FULL_CONFIG "." GODOT_VERSION_BUILD
 
-// Same as above, but prepended with Godot's name and a cosmetic "v" for "version".
-// Example: "Godot v3.1.4.stable.official.mono.double"
-#define GODOT_VERSION_FULL_NAME GODOT_VERSION_NAME " v" GODOT_VERSION_FULL_BUILD
+// Same as above, but prepended with Orca Engine's name and a cosmetic "v" for "version".
+// Example: "Orca Engine v1.0.beta.custom_build"
+#define GODOT_VERSION_FULL_NAME GODOT_VERSION_NAME " Engine v" GODOT_VERSION_FULL_BUILD
 
 // Git commit hash, generated at build time in `core/version_hash.gen.cpp`.
 extern const char *const GODOT_VERSION_HASH;
