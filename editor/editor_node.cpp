@@ -8426,6 +8426,9 @@ EditorNode::EditorNode() {
 	default_layout->set_value(docks_section, "dock_3", "Scene,Import");
 	default_layout->set_value(docks_section, "dock_4", "FileSystem");
 	default_layout->set_value(docks_section, "dock_5", "AI Chat,Inspector,Node,History");
+	
+	// Set AI Chat as the default selected tab in the right panel (dock_5)
+	default_layout->set_value(docks_section, "dock_5_selected_tab_idx", 0);
 
 	// There are 4 vsplits and 4 hsplits.
 	for (int i = 0; i < editor_dock_manager->get_vsplit_count(); i++) {
