@@ -246,7 +246,7 @@ jobs:
             Orca-Linux-x86_64.tar.gz
             Orca-Linux-x86_64.AppImage
 
-      - name: Create Release
+      - name: Create Draft Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
@@ -265,17 +265,14 @@ jobs:
             ${{ github.event.head_commit.message }}
 
             ---
-            **Build Info**: Mac ⏳ | Windows ⏳ | Linux ✅
-            
-            **Changes in this build:**
-            ${{ github.event.head_commit.message }}
+            **Build completed**: Linux ✅ | Mac ⏳ | Windows ⏳
           files: |
             Orca-Linux-x86_64.tar.gz
             Orca-Linux-x86_64.AppImage
+          draft: true
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: false
-          append_body: true
 
       - name: Build Summary
         run: |
