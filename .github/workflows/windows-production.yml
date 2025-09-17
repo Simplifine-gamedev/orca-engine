@@ -288,7 +288,7 @@ jobs:
           
           echo "✅ Binary renamed for distribution"
 
-      - name: Create or Update Release
+      - name: Complete and Publish Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
@@ -307,13 +307,13 @@ jobs:
             ${{ github.event.head_commit.message }}
 
             ---
-            **Build Info**: Mac ⏳ | Windows ✅${{ steps.sign_binary.outcome == 'success' && ' Signed' || ' Unsigned' }} | Linux ⏳
+            **All builds completed**: Mac ✅ | Linux ✅ | Windows ✅${{ steps.sign_binary.outcome == 'success' && ' Signed' || ' Unsigned' }}
           files: |
             Orca (Windows).exe
+          draft: false
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: false
-          append_body: true
 
       - name: Build Summary
         shell: cmd

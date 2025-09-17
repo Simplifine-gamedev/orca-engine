@@ -257,7 +257,7 @@ jobs:
             Orca.app
             Orca (Mac).dmg
 
-      - name: Create or Update Unified Release
+      - name: Add to Draft Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
@@ -276,10 +276,10 @@ jobs:
             ${{ github.event.head_commit.message }}
 
             ---
-            **Build Info**: Mac ✅ Signed & Notarized | Windows ⏳ | Linux ⏳
+            **Build completed**: Mac ✅ Signed & Notarized | Linux ⏳ | Windows ⏳
           files: |
             Orca (Mac).dmg
+          draft: true
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: false
-          append_body: true
