@@ -314,7 +314,7 @@ private:
 	void _populate_tree_recursive(EditorFileSystemDirectory *p_dir, TreeItem *p_parent, const String &p_filter);
 	void _on_at_mention_item_selected();
 	void _on_model_selected(int p_index);
-	void _populate_cerebras_models();
+	void _populate_all_models();
 	void _on_models_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	String _get_api_base_url();
 	void _on_index_button_pressed();

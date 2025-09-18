@@ -98,7 +98,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_input_field_gui_input"), &AIChatDock::_on_input_field_gui_input);
 	ClassDB::bind_method(D_METHOD("_handle_clipboard_paste"), &AIChatDock::_handle_clipboard_paste);
 	ClassDB::bind_method(D_METHOD("_on_model_selected"), &AIChatDock::_on_model_selected);
-	ClassDB::bind_method(D_METHOD("_populate_cerebras_models"), &AIChatDock::_populate_cerebras_models);
+	ClassDB::bind_method(D_METHOD("_populate_all_models"), &AIChatDock::_populate_all_models);
 	ClassDB::bind_method(D_METHOD("_on_models_request_completed"), &AIChatDock::_on_models_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_index_button_pressed"), &AIChatDock::_on_index_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_output_toggled"), &AIChatDock::_on_tool_output_toggled);
@@ -481,17 +481,8 @@ void AIChatDock::_notification(int p_notification) {
 			top_container->add_child(model_label);
 
             model_dropdown = memnew(OptionButton);
-            // Add multi-provider models with thinking variants
-            model_dropdown->add_item("gpt-5");
-            model_dropdown->add_item("gpt-5 (thinking)");
-			model_dropdown->add_item("gpt-4o");
-			model_dropdown->add_item("gpt-4o (thinking)");
-			model_dropdown->add_item("claude-4");
-			model_dropdown->add_item("claude-4 (thinking)");
-			model_dropdown->add_item("gemini-2.5");
-			model_dropdown->add_item("gemini-2.5 (thinking)");
-			// Add Cerebras models (high-speed inference) - will be populated dynamically
-			_populate_cerebras_models();
+            // Populate all models dynamically from backend to ensure accuracy
+            _populate_all_models();
 			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
 			top_container->add_child(model_dropdown);
@@ -833,12 +824,19 @@ void AIChatDock::_notification(int p_notification) {
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			if (EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
 				String saved_model = EditorSettings::get_singleton()->get_setting("ai_chat/model");
-				// Basic validation - allow base models, thinking variants, and any [FAST] models
-				bool is_valid = (saved_model == "gpt-5" || saved_model == "gpt-5 (thinking)" ||
-								saved_model == "gpt-4o" || saved_model == "gpt-4o (thinking)" ||
-								saved_model == "claude-4" || saved_model == "claude-4 (thinking)" ||
-								saved_model == "gemini-2.5" || saved_model == "gemini-2.5 (thinking)" ||
-								saved_model.begins_with("[FAST] "));
+				// Dynamic validation - check if model exists in dropdown
+				bool is_valid = false;
+				for (int i = 0; i < model_dropdown->get_item_count(); i++) {
+					if (model_dropdown->get_item_text(i) == saved_model) {
+						is_valid = true;
+						break;
+					}
+				}
+				// Fallback validation for known base models and [FAST] models
+				if (!is_valid) {
+					is_valid = (saved_model == "gpt-5" || saved_model == "claude-4" || 
+							   saved_model == "gemini-2.5" || saved_model.begins_with("[FAST] "));
+				}
 				if (!is_valid) {
 					saved_model = "gpt-5"; // Fallback to default model
 				}
@@ -12137,19 +12135,24 @@ String AIChatDock::_generate_inline_diff(const String &p_original, const String 
 	return inline_diff_text;
 }
 
-void AIChatDock::_populate_cerebras_models() {
-	// Fetch available models from backend
+void AIChatDock::_populate_all_models() {
+	// Add fallback base models first (in case backend request fails)
+	model_dropdown->add_item("gpt-5");
+	model_dropdown->add_item("claude-4");
+	model_dropdown->add_item("gemini-2.5");
+	
+	// Fetch all available models from backend to get correct thinking variants
 	String base_url = _get_api_base_url();
 	String models_url = base_url + "/models";
 	
-	print_line("AI Chat: Fetching models from " + models_url);
+	print_line("AI Chat: Fetching all models from " + models_url);
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
 	
 	Error err = models_http_request->request(models_url, headers, HTTPClient::METHOD_GET);
 	if (err != OK) {
-		print_line("AI Chat: Failed to request models: " + String::num_int64(err));
+		print_line("AI Chat: Failed to request models, using fallback base models: " + String::num_int64(err));
 	}
 }
 
@@ -12185,31 +12188,29 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 	Array models = response.get("models", Array());
 	print_line("AI Chat: Received " + String::num_int64(models.size()) + " models from backend");
 	
-	// Clear existing Cerebras models from dropdown (keep base models)
-	int items_to_remove = 0;
-	for (int i = model_dropdown->get_item_count() - 1; i >= 0; i--) {
-		String item_text = model_dropdown->get_item_text(i);
-		if (item_text.begins_with("[FAST] ")) {
-			model_dropdown->remove_item(i);
-			items_to_remove++;
-		}
-	}
-	if (items_to_remove > 0) {
-		print_line("AI Chat: Removed " + String::num_int64(items_to_remove) + " old Cerebras models");
-	}
+	// Clear all existing models and rebuild from backend data
+	model_dropdown->clear();
 	
-	// Add new models to dropdown with thinking variants grouped
-	int added_models = 0;
-	Array thinking_models;
+	// Organize models by type for proper display order
 	Array base_models;
+	Array thinking_models;  
+	Array fast_models;
+	Array fast_thinking_models;
 	
 	for (int i = 0; i < models.size(); i++) {
 		Dictionary model_info = models[i];
 		String model_name = model_info.get("name", "");
 		String provider = model_info.get("provider", "");
 		bool is_thinking = model_info.get("is_thinking_variant", false);
+		bool is_fast = model_name.begins_with("[FAST]");
 		
-		if (provider == "cerebras" || model_name.begins_with("[FAST]")) {
+		if (is_fast) {
+			if (is_thinking) {
+				fast_thinking_models.push_back(model_info);
+			} else {
+				fast_models.push_back(model_info);
+			}
+		} else {
 			if (is_thinking) {
 				thinking_models.push_back(model_info);
 			} else {
@@ -12218,7 +12219,10 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 		}
 	}
 	
-	// Add models in groups: base first, then thinking variants
+	// Add models in logical groups: base models, thinking variants, then fast models
+	int added_models = 0;
+	
+	// Add base models first
 	for (int i = 0; i < base_models.size(); i++) {
 		Dictionary model_info = base_models[i];
 		String model_name = model_info.get("name", "");
@@ -12226,6 +12230,7 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 		added_models++;
 	}
 	
+	// Add thinking variants  
 	for (int i = 0; i < thinking_models.size(); i++) {
 		Dictionary model_info = thinking_models[i];
 		String model_name = model_info.get("name", "");
@@ -12233,7 +12238,31 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 		added_models++;
 	}
 	
-	print_line("AI Chat: Added " + String::num_int64(added_models) + " Cerebras models to dropdown");
+	// Add fast models
+	for (int i = 0; i < fast_models.size(); i++) {
+		Dictionary model_info = fast_models[i];
+		String model_name = model_info.get("name", "");
+		model_dropdown->add_item(model_name);
+		added_models++;
+	}
+	
+	// Add fast thinking models  
+	for (int i = 0; i < fast_thinking_models.size(); i++) {
+		Dictionary model_info = fast_thinking_models[i];
+		String model_name = model_info.get("name", "");
+		model_dropdown->add_item(model_name);
+		added_models++;
+	}
+	
+	print_line("AI Chat: Added " + String::num_int64(added_models) + " models to dropdown from backend");
+	
+	// If no models were added from backend (failed request), add fallback models
+	if (added_models == 0) {
+		print_line("AI Chat: No models received from backend, using fallback models");
+		model_dropdown->add_item("gpt-5");
+		model_dropdown->add_item("claude-4");
+		model_dropdown->add_item("gemini-2.5");
+	}
 }
 
 String AIChatDock::_get_api_base_url() {
@@ -12295,12 +12324,17 @@ int AIChatDock::_calculate_conversation_tokens(const Vector<ChatMessage> &p_mess
 }
 int AIChatDock::_get_model_token_limit(const String &p_model) const {
 	// Token limits with safety margins (same as backend)
-	if (p_model == "claude-4" || p_model.begins_with("anthropic/claude-sonnet-4")) {
-		// return 180000; // 200k - 20k margin
-		return 180000;
-	} else if (p_model == "gpt-5" || p_model == "gpt-4o" || p_model.begins_with("openai/gpt-")) {
+	// Handle thinking variants by checking base model name
+	String base_model = p_model;
+	if (p_model.find(" (thinking)") != -1) {
+		base_model = p_model.replace(" (thinking)", "");
+	}
+	
+	if (base_model == "claude-4" || base_model.begins_with("anthropic/claude-sonnet-4")) {
+		return 180000; // 200k - 20k margin
+	} else if (base_model == "gpt-5" || base_model == "gpt-4o" || base_model.begins_with("openai/gpt-")) {
 		return 120000; // 128k - 8k margin
-	} else if (p_model == "gemini-2.5" || p_model.begins_with("gemini/")) {
+	} else if (base_model == "gemini-2.5" || base_model.begins_with("gemini/")) {
 		return 1800000; // 2M - 200k margin
 	} else if (p_model.begins_with("[FAST] ") || p_model.begins_with("cerebras/")) {
 		if (p_model.find("gpt-oss-120b") != -1) {
@@ -12308,7 +12342,6 @@ int AIChatDock::_get_model_token_limit(const String &p_model) const {
 		} else if (p_model.find("qwen") != -1) {
 			return 30000; // 32k - 2k margin
 		}
-		print_line("AI Chat: Token limit for " + p_model + " is 7000");
 		return 120000; // Conservative default for Cerebras
 	}
 	

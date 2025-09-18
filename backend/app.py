@@ -2445,23 +2445,17 @@ def chat():
                             "model": model_try,
                             "messages": openai_messages,
                             "tools": godot_tools,
-                            "tool_choice": "auto",
+                            "tool_choice": "auto", 
                             "stream": True
                         }
                         
-                        # CRITICAL FIX: Disable thinking mode when tools are present
-                        # Anthropic requires specific message structure for thinking + tools
-                        # For now, only enable thinking for pure text conversations
-                        has_tool_calls_in_history = any(
-                            msg.get('role') == 'assistant' and msg.get('tool_calls')
-                            for msg in openai_messages
-                        )
-                        
-                        if reasoning_params and not has_tool_calls_in_history:
+                        # EXPERIMENTAL: Always enable thinking mode when requested, regardless of tools
+                        # Anthropic should support thinking + tools together
+                        if reasoning_params:
                             completion_params.update(reasoning_params)
                             print(f"THINKING_MODE: Enabled for {model_friendly_name} with params: {reasoning_params}")
-                        elif reasoning_params and has_tool_calls_in_history:
-                            print(f"THINKING_MODE: Disabled for {model_friendly_name} due to tool calls in conversation")
+                        else:
+                            print(f"THINKING_MODE: Not requested for {model_friendly_name}")
                         
                         response = completion(**completion_params)
                         
@@ -3790,10 +3784,13 @@ def predict_code_edit():
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": full_prompt}
                     ],
-                    "temperature": 0.2,  # Even lower temperature for precise indentation
                     "max_tokens": 16000  # Higher limit to ensure complete file generation
                 }
+                
+                # Apply reasoning params first, then set temperature if not in thinking mode
                 completion_params.update(reasoning_params)
+                if not reasoning_params:  # Only set lower temp if NOT in thinking mode
+                    completion_params["temperature"] = 0.2  # Lower temperature for precise indentation
                 
                 response = completion(**completion_params)
                 break
