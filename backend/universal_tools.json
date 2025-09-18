@@ -1,0 +1,610 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "universal_file_manager",
+      "description": "Handle all file and directory operations safely. Always use this for file operations instead of individual tools.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["list", "read", "edit", "create_dir", "copy", "move", "delete", "refresh"],
+            "description": "File operation to perform"
+          },
+          "path": {
+            "type": "string", 
+            "description": "Target file/directory path"
+          },
+          "content": {
+            "type": "string",
+            "description": "File content for 'edit' operation"
+          },
+          "destination": {
+            "type": "string",
+            "description": "Destination path for 'copy' or 'move' operations"
+          },
+          "filter": {
+            "type": "string",
+            "description": "File filter for 'list' operation (e.g., '*.gd', '*.tscn')"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Recursive listing for 'list' operation",
+            "default": false
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Starting line for 'read' operation (1-indexed)"
+          },
+          "end_line": {
+            "type": "integer", 
+            "description": "Ending line for 'read' operation (inclusive)"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Edit description for 'edit' operation"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Allow overwrite for 'copy'/'move' operations",
+            "default": false
+          }
+        },
+        "required": ["operation", "path"]
+      }
+    }
+  },
+  {
+    "type": "function", 
+    "function": {
+      "name": "universal_node_manager",
+      "description": "Handle all node operations in the current scene. Consolidated tool for node manipulation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["create", "delete", "get_properties", "set_property", "batch_set", "move", "call_method", "search_by_type", "get_all", "get_selection", "attach_script", "detach_script", "change_type"],
+            "description": "Node operation to perform"
+          },
+          "path": {
+            "type": "string",
+            "description": "Node path (required for most operations)"
+          },
+          "node_type": {
+            "type": "string",
+            "description": "Node type for 'create' operation (e.g., 'Node2D', 'Button', 'CharacterBody3D')"
+          },
+          "name": {
+            "type": "string",
+            "description": "Node name for 'create' operation"
+          },
+          "parent": {
+            "type": "string",
+            "description": "Parent node path for 'create' or 'move' operations"
+          },
+          "property": {
+            "type": "string",
+            "description": "Property name for 'set_property' operation"  
+          },
+          "value": {
+            "description": "Property value for 'set_property' operation"
+          },
+          "operations": {
+            "type": "array",
+            "description": "Array of property operations for 'batch_set'",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {"type": "string"},
+                "property": {"type": "string"},
+                "value": {}
+              }
+            }
+          },
+          "method": {
+            "type": "string",
+            "description": "Method name for 'call_method' operation"
+          },
+          "method_args": {
+            "type": "array",
+            "description": "Method arguments for 'call_method' operation",
+            "items": {
+              "type": "string"
+            }
+          },
+          "script_path": {
+            "type": "string",
+            "description": "Script file path for 'attach_script' operation"
+          },
+          "new_type": {
+            "type": "string",
+            "description": "New node type for 'change_type' operation"
+          },
+          "preserve_children": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether to preserve child nodes in 'change_type' operation"
+          }
+        },
+        "required": ["operation"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "universal_scene_manager", 
+      "description": "Handle scene-level operations including creating, opening, and managing scenes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["get_info", "open", "create", "instantiate", "get_hierarchy", "run", "stop", "save", "debug_physics", "debug_camera", "debug_animation", "debug_layers", "validate_node", "get_game_status"],
+            "description": "Scene operation to perform"
+          },
+          "scene_path": {
+            "type": "string",
+            "description": "Scene file path"
+          },
+          "parent_path": {
+            "type": "string", 
+            "description": "Parent node path for 'instantiate' operation"
+          },
+          "instance_name": {
+            "type": "string",
+            "description": "Name for instantiated scene (optional)"
+          },
+          "root_type": {
+            "type": "string",
+            "description": "Root node type for 'create' operation"
+          },
+          "clear_errors": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether to clear previous errors before starting for 'run' operation"
+          },
+          "node_path": {
+            "type": "string",
+            "description": "Node path for debug operations (debug_physics, debug_camera, debug_animation, validate_node)"
+          },
+          "body_type": {
+            "type": "string",
+            "description": "Physics body type for debug_physics operation"
+          },
+          "include_children": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include child nodes in debug operations"
+          }
+        },
+        "required": ["operation"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "universal_resource_manager", 
+      "description": "Handle resource operations including creating, loading, and assigning resources to nodes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["create", "load", "assign", "get_info", "import", "wait_import"],
+            "description": "Resource operation to perform"
+          },
+          "resource_type": {
+            "type": "string",
+            "description": "Resource type for 'create' operation (e.g., 'BoxMesh', 'StandardMaterial3D')"
+          },
+          "resource_path": {
+            "type": "string", 
+            "description": "Resource file path for 'load' or 'import' operations"
+          },
+          "node_path": {
+            "type": "string",
+            "description": "Target node path for 'assign' operation"
+          },
+          "property": {
+            "type": "string",
+            "description": "Node property name for 'assign' operation (e.g., 'mesh', 'texture', 'material')"
+          },
+          "properties": {
+            "type": "object",
+            "description": "Resource properties for 'create' operation"
+          },
+          "save_path": {
+            "type": "string",
+            "description": "Optional save path for created resources"
+          },
+          "import_preset": {
+            "type": "string",
+            "description": "Import preset name for 'import' operation"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 5000,
+            "description": "Timeout for 'wait_import' operation"
+          }
+        },
+        "required": ["operation"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "universal_project_manager",
+      "description": "Handle project-level configuration and analysis operations.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["get_context", "set_settings", "add_input_action", "add_autoload", "enable_plugin", "check_errors", "get_classes"],
+            "description": "Project operation to perform"
+          },
+          "context_type": {
+            "type": "string",
+            "enum": ["structure", "hierarchy", "find_scenes", "patterns"],
+            "description": "Context type for 'get_context' operation"
+          },
+          "project_root": {
+            "type": "string",
+            "description": "Project root path (optional, uses current project by default)"
+          },
+          "scene_path": {
+            "type": "string",
+            "description": "Scene path for 'hierarchy' context type"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Search pattern for 'find_scenes' context type"
+          },
+          "include_details": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include detailed analysis for 'get_context' operation"
+          },
+          "settings": {
+            "type": "object",
+            "description": "Project settings for 'set_settings' operation"
+          },
+          "action_name": {
+            "type": "string",
+            "description": "Input action name for 'add_input_action' operation"
+          },
+          "action_config": {
+            "type": "object",
+            "description": "Input action configuration"
+          },
+          "autoload_name": {
+            "type": "string",
+            "description": "Autoload name for 'add_autoload' operation"
+          },
+          "autoload_path": {
+            "type": "string",
+            "description": "Autoload script path for 'add_autoload' operation"
+          },
+          "plugin_name": {
+            "type": "string",
+            "description": "Plugin name for 'enable_plugin' operation"
+          },
+          "check_mode": {
+            "type": "string",
+            "enum": ["scripts", "output"],
+            "default": "scripts",
+            "description": "Error check mode for 'check_errors' operation"
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Specific file path for 'check_errors' operation"
+          },
+          "check_all": {
+            "type": "boolean",
+            "default": false,
+            "description": "Check all files for 'check_errors' operation"
+          }
+        },
+        "required": ["operation"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "universal_search_manager",
+      "description": "Handle all search operations including project search, documentation search, and asset search.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["project", "docs", "assets", "install_asset"],
+            "description": "Search operation to perform"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query"
+          },
+          "max_results": {
+            "type": "integer",
+            "default": 5,
+            "description": "Maximum number of results to return"
+          },
+          "include_graph": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include graph context for project search"
+          },
+          "search_mode": {
+            "type": "string",
+            "enum": ["semantic", "keyword", "hybrid", "auto"],
+            "default": "semantic",
+            "description": "Search mode for project and docs search"
+          },
+          "section_filter": {
+            "type": "string",
+            "enum": ["overview", "methods", "properties", "signals"],
+            "description": "Filter by documentation section"
+          },
+          "class_filter": {
+            "type": "string",
+            "description": "Filter by specific class for docs search"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["2d_tools", "3d_tools", "shaders", "materials", "tools", "scripts", "misc", "templates", "demos", "plugins"],
+            "description": "Asset category filter"
+          },
+          "godot_version": {
+            "type": "string",
+            "default": "4.3",
+            "description": "Godot version filter for asset search"
+          },
+          "asset_id": {
+            "type": "string",
+            "description": "Asset ID for install_asset operation"
+          },
+          "project_path": {
+            "type": "string",
+            "description": "Project path for install_asset operation"
+          },
+          "install_location": {
+            "type": "string",
+            "default": "addons/",
+            "description": "Installation location for install_asset operation"
+          }
+        },
+        "required": ["operation", "query"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "image_operation",
+      "description": "Dynamic image generation and editing. Specify which images to use as inputs, or leave empty for pure text generation. Perfect for: generating new images, editing specific uploaded images, combining multiple images, or modifying existing images.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Detailed description of the desired image or modification."
+          },
+          "images": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Array of image identifiers to use as inputs. Leave empty [] for pure text generation. Include specific image IDs when you want to edit/combine existing images from the conversation."
+          },
+          "style": {
+            "type": "string",
+            "description": "Art style (e.g., 'realistic', 'anime', 'pixel_art', 'cartoon', 'photographic')"
+          },
+          "path": {
+            "type": "string",
+            "description": "Path where to save the generated image (e.g., 'res://art/output.png')"
+          },
+          "size": {
+            "type": "string",
+            "description": "Image size (e.g., '1024x1024', '512x512')"
+          }
+        },
+        "required": ["description"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "slice_spritesheet",
+      "description": "Backend spritesheet slicer. Takes a sheet (base64 or path) and returns frames (row/col indexed) as base64 PNGs with robust auto-detection of grid/margins.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sheet_base64": {"type": "string", "description": "Base64-encoded PNG/JPG spritesheet (preferred)."},
+          "sheet_path": {"type": "string", "description": "Optional local path for dev; prefer sheet_base64."},
+          "tile_size": {"type": "string", "description": "Tile size 'WxH' (e.g., '32x32'). Optional if auto_detect."},
+          "grid": {"type": "string", "description": "Grid 'colsxrows' (e.g., '3x3'). Optional if auto_detect."},
+          "auto_detect": {"type": "boolean", "description": "Infer margins/spacing/grid from image content.", "default": true}
+        },
+        "required": ["sheet_base64"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "check_for_app_updates",
+      "description": "Check if a newer version of Orca Engine is available and show update notification to user",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "force_check": {
+            "type": "boolean",
+            "description": "Force immediate check even if recently checked",
+            "default": false
+          },
+          "show_notification": {
+            "type": "boolean", 
+            "description": "Show update popup to user if update is available",
+            "default": true
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_runtime_errors_summary",
+      "description": "Get a smart summary of runtime errors with deduplication. Essential for debugging game issues.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "include_warnings": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include warnings in addition to errors"
+          },
+          "file_filter": {
+            "type": "string",
+            "description": "Only show errors from a specific file (optional)"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_runtime_errors_detailed",
+      "description": "Get detailed runtime error information with smart filtering. Use after get_runtime_errors_summary.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "include_warnings": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include warnings in addition to errors"
+          },
+          "max_count": {
+            "type": "integer",
+            "default": 20,
+            "description": "Maximum number of errors to return"
+          },
+          "file_filter": {
+            "type": "string",
+            "description": "Only show errors from a specific file (optional)"
+          },
+          "message_contains": {
+            "type": "string",
+            "description": "Only show errors containing this text (optional)"
+          },
+          "group_duplicates": {
+            "type": "boolean",
+            "default": true,
+            "description": "Group identical errors and show frequency counts"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "take_screenshot",
+      "description": "Take a screenshot of the editor or running game. Essential for visual debugging.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "Filename for the screenshot",
+            "default": "screenshot_debug.png"
+          },
+          "target": {
+            "type": "string",
+            "enum": ["editor", "game", "both"],
+            "description": "What to capture: editor viewport, game viewport, or both",
+            "default": "editor"
+          },
+          "return_base64": {
+            "type": "boolean",
+            "description": "Return base64 data instead of saving to file",
+            "default": false
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "editor_introspect",
+      "description": "Advanced signal and scene inspection/manipulation. Essential for complex debugging.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": ["list_node_signals", "list_signal_connections", "connect_signal", "disconnect_signal", "rename_node", "refresh_resources"],
+            "description": "Introspection operation to perform"
+          },
+          "path": {
+            "type": "string",
+            "description": "Node path for most operations"
+          },
+          "signal_name": {
+            "type": "string",
+            "description": "Signal name for signal operations"
+          },
+          "target_path": {
+            "type": "string",
+            "description": "Target node path for connections"
+          },
+          "method": {
+            "type": "string",
+            "description": "Target method name for signal connections"
+          }
+        },
+        "required": ["operation"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "save_image_to_path",
+      "description": "Save a generated/attached image to a local path. Essential for image workflow.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "image_id": {
+            "type": "string",
+            "description": "The image identifier from conversation"
+          },
+          "path": {
+            "type": "string",
+            "description": "Destination file path (e.g., 'res://art/output.png')"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["png", "jpg", "jpeg"],
+            "description": "Image format",
+            "default": "png"
+          }
+        },
+        "required": ["image_id", "path"]
+      }
+    }
+  }
+]

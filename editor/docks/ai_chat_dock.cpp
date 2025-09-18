@@ -833,9 +833,11 @@ void AIChatDock::_notification(int p_notification) {
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			if (EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
 				String saved_model = EditorSettings::get_singleton()->get_setting("ai_chat/model");
-				// Basic validation - allow base models and any [FAST] models
-				bool is_valid = (saved_model == "gpt-5" || saved_model == "gpt-4o" || 
-								saved_model == "claude-4" || saved_model == "gemini-2.5" ||
+				// Basic validation - allow base models, thinking variants, and any [FAST] models
+				bool is_valid = (saved_model == "gpt-5" || saved_model == "gpt-5 (thinking)" ||
+								saved_model == "gpt-4o" || saved_model == "gpt-4o (thinking)" ||
+								saved_model == "claude-4" || saved_model == "claude-4 (thinking)" ||
+								saved_model == "gemini-2.5" || saved_model == "gemini-2.5 (thinking)" ||
 								saved_model.begins_with("[FAST] "));
 				if (!is_valid) {
 					saved_model = "gpt-5"; // Fallback to default model
