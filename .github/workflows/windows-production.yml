@@ -307,10 +307,10 @@ jobs:
             ${{ github.event.head_commit.message }}
 
             ---
-            **All builds completed**: Mac ✅ | Linux ✅ | Windows ✅${{ steps.sign_binary.outcome == 'success' && ' Signed' || ' Unsigned' }}
+            **Build completed**: Mac ⏳ | Linux ⏳ | Windows ✅${{ steps.sign_binary.outcome == 'success' && ' Signed' || ' Unsigned' }}
           files: |
             Orca (Windows).exe
-          draft: false
+          draft: true
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: false

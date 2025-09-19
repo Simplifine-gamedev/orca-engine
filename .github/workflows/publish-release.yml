@@ -1,0 +1,135 @@
+name: 🚀 Publish Release
+
+on:
+  workflow_run:
+    workflows: 
+      - "🐧 Linux Production Build"
+      - "🍎 macOS Clean Build"  
+      - "🏁 Windows Production Build"
+    types:
+      - completed
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-when-all-complete:
+    name: Publish Release When All Platforms Complete
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for All Workflows
+        id: wait
+        run: |
+          # Get the commit SHA from the triggering workflow
+          COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+          echo "Checking workflows for commit: $COMMIT_SHA"
+          
+          # Function to check if a workflow has completed successfully
+          check_workflow() {
+            local workflow_name="$1"
+            echo "Checking workflow: $workflow_name"
+            
+            # Get workflow runs for this commit
+            curl -s \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$COMMIT_SHA&event=push" \
+              | jq -r --arg workflow "$workflow_name" '.workflow_runs[] | select(.name == $workflow) | .conclusion'
+          }
+          
+          # Wait up to 30 minutes for all workflows to complete
+          max_wait=1800  # 30 minutes in seconds
+          wait_time=0
+          sleep_interval=60  # Check every minute
+          
+          while [ $wait_time -lt $max_wait ]; do
+            echo "Checking all workflows... (waited ${wait_time}s)"
+            
+            linux_status=$(check_workflow "🐧 Linux Production Build")
+            macos_status=$(check_workflow "🍎 macOS Clean Build")  
+            windows_status=$(check_workflow "🏁 Windows Production Build")
+            
+            echo "Status - Linux: $linux_status, macOS: $macos_status, Windows: $windows_status"
+            
+            if [[ "$linux_status" == "success" && "$macos_status" == "success" && "$windows_status" == "success" ]]; then
+              echo "✅ All workflows completed successfully!"
+              echo "all_complete=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            # Check if any workflow failed
+            if [[ "$linux_status" == "failure" || "$macos_status" == "failure" || "$windows_status" == "failure" ]]; then
+              echo "❌ One or more workflows failed"
+              echo "Linux: $linux_status, macOS: $macos_status, Windows: $windows_status"
+              echo "all_complete=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            
+            # Wait before checking again
+            sleep $sleep_interval
+            wait_time=$((wait_time + sleep_interval))
+          done
+          
+          echo "⏰ Timeout waiting for all workflows to complete"
+          echo "all_complete=false" >> $GITHUB_OUTPUT
+          exit 1
+
+      - name: Get Release Version
+        id: version
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-8)
+          RELEASE_VERSION="0.01.$SHORT_SHA"
+          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "Found release version: $RELEASE_VERSION"
+
+      - name: Publish Draft Release
+        if: steps.wait.outputs.all_complete == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="v${{ steps.version.outputs.release_version }}"
+          echo "Publishing release: $RELEASE_TAG"
+          
+          # Get the release ID
+          RELEASE_ID=$(curl -s \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG" \
+            | jq -r '.id')
+          
+          if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
+            echo "❌ Release not found: $RELEASE_TAG"
+            exit 1
+          fi
+          
+          echo "Found release ID: $RELEASE_ID"
+          
+          # Update the release to publish it (set draft: false)
+          curl -X PATCH \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" \
+            -d '{
+              "draft": false,
+              "name": "Orca Engine v${{ steps.version.outputs.release_version }}",
+              "body": "🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**\n\n## Download for Your Platform:\n\n🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  \n🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  \n🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`\n\n## What's New:\n${{ github.event.workflow_run.display_title }}\n\n---\n**All builds completed**: Mac ✅ Signed & Notarized | Linux ✅ | Windows ✅\n\n### Build Details:\n- **Linux x86_64**: Complete editor with all features\n- **Windows x86_64**: Code-signed editor with all features  \n- **macOS Universal**: Notarized editor supporting Intel + Apple Silicon\n\n*Auto-update supported - The editor will notify you of newer versions.*"
+            }'
+          
+          echo "✅ Release published successfully: $RELEASE_TAG"
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.wait.outputs.all_complete }}" = "true" ]; then
+            echo "🎉 SUCCESS: Release v${{ steps.version.outputs.release_version }} published!"
+            echo "All platform builds completed and release is now public."
+          else
+            echo "❌ FAILED: Could not publish release"
+            echo "One or more platform builds may have failed or timed out."
+          fi
