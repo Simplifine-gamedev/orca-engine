@@ -52,6 +52,7 @@
 #include "scene/gui/grid_container.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/rich_text_label.h"
+#include "scene/gui/scroll_container.h"
 #include "scene/gui/slider.h"
 #include "scene/gui/split_container.h"
 #include "editor/gui/editor_file_dialog.h"
@@ -3809,21 +3810,10 @@ void ScriptTextEditor::_create_diff_toolbar() {
 
 	HBoxContainer *toolbar_hbox = memnew(HBoxContainer);
 	toolbar_hbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	toolbar_hbox->set_custom_minimum_size(Size2(0, 36));
-	toolbar_hbox->add_theme_constant_override("separation", 12);
+	toolbar_hbox->set_custom_minimum_size(Size2(0, 40)); // Compact height for hunk buttons
+	toolbar_hbox->add_theme_constant_override("separation", 8);
 
-	// Info section
-	Label *label = memnew(Label);
-	label->set_text("Unified Diff View:");
-	label->add_theme_color_override("font_color", Color(0.8, 0.8, 0.8));
-	toolbar_hbox->add_child(label);
-
-	Label *instructions = memnew(Label);
-	instructions->set_text("Use buttons below to accept/reject individual hunks:");
-	instructions->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
-	instructions->add_theme_font_size_override("font_size", 12);
-	toolbar_hbox->add_child(instructions);
-
+	// Compact info section - no verbose labels, just legend
 	toolbar_hbox->add_spacer();
 
 	// Color legend
@@ -3843,11 +3833,20 @@ void ScriptTextEditor::_create_diff_toolbar() {
 	toolbar_hbox->add_child(legend);
 	toolbar_hbox->add_spacer();
 
-	// Create hunk buttons container INSIDE the main toolbar to avoid overlay
+	// Create hunk buttons container INSIDE a ScrollContainer to handle overflow
+	ScrollContainer *hunk_scroll = memnew(ScrollContainer);
+	hunk_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	hunk_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	hunk_scroll->set_custom_minimum_size(Size2(300, 0)); // More space for hunk buttons
+	
 	hunk_buttons_container = memnew(HBoxContainer);
 	hunk_buttons_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	hunk_buttons_container->add_theme_constant_override("separation", 8);
-	toolbar_hbox->add_child(hunk_buttons_container);
+	
+	hunk_scroll->add_child(hunk_buttons_container);
+	toolbar_hbox->add_child(hunk_scroll);
 	// Spacer to push Accept/Reject to the right edge
 	toolbar_hbox->add_spacer();
 
@@ -3903,7 +3902,7 @@ void ScriptTextEditor::_create_diff_toolbar() {
 
 	// Ensure toolbar can receive mouse events properly
 	toolbar_panel->set_mouse_filter(Control::MOUSE_FILTER_PASS);
-	toolbar_panel->set_custom_minimum_size(Size2(0, 60)); // Give it minimum height
+	toolbar_panel->set_custom_minimum_size(Size2(0, 45)); // Compact height
 	toolbar_panel->set_visible(false);
 	diff_toolbar = toolbar_panel;
 }
@@ -3952,10 +3951,7 @@ void ScriptTextEditor::_create_hunk_buttons() {
 		return;
 	}
 	
-	Label *hunk_label = memnew(Label);
-	hunk_label->set_text("Individual Hunks:");
-	hunk_label->add_theme_color_override("font_color", Color(0.8, 0.8, 0.8));
-	hunk_buttons_container->add_child(hunk_label);
+	// No label needed - buttons are self-explanatory
 	
 	// Create buttons for each hunk
 	for (int i = 0; i < diff_hunks.size(); i++) {
