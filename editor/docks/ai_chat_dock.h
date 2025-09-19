@@ -351,6 +351,8 @@ private:
   void _execute_apply_edit_async(const String &p_tool_call_id, const Dictionary &p_args);
   static void _apply_edit_thread(void *p_userdata);
   void _on_apply_edit_thread_done();
+  // Deferred frontend tool execution (for slow tools only)
+  void _execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str);
 	RichTextLabel *_get_or_create_current_assistant_message_label();
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);
@@ -410,6 +412,8 @@ private:
 
 	void _on_tool_file_link_pressed(const String &p_path);
 	String _convert_to_godot_path(const String &p_path);
+	String _generate_descriptive_tool_status(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result, bool p_success);
+	String _generate_executing_tool_message(const String &p_tool_name);
 
 	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
 	void _load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section);

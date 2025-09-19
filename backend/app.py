@@ -222,13 +222,14 @@ def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> t
         # Extract missing tool_call_ids from error message
         import re
         # Pattern matches: "The following tool_call_ids did not have response messages: tool_id1, tool_id2"
+        # Use the original error message (not lowercased) to preserve tool call ID case
         pattern = r"the following tool_call_ids did not have response messages:\s*([^\n]+)"
-        match = re.search(pattern, error_str, re.IGNORECASE)
+        match = re.search(pattern, str(error_message), re.IGNORECASE)
         
         if not match:
             return messages, False
         
-        # Parse the missing tool call IDs
+        # Parse the missing tool call IDs (preserve original case)
         missing_ids_str = match.group(1).strip()
         missing_tool_call_ids = [tid.strip() for tid in missing_ids_str.split(',')]
         
@@ -1892,14 +1893,247 @@ def check_for_app_updates_internal(arguments: dict) -> dict:
             "error": f"Update check failed: {str(e)}"
         }
 
+# --- New Consolidated Tool Handlers ---
+
+def project_manager_internal(arguments: dict) -> dict:
+    """Handle project_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+        
+        if op == "assets.search":
+            # Route to existing asset search function
+            search_args = {
+                'query': arguments.get('asset_query', ''),
+                'category': arguments.get('category'),
+                'max_results': arguments.get('max_results', 10),
+                'support_level': arguments.get('support_level', 'all'),
+                'godot_version': arguments.get('godot_version', '4.3'),
+                'sort_by': arguments.get('sort_by', 'rating'),
+                'sort_reverse': arguments.get('sort_reverse', False),
+                'asset_type': arguments.get('asset_type', 'any'),
+                'cost_filter': arguments.get('cost_filter', 'all')
+            }
+            return search_godot_assets_internal(search_args)
+            
+        elif op == "assets.install":
+            # Route to existing asset install function
+            install_args = {
+                'asset_id': arguments.get('asset_id'),
+                'project_path': arguments.get('project_path'),
+                'install_location': arguments.get('install_location', 'addons/'),
+                'create_backup': arguments.get('create_backup', True)
+            }
+            return install_godot_asset_internal(install_args)
+            
+        elif op == "updates.check":
+            # Route to existing update check function
+            update_args = {
+                'force_check': arguments.get('force_check', False),
+                'show_notification': arguments.get('show_notification', True)
+            }
+            return check_for_app_updates_internal(update_args)
+            
+        elif op in ["context.get", "fs.list", "fs.read", "fs.write", "fs.copy", "fs.move", 
+                   "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", "project.analyze_dir", 
+                   "project.copy_dir", "project.update_refs"]:
+            # These are frontend-only operations
+            return {
+                "success": False,
+                "frontend_only": True,
+                "message": f"Operation '{op}' is handled by the frontend. This should not be executed on the backend.",
+                "operation": op,
+                "arguments_to_forward": arguments
+            }
+            
+        else:
+            return {"success": False, "error": f"Unknown project_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"PROJECT_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Project manager operation failed: {str(e)}"}
+
+def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Handle search_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        if op == "project.search":
+            # Route to existing project search function
+            search_args = {
+                'query': arguments.get('query'),
+                'max_results': arguments.get('max_results', 5),
+                'include_graph': arguments.get('include_graph', True),
+                'modality_filter': arguments.get('modality_filter'),
+                'project_root': arguments.get('project_root'),
+                'project_id': arguments.get('project_id'),
+                'trace_dependencies': arguments.get('trace_dependencies', False),
+                'search_mode': arguments.get('search_mode', 'semantic')
+            }
+            return search_across_project_internal(search_args, current_user)
+            
+        elif op == "docs.search":
+            # Route to existing docs search function
+            docs_args = {
+                'query': arguments.get('query'),
+                'max_results': arguments.get('max_results', 5),
+                'section_filter': arguments.get('section_filter'),
+                'class_filter': arguments.get('class_filter'),
+                'difficulty': arguments.get('difficulty'),
+                'code_examples_only': arguments.get('code_examples_only', False)
+            }
+            return search_across_godot_docs_internal(docs_args)
+            
+        else:
+            return {"success": False, "error": f"Unknown search_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"SEARCH_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Search manager operation failed: {str(e)}"}
+
+def resource_manager_internal(arguments: dict, conversation_messages: list = None) -> dict:
+    """Handle resource_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        if op == "image.generate_or_edit":
+            # Route to existing image operation function
+            image_args = {
+                'description': arguments.get('description'),
+                'images': arguments.get('images', []),
+                'style': arguments.get('style'),
+                'size': arguments.get('size'),
+                'exact_size': arguments.get('exact_size'),
+                'tile_size': arguments.get('tile_size'),
+                'grid': arguments.get('grid'),
+                'resize_filter': arguments.get('resize_filter', 'lanczos'),
+                'path_to_save': arguments.get('path_to_save')
+            }
+            return image_operation_internal(image_args, conversation_messages)
+            
+        elif op == "image.slice_spritesheet":
+            # Route to existing spritesheet slicing function
+            slice_args = {
+                'sheet_base64': arguments.get('sheet_base64'),
+                'sheet_path': arguments.get('sheet_path'),
+                'tile_size': arguments.get('tile_size'),
+                'grid': arguments.get('grid'),
+                'margin': arguments.get('margin', 0),
+                'spacing': arguments.get('spacing', 0),
+                'auto_detect': arguments.get('auto_detect', True),
+                'bg_tolerance': arguments.get('bg_tolerance', 24),
+                'alpha_threshold': arguments.get('alpha_threshold', 1),
+                'tight_crop': arguments.get('tight_crop', True),
+                'padding': arguments.get('padding', 0),
+                'fuzzy': arguments.get('fuzzy', 2),
+                'normalize_to': arguments.get('normalize_to')
+            }
+            return slice_spritesheet_internal(slice_args)
+            
+        elif op in ["res.create", "res.inspect", "res.modify", "res.assign", "res.copy_from_template", 
+                   "res.refresh", "res.load_and_assign", "import.set_options", "import.reimport", "image.save"]:
+            # These are frontend-only operations
+            return {
+                "success": False,
+                "frontend_only": True,
+                "message": f"Operation '{op}' is handled by the frontend. This should not be executed on the backend.",
+                "operation": op,
+                "arguments_to_forward": arguments
+            }
+            
+        else:
+            return {"success": False, "error": f"Unknown resource_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"RESOURCE_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Resource manager operation failed: {str(e)}"}
+
+def scene_manager_internal(arguments: dict) -> dict:
+    """Handle scene_manager tool operations - all frontend-only"""
+    op = arguments.get('op', '')
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": f"All scene_manager operations are handled by the frontend. Operation '{op}' should not be executed on the backend.",
+        "operation": op,
+        "arguments_to_forward": arguments
+    }
+
+def script_manager_internal(arguments: dict) -> dict:
+    """Handle script_manager tool operations - all frontend-only"""
+    op = arguments.get('op', '')
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": f"All script_manager operations are handled by the frontend. Operation '{op}' should not be executed on the backend.",
+        "operation": op,
+        "arguments_to_forward": arguments
+    }
+
+def settings_manager_internal(arguments: dict) -> dict:
+    """Handle settings_manager tool operations - all frontend-only"""
+    op = arguments.get('op', '')
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": f"All settings_manager operations are handled by the frontend. Operation '{op}' should not be executed on the backend.",
+        "operation": op,
+        "arguments_to_forward": arguments
+    }
+
+def runtime_manager_internal(arguments: dict) -> dict:
+    """Handle runtime_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        if op in ["game.start", "game.stop", "game.status", "errors.summary", "errors.details"]:
+            # These are frontend-only operations
+            return {
+                "success": False,
+                "frontend_only": True,
+                "message": f"Operation '{op}' is handled by the frontend. This should not be executed on the backend.",
+                "operation": op,
+                "arguments_to_forward": arguments
+            }
+            
+        else:
+            return {"success": False, "error": f"Unknown runtime_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"RUNTIME_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Runtime manager operation failed: {str(e)}"}
+
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
-    if function_name == "image_operation":
+    # New consolidated tools
+    if function_name == "project_manager":
+        return project_manager_internal(arguments)
+    elif function_name == "scene_manager":
+        return scene_manager_internal(arguments)
+    elif function_name == "script_manager":
+        return script_manager_internal(arguments)
+    elif function_name == "resource_manager":
+        return resource_manager_internal(arguments)
+    elif function_name == "settings_manager":
+        return settings_manager_internal(arguments)
+    elif function_name == "search_manager":
+        return search_manager_internal(arguments, None)
+    elif function_name == "runtime_manager":
+        return runtime_manager_internal(arguments)
+    # Legacy individual tools (maintain backward compatibility)
+    elif function_name == "image_operation":
         return image_operation_internal(arguments)
     elif function_name == "asset_processor":
         return process_asset_internal(arguments)
     elif function_name == "search_across_project":
-        return search_across_project_internal(arguments)
+        return search_across_project_internal(arguments, None)
     elif function_name == "search_across_godot_docs":
         return search_across_godot_docs_internal(arguments)
     elif function_name == "search_godot_assets":
@@ -2366,14 +2600,13 @@ def chat():
                                     "text": clean_msg['content']
                                 })
                             
-                            # Add ONLY the first image
+                            # Add ONLY the first image - but NEVER include base64 to prevent context explosion
                             if len(images) > 0 and images[0].get('base64_data'):
                                 img = images[0]
+                                # CRITICAL FIX: Replace base64 with small placeholder to prevent 500k+ char explosion
                                 content_array.append({
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{img.get('mime_type', 'image/png')};base64,{img['base64_data']}"
-                                    }
+                                    "type": "text",
+                                    "text": f"[Image: {img.get('name', 'attached_image')} - {img.get('mime_type', 'image/png')} - available for reference]"
                                 })
                                 recent_images.append(img.get('name', 'recent_image'))
                             
@@ -2681,34 +2914,56 @@ def chat():
 
                 # Now that we've processed all chunks, handle the results
 
-                # --- Backend-Only Tool Execution (Image Generation + Search + Docs) ---
-                backend_tools_detected = [
-                    func.get("name")
-                    for func in tool_call_aggregator.values()
-                    if func.get("name") in [
-                        "image_operation",
-                        "search_across_project",
-                        "search_across_godot_docs",
-                        "slice_spritesheet",
-                        "search_godot_assets",
-                        "install_godot_asset",
-                        "generate_3d_model",
-                        # Note: Game testing tools are frontend-only, not backend
-                    ]
-                ]
-                print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
+                # --- Smart Backend Tool Detection ---
+                def _needs_backend_processing(func_name: str, func_args: str) -> bool:
+                    """Determine if a tool call needs backend processing based on the operation"""
+                    # Legacy individual tools - always backend
+                    if func_name in ["image_operation", "search_across_project", "search_across_godot_docs", 
+                                   "slice_spritesheet", "search_godot_assets", "install_godot_asset", "generate_3d_model"]:
+                        return True
+                    
+                    # Parse arguments to check operation
+                    try:
+                        import json
+                        args = json.loads(func_args) if func_args else {}
+                        op = args.get('op', '')
+                        
+                        # project_manager: only specific operations need backend
+                        if func_name == "project_manager":
+                            return op in ["assets.search", "assets.install", "updates.check"]
+                        
+                        # search_manager: both operations need backend  
+                        elif func_name == "search_manager":
+                            return op in ["project.search", "docs.search"]
+                        
+                        # resource_manager: only image operations need backend
+                        elif func_name == "resource_manager":
+                            return op in ["image.generate_or_edit", "image.slice_spritesheet"]
+                        
+                        # All other tools are frontend-only
+                        return False
+                        
+                    except Exception as e:
+                        print(f"BACKEND_DETECTION_ERROR: Failed to parse {func_name} args: {e}")
+                        # Conservative: if we can't parse, assume frontend
+                        return False
                 
-                # Identify backend-only tools strictly; ignore frontend tools here
-                backend_only_names = [
-                    "image_operation",
-                    "search_across_project",
-                    "search_across_godot_docs",
-                    "slice_spritesheet",
-                    "search_godot_assets",
-                    "install_godot_asset",
-                    "generate_3d_model",
-                ]
-                backend_calls = {k: v for k, v in tool_call_aggregator.items() if v.get("name") in backend_only_names}
+                # Detect tools that actually need backend processing
+                backend_tools_detected = []
+                backend_calls = {}
+                
+                for k, func in tool_call_aggregator.items():
+                    func_name = func.get("name", "")
+                    func_args = func.get("arguments", "")
+                    
+                    if _needs_backend_processing(func_name, func_args):
+                        backend_tools_detected.append(func_name)
+                        backend_calls[k] = func
+                        print(f"BACKEND_DETECTION: {func_name} needs backend processing")
+                    else:
+                        print(f"BACKEND_DETECTION: {func_name} will be handled by frontend")
+                
+                print(f"BACKEND_DETECTION: {len(backend_calls)} tools need backend processing: {backend_tools_detected}")
                 
                 # Simple guardrails to prevent infinite repeated backend calls
                 # Build a canonical cache key from tool name and normalized arguments
@@ -3232,6 +3487,147 @@ def chat():
                                 "role": "tool",
                                 "name": "check_for_app_updates",
                                 "content": json.dumps(update_summary)
+                            })
+                        
+                        elif func["name"] == "project_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "project_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"])
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            
+                            # Inject project_root/project_path from Flask context if not provided
+                            if not arguments.get('project_root') and not arguments.get('project_path') and hasattr(g, 'project_root') and g.project_root:
+                                arguments['project_root'] = g.project_root
+                                arguments['project_path'] = g.project_root  # Some operations expect project_path
+                                print(f"PROJECT_MANAGER: Injected project_root from Flask context: {g.project_root}")
+                            
+                            pm_result = project_manager_internal(arguments)
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "project_manager",
+                                "tool_result": pm_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "project_manager",
+                                "content": json.dumps(pm_result)
+                            })
+                        
+                        elif func["name"] == "search_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "search_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"])
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            
+                            # Inject project_root from Flask context if not provided
+                            if not arguments.get('project_root') and hasattr(g, 'project_root') and g.project_root:
+                                arguments['project_root'] = g.project_root
+                                print(f"SEARCH_MANAGER: Injected project_root from Flask context: {g.project_root}")
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_search_manager():
+                                try:
+                                    _tool_result_holder["result"] = search_manager_internal(arguments, user)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_search_manager, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during search_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            sm_result = _tool_result_holder["result"] or {"success": False, "error": "search_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "search_manager",
+                                "tool_result": sm_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "search_manager",
+                                "content": json.dumps(sm_result)
+                            })
+                        
+                        elif func["name"] == "resource_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "resource_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"])
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            
+                            # Execute resource_manager with threading support for image operations
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_resource_mgr():
+                                try:
+                                    _tool_result_holder["result"] = resource_manager_internal(arguments, conversation_messages)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_resource_mgr, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during resource_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.1)
+                            rm_result = _tool_result_holder["result"] or {"success": False, "error": "resource_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "resource_manager",
+                                "tool_result": rm_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "resource_manager",
+                                "content": json.dumps(rm_result)
                             })
                 
                     # Add the assistant's decision to call the tool to history

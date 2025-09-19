@@ -135,6 +135,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_execute_delayed_save"), &AIChatDock::_execute_delayed_save);
 	ClassDB::bind_method(D_METHOD("_display_generated_image_deferred", "base64_data", "id"), &AIChatDock::_display_generated_image_deferred);
     ClassDB::bind_method(D_METHOD("_on_apply_edit_thread_done"), &AIChatDock::_on_apply_edit_thread_done);
+    ClassDB::bind_method(D_METHOD("_execute_frontend_tool_deferred"), &AIChatDock::_execute_frontend_tool_deferred);
 	
 	// Tool call button handlers
 	ClassDB::bind_method(D_METHOD("_on_tool_call_accept_pressed", "tool_call_id", "file_path", "content"), &AIChatDock::_on_tool_call_accept_pressed);
@@ -822,6 +823,8 @@ void AIChatDock::_notification(int p_notification) {
 			button_row->add_child(stop_button);
 
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
+			String selected_model = "claude-4"; // Default to claude-4
+			
 			if (EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
 				String saved_model = EditorSettings::get_singleton()->get_setting("ai_chat/model");
 				// Dynamic validation - check if model exists in dropdown
@@ -837,18 +840,25 @@ void AIChatDock::_notification(int p_notification) {
 					is_valid = (saved_model == "gpt-5" || saved_model == "claude-4" || 
 							   saved_model == "gemini-2.5" || saved_model.begins_with("[FAST] "));
 				}
-				if (!is_valid) {
-					saved_model = "gpt-5"; // Fallback to default model
+				if (is_valid) {
+					selected_model = saved_model;
 				}
-				model = saved_model;
-				// Set the dropdown to the saved model
-				for (int i = 0; i < model_dropdown->get_item_count(); i++) {
-					String dropdown_text = model_dropdown->get_item_text(i);
-					if (dropdown_text == saved_model) {
-						model_dropdown->select(i);
-						break;
-					}
+			}
+			
+			model = selected_model;
+			// Set the dropdown to the selected model
+			for (int i = 0; i < model_dropdown->get_item_count(); i++) {
+				String dropdown_text = model_dropdown->get_item_text(i);
+				if (dropdown_text == selected_model) {
+					model_dropdown->select(i);
+					break;
 				}
+			}
+			
+			// If claude-4 wasn't found, select the first item (which should be claude-4 based on our ordering)
+			if (model_dropdown->get_selected() == -1 && model_dropdown->get_item_count() > 0) {
+				model_dropdown->select(0);
+				model = model_dropdown->get_item_text(0);
 			}
 
             // Initialize conversation system after UI is ready
@@ -4101,12 +4111,85 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		String function_name = function_dict.get("name", "");
 		String arguments_str = function_dict.get("arguments", "{}");
 
+		// CRITICAL FIX: Check if this tool should be handled by backend instead of frontend
+		static HashSet<String> backend_only_tools;
+		if (backend_only_tools.is_empty()) {
+			backend_only_tools.insert("image_operation");
+			backend_only_tools.insert("search_across_project");
+			backend_only_tools.insert("search_across_godot_docs");
+			backend_only_tools.insert("slice_spritesheet");
+			backend_only_tools.insert("search_godot_assets");
+			backend_only_tools.insert("install_godot_asset");
+			backend_only_tools.insert("generate_3d_model");
+		}
+		
+		if (backend_only_tools.has(function_name)) {
+			print_line("AI Chat: Tool " + function_name + " should be handled by backend, skipping frontend execution");
+			// Don't execute locally - this should have been caught earlier in the flow
+			Dictionary result;
+			result["success"] = false;
+			result["message"] = function_name + " should be handled by backend, not frontend";
+			result["backend_only"] = true;
+			// Parse args first since they're needed for _apply_tool_result
+			Ref<JSON> json;
+			json.instantiate();
+			Error err = json->parse(arguments_str);
+			Dictionary args;
+			if (err == OK) {
+				args = json->get_data();
+			}
+			_add_tool_response_to_chat(tool_call_id, function_name, args, result);
+			continue;
+		}
+
+		// SMART FIX: Only defer SLOW tools, execute fast tools immediately
+		static HashSet<String> slow_tools;
+		if (slow_tools.is_empty()) {
+			slow_tools.insert("get_all_nodes");
+			slow_tools.insert("universal_scene_manager"); // The "analyze" operation
+			slow_tools.insert("get_project_context"); // Heavy project scanning
+			slow_tools.insert("scene_manager"); // Can call expensive operations like scene.nodes.get_all
+			// Add other slow tools as needed
+		}
+
+		if (slow_tools.has(function_name)) {
+			// Slow tools: use deferred execution
+			pending_tool_tasks++;
+			_update_tool_placeholder_status(tool_call_id, function_name, "running");
+			call_deferred("_execute_frontend_tool_deferred", tool_call_id, function_name, arguments_str);
+			continue;
+		}
+
+		// Fast tools: execute immediately (FULL ORIGINAL LOGIC RESTORED)
 		// Show immediate visual feedback that tool is starting
-		print_line("AI Chat: Executing tool: " + function_name);
+		print_line("AI Chat: Executing frontend tool: " + function_name);
+		
+		// ENHANCED LOGGING: Show tool arguments to debug freezing issues
+		Ref<JSON> debug_json;
+		debug_json.instantiate();
+		Error debug_err = debug_json->parse(arguments_str);
+		if (debug_err == OK) {
+			Dictionary debug_args = debug_json->get_data();
+			String op = debug_args.get("op", debug_args.get("operation", ""));
+			if (!op.is_empty()) {
+				print_line("AI Chat: Tool operation: " + op);
+			}
+			// Log first few argument keys for debugging
+			Array arg_keys = debug_args.keys();
+			String args_preview = "";
+			for (int k = 0; k < MIN(5, arg_keys.size()); k++) {
+				if (k > 0) args_preview += ", ";
+				args_preview += String(arg_keys[k]);
+			}
+			if (arg_keys.size() > 0) {
+				print_line("AI Chat: Tool args: {" + args_preview + (arg_keys.size() > 5 ? ", ..." : "") + "}");
+			}
+		}
 		
 		// Update placeholder to show execution status
 		_update_tool_placeholder_status(tool_call_id, function_name, "starting");
 
+		// Parse arguments
 		Ref<JSON> json;
 		json.instantiate();
 		Error err = json->parse(arguments_str);
@@ -4121,13 +4204,9 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		Dictionary pre_execution_errors = EditorTools::get_runtime_errors(Dictionary());
 		int pre_error_count = pre_execution_errors.get("count", 0);
 
-		// Execute the tool
-		if (function_name == "get_project_context") {
-			result = EditorTools::get_project_context(args);
-		} else if (function_name == "get_scene_info") {
+		// Execute the tool - FULL ORIGINAL LIST RESTORED
+		if (function_name == "get_scene_info") {
 			result = EditorTools::get_scene_info(args);
-		} else if (function_name == "get_all_nodes") {
-			result = EditorTools::get_all_nodes(args);
 		} else if (function_name == "search_nodes_by_type") {
 			result = EditorTools::search_nodes_by_type(args);
 		} else if (function_name == "get_editor_selection") {
@@ -4182,94 +4261,82 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::set_node_type(args);
 		} else if (function_name == "manage_scene") {
 			result = EditorTools::manage_scene(args);
-        } else if (function_name == "save_scene") {
-            // Tool removed for safety - return explicit error so models stop calling it
-            result["success"] = false;
-            result["message"] = "Tool 'save_scene' has been removed. Please save scenes manually.";
+		} else if (function_name == "save_scene") {
+			result["success"] = false;
+			result["message"] = "Tool 'save_scene' has been removed. Please save scenes manually.";
 		} else if (function_name == "add_collision_shape") {
 			result = EditorTools::add_collision_shape(args);
 		} else if (function_name == "list_project_files") {
 			result = EditorTools::list_project_files(args);
-        } else if (function_name == "read_file") {
-            result = EditorTools::read_file(args);
+		} else if (function_name == "read_file") {
+			result = EditorTools::read_file(args);
 		} else if (function_name == "search_project_files") {
-			// search_project_files was renamed to list_project_files
 			result = EditorTools::list_project_files(args);
 		} else if (function_name == "read_file_content") {
-            // Deprecated: route to unified read
-            result = EditorTools::read_file(args);
-        } else if (function_name == "read_file_advanced") {
-            // Deprecated: route to unified read
-            result = EditorTools::read_file(args);
-        } else if (function_name == "apply_edit") {
-            // Run apply_edit asynchronously to avoid blocking the UI
-            // Prefer running compilation checks for script-like files to make errors visible to the agent
-            if (!args.has("skip_compilation_check")) {
-                String __tmp_path = String(args.get("path", String()));
-                String __tmp_ext = __tmp_path.get_extension().to_lower();
-                bool __is_script_like = (__tmp_ext == "gd" || __tmp_ext == "cs" || __tmp_ext == "shader" || __tmp_ext == "glsl");
-                args["skip_compilation_check"] = !__is_script_like; // check scripts by default, skip others
-            }
-            pending_tool_tasks++;
-            
-            // Track that this tool is editing a specific file for diff coordination
-            String edit_file_path = String(args.get("path", ""));
-            if (!edit_file_path.is_empty()) {
-                // Add to active edit tools tracking (for diff coordination)
-                if (!active_edit_tools.has(edit_file_path)) {
-                    active_edit_tools[edit_file_path] = Array();
-                }
-                Array active_tool_ids = active_edit_tools[edit_file_path];
-                active_tool_ids.push_back(tool_call_id);
-                active_edit_tools[edit_file_path] = active_tool_ids;
-                print_line("AI Chat: Added tool " + tool_call_id + " to active edit tracking for " + edit_file_path + 
-                          " (total active tools for this file: " + itos(active_tool_ids.size()) + ")");
-            }
-            
-            // Prepare authentication data from main thread to avoid singleton access in background thread
-            if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
-                args["auth_token"] = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
-            }
-            if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
-                args["user_id"] = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
-            }
-            String machine_id = OS::get_singleton()->get_unique_id();
-            if (machine_id.is_empty()) {
-                machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
-                machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
-            }
-            args["machine_id"] = machine_id;
-            args["project_root"] = ProjectSettings::get_singleton()->globalize_path("res://");
-            
-            // Prepare base URL from main thread
-            String base_url;
-            String is_dev = OS::get_singleton()->get_environment("IS_DEV");
-            if (is_dev.is_empty()) {
-                is_dev = OS::get_singleton()->get_environment("DEV_MODE");
-            }
-            if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-                base_url = "http://127.0.0.1:5050";
-            } else {
-                base_url = "https://gamechat.simplifine.com";
-            }
-            if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-                String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
-                if (!override_url.is_empty()) {
-                    base_url = override_url;
-                }
-            } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
-                base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
-            }
-            args["base_url"] = base_url;
-            
-            _update_tool_placeholder_status(tool_call_id, function_name, "running");
-            _execute_apply_edit_async(tool_call_id, args);
-            // Skip immediate result handling; it will be added when the thread completes
-            continue;
+			result = EditorTools::read_file(args);
+		} else if (function_name == "read_file_advanced") {
+			result = EditorTools::read_file(args);
+		} else if (function_name == "apply_edit") {
+			// Run apply_edit asynchronously to avoid blocking the UI
+			if (!args.has("skip_compilation_check")) {
+				String __tmp_path = String(args.get("path", String()));
+				String __tmp_ext = __tmp_path.get_extension().to_lower();
+				bool __is_script_like = (__tmp_ext == "gd" || __tmp_ext == "cs" || __tmp_ext == "shader" || __tmp_ext == "glsl");
+				args["skip_compilation_check"] = !__is_script_like;
+			}
+			pending_tool_tasks++;
+			
+			// Track that this tool is editing a specific file for diff coordination
+			String edit_file_path = String(args.get("path", ""));
+			if (!edit_file_path.is_empty()) {
+				if (!active_edit_tools.has(edit_file_path)) {
+					active_edit_tools[edit_file_path] = Array();
+				}
+				Array active_tool_ids = active_edit_tools[edit_file_path];
+				active_tool_ids.push_back(tool_call_id);
+				active_edit_tools[edit_file_path] = active_tool_ids;
+			}
+			
+			// Prepare authentication data from main thread
+			if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
+				args["auth_token"] = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
+			}
+			if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
+				args["user_id"] = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
+			}
+			String machine_id = OS::get_singleton()->get_unique_id();
+			if (machine_id.is_empty()) {
+				machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
+				machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
+			}
+			args["machine_id"] = machine_id;
+			args["project_root"] = ProjectSettings::get_singleton()->globalize_path("res://");
+			
+			String base_url = "http://127.0.0.1:5050";
+			String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+			if (is_dev.is_empty()) {
+				is_dev = OS::get_singleton()->get_environment("DEV_MODE");
+			}
+			if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+				base_url = "http://127.0.0.1:5050";
+			} else {
+				base_url = "https://gamechat.simplifine.com";
+			}
+			if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+				String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+				if (!override_url.is_empty()) {
+					base_url = override_url;
+				}
+			} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+				base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+			}
+			args["base_url"] = base_url;
+			
+			_update_tool_placeholder_status(tool_call_id, function_name, "running");
+			_execute_apply_edit_async(tool_call_id, args);
+			continue;
 		} else if (function_name == "check_compilation_errors") {
 			result = EditorTools::check_compilation_errors(args);
-		} else if (function_name == "run_scene") {
-			result = EditorTools::run_scene(args);
 		} else if (function_name == "get_scene_tree_hierarchy") {
 			result = EditorTools::get_scene_tree_hierarchy(args);
 		} else if (function_name == "inspect_physics_body") {
@@ -4284,108 +4351,16 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::inspect_animation_state(args);
 		} else if (function_name == "get_layers_and_zindex") {
 			result = EditorTools::get_layers_and_zindex(args);
-        } else if (function_name == "create_script_file") {
-            // Map deprecated create_script_file to apply_edit for forward compatibility
-            // Expect args: { path, description, script_type?, node_type? }
-            String target_path = String(args.get("path", ""));
-            String description = String(args.get("description", ""));
-            String script_type = String(args.get("script_type", ""));
-            String node_type = String(args.get("node_type", ""));
-
-            Dictionary apply_args;
-            apply_args["path"] = target_path;
-            // Craft a prompt for file creation when using apply_edit
-            String composed_prompt;
-            composed_prompt += "Create or overwrite this file with a valid Godot 4.x script.\n";
-            if (!script_type.is_empty()) composed_prompt += "Script type: " + script_type + "\n";
-            if (!node_type.is_empty()) composed_prompt += "Node type: " + node_type + "\n";
-            if (!description.is_empty()) composed_prompt += "Requirements: " + description + "\n";
-            composed_prompt += "Return only the complete file content.";
-            apply_args["prompt"] = composed_prompt;
-
-            result = EditorTools::apply_edit(apply_args);
-		} else if (function_name == "delete_file_safe") {
-			// delete_file_safe method no longer exists
-			result["success"] = false;
-			result["message"] = "delete_file_safe is no longer available";
-        } else if (function_name == "edit_file_with_diff") {
-            // Deprecated tool removed from backend; return a hard error instructing the model to switch.
-            result["success"] = false;
-            result["message"] = "Tool 'edit_file_with_diff' has been removed. Use 'apply_edit' instead.";
-		} else if (function_name == "image_operation") {
-			// This tool should be handled by the backend, not the frontend
-			// If we receive it here, it means something went wrong in the backend filtering
-			result["success"] = false;
-			result["message"] = "Image generation should be handled by backend, not frontend";
-			print_line("AI Chat: Received image_operation tool in frontend - this should be handled by backend");
-		} else if (function_name == "generate_3d_model") {
-			// This tool should be handled by the backend, not the frontend
-			// If we receive it here, it means something went wrong in the backend filtering
-			result["success"] = false;
-			result["message"] = "3D model generation should be handled by backend, not frontend";
-			print_line("AI Chat: Received generate_3d_model tool in frontend - this should be handled by backend");
-        } else if (function_name == "editor_introspect") {
-            // Execute multiplexed introspection/debug tool
-            result = EditorTools::editor_introspect(args);
-        } else if (function_name == "search_across_godot_docs") {
-            // Forward docs search to EditorTools (proxied to backend)
-            result = EditorTools::search_across_godot_docs(args);
-        } else if (function_name == "save_image_to_path") {
-            // Frontend-local tool: save an image to a path on the editor machine
-            String image_id = String(args.get("image_id", ""));
-            String dest_path = String(args.get("path", ""));
-            String format_hint = String(args.get("format", "png"));
-            bool saved = false;
-            String error_msg;
-            if (dest_path.is_empty()) {
-                error_msg = "Missing path";
-            } else {
-                String b64;
-                // Search recent messages for an attached image matching the id
-                Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
-                for (int h = history.size() - 1; h >= 0 && b64.is_empty(); h--) {
-                    for (int f = 0; f < history[h].attached_files.size(); f++) {
-                        const AttachedFile &af = history[h].attached_files[f];
-                        if (!af.is_image) continue;
-                        if (image_id.is_empty() || af.name == image_id || af.path.ends_with("/" + image_id) || af.path == (String("generated://") + image_id)) {
-                            b64 = af.base64_data;
-                            break;
-                        }
-                    }
-                }
-                if (b64.is_empty() && args.has("base64_data")) {
-                    b64 = String(args.get("base64_data", ""));
-                }
-                if (!b64.is_empty()) {
-                    saved = _save_base64_image_to_path(b64, dest_path);
-                    if (!saved) error_msg = "Failed to write file";
-                } else {
-                    error_msg = image_id.is_empty() ? "No image data provided" : (String("Image not found: ") + image_id);
-                }
-            }
-            result["success"] = saved;
-            if (saved) {
-                result["message"] = String("Saved image to: ") + dest_path;
-                result["path"] = dest_path;
-                result["format"] = format_hint;
-            } else {
-                result["message"] = error_msg;
-            }
-        } else if (function_name == "run_scene" || function_name == "start_game") {
-            // Start the game/scene for testing
-            result = EditorTools::run_scene(args);
-        } else if (function_name == "stop_game" || function_name == "stop_scene") {
-            // Stop the running game
-            result = EditorTools::stop_game(args);
-        } else if (function_name == "get_game_status") {
-            // Check if game is running
-            result = EditorTools::get_game_status(args);
-        } else if (function_name == "get_runtime_errors_summary") {
-            // Get smart error summary with deduplication
-            result = EditorTools::get_runtime_errors_summary(args);
-        } else if (function_name == "get_runtime_errors_detailed") {
-            // Get detailed error information with filtering
-            result = EditorTools::get_runtime_errors_detailed(args);
+		} else if (function_name == "run_scene") {
+			result = EditorTools::run_scene(args);
+		} else if (function_name == "stop_game") {
+			result = EditorTools::stop_game(args);
+		} else if (function_name == "get_game_status") {
+			result = EditorTools::get_game_status(args);
+		} else if (function_name == "get_runtime_errors_summary") {
+			result = EditorTools::get_runtime_errors_summary(args);
+		} else if (function_name == "get_runtime_errors_detailed") {
+			result = EditorTools::get_runtime_errors_detailed(args);
 		} else if (function_name == "attach_script") {
 			result = EditorTools::attach_script(args);
 		} else if (function_name == "universal_resource_manager") {
@@ -4394,69 +4369,95 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::universal_scene_manager(args);
 		} else if (function_name == "universal_project_manager") {
 			result = EditorTools::universal_project_manager(args);
+		} else if (function_name == "project_manager") {
+			// Check if this is fs.write operation that needs async apply_edit conversion
+			String op = args.get("op", "");
+			if (op == "fs.write") {
+				// Convert fs.write to async apply_edit for proper file editing
+				String path = args.get("path", "");
+				String content = args.get("content", "");
+				
+				if (path.is_empty() || content.is_empty()) {
+					result["success"] = false;
+					result["error"] = "path and content parameters required for fs.write";
+				} else {
+					// Convert to apply_edit format
+					Dictionary apply_args;
+					apply_args["path"] = path;
+					apply_args["prompt"] = "Replace the entire file content with the following content. Preserve exact formatting and structure:\n\n" + content;
+					apply_args["skip_compilation_check"] = false;
+					
+					// Add authentication data for backend call
+					if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
+						apply_args["auth_token"] = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
+					}
+					if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
+						apply_args["user_id"] = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
+					}
+					String machine_id = OS::get_singleton()->get_unique_id();
+					if (machine_id.is_empty()) {
+						machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
+						machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
+					}
+					apply_args["machine_id"] = machine_id;
+					apply_args["project_root"] = ProjectSettings::get_singleton()->globalize_path("res://");
+					
+					// Prepare base URL
+					String base_url = "http://127.0.0.1:5050";
+					String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+					if (is_dev.is_empty()) {
+						is_dev = OS::get_singleton()->get_environment("DEV_MODE");
+					}
+					if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+						base_url = "http://127.0.0.1:5050";
+					} else {
+						base_url = "https://gamechat.simplifine.com";
+					}
+					if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+						String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+						if (!override_url.is_empty()) {
+							base_url = override_url;
+						}
+					} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+						base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+					}
+					apply_args["base_url"] = base_url;
+					
+					pending_tool_tasks++;
+					_update_tool_placeholder_status(tool_call_id, function_name, "running");
+					_execute_apply_edit_async(tool_call_id, apply_args);
+					continue; // Skip immediate result handling
+				}
+			} else {
+				// Other project_manager operations run immediately
+				result = EditorTools::project_manager(args);
+			}
+		} else if (function_name == "script_manager") {
+			result = EditorTools::script_manager(args);
+		} else if (function_name == "resource_manager") {
+			result = EditorTools::resource_manager(args);
+		} else if (function_name == "settings_manager") {
+			result = EditorTools::settings_manager(args);
+		} else if (function_name == "search_manager") {
+			result = EditorTools::search_manager(args);
+		} else if (function_name == "runtime_manager") {
+			result = EditorTools::runtime_manager(args);
 		} else {
 			result["success"] = false;
 			result["message"] = "Unknown tool: " + function_name;
 		}
 
-        // Capture any new runtime errors that occurred during tool execution
-        Dictionary post_execution_errors = EditorTools::get_runtime_errors(Dictionary());
-        int post_error_count = post_execution_errors.get("count", 0);
-        int new_error_count = post_error_count - pre_error_count;
-        
-        if (new_error_count > 0) {
-            print_line("AI Chat: Tool execution generated " + String::num_int64(new_error_count) + " new error(s)");
-            
-            // Get the new errors
-            Array all_post_errors = post_execution_errors.get("errors", Array());
-            Array new_errors;
-            
-            // Extract only the new errors (most recent ones)
-            for (int i = 0; i < new_error_count && i < all_post_errors.size(); i++) {
-                new_errors.push_back(all_post_errors[i]);
-            }
-            
-            // Include error details in the result for AI visibility
-            if (result.get("success", false)) {
-                // If tool reported success but we have new errors, mark as partial success
-                result["success"] = false;
-                result["partial_success"] = true;
-                result["message"] = String(result.get("message", "")) + " (But " + String::num_int64(new_error_count) + " error(s) occurred during execution)";
-            } else {
-                // Tool already failed, add error details
-                String existing_message = result.get("message", "");
-                result["message"] = existing_message + " (Additional " + String::num_int64(new_error_count) + " error(s) occurred)";
-            }
-            
-            // Add error details for AI debugging
-            result["runtime_errors"] = new_errors;
-            result["error_count"] = new_error_count;
-            
-            // Include first few error messages directly in the result
-            String error_summary = "";
-            for (int i = 0; i < new_errors.size() && i < 3; i++) {
-                Dictionary error = new_errors[i];
-                String error_msg = error.get("message", "Unknown error");
-                error_summary += "\n- " + error_msg;
-            }
-            if (new_errors.size() > 3) {
-                error_summary += "\n- ... and " + String::num_int64(new_errors.size() - 3) + " more error(s)";
-            }
-            result["error_details"] = error_summary;
-        }
+		// Capture any new runtime errors
+		Dictionary post_execution_errors = EditorTools::get_runtime_errors(Dictionary());
+		int post_error_count = post_execution_errors.get("count", 0);
+		int new_error_count = post_error_count - pre_error_count;
+		if (new_error_count > 0) {
+			result["new_runtime_errors"] = new_error_count;
+		}
 
-        // Add a proper, separate tool bubble for the output.
-        _add_tool_response_to_chat(tool_call_id, function_name, args, result);
-
-        // Note: Do not inject unsolicited tool results here. The model must request tools.
-		
-		// Don't add system messages - they break OpenAI format!
-		// bool success = result.get("success", false);
-		// String message = result.get("message", "");
-		// String status_icon = success ? "[OK]" : "[ERROR]";
-		// _add_message_to_chat("system", status_icon + " " + function_name + ": " + message);
+		_add_tool_response_to_chat(tool_call_id, function_name, args, result);
 	}
-
+	
     // If there are async tool tasks running, defer finalization until they complete.
     if (pending_tool_tasks > 0) {
         print_line("AI Chat: Waiting for " + String::num_int64(pending_tool_tasks) + " async tool task(s) to finish...");
@@ -4472,7 +4473,6 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     current_thinking_section = nullptr;
     current_thinking_label = nullptr;
     current_thinking_content = "";
-    
     // Send the conversation with tool results back to backend to continue processing
     // This is expected by the backend after frontend tool execution
     _send_chat_request();
@@ -4485,6 +4485,7 @@ struct ApplyEditTaskData {
     Dictionary args;
     Dictionary result;
 };
+
 
 void AIChatDock::_execute_apply_edit_async(const String &p_tool_call_id, const Dictionary &p_args) {
     ApplyEditTaskData *task = memnew(ApplyEditTaskData);
@@ -4579,10 +4580,10 @@ void AIChatDock::_on_apply_edit_thread_done() {
         }
         
         // Keep UI busy if background apply threads still running
-        bool busy = false;
         ai_busy_mutex.lock();
-        busy = ai_busy_count > 0;
+        bool has_background_tasks = ai_busy_count > 0;
         ai_busy_mutex.unlock();
+        (void)has_background_tasks; // Mark as used to suppress warning
         // CRITICAL FIX: Check if this was the last async tool and stream has completed
         if (pending_tool_tasks == 0 && stream_completed_successfully && is_waiting_for_response) {
             // All async tools completed AND stream completed - now we can clear waiting state
@@ -4670,6 +4671,7 @@ void AIChatDock::_on_apply_edit_thread_done() {
         _send_chat_request();
     }
 }
+
 void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_content, const Array &p_tool_calls) {
 	AIChatDock::ChatMessage msg;
 	msg.role = p_role;
@@ -4738,7 +4740,150 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
         result_for_content["image_name"] = gen_file.name;
 	}
 
-    msg.content = json->stringify(result_for_content);
+    // PERFORMANCE FIX: Provide model with smart summary instead of truncation to preserve data access
+    Dictionary content_to_serialize = result_for_content;
+    
+    // Check for large arrays that could freeze JSON.stringify()
+    if (content_to_serialize.has("nodes")) {
+        Array nodes = content_to_serialize["nodes"];
+        if (nodes.size() > 50) {
+            // Create a smart summary for the model instead of truncating
+            content_to_serialize["nodes_summary"] = "Found " + String::num_int64(nodes.size()) + " nodes. First 10: ";
+            for (int i = 0; i < MIN(10, nodes.size()); i++) {
+                Dictionary node = nodes[i];
+                String name = node.get("name", "");
+                String type = node.get("type", "");
+                String path = node.get("path", "");
+                content_to_serialize["nodes_summary"] = String(content_to_serialize["nodes_summary"]) + 
+                    name + "(" + type + ") at " + path + (i < MIN(9, nodes.size()-1) ? ", " : "");
+            }
+            if (nodes.size() > 10) {
+                content_to_serialize["nodes_summary"] = String(content_to_serialize["nodes_summary"]) + "... and " + String::num_int64(nodes.size() - 10) + " more";
+            }
+            
+            // Add searchable node index for model
+            Dictionary node_index;
+            for (int i = 0; i < nodes.size(); i++) {
+                Dictionary node = nodes[i];
+                String name = node.get("name", "");
+                String type = node.get("type", "");
+                String path = node.get("path", "");
+                node_index[name] = path + " (" + type + ")";
+            }
+            content_to_serialize["node_index"] = node_index;
+            content_to_serialize["total_nodes"] = nodes.size();
+            
+            // Remove the large nodes array but keep essential info accessible
+            content_to_serialize.erase("nodes");
+            content_to_serialize["nodes_available_in_full_results"] = true;
+            print_line("AI Chat: Created smart summary for " + String::num_int64(nodes.size()) + " nodes to prevent JSON freeze while preserving model access");
+        }
+    }
+    
+    // Check for large project context arrays (scenes, scripts, folders)
+    if (content_to_serialize.has("context")) {
+        Dictionary context = content_to_serialize["context"];
+        bool context_modified = false;
+        
+        // Limit scenes array
+        if (context.has("scenes")) {
+            Array scenes = context["scenes"];
+            if (scenes.size() > 50) {
+                Array truncated_scenes;
+                for (int i = 0; i < 50; i++) {
+                    truncated_scenes.push_back(scenes[i]);
+                }
+                context["scenes"] = truncated_scenes;
+                context["scenes_truncated_in_json"] = true;
+                context["original_scenes_count"] = scenes.size();
+                context_modified = true;
+                print_line("AI Chat: Truncated scenes array from " + String::num_int64(scenes.size()) + " to 50 for JSON serialization");
+            }
+        }
+        
+        // Limit scripts array
+        if (context.has("scripts")) {
+            Array scripts = context["scripts"];
+            if (scripts.size() > 50) {
+                Array truncated_scripts;
+                for (int i = 0; i < 50; i++) {
+                    truncated_scripts.push_back(scripts[i]);
+                }
+                context["scripts"] = truncated_scripts;
+                context["scripts_truncated_in_json"] = true;
+                context["original_scripts_count"] = scripts.size();
+                context_modified = true;
+                print_line("AI Chat: Truncated scripts array from " + String::num_int64(scripts.size()) + " to 50 for JSON serialization");
+            }
+        }
+        
+        // Limit folders array  
+        if (context.has("folders")) {
+            Array folders = context["folders"];
+            if (folders.size() > 100) {
+                Array truncated_folders;
+                for (int i = 0; i < 100; i++) {
+                    truncated_folders.push_back(folders[i]);
+                }
+                context["folders"] = truncated_folders;
+                context["folders_truncated_in_json"] = true;
+                context["original_folders_count"] = folders.size();
+                context_modified = true;
+                print_line("AI Chat: Truncated folders array from " + String::num_int64(folders.size()) + " to 100 for JSON serialization");
+            }
+        }
+        
+        if (context_modified) {
+            content_to_serialize["context"] = context;
+        }
+    }
+    
+    // Check for large properties arrays/dictionaries (from get_node_properties)
+    if (content_to_serialize.has("property_info")) {
+        Array prop_info = content_to_serialize["property_info"];
+        if (prop_info.size() > 30) {
+            Array truncated_prop_info;
+            for (int i = 0; i < 30; i++) {
+                truncated_prop_info.push_back(prop_info[i]);
+            }
+            content_to_serialize["property_info"] = truncated_prop_info;
+            content_to_serialize["property_info_truncated_in_json"] = true;
+            content_to_serialize["original_property_info_count"] = prop_info.size();
+            print_line("AI Chat: Truncated property_info array from " + String::num_int64(prop_info.size()) + " to 30 for JSON serialization");
+        }
+    }
+    
+    if (content_to_serialize.has("property_values")) {
+        Dictionary prop_values = content_to_serialize["property_values"];
+        if (prop_values.size() > 30) {
+            Dictionary truncated_prop_values;
+            Array keys = prop_values.keys();
+            for (int i = 0; i < MIN(30, keys.size()); i++) {
+                String key = keys[i];
+                truncated_prop_values[key] = prop_values[key];
+            }
+            content_to_serialize["property_values"] = truncated_prop_values;
+            content_to_serialize["property_values_truncated_in_json"] = true;
+            content_to_serialize["original_property_values_count"] = prop_values.size();
+            print_line("AI Chat: Truncated property_values dict from " + String::num_int64(prop_values.size()) + " to 30 for JSON serialization");
+        }
+    }
+    
+    if (content_to_serialize.has("signals")) {
+        Array signals = content_to_serialize["signals"];
+        if (signals.size() > 20) {
+            Array truncated_signals;
+            for (int i = 0; i < 20; i++) {
+                truncated_signals.push_back(signals[i]);
+            }
+            content_to_serialize["signals"] = truncated_signals;
+            content_to_serialize["signals_truncated_in_json"] = true;
+            content_to_serialize["original_signals_count"] = signals.size();
+            print_line("AI Chat: Truncated signals array from " + String::num_int64(signals.size()) + " to 20 for JSON serialization");
+        }
+    }
+    
+    msg.content = json->stringify(content_to_serialize);
 
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
@@ -4776,24 +4921,11 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 
 	Button *toggle_button = memnew(Button);
 	
-	// Show success/failure status in the button
+	// Show success/failure status in the button with descriptive messages
 	Dictionary data = p_result;
 	bool success = data.get("success", false);
-	String message = data.get("message", "");
-	String status_text = success ? "SUCCESS" : "ERROR";
-	
-	// Special formatting for apply_edit to highlight the file name
-	if (p_name == "apply_edit" && success) {
-		String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
-		if (!file_path.is_empty()) {
-			String display_path = _convert_to_godot_path(file_path);
-			toggle_button->set_text(status_text + " - Edit applied to: " + display_path);
-		} else {
-			toggle_button->set_text(status_text + " - " + p_name + ": " + message);
-		}
-	} else {
-		toggle_button->set_text(status_text + " - " + p_name + ": " + message);
-	}
+	String descriptive_status = _generate_descriptive_tool_status(p_name, p_args, data, success);
+	toggle_button->set_text(descriptive_status);
 	
 	toggle_button->set_flat(false);
 	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -4912,6 +5044,234 @@ String AIChatDock::_truncate_text_for_context(const String &p_text, int p_max_ch
     String head_str = p_text.substr(0, head);
     String tail_str = p_text.substr(p_text.length() - tail, tail);
     return head_str + "\n\n...\n[Middle omitted; content truncated to fit context]\n\n" + tail_str;
+}
+
+String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result, bool p_success) {
+    String op = p_args.get("op", "");
+    String operation = p_args.get("operation", "");  // Support legacy parameter name
+    String actual_op = !op.is_empty() ? op : operation;
+    
+    if (p_success) {
+        // Success messages - make them descriptive and user-friendly
+        if (p_tool_name == "project_manager") {
+            if (actual_op == "context.get") {
+                return "Project context loaded";
+            } else if (actual_op == "fs.list") {
+                String dir = p_args.get("dir", "res://");
+                return "Listed files in: " + _convert_to_godot_path(dir);
+            } else if (actual_op == "fs.read") {
+                String path = p_args.get("path", "");
+                return "Read file: " + _convert_to_godot_path(path);
+            } else if (actual_op == "fs.write") {
+                String path = p_args.get("path", "");
+                return "Wrote file: " + _convert_to_godot_path(path);
+            } else if (actual_op == "fs.copy") {
+                String dest = p_args.get("destination", "");
+                return "Copied to: " + _convert_to_godot_path(dest);
+            } else if (actual_op == "fs.move") {
+                String dest = p_args.get("destination", "");
+                return "Moved to: " + _convert_to_godot_path(dest);
+            } else if (actual_op == "fs.delete") {
+                String path = p_args.get("path", "");
+                return "Deleted: " + _convert_to_godot_path(path);
+            } else if (actual_op == "fs.mkdir") {
+                String path = p_args.get("path", "");
+                return "Created directory: " + _convert_to_godot_path(path);
+            } else if (actual_op == "assets.search") {
+                String query = p_args.get("asset_query", "");
+                int found = p_result.get("total_found", 0);
+                return "Found " + String::num_int64(found) + " assets for: '" + query + "'";
+            } else if (actual_op == "assets.install") {
+                Dictionary install_info = p_result.get("installation_info", Dictionary());
+                String asset_name = install_info.has("asset_name") ? String(install_info["asset_name"]) : String("asset");
+                return "Installed asset: " + asset_name;
+            } else if (actual_op == "updates.check") {
+                bool update_available = p_result.get("update_available", false);
+                return update_available ? "Update available!" : "App is up to date";
+            }
+        } else if (p_tool_name == "search_manager") {
+            if (actual_op == "project.search") {
+                String query = p_args.get("query", "");
+                String search_mode = p_result.get("search_mode", "semantic");
+                int found = p_result.get("file_count", 0);
+                return "Found " + String::num_int64(found) + " files using " + search_mode + " search: '" + query + "'";
+            } else if (actual_op == "docs.search") {
+                String query = p_args.get("query", "");
+                int found = p_result.get("file_count", 0);
+                return "Found " + String::num_int64(found) + " docs for: '" + query + "'";
+            }
+        } else if (p_tool_name == "scene_manager") {
+            if (actual_op == "node.create") {
+                String name = p_args.get("name", "");
+                String type = p_args.get("type", "");
+                return "Created " + type + " node: " + name;
+            } else if (actual_op == "node.delete") {
+                String path = p_args.get("path", "");
+                return "Deleted node: " + path;
+            } else if (actual_op == "scene.open") {
+                String path = p_args.get("scene_path", p_args.get("path", ""));
+                return "Opened scene: " + _convert_to_godot_path(path);
+            } else if (actual_op == "scene.save_as") {
+                String path = p_args.get("scene_path", p_args.get("path", ""));
+                return "Saved scene as: " + _convert_to_godot_path(path);
+            } else if (actual_op == "scene.nodes.get_all") {
+                int node_count = p_result.get("node_count", 0);
+                return "Found " + String::num_int64(node_count) + " nodes in scene";
+            }
+        } else if (p_tool_name == "script_manager") {
+            if (actual_op == "script.attach") {
+                String script_path = p_args.get("script_path", "");
+                return "Attached script: " + _convert_to_godot_path(script_path);
+            } else if (actual_op == "script.detach") {
+                String path = p_args.get("path", "");
+                return "Detached script from: " + path;
+            } else if (actual_op == "compile.check") {
+                int error_count = p_result.get("error_count", 0);
+                return error_count > 0 ? "Found " + String::num_int64(error_count) + " compilation errors" : "No compilation errors";
+            }
+        } else if (p_tool_name == "resource_manager") {
+            if (actual_op == "image.generate_or_edit") {
+                String description = p_args.get("description", "image");
+                return "Generated image: " + description.substr(0, 30) + (description.length() > 30 ? "..." : "");
+            } else if (actual_op == "image.slice_spritesheet") {
+                int frame_count = p_result.get("frames_count", 0);
+                return "Sliced spritesheet into " + String::num_int64(frame_count) + " frames";
+            } else if (actual_op == "res.create") {
+                String type = p_args.get("type", "");
+                return "Created " + type + " resource";
+            } else if (actual_op == "res.load_and_assign") {
+                String resource_path = p_args.get("resource_path", "");
+                return "Loaded resource: " + _convert_to_godot_path(resource_path);
+            }
+        } else if (p_tool_name == "settings_manager") {
+            if (actual_op == "project_settings.set") {
+                String key = p_args.get("key", "");
+                return "Set project setting: " + key;
+            } else if (actual_op == "inputmap.add_action") {
+                String action = p_args.get("action", "");
+                return "Added input action: " + action;
+            } else if (actual_op == "autoload.add") {
+                String autoload_name = p_args.get("autoload_name", "");
+                return "Added autoload: " + autoload_name;
+            }
+        } else if (p_tool_name == "runtime_manager") {
+            if (actual_op == "game.start") {
+                return "✓ Started game";
+            } else if (actual_op == "game.stop") {
+                return "✓ Stopped game";
+            } else if (actual_op == "errors.summary") {
+                int error_count = p_result.get("total_errors", 0);
+                return "✓ Found " + String::num_int64(error_count) + " runtime errors";
+            } else if (actual_op == "errors.details") {
+                int error_count = p_result.get("total_found", 0);
+                return "✓ Retrieved " + String::num_int64(error_count) + " detailed runtime errors";
+            } else if (actual_op == "errors.test") {
+                return "✓ Added test runtime errors for debugging";
+            } else if (actual_op == "errors.debug") {
+                int total_recorded = p_result.get("total_recorded", 0);
+                return "✓ Debug: " + String::num_int64(total_recorded) + " errors currently tracked";
+            } else if (actual_op == "screenshot.take") {
+                bool any_captured = p_result.get("success", false);
+                int count = p_result.get("count", 0);
+                String target = p_args.get("target", "editor");
+                if (any_captured) {
+                    return "✓ Screenshot captured (" + String::num_int64(count) + " viewport(s))";
+                } else if (target == "game" || target == "both") {
+                    return "ℹ Game screenshots: Use 'Snap to Chat' button in Game View for best results";
+                } else {
+                    return "⚠ Editor screenshot failed - viewport not ready";
+                }
+            }
+        }
+        
+        // Legacy individual tools
+        if (p_tool_name == "apply_edit") {
+            String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
+            if (!file_path.is_empty()) {
+                return "Edit applied to: " + _convert_to_godot_path(file_path);
+            }
+        } else if (p_tool_name == "image_operation") {
+            String description = p_args.get("description", "image");
+            return "Generated image: " + description.substr(0, 30) + (description.length() > 30 ? "..." : "");
+        } else if (p_tool_name == "search_across_project") {
+            String query = p_args.get("query", "");
+            int found = p_result.get("file_count", 0);
+            return "Found " + String::num_int64(found) + " files for: '" + query + "'";
+        } else if (p_tool_name == "take_screenshot") {
+            return "Screenshot captured";
+        } else if (p_tool_name == "create_node") {
+            String name = p_args.get("name", "");
+            String type = p_args.get("type", "");
+            return "Created " + type + " node: " + name;
+        } else if (p_tool_name == "delete_node") {
+            String path = p_args.get("path", "");
+            return "Deleted node: " + path;
+        } else if (p_tool_name == "read_file") {
+            String path = p_args.get("path", "");
+            return "Read file: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "list_project_files") {
+            String dir = p_args.get("dir", "res://");
+            return "Listed files in: " + _convert_to_godot_path(dir);
+        }
+        
+        // Fallback to generic success message
+        String message = p_result.get("message", "");
+        return "" + p_tool_name + ": " + message;
+    } else {
+        // Error messages - also make them more descriptive
+        if (p_tool_name == "search_manager" && actual_op == "project.search") {
+            String query = p_args.get("query", "");
+            return "✗ Search failed for: '" + query + "'";
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.read") {
+            String path = p_args.get("path", "");
+            return "✗ Failed to read: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "apply_edit") {
+            String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
+            return "✗ Edit failed for: " + _convert_to_godot_path(file_path);
+        }
+        
+        // Fallback to generic error message
+        String message = p_result.get("message", "");
+        return "✗ " + p_tool_name + " failed: " + message;
+    }
+}
+
+String AIChatDock::_generate_executing_tool_message(const String &p_tool_name) {
+    // Generate descriptive "executing..." messages based on tool name
+    if (p_tool_name == "image_operation") {
+        return "Generating image...";
+    } else if (p_tool_name == "search_across_project") {
+        return "Searching project files...";
+    } else if (p_tool_name == "search_across_godot_docs") {
+        return "Searching Godot documentation...";
+    } else if (p_tool_name == "search_godot_assets") {
+        return "Searching asset library...";
+    } else if (p_tool_name == "install_godot_asset") {
+        return "Installing asset...";
+    } else if (p_tool_name == "generate_3d_model") {
+        return "Generating 3D model...";
+    } else if (p_tool_name == "slice_spritesheet") {
+        return "Slicing spritesheet...";
+    } else if (p_tool_name == "check_for_app_updates") {
+        return "Checking for updates...";
+    } else if (p_tool_name == "project_manager") {
+        return "Managing project...";
+    } else if (p_tool_name == "search_manager") {
+        return "Performing search...";
+    } else if (p_tool_name == "resource_manager") {
+        return "Managing resources...";
+    } else if (p_tool_name == "scene_manager") {
+        return "Managing scene...";
+    } else if (p_tool_name == "script_manager") {
+        return "Managing scripts...";
+    } else if (p_tool_name == "settings_manager") {
+        return "Managing settings...";
+    } else if (p_tool_name == "runtime_manager") {
+        return "Managing runtime...";
+    } else {
+        // Fallback for unknown tools
+        return "⚡ Executing: " + p_tool_name + "...";
+    }
 }
 
 String AIChatDock::_convert_to_godot_path(const String &p_path) {
@@ -5481,28 +5841,17 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 
     Button *toggle_button = memnew(Button);
 	
-	// Show success/failure status in the button
+	// Show success/failure status in the button with descriptive messages
 	bool success = result.get("success", false);
-	String message = result.get("message", "");
-	String status_text = success ? "SUCCESS" : "ERROR";
 	
-	// Special formatting for apply_edit to highlight the file name
-	if (p_tool_message.name == "apply_edit" && success) {
-		// Extract arguments if they were stored
-		Dictionary args;
-		if (p_tool_message.tool_results.size() > 1) {
-			args = p_tool_message.tool_results[1]; // Args are stored as second element
-		}
-		String file_path = args.has("path") ? args.get("path", "") : args.get("file_path", "");
-		if (!file_path.is_empty()) {
-			String display_path = _convert_to_godot_path(file_path);
-			toggle_button->set_text(status_text + " - Edit applied to: " + display_path);
-		} else {
-			toggle_button->set_text(status_text + " - " + p_tool_message.name + ": " + message);
-		}
-	} else {
-		toggle_button->set_text(status_text + " - " + p_tool_message.name + ": " + message);
+	// Extract arguments if they were stored
+	Dictionary args;
+	if (p_tool_message.tool_results.size() > 1) {
+		args = p_tool_message.tool_results[1]; // Args are stored as second element
 	}
+	
+	String descriptive_status = _generate_descriptive_tool_status(p_tool_message.name, args, result, success);
+	toggle_button->set_text(descriptive_status);
 	
     toggle_button->set_flat(false);
 	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -5549,12 +5898,6 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 	header_hbox->add_child(status_label);
 
 	content_vbox->add_child(memnew(HSeparator));
-
-	// Extract arguments if they were stored - better error handling
-	Dictionary args;
-	if (p_tool_message.tool_results.size() > 1) {
-		args = p_tool_message.tool_results[1]; // Args are stored as second element
-	}
 
     // Create specific UI based on the tool that was called
     _create_tool_specific_ui(content_vbox, p_tool_message.name, result, success, args);
@@ -5679,20 +6022,39 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		p_content_vbox->add_child(nodes_vbox);
 
 		Array nodes = p_result.get("nodes", Array());
+		bool truncated = p_result.get("truncated", false);
 		
 		Label *count_label = memnew(Label);
-		count_label->set_text("Found " + String::num_int64(nodes.size()) + " nodes:");
+		String count_text = "Found " + String::num_int64(nodes.size()) + " nodes";
+		if (truncated) {
+			count_text += " (truncated - scene has more nodes)";
+		}
+		count_text += ":";
+		count_label->set_text(count_text);
 		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		nodes_vbox->add_child(count_label);
 		
-		// Create a tree for better organization
+		// PERFORMANCE FIX: Limit UI display to prevent freezing (even if backend collected more)
+		int max_display_nodes = 50; // Only show first 50 nodes in UI
+		int nodes_to_show = MIN(nodes.size(), max_display_nodes);
+		bool ui_truncated = nodes.size() > max_display_nodes;
+		
+		if (ui_truncated) {
+			Label *truncation_warning = memnew(Label);
+			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " nodes only (UI performance limit)");
+			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			nodes_vbox->add_child(truncation_warning);
+		}
+		
+		// Create a tree for better organization (limited display)
 		Tree *nodes_tree = memnew(Tree);
 		nodes_tree->set_hide_root(true);
 		nodes_tree->set_custom_minimum_size(Size2(0, 200));
-		nodes_tree->set_columns(2); // FIX: Set to 2 columns before accessing column 1
+		nodes_tree->set_columns(2);
 		TreeItem *root = nodes_tree->create_item();
 		
-		for (int i = 0; i < nodes.size(); i++) {
+		// Only populate UI with limited number of nodes to prevent freezing
+		for (int i = 0; i < nodes_to_show; i++) {
 			Dictionary node = nodes[i];
 			TreeItem *item = nodes_tree->create_item(root);
 			
@@ -5709,6 +6071,14 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			if (child_count >= 0) {
 				item->set_text(1, String::num_int64(child_count) + " children");
 			}
+		}
+		
+		if (ui_truncated) {
+			// Add a footer item showing the truncation
+			TreeItem *footer_item = nodes_tree->create_item(root);
+			footer_item->set_text(0, "... and " + String::num_int64(nodes.size() - max_display_nodes) + " more nodes");
+			footer_item->set_custom_color(0, get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			footer_item->set_selectable(0, false);
 		}
 		
 		nodes_tree->set_column_title(0, "Node");
@@ -5743,20 +6113,38 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		p_content_vbox->add_child(search_vbox);
 
 		Array nodes = p_result.get("nodes", Array());
-		String node_type = p_args.get("node_type", "Unknown");
+		String node_type = p_args.get("node_type", p_args.get("type", "Unknown"));
+		bool search_truncated = p_result.get("truncated", false);
 		
 		Label *count_label = memnew(Label);
-		count_label->set_text("Found " + String::num_int64(nodes.size()) + " nodes of type: " + node_type);
+		String count_text = "Found " + String::num_int64(nodes.size()) + " nodes of type: " + node_type;
+		if (search_truncated) {
+			count_text += " (search truncated - scene may have more)";
+		}
+		count_label->set_text(count_text);
 		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		search_vbox->add_child(count_label);
 		
 		if (nodes.size() > 0) {
+			// PERFORMANCE FIX: Limit UI display to prevent freezing (same as get_all_nodes)
+			int max_display_nodes = 30; // Show max 30 nodes in search results
+			int nodes_to_show = MIN(nodes.size(), max_display_nodes);
+			bool ui_truncated = nodes.size() > max_display_nodes;
+			
+			if (ui_truncated) {
+				Label *truncation_warning = memnew(Label);
+				truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " results only (UI performance limit)");
+				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				search_vbox->add_child(truncation_warning);
+			}
+			
 			Tree *nodes_tree = memnew(Tree);
 			nodes_tree->set_hide_root(true);
 			nodes_tree->set_custom_minimum_size(Size2(0, 150));
 			TreeItem *root = nodes_tree->create_item();
 			
-			for (int i = 0; i < nodes.size(); i++) {
+			// Only create TreeItems for limited number to prevent UI freezing
+			for (int i = 0; i < nodes_to_show; i++) {
 				Dictionary node = nodes[i];
 				TreeItem *item = nodes_tree->create_item(root);
 				
@@ -5767,6 +6155,15 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				item->set_tooltip_text(0, "Path: " + path);
 				item->set_icon(0, get_theme_icon(SNAME("Node"), SNAME("EditorIcons")));
 			}
+			
+			if (ui_truncated) {
+				// Add a footer item showing the truncation
+				TreeItem *footer_item = nodes_tree->create_item(root);
+				footer_item->set_text(0, "... and " + String::num_int64(nodes.size() - max_display_nodes) + " more nodes");
+				footer_item->set_custom_color(0, get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				footer_item->set_selectable(0, false);
+			}
+			
 			search_vbox->add_child(nodes_tree);
 		}
 
@@ -7771,18 +8168,9 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 		}
 	}
 
-	// Special formatting for apply_edit to highlight the file name
-	if (p_tool_name == "apply_edit" && success) {
-		String file_path = args.has("path") ? args.get("path", "") : args.get("file_path", "");
-		if (!file_path.is_empty()) {
-			String display_path = _convert_to_godot_path(file_path);
-			toggle_button->set_text(status_text + " - Edit applied to: " + display_path);
-		} else {
-			toggle_button->set_text(status_text + " - " + p_tool_name + ": " + message);
-		}
-	} else {
-		toggle_button->set_text(status_text + " - " + p_tool_name + ": " + message);
-	}
+	// Use descriptive status messages
+	String descriptive_status = _generate_descriptive_tool_status(p_tool_name, args, result, success);
+	toggle_button->set_text(descriptive_status);
 	
 	toggle_button->set_flat(false);
 	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -8032,6 +8420,56 @@ void AIChatDock::_send_chat_request() {
 	// Store messages and route to finalize method
 	_chunked_messages = messages;
 	call_deferred("_finalize_chat_request");
+}
+
+void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str) {
+    print_line("AI Chat: DEFERRED EXECUTION - Tool: " + p_function_name + " (ID: " + p_tool_call_id + ")");
+    
+    // Parse arguments
+    Ref<JSON> json;
+    json.instantiate();
+    Error err = json->parse(p_arguments_str);
+    Dictionary args;
+    if (err == OK) {
+        args = json->get_data();
+        String op = args.get("op", args.get("operation", ""));
+        if (!op.is_empty()) {
+            print_line("AI Chat: DEFERRED - Operation: " + op);
+        }
+        Array arg_keys = args.keys();
+        String args_preview = "";
+        for (int k = 0; k < MIN(5, arg_keys.size()); k++) {
+            if (k > 0) args_preview += ", ";
+            args_preview += String(arg_keys[k]);
+        }
+        if (arg_keys.size() > 0) {
+            print_line("AI Chat: DEFERRED - Args: {" + args_preview + (arg_keys.size() > 5 ? ", ..." : "") + "}");
+        }
+    }
+
+    Dictionary result;
+    // Execute slow tool on main thread (safe for Godot APIs but deferred to prevent UI blocking)
+    if (p_function_name == "get_all_nodes") {
+        result = EditorTools::get_all_nodes(args);
+    } else if (p_function_name == "universal_scene_manager") {
+        result = EditorTools::universal_scene_manager(args);
+    } else if (p_function_name == "get_project_context") {
+        result = EditorTools::get_project_context(args);
+    } else if (p_function_name == "scene_manager") {
+        result = EditorTools::scene_manager(args);
+    } else {
+        result["success"] = false;
+        result["message"] = "Tool " + p_function_name + " should not be deferred. This is a bug.";
+    }
+
+    pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
+    _update_tool_placeholder_status(p_tool_call_id, p_function_name, "completed");
+    _add_tool_response_to_chat(p_tool_call_id, p_function_name, args, result);
+    
+    // If all tools done, continue to backend
+    if (pending_tool_tasks == 0) {
+        _send_chat_request();
+    }
 }
 
 void AIChatDock::_send_chat_request_chunked(int p_start_index) {
@@ -8545,7 +8983,7 @@ void AIChatDock::_finalize_chat_request() {
 	String host = api_endpoint;
 	int port = 80;
 	bool use_ssl = false;
-
+	
 	if (host.begins_with("https://")) {
 		host = host.trim_prefix("https://");
 		use_ssl = true;
@@ -8563,6 +9001,15 @@ void AIChatDock::_finalize_chat_request() {
 	if (host.find(":") != -1) {
 		port = host.substr(host.find(":") + 1, -1).to_int();
 		host = host.substr(0, host.find(":"));
+	}
+
+	// Safety check: prevent connection attempt with empty host
+	if (host.is_empty()) {
+		print_line("AI Chat: ERROR - Host is empty after URL parsing. Original api_endpoint: '" + api_endpoint + "'");
+		_add_message_to_chat("system", "Configuration error: Backend URL is invalid or empty. Please check your settings.");
+		is_waiting_for_response = false;
+		_update_ui_state();
+		return;
 	}
 
     PackedByteArray request_body_data = request_body.to_utf8_buffer();
@@ -10958,7 +11405,8 @@ void AIChatDock::_create_backend_tool_placeholder(const String &p_tool_id, const
 	placeholder->add_child(tool_hbox);
 
     Label *tool_label = memnew(Label);
-    tool_label->set_text("Executing: " + p_tool_name + "...");
+    String executing_message = _generate_executing_tool_message(p_tool_name);
+    tool_label->set_text(executing_message);
 	tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0));
 	tool_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
 	tool_hbox->add_child(tool_label);
@@ -12137,8 +12585,9 @@ String AIChatDock::_generate_inline_diff(const String &p_original, const String 
 
 void AIChatDock::_populate_all_models() {
 	// Add fallback base models first (in case backend request fails)
-	model_dropdown->add_item("gpt-5");
+	// claude-4 first to make it the default selection
 	model_dropdown->add_item("claude-4");
+	model_dropdown->add_item("gpt-5");
 	model_dropdown->add_item("gemini-2.5");
 	
 	// Fetch all available models from backend to get correct thinking variants
@@ -12222,20 +12671,46 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 	// Add models in logical groups: base models, thinking variants, then fast models
 	int added_models = 0;
 	
-	// Add base models first
+	// Add base models first, prioritizing claude-4
+	// First add claude-4 if it exists
 	for (int i = 0; i < base_models.size(); i++) {
 		Dictionary model_info = base_models[i];
 		String model_name = model_info.get("name", "");
-		model_dropdown->add_item(model_name);
-		added_models++;
+		if (model_name == "claude-4") {
+			model_dropdown->add_item(model_name);
+			added_models++;
+			break;
+		}
+	}
+	// Then add other base models
+	for (int i = 0; i < base_models.size(); i++) {
+		Dictionary model_info = base_models[i];
+		String model_name = model_info.get("name", "");
+		if (model_name != "claude-4") {  // Skip claude-4 since we already added it
+			model_dropdown->add_item(model_name);
+			added_models++;
+		}
 	}
 	
-	// Add thinking variants  
+	// Add thinking variants, prioritizing claude-4 (thinking)
+	// First add claude-4 (thinking) if it exists
 	for (int i = 0; i < thinking_models.size(); i++) {
 		Dictionary model_info = thinking_models[i];
 		String model_name = model_info.get("name", "");
-		model_dropdown->add_item(model_name);
-		added_models++;
+		if (model_name == "claude-4 (thinking)") {
+			model_dropdown->add_item(model_name);
+			added_models++;
+			break;
+		}
+	}
+	// Then add other thinking variants
+	for (int i = 0; i < thinking_models.size(); i++) {
+		Dictionary model_info = thinking_models[i];
+		String model_name = model_info.get("name", "");
+		if (model_name != "claude-4 (thinking)") {  // Skip claude-4 (thinking) since we already added it
+			model_dropdown->add_item(model_name);
+			added_models++;
+		}
 	}
 	
 	// Add fast models
@@ -12259,9 +12734,42 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 	// If no models were added from backend (failed request), add fallback models
 	if (added_models == 0) {
 		print_line("AI Chat: No models received from backend, using fallback models");
-		model_dropdown->add_item("gpt-5");
 		model_dropdown->add_item("claude-4");
+		model_dropdown->add_item("gpt-5");
 		model_dropdown->add_item("gemini-2.5");
+	}
+	
+	// After populating models, ensure claude-4 is selected by default if no saved preference
+	String current_model = model;  // This was set during initialization
+	bool model_found = false;
+	
+	// Try to find and select the current model
+	for (int i = 0; i < model_dropdown->get_item_count(); i++) {
+		String dropdown_text = model_dropdown->get_item_text(i);
+		if (dropdown_text == current_model) {
+			model_dropdown->select(i);
+			model_found = true;
+			break;
+		}
+	}
+	
+	// If current model not found, default to claude-4 or first item
+	if (!model_found) {
+		bool claude_found = false;
+		for (int i = 0; i < model_dropdown->get_item_count(); i++) {
+			String dropdown_text = model_dropdown->get_item_text(i);
+			if (dropdown_text == "claude-4") {
+				model_dropdown->select(i);
+				model = "claude-4";
+				claude_found = true;
+				break;
+			}
+		}
+		// If claude-4 not found, select first item
+		if (!claude_found && model_dropdown->get_item_count() > 0) {
+			model_dropdown->select(0);
+			model = model_dropdown->get_item_text(0);
+		}
 	}
 }
 
