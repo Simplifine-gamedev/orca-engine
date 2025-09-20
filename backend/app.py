@@ -32,12 +32,62 @@ except Exception:
     LocalVectorManager = None
 from auth_manager import AuthManager
 from auto_update_manager import auto_update_manager
+from tool_logger import log_tool_call, log_tool_result
+from version_checker import version_checker
 
 # app = Flask(__name__)
 # CORS(app)
 
 # Load environment variables from .env file
 load_dotenv()
+
+# --- LiteLLM Custom Logging Setup ---
+# Initialize custom logger for LiteLLM API calls
+# Auto-detect logging server URL based on DEV_MODE
+_dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
+
+# Choose logging server URL based on environment
+if _dev_mode:
+    # Development mode: use local logging server
+    LOGGING_SERVER_URL = 'http://localhost:3031'
+    print(f"🧪 DEV_MODE: Using local logging server: {LOGGING_SERVER_URL}")
+else:
+    # Production mode: use configured cloud logging server
+    LOGGING_SERVER_URL = os.getenv('LOGGING_SERVER_URL')
+    if LOGGING_SERVER_URL:
+        print(f"☁️  PRODUCTION: Using cloud logging server: {LOGGING_SERVER_URL}")
+    else:
+        print("ℹ️  PRODUCTION: LOGGING_SERVER_URL not configured")
+
+# Initialize the logger if we have a URL and logging is enabled
+detailed_logging_enabled = os.getenv('DETAILED_LOGGING', 'false').lower()
+if detailed_logging_enabled == 'false':
+    print("ℹ️  LiteLLM logging disabled via DETAILED_LOGGING=false")
+    litellm_logger = None
+elif LOGGING_SERVER_URL and detailed_logging_enabled in ['true', 'auto']:
+    try:
+        from litellm_callback import GodotLiteLLMLogger
+        litellm_logger = GodotLiteLLMLogger(LOGGING_SERVER_URL)
+        litellm.callbacks = [litellm_logger]
+        mode = "DEV" if _dev_mode else "PROD"
+        logging_mode = "FORCED" if detailed_logging_enabled == 'true' else "AUTO"
+        print(f"✅ LiteLLM logging enabled ({mode}/{logging_mode}): {LOGGING_SERVER_URL}")
+    except ImportError as e:
+        print(f"⚠️  LiteLLM logging disabled: {e}")
+        litellm_logger = None
+else:
+    print("ℹ️  LiteLLM logging disabled: no server URL available or DETAILED_LOGGING=false")
+    litellm_logger = None
+
+# Print final logging status
+if detailed_logging_enabled == 'true':
+    print("🔍 DETAILED_LOGGING: ENABLED (forced via DETAILED_LOGGING=true)")
+elif detailed_logging_enabled == 'auto':
+    mode = "CLOUD" if STRUCTURED_LOGS else "LOCAL"
+    print(f"📊 DETAILED_LOGGING: AUTO ({mode} mode)")
+else:
+    print("🔇 DETAILED_LOGGING: DISABLED (default - set DETAILED_LOGGING=true to enable)")
+# --- End LiteLLM Setup ---
 
 # Vertex AI configuration (DISABLED - using direct Anthropic API instead)
 # VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')  
@@ -99,6 +149,14 @@ def _anon(val: str | None) -> str | None:
 
 def _should_emit_for_local_request() -> bool:
     try:
+        # Check DETAILED_LOGGING environment variable first (overrides all other logic)
+        detailed_logging_env = os.getenv('DETAILED_LOGGING', '').lower()
+        if detailed_logging_env == 'true':
+            return True
+        elif detailed_logging_env == 'false':
+            return False
+        # If DETAILED_LOGGING not set, use existing logic
+        
         # Always emit in cloud (structured logs)
         if STRUCTURED_LOGS:
             return True
@@ -111,6 +169,14 @@ def _should_emit_for_local_request() -> bool:
     except Exception:
         # Be conservative locally
         return False
+
+def debug_print(message: str) -> None:
+    """Print debug messages only when detailed logging is enabled"""
+    try:
+        if _should_emit_for_local_request():
+            print(message)
+    except Exception:
+        pass
 
 def log_event(event_name: str, props: dict | None = None, severity: str = 'INFO') -> None:
     try:
@@ -365,18 +431,46 @@ CORS(app, origins=["*"])
 def log_request_info():
     try:
         if _should_emit_for_local_request():
-            print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+            debug_print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
     except Exception:
         pass
     try:
         g.request_id = str(uuid.uuid4())
         g.request_started_at = time.time()
+        
+        # Generate conversation ID for logging (STABLE across entire conversation)
+        try:
+            user_id = request.headers.get('X-User-ID', 'anonymous')
+            machine_id = request.headers.get('X-Machine-ID', 'unknown')
+            
+            # SIMPLE & STABLE: Just use user+machine (no time buckets)
+            # This ensures the ENTIRE conversation thread has the same ID
+            conv_seed = f"conv_{user_id}_{machine_id}"
+            g.conversation_id = hashlib.md5(conv_seed.encode()).hexdigest()[:16]
+            
+            # Store for debugging
+            g.conversation_seed = conv_seed
+            
+        except Exception:
+            g.conversation_id = 'fallback_conv'
         log_event('request_start', {
             'content_length': request.content_length,
             'query_len': (len(request.query_string) if request.query_string else 0),
             'ip_h': _anon(request.environ.get('REMOTE_ADDR')),
         })
     except Exception:
+        pass
+
+@app.before_request 
+def version_compatibility_check():
+    """Check version compatibility before processing requests"""
+    try:
+        version_check_result = check_version_compatibility()
+        if version_check_result:
+            return version_check_result
+    except Exception as e:
+        print(f"VERSION_CHECK_ERROR: {e}")
+        # Continue processing request if version check fails
         pass
 
 @app.after_request
@@ -398,7 +492,7 @@ def log_request_end(response):
     return response
 
 # Secret must be stable across restarts in production. Require env in production, random only in DEV_MODE.
-_dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
+# _dev_mode already defined above in LiteLLM logging setup section
 DEPLOYMENT_MODE = os.getenv('DEPLOYMENT_MODE', 'oss').lower()  # 'oss' or 'cloud'
 REQUIRE_SERVER_API_KEY = os.getenv('REQUIRE_SERVER_API_KEY', 'false').lower() == 'true'
 SERVER_API_KEY = os.getenv('SERVER_API_KEY')
@@ -691,6 +785,40 @@ def verify_server_key_if_required():
         return jsonify({"success": False, "error": "Invalid server API key"}), 403
     return None
 
+def check_version_compatibility():
+    """Check if frontend version is compatible with backend."""
+    frontend_version = request.headers.get('X-Frontend-Version')
+    frontend_api_version = request.headers.get('X-Frontend-API-Version')
+    
+    # Skip version checking for health endpoint and version endpoint itself
+    if request.endpoint in ['health_check', 'get_version_info']:
+        return None
+    
+    # Skip if no version headers (for backwards compatibility with old frontends)
+    if not frontend_version or not frontend_api_version:
+        # Log old client for monitoring during transition
+        log_event('legacy_client_detected', {
+            'user_agent': request.headers.get('User-Agent', ''),
+            'endpoint': request.endpoint
+        }, 'INFO')
+        return None
+    
+    compatible, error = version_checker.check_compatibility(frontend_version, frontend_api_version)
+    
+    if not compatible:
+        return jsonify({
+            "success": False,
+            "error": "Version compatibility check failed",
+            "version_error": error,
+            "backend_version": version_checker.backend_version,
+            "backend_api_version": version_checker.api_version,
+            "frontend_version": frontend_version,
+            "frontend_api_version": frontend_api_version,
+            "compatibility_info": version_checker.get_compatibility_status(frontend_version, frontend_api_version)
+        }), 409  # 409 Conflict for version mismatch
+    
+    return None
+
 # Image handling will use OpenAI's native ID system - no local registry needed
 
 # --- Helper Functions ---
@@ -807,7 +935,7 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         # Gather available images from prior conversation messages
         available_images = {}
         if conversation_messages:
-            print(f"IMAGE_OP DEBUG: conversation_messages count: {len(conversation_messages)}")
+            debug_print(f"IMAGE_OP DEBUG: conversation_messages count: {len(conversation_messages)}")
             cm_index = -1
             for msg in conversation_messages:
                 cm_index += 1
@@ -839,7 +967,7 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 for key in available_images.keys():
                     if str(key).startswith(str(img_id)):
                         match = available_images[key]
-                        print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
+                        debug_print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
                         break
             if match:
                 selected_images.append(match)
@@ -1760,8 +1888,10 @@ def generate_3d_model_internal(arguments: dict) -> dict:
             api_url = "http://127.0.0.1:3030/api/generate-3d"
             base_3d_url = "http://127.0.0.1:3030"
         else:
-            api_url = "https://ai-3d-proxy-976792908107.us-central1.run.app/api/generate-3d"
-            base_3d_url = "https://ai-3d-proxy-976792908107.us-central1.run.app"
+            # Use environment variable for 3D service URL, fallback to default project
+            model_3d_service_url = os.getenv('MODEL_3D_SERVICE_URL', 'https://ai-3d-proxy-976792908107.us-central1.run.app')
+            api_url = f"{model_3d_service_url}/api/generate-3d"
+            base_3d_url = model_3d_service_url
         
         # Generate unique user ID for tracking
         user_id = f"godot_user_{hashlib.md5(prompt.encode()).hexdigest()[:8]}"
@@ -2001,6 +2131,7 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
         if not op:
             return {"success": False, "error": "Operation 'op' parameter is required"}
             
+        # Backend-processed image operations
         if op == "image.generate_or_edit":
             # Route to existing image operation function
             image_args = {
@@ -2034,7 +2165,8 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
                 'normalize_to': arguments.get('normalize_to')
             }
             return slice_spritesheet_internal(slice_args)
-            
+        
+        # All resource operations should be handled by frontend (direct Godot engine access needed)
         elif op in ["res.create", "res.inspect", "res.modify", "res.assign", "res.copy_from_template", 
                    "res.refresh", "res.load_and_assign", "import.set_options", "import.reimport", "image.save"]:
             # These are frontend-only operations
@@ -2439,9 +2571,29 @@ def chat():
             # Track recovery attempts to prevent infinite recovery loops
             recovery_attempts = 0
             max_recovery_attempts = 2
+            
+            # Log tool results that come from frontend
             for msg in messages:
                 if msg is not None and isinstance(msg, dict) and msg.get('role'):
                     conversation_messages.append(msg)
+                    
+                    # Log tool results when they come back from frontend
+                    if msg.get('role') == 'tool':
+                        try:
+                            tool_name = msg.get('name', 'unknown_tool')
+                            tool_call_id = msg.get('tool_call_id', 'unknown_id')
+                            content = msg.get('content', '{}')
+                            
+                            # Parse tool result
+                            try:
+                                result = json.loads(content) if isinstance(content, str) else content
+                            except Exception:
+                                result = {'content': str(content)}
+                            
+                            log_tool_result(tool_name, tool_call_id, result, duration_ms=0)
+                            print(f"TOOL_RESULT_LOG: Logged result for {tool_name} (ID: {tool_call_id})")
+                        except Exception as e:
+                            print(f"⚠️  Error logging frontend tool result: {e}")
                 else:
                     pass
                 # Check for stop even during initial processing
@@ -3007,6 +3159,9 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "image_operation", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Log tool call
+                            log_tool_call("image_operation", tool_id, arguments)
                             try:
                                 arguments = json.loads(func["arguments"])
                             except json.JSONDecodeError:
@@ -3038,6 +3193,9 @@ def chat():
                                 print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
+                            
+                            # Log tool result
+                            log_tool_result("image_operation", tool_id, image_result, duration_ms=0)
                             
                             # Yield result to frontend immediately (include tool_call_id for consistent UI handling)
                             yield json.dumps({
@@ -3072,6 +3230,9 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "search_across_project", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Log tool call
+                            log_tool_call("search_across_project", tool_id, arguments)
                             try:
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
                             except Exception:
@@ -3125,6 +3286,9 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
                             
+                            # Log tool result 
+                            log_tool_result("search_across_project", tool_id, search_result, duration_ms=0)
+                            
                             # Yield result to frontend immediately
                             yield json.dumps({"tool_executed": "search_across_project", "tool_result": search_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
                             
@@ -3151,6 +3315,9 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "search_across_godot_docs", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Log tool call
+                            log_tool_call("search_across_godot_docs", tool_id, arguments)
                             try:
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
                             except Exception:
@@ -3188,6 +3355,9 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
 
+                            # Log tool result
+                            log_tool_result("search_across_godot_docs", tool_id, docs_result, duration_ms=0)
+                            
                             # Yield result to frontend immediately
                             yield json.dumps({"tool_executed": "search_across_godot_docs", "tool_result": docs_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
 
@@ -3699,6 +3869,17 @@ def chat():
                     print(f"CONVERSATION_ADD: Added frontend assistant message with {len(tool_calls_for_history)} tool calls")
                     
                     print(f"FRONTEND_PROCESSING: Sending {len(tool_calls_for_frontend)} tool calls to frontend")
+                    
+                    # Log each frontend tool call
+                    for tool_call in tool_calls_for_frontend:
+                        try:
+                            tool_name = tool_call['function']['name']
+                            tool_id = tool_call['id']
+                            arguments = json.loads(tool_call['function']['arguments']) if tool_call['function']['arguments'] else {}
+                            log_tool_call(tool_name, tool_id, arguments)
+                        except Exception as e:
+                            print(f"⚠️  Error logging frontend tool call: {e}")
+                    
                     # Yield tool calls to the frontend in the format it expects
                     frontend_response = {
                         "status": "executing_tools",
@@ -5022,13 +5203,52 @@ def get_available_models():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for testing"""
+    version_info = version_checker.get_version_info()
     return jsonify({
         "status": "healthy", 
         "service": "orca-engine-ai-service",
         "providers": ["openai", "anthropic", "google"],
         "available_models": list(MODEL_MAP.keys()),
-        "version": auto_update_manager.current_version
+        "version": auto_update_manager.current_version,
+        "version_info": version_info
     })
+
+@app.route('/version', methods=['GET'])
+def get_version_info():
+    """Get detailed version information for compatibility checking"""
+    version_info = version_checker.get_version_info()
+    return jsonify({
+        "success": True,
+        "orca_version": auto_update_manager.current_version,
+        **version_info
+    })
+
+@app.route('/version/check', methods=['POST'])
+def check_version_compatibility_endpoint():
+    """Explicit endpoint for checking version compatibility"""
+    try:
+        data = request.json or {}
+        frontend_version = data.get('frontend_version') or request.headers.get('X-Frontend-Version')
+        frontend_api_version = data.get('frontend_api_version') or request.headers.get('X-Frontend-API-Version')
+        
+        if not frontend_version or not frontend_api_version:
+            return jsonify({
+                "success": False,
+                "error": "frontend_version and frontend_api_version are required"
+            }), 400
+        
+        compatibility_status = version_checker.get_compatibility_status(frontend_version, frontend_api_version)
+        
+        return jsonify({
+            "success": True,
+            "compatibility_check": compatibility_status
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Version compatibility check failed: {str(e)}"
+        }), 500
 
 # --- Auto-Update Endpoints ---
 

@@ -9,7 +9,7 @@ dotenv.load_dotenv()
 model = "claude-sonnet-4@20250514"
 # model = "claude-4-sonnet"
 
-vertex_ai_project = "eastern-rider-436701-f4" # can also set this as os.environ["VERTEXAI_PROJECT"]
+vertex_ai_project = os.environ.get("VERTEXAI_PROJECT", "your-gcp-project-id")  # Set via environment variable
 vertex_ai_location = "global" # can also set this as os.environ["VERTEXAI_LOCATION"]
 
 response = completion(

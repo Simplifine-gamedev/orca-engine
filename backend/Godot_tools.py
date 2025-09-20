@@ -1438,12 +1438,13 @@ godot_tools = [
 
                     # Collision
                     "node_path": {"type": "string"},
-                    "shape_type": {"type": "string", "enum": ["rectangle", "circle", "capsule"]},
+                    "shape_type": {"type": "string", "enum": ["rectangle", "circle", "capsule", "box", "box3d", "sphere", "sphere3d", "capsule3d", "convex", "convex3d", "trimesh", "trimesh3d"]},
 
                     # Bulk/copy config
                     "transformations": {"type": "object"},
                     "validation": {"type": "boolean", "default": True},
-                    "source_config_scene": {"type": "string", "description": "Source scene for copy_configuration"},
+                    "source_config_scene": {"type": "string", "description": "Source node path for copy_configuration (will be mapped to 'source')"},
+                    "source": {"type": "string", "description": "Source node path (alternative to source_config_scene)"},
 
                     # Signals
                     "signal_name": {"type": "string"},
