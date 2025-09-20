@@ -671,6 +671,12 @@ public:
 	bool _create_checkpoint(const String &p_message, int p_message_index);
 	String _get_checkpoint_name(int p_message_index);
 	bool _restore_from_checkpoint(int p_message_index);
+	void _safely_reopen_scene_after_checkpoint(const String &p_scene_path);
+	void _verify_scene_reopened(const String &p_expected_scene_path);
+	void _force_editor_refresh_after_checkpoint();
+	void _trigger_external_change_detection();
+	void _final_ui_refresh_after_checkpoint();
+	void _immediate_post_restore_refresh();
 
 	// Attach an external file (e.g., screenshot) to the current chat input attachments.
 	void attach_external_file(const String &p_file_path);

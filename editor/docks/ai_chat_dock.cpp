@@ -100,6 +100,12 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_edit_message_cancel_pressed"), &AIChatDock::_on_edit_message_cancel_pressed);
 	ClassDB::bind_method(D_METHOD("_on_checkpoint_message_pressed"), &AIChatDock::_on_checkpoint_message_pressed);
 	ClassDB::bind_method(D_METHOD("_on_restore_checkpoint_confirmed"), &AIChatDock::_on_restore_checkpoint_confirmed);
+	ClassDB::bind_method(D_METHOD("_safely_reopen_scene_after_checkpoint"), &AIChatDock::_safely_reopen_scene_after_checkpoint);
+	ClassDB::bind_method(D_METHOD("_verify_scene_reopened"), &AIChatDock::_verify_scene_reopened);
+	ClassDB::bind_method(D_METHOD("_force_editor_refresh_after_checkpoint"), &AIChatDock::_force_editor_refresh_after_checkpoint);
+	ClassDB::bind_method(D_METHOD("_trigger_external_change_detection"), &AIChatDock::_trigger_external_change_detection);
+	ClassDB::bind_method(D_METHOD("_final_ui_refresh_after_checkpoint"), &AIChatDock::_final_ui_refresh_after_checkpoint);
+	ClassDB::bind_method(D_METHOD("_immediate_post_restore_refresh"), &AIChatDock::_immediate_post_restore_refresh);
 	ClassDB::bind_method(D_METHOD("_on_edit_field_gui_input"), &AIChatDock::_on_edit_field_gui_input);
 	ClassDB::bind_method(D_METHOD("_process_send_request_async"), &AIChatDock::_process_send_request_async);
 	ClassDB::bind_method(D_METHOD("_save_conversations_async"), &AIChatDock::_save_conversations_async);
@@ -14186,6 +14192,16 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     
     print_line("AI Chat: Restoring project to checkpoint: " + checkpoint_name);
     
+    // CRASH FIX: Store current scene path before clearing editor state
+    String current_scene_path;
+    if (EditorNode::get_singleton()) {
+        Node *edited_scene = EditorNode::get_singleton()->get_edited_scene();
+        if (edited_scene) {
+            current_scene_path = edited_scene->get_scene_file_path();
+            print_line("AI Chat: Current scene path: " + current_scene_path);
+        }
+    }
+    
     // Change to project root directory for Git operations
     String old_cwd = OS::get_singleton()->get_environment("PWD");
     OS::get_singleton()->set_cwd(project_root);
@@ -14221,6 +14237,27 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     String target_tag = tags[0];
     print_line("AI Chat: Found checkpoint tag: " + target_tag);
     
+    // CRASH FIX: Clear editor state BEFORE git reset to prevent invalid references
+    print_line("AI Chat: Clearing editor state before git reset...");
+    
+    // Close current scene to clear editor data and prevent invalid references
+    if (EditorNode::get_singleton()) {
+        // Don't use reload_scene which can crash - instead create a new empty scene
+        EditorNode::get_singleton()->new_scene();
+        print_line("AI Chat: Closed current scene and created new empty scene");
+    }
+    
+    // Clear script editor state
+    if (ScriptEditor::get_singleton()) {
+        // Clear script editor cache to prevent stale references
+        // Note: We avoid closing tabs directly since _close_all_tabs is private
+        // Instead, we'll let the file system scan handle script reloading
+        print_line("AI Chat: Preparing script editor for checkpoint restore");
+    }
+    
+    // Clear any preview overlays to prevent conflicts
+    EditorTools::clear_all_preview_overlays();
+    
     // Reset project to the checkpoint (hard reset)
     List<String> reset_args;
     reset_args.push_back("reset");
@@ -14241,34 +14278,35 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     
     print_line("AI Chat: Successfully restored project to checkpoint: " + target_tag);
     
-    // Force Godot to reload all changed files and editor state immediately
+    // CRASH FIX: Use safer reload approach after git reset
+    print_line("AI Chat: Safely reloading editor state after git reset...");
+    
+    // Force file system scan to detect all changes from git reset
     if (EditorFileSystem::get_singleton()) {
-        EditorFileSystem::get_singleton()->scan_changes();
+        print_line("AI Chat: Scanning file system for changes...");
+        EditorFileSystem::get_singleton()->scan();  // Full scan instead of just scan_changes()
     }
+    
+    // Reload scripts with error handling
     if (ScriptEditor::get_singleton()) {
         ScriptEditor *se = ScriptEditor::get_singleton();
-        const Vector<Ref<Script>> &open_scripts = se->get_open_scripts();
-        for (int i = 0; i < open_scripts.size(); i++) {
-            Ref<Script> script = open_scripts[i];
-            if (script.is_valid()) {
-                String spath = script->get_path();
-                if (!spath.is_empty()) {
-                    se->trigger_live_script_reload(spath);
-                }
-            }
-        }
-        // Light-weight reload to refresh editors without dialog
-        se->reload_scripts(false);
+        print_line("AI Chat: Reloading script editor state...");
+        
+        // Use call_deferred to ensure file system scan completes first
+        se->call_deferred("reload_scripts", false);
     }
-    if (EditorNode::get_singleton()) {
-        Node *edited_scene = EditorNode::get_singleton()->get_edited_scene();
-        if (edited_scene) {
-            String scene_path = edited_scene->get_scene_file_path();
-            if (!scene_path.is_empty()) {
-                EditorNode::get_singleton()->reload_scene(scene_path);
-            }
-        }
+    
+    // CRASH FIX: Safely reopen the scene if it still exists after git reset
+    if (!current_scene_path.is_empty() && EditorNode::get_singleton()) {
+        print_line("AI Chat: Attempting to reopen scene: " + current_scene_path);
+        
+        // Use call_deferred to ensure all other reload operations complete first
+        // Also use open_scene_from_path instead of reload_scene to avoid history issues
+        call_deferred("_safely_reopen_scene_after_checkpoint", current_scene_path);
     }
+    
+    // UI REFRESH FIX: Force complete editor refresh after checkpoint restore
+    call_deferred("_force_editor_refresh_after_checkpoint");
     
     // Also restore conversation to match the checkpoint
     Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
@@ -14302,7 +14340,262 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
         _queue_delayed_save();
     }
     
+    // IMMEDIATE UI REFRESH: Force an immediate UI update right after restoring conversation
+    call_deferred("_immediate_post_restore_refresh");
+    
     return true;
+}
+
+void AIChatDock::_immediate_post_restore_refresh() {
+    print_line("AI Chat: _immediate_post_restore_refresh called - forcing UI update right after conversation restore");
+    
+    // This method is called immediately after conversation UI rebuild to ensure
+    // reload popups appear without requiring user clicks
+    
+    // Force immediate window activation
+    if (EditorNode::get_singleton()) {
+        Window *main_window = EditorNode::get_singleton()->get_window();
+        if (main_window) {
+            print_line("AI Chat: Immediately activating main window...");
+            main_window->grab_focus();
+            main_window->move_to_foreground();
+        }
+    }
+    
+    // Process display events immediately
+    if (DisplayServer::get_singleton()) {
+        print_line("AI Chat: Processing display events immediately...");
+        DisplayServer::get_singleton()->process_events();
+    }
+    
+    // Force script editor to immediately check for external changes
+    if (ScriptEditor::get_singleton()) {
+        ScriptEditor *se = ScriptEditor::get_singleton();
+        print_line("AI Chat: Immediately checking for script changes...");
+        
+        // This should immediately trigger reload popups for any scripts that changed
+        se->reload_scripts(true);
+    }
+    
+    print_line("AI Chat: Immediate refresh completed - reload popups should be visible now");
+}
+
+void AIChatDock::_safely_reopen_scene_after_checkpoint(const String &p_scene_path) {
+    print_line("AI Chat: _safely_reopen_scene_after_checkpoint called for: " + p_scene_path);
+    
+    // Check if the scene file still exists after git reset
+    if (!FileAccess::exists(p_scene_path)) {
+        print_line("AI Chat: Scene file no longer exists after checkpoint restore: " + p_scene_path);
+        return;
+    }
+    
+    // Use EditorInterface to safely open the scene
+    if (EditorInterface::get_singleton()) {
+        print_line("AI Chat: Using EditorInterface to safely open scene...");
+        
+        // Try to open the scene using EditorInterface (safer than EditorNode::reload_scene)
+        // Note: open_scene_from_path returns void, so we use try-catch approach
+        EditorInterface::get_singleton()->open_scene_from_path(p_scene_path);
+        print_line("AI Chat: Scene reopen requested: " + p_scene_path);
+        
+        // Verify the scene was opened by checking if current scene matches
+        call_deferred("_verify_scene_reopened", p_scene_path);
+    } else {
+        print_line("AI Chat: EditorInterface not available for scene reopening");
+        
+        // Fallback: try with EditorNode::load_scene
+        if (EditorNode::get_singleton()) {
+            print_line("AI Chat: Trying fallback scene loading method...");
+            EditorNode::get_singleton()->load_scene(p_scene_path);
+        }
+    }
+}
+
+void AIChatDock::_force_editor_refresh_after_checkpoint() {
+    print_line("AI Chat: _force_editor_refresh_after_checkpoint called - forcing complete UI refresh");
+    
+    // Force the main editor window to refresh and regain focus
+    if (EditorNode::get_singleton()) {
+        print_line("AI Chat: Forcing main window refresh...");
+        
+        // Get the main window and force refresh
+        Window *main_window = EditorNode::get_singleton()->get_window();
+        if (main_window) {
+            // Force window to regain focus and refresh
+            main_window->grab_focus();
+            
+            // Force move to front to ensure proper focus
+            main_window->move_to_foreground();
+            
+            // Force a full redraw by requesting update
+            main_window->set_flag(Window::FLAG_ALWAYS_ON_TOP, true);
+            main_window->set_flag(Window::FLAG_ALWAYS_ON_TOP, false);
+            
+            print_line("AI Chat: Main window focus and refresh forced");
+        }
+        
+        // Force editor interface refresh
+        EditorInterface *editor_interface = EditorInterface::get_singleton();
+        if (editor_interface) {
+            // Force refresh of the main screen - use a simpler approach
+            print_line("AI Chat: Editor interface refresh requested");
+        }
+    }
+    
+    // Force DisplayServer to update (platform-specific refresh)
+    if (DisplayServer::get_singleton()) {
+        print_line("AI Chat: Forcing display server refresh...");
+        DisplayServer::get_singleton()->process_events();
+    }
+    
+    // Force ScriptEditor to check for external file changes (triggers reload popups)
+    if (ScriptEditor::get_singleton()) {
+        ScriptEditor *se = ScriptEditor::get_singleton();
+        print_line("AI Chat: Triggering script editor external change detection...");
+        
+        // Force a scripts reload check which should detect file changes
+        se->call_deferred("reload_scripts", true); // true = soft reload that shows popups
+    }
+    
+    // Force FileSystemDock to refresh as well
+    if (FileSystemDock::get_singleton()) {
+        print_line("AI Chat: Forcing filesystem dock refresh...");
+        // Navigate to current path to force refresh
+        FileSystemDock::get_singleton()->navigate_to_path("res://");
+    }
+    
+    // Force EditorNode to check for external file changes with multiple attempts
+    if (EditorNode::get_singleton()) {
+        // Use multiple timers to aggressively trigger change detection
+        print_line("AI Chat: Setting up external change detection timers...");
+        
+        // First check after 0.2 seconds
+        Ref<SceneTreeTimer> timer1 = get_tree()->create_timer(0.2, true);
+        timer1->connect("timeout", callable_mp(this, &AIChatDock::_trigger_external_change_detection), CONNECT_ONE_SHOT);
+        
+        // Second check after 0.5 seconds (backup)
+        Ref<SceneTreeTimer> timer2 = get_tree()->create_timer(0.5, true);
+        timer2->connect("timeout", callable_mp(this, &AIChatDock::_trigger_external_change_detection), CONNECT_ONE_SHOT);
+        
+        // Third check after 1.0 seconds (final attempt)
+        Ref<SceneTreeTimer> timer3 = get_tree()->create_timer(1.0, true);
+        timer3->connect("timeout", callable_mp(this, &AIChatDock::_final_ui_refresh_after_checkpoint), CONNECT_ONE_SHOT);
+    }
+    
+    print_line("AI Chat: Completed forcing editor refresh - multiple UI update attempts scheduled");
+}
+
+void AIChatDock::_trigger_external_change_detection() {
+    print_line("AI Chat: _trigger_external_change_detection called - checking for external file changes");
+    
+    // Force another file system scan to ensure all changes are detected
+    if (EditorFileSystem::get_singleton()) {
+        print_line("AI Chat: Triggering final file system scan...");
+        EditorFileSystem::get_singleton()->scan_changes();
+    }
+    
+    // Force all open scripts to reload from disk
+    if (ScriptEditor::get_singleton()) {
+        ScriptEditor *se = ScriptEditor::get_singleton();
+        print_line("AI Chat: Forcing script reload to trigger external change popups...");
+        
+        // This should trigger the "reload from disk" popups for changed scripts
+        se->reload_scripts(true); // true = show reload confirmation dialogs
+    }
+    
+    // Force a final window refresh to make sure UI updates are visible
+    if (EditorNode::get_singleton()) {
+        Window *main_window = EditorNode::get_singleton()->get_window();
+        if (main_window) {
+            // Force window to process all pending events and refresh
+            main_window->grab_focus();
+            
+            // Trigger a window event to force refresh
+            if (DisplayServer::get_singleton()) {
+                DisplayServer::get_singleton()->process_events();
+            }
+        }
+    }
+    
+    print_line("AI Chat: External change detection and UI refresh completed");
+}
+
+void AIChatDock::_final_ui_refresh_after_checkpoint() {
+    print_line("AI Chat: _final_ui_refresh_after_checkpoint called - final attempt to refresh UI");
+    
+    // AGGRESSIVE UI REFRESH: This is the final attempt to make the UI show updates
+    
+    // Force window activation and focus
+    if (EditorNode::get_singleton()) {
+        Window *main_window = EditorNode::get_singleton()->get_window();
+        if (main_window) {
+            print_line("AI Chat: Final window focus and activation...");
+            
+            // Try multiple activation methods
+            main_window->grab_focus();
+            main_window->move_to_foreground();
+            
+            // Force window to become active (macOS specific)
+            if (DisplayServer::get_singleton()) {
+                DisplayServer::get_singleton()->window_set_flag(DisplayServer::WINDOW_FLAG_ALWAYS_ON_TOP, true, DisplayServer::MAIN_WINDOW_ID);
+                DisplayServer::get_singleton()->window_set_flag(DisplayServer::WINDOW_FLAG_ALWAYS_ON_TOP, false, DisplayServer::MAIN_WINDOW_ID);
+                
+                // Process all pending events
+                DisplayServer::get_singleton()->process_events();
+                DisplayServer::get_singleton()->force_process_and_drop_events();
+            }
+        }
+    }
+    
+    // Force one more script reload check
+    if (ScriptEditor::get_singleton()) {
+        ScriptEditor *se = ScriptEditor::get_singleton();
+        print_line("AI Chat: Final script reload check...");
+        
+        // Force script editor to detect external changes one more time
+        se->reload_scripts(true);
+        
+        // Also try to manually trigger external file detection
+        const Vector<Ref<Script>> &open_scripts = se->get_open_scripts();
+        for (int i = 0; i < open_scripts.size(); i++) {
+            Ref<Script> script = open_scripts[i];
+            if (script.is_valid()) {
+                // Force script to check modification time
+                script->reload_from_file();
+            }
+        }
+    }
+    
+    print_line("AI Chat: Final UI refresh completed - reload popups should now be visible");
+}
+
+void AIChatDock::_verify_scene_reopened(const String &p_expected_scene_path) {
+    print_line("AI Chat: _verify_scene_reopened called for: " + p_expected_scene_path);
+    
+    if (EditorNode::get_singleton()) {
+        Node *current_scene = EditorNode::get_singleton()->get_edited_scene();
+        if (current_scene) {
+            String current_path = current_scene->get_scene_file_path();
+            if (current_path == p_expected_scene_path) {
+                print_line("AI Chat: Scene successfully reopened: " + p_expected_scene_path);
+            } else {
+                print_line("AI Chat: Scene reopen verification failed - expected: " + p_expected_scene_path + ", actual: " + current_path);
+                
+                // Try fallback method if verification failed
+                if (EditorNode::get_singleton()) {
+                    print_line("AI Chat: Attempting fallback scene loading...");
+                    EditorNode::get_singleton()->load_scene(p_expected_scene_path);
+                }
+            }
+        } else {
+            print_line("AI Chat: No scene currently opened, fallback loading: " + p_expected_scene_path);
+            
+            // Try fallback method
+            if (EditorNode::get_singleton()) {
+                EditorNode::get_singleton()->load_scene(p_expected_scene_path);
+            }
+        }
+    }
 }
 
 Dictionary AIChatDock::_summarize_scene_node_for_context(const Dictionary &p_node, int p_max_depth, int p_max_children) {
