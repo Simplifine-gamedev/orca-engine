@@ -179,6 +179,24 @@ private:
 	void _update_theme();
 	void _editor_settings_changed();
 
+	// --- Performance: queue + ring buffer to avoid UI freezes on massive stdout ---
+	// Pending messages to be flushed incrementally during idle processing.
+	Vector<LogMessage> pending_messages;
+	int pending_read_index = 0;
+	// Limit of messages to flush per frame to keep the editor responsive.
+	int max_flush_per_frame = 100;
+	// Cap the pending queue size to prevent unbounded growth during floods.
+	int max_pending_queue_size = 10000;
+	// Cap the in-memory number of stored messages to prevent unbounded growth.
+	int max_messages = 100000;
+	// Cap the UI-rendered messages to prevent RichTextLabel slowdown.
+	int max_ui_messages = 2000;
+	bool flush_processing_enabled = false;
+	void _ensure_processing();
+	void _process_pending_messages();
+	void _enforce_message_cap();
+	void _enforce_ui_message_cap();
+
 protected:
 	void _notification(int p_what);
 

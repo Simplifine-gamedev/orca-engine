@@ -130,6 +130,16 @@ void EditorLog::_editor_settings_changed() {
 		line_limit = new_line_limit;
 		_rebuild_log();
 	}
+
+    int cfg_flush = int(EDITOR_GET("run/output/max_flush_per_frame"));
+    if (cfg_flush > 0) {
+        max_flush_per_frame = cfg_flush;
+    }
+    int cfg_messages = int(EDITOR_GET("run/output/max_messages"));
+    if (cfg_messages > 0) {
+        max_messages = cfg_messages;
+        _enforce_message_cap();
+    }
 }
 
 void EditorLog::_notification(int p_what) {
@@ -137,12 +147,19 @@ void EditorLog::_notification(int p_what) {
 		case NOTIFICATION_ENTER_TREE: {
 			_update_theme();
 			_load_state();
+            if (!pending_messages.is_empty()) {
+                _ensure_processing();
+            }
 		} break;
 
 		case NOTIFICATION_THEME_CHANGED: {
 			_update_theme();
 			_rebuild_log();
 		} break;
+
+        case NOTIFICATION_PROCESS: {
+            _process_pending_messages();
+        } break;
 	}
 }
 
@@ -239,21 +256,14 @@ void EditorLog::clear() {
 }
 
 void EditorLog::_process_message(const String &p_msg, MessageType p_type, bool p_clear) {
-	if (messages.size() > 0 && messages[messages.size() - 1].text == p_msg && messages[messages.size() - 1].type == p_type) {
-		// If previous message is the same as the new one, increase previous count rather than adding another
-		// instance to the messages list.
-		LogMessage &previous = messages.write[messages.size() - 1];
-		previous.count++;
-
-		_add_log_line(previous, collapse);
-	} else {
-		// Different message to the previous one received.
-		LogMessage message(p_msg, p_type, p_clear);
-		_add_log_line(message);
-		messages.push_back(message);
+	// Queue message for incremental flush to keep UI responsive.
+	// Drop messages if queue is too large to prevent unbounded growth.
+	if (pending_messages.size() >= max_pending_queue_size) {
+		return; // Silently drop to prevent UI freeze
 	}
-
-	type_filter_map[p_type]->set_message_count(type_filter_map[p_type]->get_message_count() + 1);
+	LogMessage message(p_msg, p_type, p_clear);
+	pending_messages.push_back(message);
+	_ensure_processing();
 }
 
 void EditorLog::add_message(const String &p_msg, MessageType p_type) {
@@ -265,9 +275,9 @@ void EditorLog::add_message(const String &p_msg, MessageType p_type) {
 	Vector<String> lines = p_msg.split("\n", true);
 	int line_count = lines.size();
 
-	for (int i = 0; i < line_count; i++) {
-		_process_message(lines[i], p_type, i == line_count - 1);
-	}
+    for (int i = 0; i < line_count; i++) {
+        _process_message(lines[i], p_type, i == line_count - 1);
+    }
 }
 
 void EditorLog::set_tool_button(Button *p_tool_button) {
@@ -294,11 +304,13 @@ void EditorLog::_rebuild_log() {
 
 	log->clear();
 
+	// Respect UI message cap during rebuild to prevent showing all messages
+	int effective_line_limit = MIN(line_limit, max_ui_messages);
 	int line_count = 0;
 	int start_message_index = 0;
 	int initial_skip = 0;
 
-	// Search backward for starting place.
+	// Search backward for starting place, but also respect UI message cap.
 	for (start_message_index = messages.size() - 1; start_message_index >= 0; start_message_index--) {
 		LogMessage msg = messages[start_message_index];
 		if (collapse) {
@@ -313,8 +325,8 @@ void EditorLog::_rebuild_log() {
 				}
 			}
 		}
-		if (line_count >= line_limit) {
-			initial_skip = line_count - line_limit;
+		if (line_count >= effective_line_limit) {
+			initial_skip = line_count - effective_line_limit;
 			break;
 		}
 		if (start_message_index == 0) {
@@ -519,7 +531,18 @@ EditorLog::EditorLog() {
 	save_state_timer->connect("timeout", callable_mp(this, &EditorLog::_save_state));
 	add_child(save_state_timer);
 
-	line_limit = int(EDITOR_GET("run/output/max_lines"));
+    line_limit = int(EDITOR_GET("run/output/max_lines"));
+    // Optional settings; fall back to sensible defaults if unset or invalid.
+    {
+        int cfg_flush = int(EDITOR_GET("run/output/max_flush_per_frame"));
+        if (cfg_flush > 0) {
+            max_flush_per_frame = cfg_flush;
+        }
+        int cfg_messages = int(EDITOR_GET("run/output/max_messages"));
+        if (cfg_messages > 0) {
+            max_messages = cfg_messages;
+        }
+    }
 	EditorSettings::get_singleton()->connect("settings_changed", callable_mp(this, &EditorLog::_editor_settings_changed));
 
 	HBoxContainer *hb = this;
@@ -655,3 +678,87 @@ EditorLog::~EditorLog() {
 		}
 	}
 }
+
+void EditorLog::_ensure_processing() {
+    if (!flush_processing_enabled) {
+        set_process(true);
+        flush_processing_enabled = true;
+    }
+}
+
+void EditorLog::_process_pending_messages() {
+    if (pending_read_index >= pending_messages.size()) {
+        pending_messages.clear();
+        pending_read_index = 0;
+        if (flush_processing_enabled) {
+            set_process(false);
+            flush_processing_enabled = false;
+        }
+        return;
+    }
+
+	int processed = 0;
+	while (pending_read_index < pending_messages.size() && processed < max_flush_per_frame) {
+		LogMessage &queued = pending_messages.write[pending_read_index++];
+
+		if (messages.size() > 0 && messages[messages.size() - 1].text == queued.text && messages[messages.size() - 1].type == queued.type) {
+            LogMessage &previous = messages.write[messages.size() - 1];
+            previous.count++;
+            _add_log_line(previous, collapse);
+		} else {
+			_add_log_line(queued);
+			messages.push_back(queued);
+			_enforce_message_cap();
+			_enforce_ui_message_cap();
+		}
+
+        if (type_filter_map.has(queued.type)) {
+            type_filter_map[queued.type]->set_message_count(type_filter_map[queued.type]->get_message_count() + 1);
+        }
+
+        processed++;
+    }
+
+    if (pending_read_index >= pending_messages.size()) {
+        pending_messages.clear();
+        pending_read_index = 0;
+        set_process(false);
+        flush_processing_enabled = false;
+    }
+}
+
+void EditorLog::_enforce_message_cap() {
+	if (max_messages <= 0) {
+		return;
+	}
+	int excess = messages.size() - max_messages;
+	if (excess > 0) {
+		for (int i = 0; i < excess; i++) {
+			messages.remove_at(0);
+		}
+		// No rebuild here to avoid heavy work during floods; UI is already capped by line_limit.
+	}
+}
+
+void EditorLog::_enforce_ui_message_cap() {
+	if (max_ui_messages <= 0) {
+		return;
+	}
+	// Cap the UI rendering by removing old paragraphs from RichTextLabel.
+	// Keep the messages in memory but remove from UI to prevent slowdown.
+	int ui_paragraphs = log->get_paragraph_count();
+	// Only rebuild when significantly over limit to avoid constant rebuilding
+	if (ui_paragraphs > max_ui_messages * 2) { 
+		// Instead of full rebuild, just remove old paragraphs in small batches
+		int to_remove = ui_paragraphs - max_ui_messages;
+		int batch_size = MIN(to_remove, 100); // Remove max 100 at a time to avoid blocking
+		for (int i = 0; i < batch_size; i++) {
+			if (log->get_paragraph_count() > 0) {
+				log->remove_paragraph(0, false); // Don't update immediately
+			}
+		}
+		// Debug: show when UI cap is enforced
+		print_line("EditorLog: Removed " + itos(batch_size) + " old paragraphs, remaining: " + itos(log->get_paragraph_count()));
+	}
+}
+
