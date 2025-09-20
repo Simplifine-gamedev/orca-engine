@@ -44,6 +44,7 @@ public:
 	static Array _check_compilation_errors(const String &p_file_path, const String &p_content);
 	static void _check_all_scripts_errors(Array &r_errors);
 	static void _get_all_project_files(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions);
+	static void _get_all_project_files_limited(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files);
     static void set_api_endpoint(const String &p_endpoint);
 
     // Pending preview overlay management (in-memory edited content before save)
@@ -111,6 +112,14 @@ public:
 	static Dictionary universal_node_manager(const Dictionary &p_args);
 	static Dictionary universal_file_manager(const Dictionary &p_args);
 	static Dictionary scene_manager(const Dictionary &p_args);
+
+	// New Consolidated Tool Methods
+	static Dictionary project_manager(const Dictionary &p_args);
+	static Dictionary script_manager(const Dictionary &p_args);
+	static Dictionary resource_manager(const Dictionary &p_args);
+	static Dictionary settings_manager(const Dictionary &p_args);
+	static Dictionary search_manager(const Dictionary &p_args);
+	static Dictionary runtime_manager(const Dictionary &p_args);
 
 	// Multiplexed introspection/debug tool
 	static Dictionary editor_introspect(const Dictionary &p_args);

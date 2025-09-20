@@ -32,12 +32,62 @@ except Exception:
     LocalVectorManager = None
 from auth_manager import AuthManager
 from auto_update_manager import auto_update_manager
+from tool_logger import log_tool_call, log_tool_result
+from version_checker import version_checker
 
 # app = Flask(__name__)
 # CORS(app)
 
 # Load environment variables from .env file
 load_dotenv()
+
+# --- LiteLLM Custom Logging Setup ---
+# Initialize custom logger for LiteLLM API calls
+# Auto-detect logging server URL based on DEV_MODE
+_dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
+
+# Choose logging server URL based on environment
+if _dev_mode:
+    # Development mode: use local logging server
+    LOGGING_SERVER_URL = 'http://localhost:3031'
+    print(f"🧪 DEV_MODE: Using local logging server: {LOGGING_SERVER_URL}")
+else:
+    # Production mode: use configured cloud logging server
+    LOGGING_SERVER_URL = os.getenv('LOGGING_SERVER_URL')
+    if LOGGING_SERVER_URL:
+        print(f"☁️  PRODUCTION: Using cloud logging server: {LOGGING_SERVER_URL}")
+    else:
+        print("ℹ️  PRODUCTION: LOGGING_SERVER_URL not configured")
+
+# Initialize the logger if we have a URL and logging is enabled
+detailed_logging_enabled = os.getenv('DETAILED_LOGGING', 'false').lower()
+if detailed_logging_enabled == 'false':
+    print("ℹ️  LiteLLM logging disabled via DETAILED_LOGGING=false")
+    litellm_logger = None
+elif LOGGING_SERVER_URL and detailed_logging_enabled in ['true', 'auto']:
+    try:
+        from litellm_callback import GodotLiteLLMLogger
+        litellm_logger = GodotLiteLLMLogger(LOGGING_SERVER_URL)
+        litellm.callbacks = [litellm_logger]
+        mode = "DEV" if _dev_mode else "PROD"
+        logging_mode = "FORCED" if detailed_logging_enabled == 'true' else "AUTO"
+        print(f"✅ LiteLLM logging enabled ({mode}/{logging_mode}): {LOGGING_SERVER_URL}")
+    except ImportError as e:
+        print(f"⚠️  LiteLLM logging disabled: {e}")
+        litellm_logger = None
+else:
+    print("ℹ️  LiteLLM logging disabled: no server URL available or DETAILED_LOGGING=false")
+    litellm_logger = None
+
+# Print final logging status
+if detailed_logging_enabled == 'true':
+    print("🔍 DETAILED_LOGGING: ENABLED (forced via DETAILED_LOGGING=true)")
+elif detailed_logging_enabled == 'auto':
+    mode = "CLOUD" if STRUCTURED_LOGS else "LOCAL"
+    print(f"📊 DETAILED_LOGGING: AUTO ({mode} mode)")
+else:
+    print("🔇 DETAILED_LOGGING: DISABLED (default - set DETAILED_LOGGING=true to enable)")
+# --- End LiteLLM Setup ---
 
 # Vertex AI configuration (DISABLED - using direct Anthropic API instead)
 # VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')  
@@ -99,6 +149,14 @@ def _anon(val: str | None) -> str | None:
 
 def _should_emit_for_local_request() -> bool:
     try:
+        # Check DETAILED_LOGGING environment variable first (overrides all other logic)
+        detailed_logging_env = os.getenv('DETAILED_LOGGING', '').lower()
+        if detailed_logging_env == 'true':
+            return True
+        elif detailed_logging_env == 'false':
+            return False
+        # If DETAILED_LOGGING not set, use existing logic
+        
         # Always emit in cloud (structured logs)
         if STRUCTURED_LOGS:
             return True
@@ -111,6 +169,14 @@ def _should_emit_for_local_request() -> bool:
     except Exception:
         # Be conservative locally
         return False
+
+def debug_print(message: str) -> None:
+    """Print debug messages only when detailed logging is enabled"""
+    try:
+        if _should_emit_for_local_request():
+            print(message)
+    except Exception:
+        pass
 
 def log_event(event_name: str, props: dict | None = None, severity: str = 'INFO') -> None:
     try:
@@ -222,13 +288,14 @@ def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> t
         # Extract missing tool_call_ids from error message
         import re
         # Pattern matches: "The following tool_call_ids did not have response messages: tool_id1, tool_id2"
+        # Use the original error message (not lowercased) to preserve tool call ID case
         pattern = r"the following tool_call_ids did not have response messages:\s*([^\n]+)"
-        match = re.search(pattern, error_str, re.IGNORECASE)
+        match = re.search(pattern, str(error_message), re.IGNORECASE)
         
         if not match:
             return messages, False
         
-        # Parse the missing tool call IDs
+        # Parse the missing tool call IDs (preserve original case)
         missing_ids_str = match.group(1).strip()
         missing_tool_call_ids = [tid.strip() for tid in missing_ids_str.split(',')]
         
@@ -364,18 +431,46 @@ CORS(app, origins=["*"])
 def log_request_info():
     try:
         if _should_emit_for_local_request():
-            print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+            debug_print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
     except Exception:
         pass
     try:
         g.request_id = str(uuid.uuid4())
         g.request_started_at = time.time()
+        
+        # Generate conversation ID for logging (STABLE across entire conversation)
+        try:
+            user_id = request.headers.get('X-User-ID', 'anonymous')
+            machine_id = request.headers.get('X-Machine-ID', 'unknown')
+            
+            # SIMPLE & STABLE: Just use user+machine (no time buckets)
+            # This ensures the ENTIRE conversation thread has the same ID
+            conv_seed = f"conv_{user_id}_{machine_id}"
+            g.conversation_id = hashlib.md5(conv_seed.encode()).hexdigest()[:16]
+            
+            # Store for debugging
+            g.conversation_seed = conv_seed
+            
+        except Exception:
+            g.conversation_id = 'fallback_conv'
         log_event('request_start', {
             'content_length': request.content_length,
             'query_len': (len(request.query_string) if request.query_string else 0),
             'ip_h': _anon(request.environ.get('REMOTE_ADDR')),
         })
     except Exception:
+        pass
+
+@app.before_request 
+def version_compatibility_check():
+    """Check version compatibility before processing requests"""
+    try:
+        version_check_result = check_version_compatibility()
+        if version_check_result:
+            return version_check_result
+    except Exception as e:
+        print(f"VERSION_CHECK_ERROR: {e}")
+        # Continue processing request if version check fails
         pass
 
 @app.after_request
@@ -397,7 +492,7 @@ def log_request_end(response):
     return response
 
 # Secret must be stable across restarts in production. Require env in production, random only in DEV_MODE.
-_dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
+# _dev_mode already defined above in LiteLLM logging setup section
 DEPLOYMENT_MODE = os.getenv('DEPLOYMENT_MODE', 'oss').lower()  # 'oss' or 'cloud'
 REQUIRE_SERVER_API_KEY = os.getenv('REQUIRE_SERVER_API_KEY', 'false').lower() == 'true'
 SERVER_API_KEY = os.getenv('SERVER_API_KEY')
@@ -690,6 +785,40 @@ def verify_server_key_if_required():
         return jsonify({"success": False, "error": "Invalid server API key"}), 403
     return None
 
+def check_version_compatibility():
+    """Check if frontend version is compatible with backend."""
+    frontend_version = request.headers.get('X-Frontend-Version')
+    frontend_api_version = request.headers.get('X-Frontend-API-Version')
+    
+    # Skip version checking for health endpoint and version endpoint itself
+    if request.endpoint in ['health_check', 'get_version_info']:
+        return None
+    
+    # Skip if no version headers (for backwards compatibility with old frontends)
+    if not frontend_version or not frontend_api_version:
+        # Log old client for monitoring during transition
+        log_event('legacy_client_detected', {
+            'user_agent': request.headers.get('User-Agent', ''),
+            'endpoint': request.endpoint
+        }, 'INFO')
+        return None
+    
+    compatible, error = version_checker.check_compatibility(frontend_version, frontend_api_version)
+    
+    if not compatible:
+        return jsonify({
+            "success": False,
+            "error": "Version compatibility check failed",
+            "version_error": error,
+            "backend_version": version_checker.backend_version,
+            "backend_api_version": version_checker.api_version,
+            "frontend_version": frontend_version,
+            "frontend_api_version": frontend_api_version,
+            "compatibility_info": version_checker.get_compatibility_status(frontend_version, frontend_api_version)
+        }), 409  # 409 Conflict for version mismatch
+    
+    return None
+
 # Image handling will use OpenAI's native ID system - no local registry needed
 
 # --- Helper Functions ---
@@ -806,7 +935,7 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         # Gather available images from prior conversation messages
         available_images = {}
         if conversation_messages:
-            print(f"IMAGE_OP DEBUG: conversation_messages count: {len(conversation_messages)}")
+            debug_print(f"IMAGE_OP DEBUG: conversation_messages count: {len(conversation_messages)}")
             cm_index = -1
             for msg in conversation_messages:
                 cm_index += 1
@@ -838,7 +967,7 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 for key in available_images.keys():
                     if str(key).startswith(str(img_id)):
                         match = available_images[key]
-                        print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
+                        debug_print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
                         break
             if match:
                 selected_images.append(match)
@@ -1759,8 +1888,10 @@ def generate_3d_model_internal(arguments: dict) -> dict:
             api_url = "http://127.0.0.1:3030/api/generate-3d"
             base_3d_url = "http://127.0.0.1:3030"
         else:
-            api_url = "https://ai-3d-proxy-976792908107.us-central1.run.app/api/generate-3d"
-            base_3d_url = "https://ai-3d-proxy-976792908107.us-central1.run.app"
+            # Use environment variable for 3D service URL, fallback to default project
+            model_3d_service_url = os.getenv('MODEL_3D_SERVICE_URL', 'https://ai-3d-proxy-976792908107.us-central1.run.app')
+            api_url = f"{model_3d_service_url}/api/generate-3d"
+            base_3d_url = model_3d_service_url
         
         # Generate unique user ID for tracking
         user_id = f"godot_user_{hashlib.md5(prompt.encode()).hexdigest()[:8]}"
@@ -1892,14 +2023,249 @@ def check_for_app_updates_internal(arguments: dict) -> dict:
             "error": f"Update check failed: {str(e)}"
         }
 
+# --- New Consolidated Tool Handlers ---
+
+def project_manager_internal(arguments: dict) -> dict:
+    """Handle project_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+        
+        if op == "assets.search":
+            # Route to existing asset search function
+            search_args = {
+                'query': arguments.get('asset_query', ''),
+                'category': arguments.get('category'),
+                'max_results': arguments.get('max_results', 10),
+                'support_level': arguments.get('support_level', 'all'),
+                'godot_version': arguments.get('godot_version', '4.3'),
+                'sort_by': arguments.get('sort_by', 'rating'),
+                'sort_reverse': arguments.get('sort_reverse', False),
+                'asset_type': arguments.get('asset_type', 'any'),
+                'cost_filter': arguments.get('cost_filter', 'all')
+            }
+            return search_godot_assets_internal(search_args)
+            
+        elif op == "assets.install":
+            # Route to existing asset install function
+            install_args = {
+                'asset_id': arguments.get('asset_id'),
+                'project_path': arguments.get('project_path'),
+                'install_location': arguments.get('install_location', 'addons/'),
+                'create_backup': arguments.get('create_backup', True)
+            }
+            return install_godot_asset_internal(install_args)
+            
+        elif op == "updates.check":
+            # Route to existing update check function
+            update_args = {
+                'force_check': arguments.get('force_check', False),
+                'show_notification': arguments.get('show_notification', True)
+            }
+            return check_for_app_updates_internal(update_args)
+            
+        elif op in ["context.get", "fs.list", "fs.read", "fs.write", "fs.copy", "fs.move", 
+                   "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", "project.analyze_dir", 
+                   "project.copy_dir", "project.update_refs"]:
+            # These are frontend-only operations
+            return {
+                "success": False,
+                "frontend_only": True,
+                "message": f"Operation '{op}' is handled by the frontend. This should not be executed on the backend.",
+                "operation": op,
+                "arguments_to_forward": arguments
+            }
+            
+        else:
+            return {"success": False, "error": f"Unknown project_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"PROJECT_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Project manager operation failed: {str(e)}"}
+
+def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Handle search_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        if op == "project.search":
+            # Route to existing project search function
+            search_args = {
+                'query': arguments.get('query'),
+                'max_results': arguments.get('max_results', 5),
+                'include_graph': arguments.get('include_graph', True),
+                'modality_filter': arguments.get('modality_filter'),
+                'project_root': arguments.get('project_root'),
+                'project_id': arguments.get('project_id'),
+                'trace_dependencies': arguments.get('trace_dependencies', False),
+                'search_mode': arguments.get('search_mode', 'semantic')
+            }
+            return search_across_project_internal(search_args, current_user)
+            
+        elif op == "docs.search":
+            # Route to existing docs search function
+            docs_args = {
+                'query': arguments.get('query'),
+                'max_results': arguments.get('max_results', 5),
+                'section_filter': arguments.get('section_filter'),
+                'class_filter': arguments.get('class_filter'),
+                'difficulty': arguments.get('difficulty'),
+                'code_examples_only': arguments.get('code_examples_only', False)
+            }
+            return search_across_godot_docs_internal(docs_args)
+            
+        else:
+            return {"success": False, "error": f"Unknown search_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"SEARCH_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Search manager operation failed: {str(e)}"}
+
+def resource_manager_internal(arguments: dict, conversation_messages: list = None) -> dict:
+    """Handle resource_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        # Backend-processed image operations
+        if op == "image.generate_or_edit":
+            # Route to existing image operation function
+            image_args = {
+                'description': arguments.get('description'),
+                'images': arguments.get('images', []),
+                'style': arguments.get('style'),
+                'size': arguments.get('size'),
+                'exact_size': arguments.get('exact_size'),
+                'tile_size': arguments.get('tile_size'),
+                'grid': arguments.get('grid'),
+                'resize_filter': arguments.get('resize_filter', 'lanczos'),
+                'path_to_save': arguments.get('path_to_save')
+            }
+            return image_operation_internal(image_args, conversation_messages)
+            
+        elif op == "image.slice_spritesheet":
+            # Route to existing spritesheet slicing function
+            slice_args = {
+                'sheet_base64': arguments.get('sheet_base64'),
+                'sheet_path': arguments.get('sheet_path'),
+                'tile_size': arguments.get('tile_size'),
+                'grid': arguments.get('grid'),
+                'margin': arguments.get('margin', 0),
+                'spacing': arguments.get('spacing', 0),
+                'auto_detect': arguments.get('auto_detect', True),
+                'bg_tolerance': arguments.get('bg_tolerance', 24),
+                'alpha_threshold': arguments.get('alpha_threshold', 1),
+                'tight_crop': arguments.get('tight_crop', True),
+                'padding': arguments.get('padding', 0),
+                'fuzzy': arguments.get('fuzzy', 2),
+                'normalize_to': arguments.get('normalize_to')
+            }
+            return slice_spritesheet_internal(slice_args)
+        
+        # All resource operations should be handled by frontend (direct Godot engine access needed)
+        elif op in ["res.create", "res.inspect", "res.modify", "res.assign", "res.copy_from_template", 
+                   "res.refresh", "res.load_and_assign", "import.set_options", "import.reimport", "image.save"]:
+            # These are frontend-only operations
+            return {
+                "success": False,
+                "frontend_only": True,
+                "message": f"Operation '{op}' is handled by the frontend. This should not be executed on the backend.",
+                "operation": op,
+                "arguments_to_forward": arguments
+            }
+            
+        else:
+            return {"success": False, "error": f"Unknown resource_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"RESOURCE_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Resource manager operation failed: {str(e)}"}
+
+def scene_manager_internal(arguments: dict) -> dict:
+    """Handle scene_manager tool operations - all frontend-only"""
+    op = arguments.get('op', '')
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": f"All scene_manager operations are handled by the frontend. Operation '{op}' should not be executed on the backend.",
+        "operation": op,
+        "arguments_to_forward": arguments
+    }
+
+def script_manager_internal(arguments: dict) -> dict:
+    """Handle script_manager tool operations - all frontend-only"""
+    op = arguments.get('op', '')
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": f"All script_manager operations are handled by the frontend. Operation '{op}' should not be executed on the backend.",
+        "operation": op,
+        "arguments_to_forward": arguments
+    }
+
+def settings_manager_internal(arguments: dict) -> dict:
+    """Handle settings_manager tool operations - all frontend-only"""
+    op = arguments.get('op', '')
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": f"All settings_manager operations are handled by the frontend. Operation '{op}' should not be executed on the backend.",
+        "operation": op,
+        "arguments_to_forward": arguments
+    }
+
+def runtime_manager_internal(arguments: dict) -> dict:
+    """Handle runtime_manager tool operations"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        if op in ["game.start", "game.stop", "game.status", "errors.summary", "errors.details"]:
+            # These are frontend-only operations
+            return {
+                "success": False,
+                "frontend_only": True,
+                "message": f"Operation '{op}' is handled by the frontend. This should not be executed on the backend.",
+                "operation": op,
+                "arguments_to_forward": arguments
+            }
+            
+        else:
+            return {"success": False, "error": f"Unknown runtime_manager operation: {op}"}
+            
+    except Exception as e:
+        print(f"RUNTIME_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Runtime manager operation failed: {str(e)}"}
+
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
-    if function_name == "image_operation":
+    # New consolidated tools
+    if function_name == "project_manager":
+        return project_manager_internal(arguments)
+    elif function_name == "scene_manager":
+        return scene_manager_internal(arguments)
+    elif function_name == "script_manager":
+        return script_manager_internal(arguments)
+    elif function_name == "resource_manager":
+        return resource_manager_internal(arguments)
+    elif function_name == "settings_manager":
+        return settings_manager_internal(arguments)
+    elif function_name == "search_manager":
+        return search_manager_internal(arguments, None)
+    elif function_name == "runtime_manager":
+        return runtime_manager_internal(arguments)
+    # Legacy individual tools (maintain backward compatibility)
+    elif function_name == "image_operation":
         return image_operation_internal(arguments)
     elif function_name == "asset_processor":
         return process_asset_internal(arguments)
     elif function_name == "search_across_project":
-        return search_across_project_internal(arguments)
+        return search_across_project_internal(arguments, None)
     elif function_name == "search_across_godot_docs":
         return search_across_godot_docs_internal(arguments)
     elif function_name == "search_godot_assets":
@@ -2205,9 +2571,29 @@ def chat():
             # Track recovery attempts to prevent infinite recovery loops
             recovery_attempts = 0
             max_recovery_attempts = 2
+            
+            # Log tool results that come from frontend
             for msg in messages:
                 if msg is not None and isinstance(msg, dict) and msg.get('role'):
                     conversation_messages.append(msg)
+                    
+                    # Log tool results when they come back from frontend
+                    if msg.get('role') == 'tool':
+                        try:
+                            tool_name = msg.get('name', 'unknown_tool')
+                            tool_call_id = msg.get('tool_call_id', 'unknown_id')
+                            content = msg.get('content', '{}')
+                            
+                            # Parse tool result
+                            try:
+                                result = json.loads(content) if isinstance(content, str) else content
+                            except Exception:
+                                result = {'content': str(content)}
+                            
+                            log_tool_result(tool_name, tool_call_id, result, duration_ms=0)
+                            print(f"TOOL_RESULT_LOG: Logged result for {tool_name} (ID: {tool_call_id})")
+                        except Exception as e:
+                            print(f"⚠️  Error logging frontend tool result: {e}")
                 else:
                     pass
                 # Check for stop even during initial processing
@@ -2366,14 +2752,13 @@ def chat():
                                     "text": clean_msg['content']
                                 })
                             
-                            # Add ONLY the first image
+                            # Add ONLY the first image - but NEVER include base64 to prevent context explosion
                             if len(images) > 0 and images[0].get('base64_data'):
                                 img = images[0]
+                                # CRITICAL FIX: Replace base64 with small placeholder to prevent 500k+ char explosion
                                 content_array.append({
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{img.get('mime_type', 'image/png')};base64,{img['base64_data']}"
-                                    }
+                                    "type": "text",
+                                    "text": f"[Image: {img.get('name', 'attached_image')} - {img.get('mime_type', 'image/png')} - available for reference]"
                                 })
                                 recent_images.append(img.get('name', 'recent_image'))
                             
@@ -2681,34 +3066,56 @@ def chat():
 
                 # Now that we've processed all chunks, handle the results
 
-                # --- Backend-Only Tool Execution (Image Generation + Search + Docs) ---
-                backend_tools_detected = [
-                    func.get("name")
-                    for func in tool_call_aggregator.values()
-                    if func.get("name") in [
-                        "image_operation",
-                        "search_across_project",
-                        "search_across_godot_docs",
-                        "slice_spritesheet",
-                        "search_godot_assets",
-                        "install_godot_asset",
-                        "generate_3d_model",
-                        # Note: Game testing tools are frontend-only, not backend
-                    ]
-                ]
-                print(f"BACKEND_DETECTION: Found {len(backend_tools_detected)} backend tools: {backend_tools_detected}")
+                # --- Smart Backend Tool Detection ---
+                def _needs_backend_processing(func_name: str, func_args: str) -> bool:
+                    """Determine if a tool call needs backend processing based on the operation"""
+                    # Legacy individual tools - always backend
+                    if func_name in ["image_operation", "search_across_project", "search_across_godot_docs", 
+                                   "slice_spritesheet", "search_godot_assets", "install_godot_asset", "generate_3d_model"]:
+                        return True
+                    
+                    # Parse arguments to check operation
+                    try:
+                        import json
+                        args = json.loads(func_args) if func_args else {}
+                        op = args.get('op', '')
+                        
+                        # project_manager: only specific operations need backend
+                        if func_name == "project_manager":
+                            return op in ["assets.search", "assets.install", "updates.check"]
+                        
+                        # search_manager: both operations need backend  
+                        elif func_name == "search_manager":
+                            return op in ["project.search", "docs.search"]
+                        
+                        # resource_manager: only image operations need backend
+                        elif func_name == "resource_manager":
+                            return op in ["image.generate_or_edit", "image.slice_spritesheet"]
+                        
+                        # All other tools are frontend-only
+                        return False
+                        
+                    except Exception as e:
+                        print(f"BACKEND_DETECTION_ERROR: Failed to parse {func_name} args: {e}")
+                        # Conservative: if we can't parse, assume frontend
+                        return False
                 
-                # Identify backend-only tools strictly; ignore frontend tools here
-                backend_only_names = [
-                    "image_operation",
-                    "search_across_project",
-                    "search_across_godot_docs",
-                    "slice_spritesheet",
-                    "search_godot_assets",
-                    "install_godot_asset",
-                    "generate_3d_model",
-                ]
-                backend_calls = {k: v for k, v in tool_call_aggregator.items() if v.get("name") in backend_only_names}
+                # Detect tools that actually need backend processing
+                backend_tools_detected = []
+                backend_calls = {}
+                
+                for k, func in tool_call_aggregator.items():
+                    func_name = func.get("name", "")
+                    func_args = func.get("arguments", "")
+                    
+                    if _needs_backend_processing(func_name, func_args):
+                        backend_tools_detected.append(func_name)
+                        backend_calls[k] = func
+                        print(f"BACKEND_DETECTION: {func_name} needs backend processing")
+                    else:
+                        print(f"BACKEND_DETECTION: {func_name} will be handled by frontend")
+                
+                print(f"BACKEND_DETECTION: {len(backend_calls)} tools need backend processing: {backend_tools_detected}")
                 
                 # Simple guardrails to prevent infinite repeated backend calls
                 # Build a canonical cache key from tool name and normalized arguments
@@ -2752,6 +3159,9 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "image_operation", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Log tool call
+                            log_tool_call("image_operation", tool_id, arguments)
                             try:
                                 arguments = json.loads(func["arguments"])
                             except json.JSONDecodeError:
@@ -2783,6 +3193,9 @@ def chat():
                                 print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
+                            
+                            # Log tool result
+                            log_tool_result("image_operation", tool_id, image_result, duration_ms=0)
                             
                             # Yield result to frontend immediately (include tool_call_id for consistent UI handling)
                             yield json.dumps({
@@ -2817,6 +3230,9 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "search_across_project", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Log tool call
+                            log_tool_call("search_across_project", tool_id, arguments)
                             try:
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
                             except Exception:
@@ -2870,6 +3286,9 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
                             
+                            # Log tool result 
+                            log_tool_result("search_across_project", tool_id, search_result, duration_ms=0)
+                            
                             # Yield result to frontend immediately
                             yield json.dumps({"tool_executed": "search_across_project", "tool_result": search_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
                             
@@ -2896,6 +3315,9 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "search_across_godot_docs", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Log tool call
+                            log_tool_call("search_across_godot_docs", tool_id, arguments)
                             try:
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
                             except Exception:
@@ -2933,6 +3355,9 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
 
+                            # Log tool result
+                            log_tool_result("search_across_godot_docs", tool_id, docs_result, duration_ms=0)
+                            
                             # Yield result to frontend immediately
                             yield json.dumps({"tool_executed": "search_across_godot_docs", "tool_result": docs_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
 
@@ -3233,6 +3658,147 @@ def chat():
                                 "name": "check_for_app_updates",
                                 "content": json.dumps(update_summary)
                             })
+                        
+                        elif func["name"] == "project_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "project_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"])
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            
+                            # Inject project_root/project_path from Flask context if not provided
+                            if not arguments.get('project_root') and not arguments.get('project_path') and hasattr(g, 'project_root') and g.project_root:
+                                arguments['project_root'] = g.project_root
+                                arguments['project_path'] = g.project_root  # Some operations expect project_path
+                                print(f"PROJECT_MANAGER: Injected project_root from Flask context: {g.project_root}")
+                            
+                            pm_result = project_manager_internal(arguments)
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "project_manager",
+                                "tool_result": pm_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "project_manager",
+                                "content": json.dumps(pm_result)
+                            })
+                        
+                        elif func["name"] == "search_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "search_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"])
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            
+                            # Inject project_root from Flask context if not provided
+                            if not arguments.get('project_root') and hasattr(g, 'project_root') and g.project_root:
+                                arguments['project_root'] = g.project_root
+                                print(f"SEARCH_MANAGER: Injected project_root from Flask context: {g.project_root}")
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_search_manager():
+                                try:
+                                    _tool_result_holder["result"] = search_manager_internal(arguments, user)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_search_manager, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during search_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            sm_result = _tool_result_holder["result"] or {"success": False, "error": "search_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "search_manager",
+                                "tool_result": sm_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "search_manager",
+                                "content": json.dumps(sm_result)
+                            })
+                        
+                        elif func["name"] == "resource_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({"tool_starting": "resource_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            try:
+                                arguments = json.loads(func["arguments"])
+                            except json.JSONDecodeError:
+                                arguments = {}
+                            
+                            # Execute resource_manager with threading support for image operations
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_resource_mgr():
+                                try:
+                                    _tool_result_holder["result"] = resource_manager_internal(arguments, conversation_messages)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_resource_mgr, daemon=True)
+                            t.start()
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during resource_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.1)
+                            rm_result = _tool_result_holder["result"] or {"success": False, "error": "resource_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "resource_manager",
+                                "tool_result": rm_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "resource_manager",
+                                "content": json.dumps(rm_result)
+                            })
                 
                     # Add the assistant's decision to call the tool to history
                     assistant_message = {"role": "assistant", "content": None, "tool_calls": original_tool_calls_for_history}
@@ -3303,6 +3869,17 @@ def chat():
                     print(f"CONVERSATION_ADD: Added frontend assistant message with {len(tool_calls_for_history)} tool calls")
                     
                     print(f"FRONTEND_PROCESSING: Sending {len(tool_calls_for_frontend)} tool calls to frontend")
+                    
+                    # Log each frontend tool call
+                    for tool_call in tool_calls_for_frontend:
+                        try:
+                            tool_name = tool_call['function']['name']
+                            tool_id = tool_call['id']
+                            arguments = json.loads(tool_call['function']['arguments']) if tool_call['function']['arguments'] else {}
+                            log_tool_call(tool_name, tool_id, arguments)
+                        except Exception as e:
+                            print(f"⚠️  Error logging frontend tool call: {e}")
+                    
                     # Yield tool calls to the frontend in the format it expects
                     frontend_response = {
                         "status": "executing_tools",
@@ -4626,13 +5203,52 @@ def get_available_models():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for testing"""
+    version_info = version_checker.get_version_info()
     return jsonify({
         "status": "healthy", 
         "service": "orca-engine-ai-service",
         "providers": ["openai", "anthropic", "google"],
         "available_models": list(MODEL_MAP.keys()),
-        "version": auto_update_manager.current_version
+        "version": auto_update_manager.current_version,
+        "version_info": version_info
     })
+
+@app.route('/version', methods=['GET'])
+def get_version_info():
+    """Get detailed version information for compatibility checking"""
+    version_info = version_checker.get_version_info()
+    return jsonify({
+        "success": True,
+        "orca_version": auto_update_manager.current_version,
+        **version_info
+    })
+
+@app.route('/version/check', methods=['POST'])
+def check_version_compatibility_endpoint():
+    """Explicit endpoint for checking version compatibility"""
+    try:
+        data = request.json or {}
+        frontend_version = data.get('frontend_version') or request.headers.get('X-Frontend-Version')
+        frontend_api_version = data.get('frontend_api_version') or request.headers.get('X-Frontend-API-Version')
+        
+        if not frontend_version or not frontend_api_version:
+            return jsonify({
+                "success": False,
+                "error": "frontend_version and frontend_api_version are required"
+            }), 400
+        
+        compatibility_status = version_checker.get_compatibility_status(frontend_version, frontend_api_version)
+        
+        return jsonify({
+            "success": True,
+            "compatibility_check": compatibility_status
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Version compatibility check failed: {str(e)}"
+        }), 500
 
 # --- Auto-Update Endpoints ---
 

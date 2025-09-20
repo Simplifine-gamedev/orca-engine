@@ -9,6 +9,7 @@
 #include "core/string/string_builder.h"
 #include "core/config/project_settings.h"
 #include "core/version.h"
+#include <cstring>
 
 void AIToolServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("listen", "port"), &AIToolServer::listen, DEFVAL(8001));
@@ -224,6 +225,20 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		result = EditorTools::ensure_node(args);
 	} else if (function_name == "batch_scene_ops") {
 		result = EditorTools::batch_scene_ops(args);
+	} else if (function_name == "project_manager") {
+		result = EditorTools::project_manager(args);
+	} else if (function_name == "scene_manager") {
+		result = EditorTools::scene_manager(args);
+	} else if (function_name == "script_manager") {
+		result = EditorTools::script_manager(args);
+	} else if (function_name == "resource_manager") {
+		result = EditorTools::resource_manager(args);
+	} else if (function_name == "settings_manager") {
+		result = EditorTools::settings_manager(args);
+	} else if (function_name == "search_manager") {
+		result = EditorTools::search_manager(args);
+	} else if (function_name == "runtime_manager") {
+		result = EditorTools::runtime_manager(args);
 	} else {
 		result["error"] = "Unknown function: " + function_name;
 	}

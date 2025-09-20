@@ -10,10 +10,27 @@ elif [ -n "$GCP_PROJECT_ID" ]; then
     PROJECT_ID="$GCP_PROJECT_ID"
 else
     echo "❌ Error: GCP project id not provided."
-    echo "Usage: ./deploy.sh <GCP_PROJECT_ID> (or set GCP_PROJECT_ID env var)"
+    echo "Usage: ./deploy.sh <GCP_PROJECT_ID> [SERVICE_NAME]"
+    echo "       ./deploy.sh my-project-id                    # Uses default godot-ai-backend-v2"
+    echo "       ./deploy.sh my-project-id my-custom-backend  # Uses custom service name"
+    echo "   OR: Set GCP_PROJECT_ID and/or SERVICE_NAME environment variables"
     exit 1
 fi
-SERVICE_NAME="godot-ai-backend"
+
+# Handle optional service name parameter or environment variable
+if [ -n "$2" ]; then
+    SERVICE_NAME="$2"  # Use provided service name
+elif [ -n "$SERVICE_NAME" ]; then
+    # Use environment variable if set
+    echo "📋 Using SERVICE_NAME from environment: $SERVICE_NAME"
+else
+    SERVICE_NAME="godot-ai-backend-v2"  # Default to v2 for updated backend with version checking
+fi
+
+echo "📋 DEPLOYMENT STRATEGY:"
+echo "   🆕 New service: $SERVICE_NAME (with version checking)"
+echo "   🔄 Old service: godot-ai-backend (legacy, no version headers)"
+echo "   🌐 DNS: Custom domain api.orcaengine.ai points to this service"
 REGION="us-central1"
 IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
 
@@ -45,8 +62,23 @@ gcloud services enable containerregistry.googleapis.com
 gcloud services enable bigquery.googleapis.com
 gcloud services enable aiplatform.googleapis.com  # Required for Vertex AI models (Claude, Gemini)
 
+# Extract version information from version.py for build-time injection
+echo "📋 Extracting versions from version.py..."
+if [ -f "../extract_versions.py" ] && [ -f "../version.py" ]; then
+    # Use the extraction script for reliable version parsing
+    eval $(python3 ../extract_versions.py env_vars)
+    echo "📋 Extracted versions: Backend=$BACKEND_VERSION, API=$API_VERSION, Frontend=$FRONTEND_VERSION, Orca=$ORCA_VERSION"
+else
+    echo "⚠️  extract_versions.py or version.py not found, using default versions"
+    BACKEND_VERSION="1.0.0"
+    API_VERSION="1.0"
+    FRONTEND_VERSION="1.0.0"
+    ORCA_VERSION="1.0.0"
+fi
+
 # Build and push the container image
 echo "🏗️  Building container image (scoped to backend/ context)..."
+echo "📋 Versions will be injected via environment variables during deployment"
 gcloud builds submit --tag ${IMAGE_NAME}
 
 # Upload secrets to GCP Secret Manager if .env exists
@@ -142,7 +174,7 @@ if [ -n "$SECRET_REFS" ]; then
         --min-instances 2 \
         --max-instances 100 \
         --timeout 600 \
-        --set-env-vars "FLASK_ENV=production" \
+        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION}" \
         --set-secrets "$SECRET_REFS"
 else
     echo "⚠️  No secrets found, deploying without secrets"
@@ -158,7 +190,7 @@ else
         --min-instances 2 \
         --max-instances 100 \
         --timeout 600 \
-        --set-env-vars "FLASK_ENV=production"
+        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION}"
 fi
 
 # Get the service URL

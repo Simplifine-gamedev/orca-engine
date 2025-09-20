@@ -73,6 +73,10 @@ public:
 	static AIChatDock *get_singleton() { return singleton; }
 
 private:
+	// Version Management - These should match version.py values
+	static const String FRONTEND_VERSION;
+	static const String API_VERSION;
+	
 	DiffViewer *diff_viewer;
 	Ref<AIToolServer> tool_server;
 	// Helper to find RichTextLabel recursively.
@@ -351,6 +355,8 @@ private:
   void _execute_apply_edit_async(const String &p_tool_call_id, const Dictionary &p_args);
   static void _apply_edit_thread(void *p_userdata);
   void _on_apply_edit_thread_done();
+  // Deferred frontend tool execution (for slow tools only)
+  void _execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str);
 	RichTextLabel *_get_or_create_current_assistant_message_label();
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);
@@ -410,9 +416,18 @@ private:
 
 	void _on_tool_file_link_pressed(const String &p_path);
 	String _convert_to_godot_path(const String &p_path);
+	String _generate_descriptive_tool_status(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result, bool p_success);
+	String _generate_executing_tool_message(const String &p_tool_name);
 
 	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
 	void _load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section);
+
+	// Version compatibility methods
+	void _add_version_headers_to_request(PackedStringArray &p_headers);
+	void _check_version_compatibility_on_startup();
+	void _on_version_check_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _handle_version_mismatch(const Dictionary &p_version_info);
+	HTTPRequest *version_check_request = nullptr;
 
 	// Markdown to BBCode conversion
 	String _markdown_to_bbcode(const String &p_markdown);
@@ -656,6 +671,12 @@ public:
 	bool _create_checkpoint(const String &p_message, int p_message_index);
 	String _get_checkpoint_name(int p_message_index);
 	bool _restore_from_checkpoint(int p_message_index);
+	void _safely_reopen_scene_after_checkpoint(const String &p_scene_path);
+	void _verify_scene_reopened(const String &p_expected_scene_path);
+	void _force_editor_refresh_after_checkpoint();
+	void _trigger_external_change_detection();
+	void _final_ui_refresh_after_checkpoint();
+	void _immediate_post_restore_refresh();
 
 	// Attach an external file (e.g., screenshot) to the current chat input attachments.
 	void attach_external_file(const String &p_file_path);

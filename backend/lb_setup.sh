@@ -5,7 +5,7 @@ set -euo pipefail
 # HTTPS Load Balancer for Cloud Run + Cloud Armor attachment
 #
 # Usage:
-#   ./lb_setup.sh --domain gamechat.simplifine.com --service godot-ai-backend --region us-central1 [--policy godot-ai-armor]
+#   ./lb_setup.sh --domain api.orcaengine.ai --service godot-ai-backend --region us-central1 [--policy godot-ai-armor]
 #
 # Requires: gcloud authenticated; project set
 
