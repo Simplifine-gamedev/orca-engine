@@ -52,7 +52,6 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/panel.h"
 #include "scene/gui/separator.h"
-#include "editor/docks/ai_chat_dock.h"
 
 void GameViewDebugger::_session_started(Ref<EditorDebuggerSession> p_session) {
 	if (!is_feature_enabled) {
@@ -289,8 +288,6 @@ GameViewDebugger::GameViewDebugger() {
 	ED_SHORTCUT_OVERRIDE("editor/suspend_resume_embedded_project", "macos", KeyModifierMask::META | KeyModifierMask::SHIFT | Key::B);
 
 	ED_SHORTCUT("editor/next_frame_embedded_project", TTRC("Next Frame"), Key::F10);
-
-	ED_SHORTCUT("spatial_editor/tool_select", TTRC("Select Mode"), Key::Q);
 }
 
 ///////
@@ -523,30 +520,6 @@ void GameView::_handle_shortcut_requested(int p_embed_action) {
 			debugger->next_frame();
 		} break;
 	}
-}
-
-void GameView::_snap_to_chat_pressed() {
-    // Request screenshot from running instance and attach to AI chat on callback
-    Callable cb = callable_mp(this, &GameView::_on_snapshot_ready);
-    bool requested = _instance_rq_screenshot(cb);
-    if (!requested) {
-        // Fallback for non-embedded/floating game windows: request via debugger directly.
-        if (!debugger.is_null()) {
-            requested = debugger->add_screenshot_callback(cb, Rect2i());
-        }
-        if (!requested) {
-            EditorNode::get_singleton()->show_warning(TTRC("No running embedded game to snapshot."));
-        }
-    }
-}
-
-void GameView::_on_snapshot_ready(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
-    // p_path is an absolute path to a temporary PNG generated in the game process.
-    AIChatDock *dock = EditorNode::get_singleton()->get_ai_chat_dock();
-    if (!dock) {
-        return;
-    }
-    dock->attach_external_file(p_path);
 }
 
 void GameView::_toggle_suspend_button() {
@@ -1227,17 +1200,6 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 	menu->add_check_item(TTRC("Embed Game on Next Play"), EMBED_RUN_GAME_EMBEDDED);
 	menu->add_check_item(TTRC("Make Game Workspace Floating on Next Play"), EMBED_MAKE_FLOATING_ON_PLAY);
 
-	// Snap to Chat button: capture a screenshot and attach to AI Chat
-	main_menu_hbox->add_child(memnew(VSeparator));
-
-	Button *snap_to_chat_button = memnew(Button);
-	main_menu_hbox->add_child(snap_to_chat_button);
-	snap_to_chat_button->set_theme_type_variation(SceneStringName(FlatButton));
-	snap_to_chat_button->set_text(TTRC("Snap to Chat"));
-	snap_to_chat_button->set_tooltip_text(TTRC("Capture a snapshot of the running game and attach it to the AI Chat."));
-
-	snap_to_chat_button->connect(SceneStringName(pressed), callable_mp(this, &GameView::_snap_to_chat_pressed));
-
 	main_menu_hbox->add_spacer();
 
 	game_size_label = memnew(Label());
@@ -1345,7 +1307,7 @@ void GameViewPluginBase::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_TRANSLATION_CHANGED: {
 #ifndef ANDROID_ENABLED
-			window_wrapper->set_window_title(vformat(TTR("%s - Orca"), TTR("Game Workspace")));
+			window_wrapper->set_window_title(vformat(TTR("%s - Godot Engine"), TTR("Game Workspace")));
 #endif
 		} break;
 		case NOTIFICATION_ENTER_TREE: {
