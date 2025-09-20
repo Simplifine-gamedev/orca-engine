@@ -1470,7 +1470,8 @@ Dictionary EditorTools::create_directory(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::copy_file(const Dictionary &p_args) {
-    Dictionary result; String src = p_args.get("source", ""); String dst = p_args.get("destination", ""); bool overwrite = p_args.get("overwrite", false);
+    Dictionary result; 
+    String src = p_args.get("source", ""); String dst = p_args.get("destination", ""); bool overwrite = p_args.get("overwrite", false);
     if (src.is_empty() || dst.is_empty()) { result["success"] = false; result["message"] = "source and destination required"; return result; }
     if (!_is_within_project(src) || !_is_within_project(dst)) { result["success"] = false; result["message"] = "Paths must be within project"; return result; }
     String abs_src = ProjectSettings::get_singleton()->globalize_path(src);
@@ -1483,7 +1484,8 @@ Dictionary EditorTools::copy_file(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::move_file(const Dictionary &p_args) {
-    Dictionary result; String src = p_args.get("source", ""); String dst = p_args.get("destination", ""); bool overwrite = p_args.get("overwrite", false);
+    Dictionary result; 
+    String src = p_args.get("source", ""); String dst = p_args.get("destination", ""); bool overwrite = p_args.get("overwrite", false);
     if (src.is_empty() || dst.is_empty()) { result["success"] = false; result["message"] = "source and destination required"; return result; }
     if (!_is_within_project(src) || !_is_within_project(dst)) { result["success"] = false; result["message"] = "Paths must be within project"; return result; }
     String abs_src = ProjectSettings::get_singleton()->globalize_path(src);
@@ -1496,24 +1498,114 @@ Dictionary EditorTools::move_file(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::delete_file(const Dictionary &p_args) {
-    Dictionary result; String path = p_args.get("path", ""); if (path.is_empty()) { result["success"] = false; result["message"] = "path required"; return result; }
+    Dictionary result; 
+    String path = p_args.get("path", ""); 
+    if (path.is_empty()) { result["success"] = false; result["message"] = "path required"; return result; }
     if (!_is_within_project(path)) { result["success"] = false; result["message"] = "Path must be within project"; return result; }
+    
     String abs = ProjectSettings::get_singleton()->globalize_path(path);
-    Error e = DirAccess::remove_absolute(abs);
-    if (e != OK) { result["success"] = false; result["message"] = "Delete failed"; return result; }
+    print_line("delete_file DEBUG: Deleting " + abs);
+    
+    // Handle different file types (files, directories, symlinks, reference files)
+    Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+    Error e = ERR_FILE_NOT_FOUND;
+    
+    // Check for reference files created by our symlink fallback
+    String ref_file_path = abs + ".ref";
+    if (FileAccess::exists(ref_file_path)) {
+        print_line("delete_file DEBUG: Found reference file: " + ref_file_path);
+        e = da->remove(ref_file_path);
+        print_line("delete_file DEBUG: Removed reference file, result: " + String::num_int64(e));
+    } else if (da->dir_exists(abs)) {
+        // It's a directory - try to remove it (will fail if not empty)
+        e = da->remove(abs);
+        print_line("delete_file DEBUG: Removed directory, result: " + String::num_int64(e));
+    } else if (da->file_exists(abs)) {
+        // It's a file or symlink
+        e = da->remove(abs);
+        print_line("delete_file DEBUG: Removed file/symlink, result: " + String::num_int64(e));
+    } else {
+        // Try the fallback method
+        e = DirAccess::remove_absolute(abs);
+        print_line("delete_file DEBUG: Used remove_absolute fallback, result: " + String::num_int64(e));
+    }
+    
+    if (e != OK) { result["success"] = false; result["message"] = "Delete failed (Error: " + String::num_int64(e) + ")"; return result; }
     if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
     result["success"] = true; return result;
 }
 
 Dictionary EditorTools::create_symlink(const Dictionary &p_args) {
-    Dictionary result; String target = p_args.get("target", ""); String link_path = p_args.get("link_path", "");
-    if (target.is_empty() || link_path.is_empty()) { result["success"] = false; result["message"] = "target and link_path required"; return result; }
-    if (!_is_within_project(target) || !_is_within_project(link_path)) { result["success"] = false; result["message"] = "Paths must be within project"; return result; }
+    Dictionary result; 
+    
+    // Debug parameter names
+    print_line("create_symlink DEBUG: Available parameters:");
+    Array keys = p_args.keys();
+    for (int i = 0; i < keys.size(); i++) {
+        print_line("  " + String(keys[i]) + " = " + String(p_args[keys[i]]));
+    }
+    
+    String target = p_args.get("target", ""); 
+    String link_path = p_args.get("link_path", "");
+    
+    if (target.is_empty() || link_path.is_empty()) { 
+        result["success"] = false; 
+        result["message"] = "target and link_path required"; 
+        return result; 
+    }
+    
+    if (!_is_within_project(target) || !_is_within_project(link_path)) { 
+        result["success"] = false; 
+        result["message"] = "Paths must be within project"; 
+        return result; 
+    }
+    
+    String abs_target = ProjectSettings::get_singleton()->globalize_path(target);
+    String abs_link = ProjectSettings::get_singleton()->globalize_path(link_path);
+    
+    print_line("create_symlink DEBUG: Creating symlink:");
+    print_line("  Target (abs): " + abs_target);
+    print_line("  Link (abs): " + abs_link);
+    
+    // Check if target exists first
+    if (!FileAccess::exists(abs_target) && !DirAccess::dir_exists_absolute(abs_target)) {
+        result["success"] = false;
+        result["message"] = "Target does not exist: " + target;
+        return result;
+    }
+    
+    // Try different symlink creation methods
     Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-    Error e = da->create_link(ProjectSettings::get_singleton()->globalize_path(link_path), ProjectSettings::get_singleton()->globalize_path(target));
-    if (e != OK) { result["success"] = false; result["message"] = "Symlink creation failed"; return result; }
+    Error e = da->create_link(abs_link, abs_target);  // Note: link_path first, target second
+    
+    if (e != OK) {
+        print_line("create_symlink DEBUG: Primary method failed with error: " + String::num_int64(e));
+        
+        // For development/testing: create a text file that acts as a "reference file" instead of a symlink
+        // This provides the functionality even when symlinks aren't supported
+        String ref_content = "# SYMBOLIC REFERENCE TO: " + target + "\n# This file acts as a reference pointer because symlinks are not supported on this filesystem.";
+        Ref<FileAccess> ref_file = FileAccess::open(abs_link + ".ref", FileAccess::WRITE);
+        if (ref_file.is_valid()) {
+            ref_file->store_string(ref_content);
+            result["success"] = true;
+            result["message"] = "Created reference file instead of symlink (symlinks not supported)";
+            result["reference_file"] = abs_link + ".ref";
+            result["symlink_supported"] = false;
+            if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+            return result;
+        }
+        
+        result["success"] = false; 
+        result["message"] = "Symlink creation failed (Error: " + String::num_int64(e) + ") and reference file fallback also failed";
+        result["symlink_supported"] = false;
+        return result; 
+    }
+    
     if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
-    result["success"] = true; return result;
+    result["success"] = true; 
+    result["symlink_supported"] = true;
+    result["message"] = "Symlink created successfully";
+    return result;
 }
 
 Dictionary EditorTools::refresh_filesystem(const Dictionary &p_args) {
@@ -2720,10 +2812,13 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 	if (operation == "create_new") {
 		EditorNode::get_singleton()->new_scene();
 		
-		// Create a default Node2D root for the new scene
+		// Get root type from parameters, default to Node2D for backward compatibility
+		String root_type = p_args.get("root_type", "Node2D");
+		
+		// Create root node of the specified type
 		Node *root_node = nullptr;
-		if (ClassDB::can_instantiate("Node2D")) {
-			root_node = (Node *)ClassDB::instantiate("Node2D");
+		if (ClassDB::can_instantiate(root_type)) {
+			root_node = (Node *)ClassDB::instantiate(root_type);
 			root_node->set_name("Main");
 			
 			// Properly set the scene root using EditorNode's method
@@ -2733,10 +2828,11 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 		
 		if (root_node) {
 			result["success"] = true;
-			result["message"] = "New scene created with Node2D root.";
+			result["message"] = "New scene created with " + root_type + " root.";
+			result["root_type"] = root_type;
 		} else {
 			result["success"] = false;
-			result["message"] = "Failed to create scene root node.";
+			result["message"] = "Failed to create scene root node of type: " + root_type;
 		}
 
 	} else if (operation == "save_as") {
@@ -3037,14 +3133,37 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 				break;
 			}
 		}
-		if (!expected_type.is_empty() && !ClassDB::is_parent_class(actual_type, expected_type)) {
-			result["success"] = false;
-			result["ok"] = false;
-			result["error_code"] = "TYPE_MISMATCH";
-			result["error"] = String("Property '") + property + "' expects " + expected_type + ", got " + actual_type;
-			result["actual_resource_type"] = actual_type;
-			result["expected_property_type"] = expected_type;
-			return result;
+		if (!expected_type.is_empty()) {
+			// Handle comma-separated expected types (e.g., "BaseMaterial3D,ShaderMaterial")
+			bool type_compatible = false;
+			Vector<String> allowed_types = expected_type.split(",");
+			
+			for (int i = 0; i < allowed_types.size(); i++) {
+				String allowed_type = allowed_types[i].strip_edges();
+				
+				// Check exact match first
+				if (actual_type == allowed_type) {
+					type_compatible = true;
+					break;
+				}
+				
+				// Check inheritance: is actual_type a subclass of allowed_type?
+				if (ClassDB::is_parent_class(actual_type, allowed_type)) {
+					type_compatible = true;
+					break;
+				}
+			}
+			
+			if (!type_compatible) {
+				result["success"] = false;
+				result["ok"] = false;
+				result["error_code"] = "TYPE_MISMATCH";
+				result["error"] = String("Property '") + property + "' expects " + expected_type + ", got " + actual_type;
+				result["actual_resource_type"] = actual_type;
+				result["expected_property_type"] = expected_type;
+				result["debug_allowed_types"] = allowed_types;
+				return result;
+			}
 		}
 	}
 
@@ -4140,7 +4259,7 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
             base_url = "http://127.0.0.1:5050";
         } else {
-            base_url = "https://gamechat.simplifine.com";
+            base_url = "https://api.orcaengine.ai";
         }
         
         // Also check EditorSettings override like ai_chat_dock does
@@ -4678,7 +4797,8 @@ Array EditorTools::_check_compilation_errors(const String &p_file_path, const St
 
 Dictionary EditorTools::check_compilation_errors(const Dictionary &p_args) {
     Dictionary result;
-    String path = p_args.get("path", "");
+    // Support both 'path' (legacy) and 'check_path' (new script_manager tool)
+    String path = p_args.get("check_path", p_args.get("path", ""));
     bool check_all = p_args.get("check_all", false);
     String check_mode = String(p_args.get("check_mode", "scripts")).to_lower(); // "scripts" or "output"
     
@@ -5033,9 +5153,25 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 	
 	// New consolidated operations
 	if (operation == "scene.open" || operation == "scene.create" || operation == "scene.save_as" || operation == "scene.instantiate") {
-		// Fix parameter translation: manage_scene expects "operation" not "op"  
+		// Fix parameter translation: manage_scene expects "operation" not "op" AND expects stripped operation names
 		Dictionary manage_args = p_args;
-		manage_args["operation"] = operation;
+		String stripped_operation = operation;
+		if (operation == "scene.open") {
+			stripped_operation = "open";
+		} else if (operation == "scene.create") {
+			stripped_operation = "create_new";  // manage_scene expects "create_new", not "create"
+		} else if (operation == "scene.save_as") {
+			stripped_operation = "save_as";
+		} else if (operation == "scene.instantiate") {
+			stripped_operation = "instantiate";
+		}
+		manage_args["operation"] = stripped_operation;
+		
+		// CRITICAL FIX: Parameter name mapping - manage_scene expects "path" but schema uses "scene_path"
+		if (p_args.has("scene_path") && !p_args.has("path")) {
+			manage_args["path"] = p_args["scene_path"];
+		}
+		
 		return manage_scene(manage_args);
 	} else if (operation == "scene.analyze" || operation == "scene.info") {
 		return get_scene_info(p_args);
@@ -5080,9 +5216,25 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 		
 		return universal_scene_manager(universal_args);
 	} else if (operation == "scene.copy_configuration") {
-		// Fix parameter translation: universal_scene_manager expects "operation" not "op"
+		// Fix parameter translation: universal_scene_manager expects "operation" not "op" and different parameter names
 		Dictionary universal_args = p_args;
 		universal_args["operation"] = "copy_configuration"; // Strip "scene." prefix
+		
+		// Parameter mapping: scene_manager uses "source_config_scene" but universal_scene_manager expects "source"
+		if (p_args.has("source_config_scene")) {
+			universal_args["source"] = p_args["source_config_scene"];
+			universal_args.erase("source_config_scene"); // Remove old parameter name
+		}
+		// Also check for legacy "source" parameter name
+		if (p_args.has("source")) {
+			universal_args["source"] = p_args["source"];
+		}
+		
+		// Ensure targets parameter exists - if not provided, use empty array as fallback
+		if (!universal_args.has("targets")) {
+			universal_args["targets"] = Array();
+		}
+		
 		return universal_scene_manager(universal_args);
 	} else if (operation == "node.create") {
 		return create_node(p_args);
@@ -5108,7 +5260,12 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 	} else if (operation == "node.assign_resource") {
 		return assign_resource_to_node_property(p_args);
 	} else if (operation == "node.add_collision") {
-		return add_collision_shape(p_args);
+		// Fix parameter mapping: add_collision_shape expects "node_path" but scene_manager schema might use "path"
+		Dictionary collision_args = p_args;
+		if (p_args.has("path") && !p_args.has("node_path")) {
+			collision_args["node_path"] = p_args["path"];
+		}
+		return add_collision_shape(collision_args);
 	} else if (operation.begins_with("groups.") || operation.begins_with("signals.")) {
 		// Fix parameter translation: editor_introspect expects "operation" not "op"
 		Dictionary introspect_args = p_args;
@@ -7072,6 +7229,86 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         result["method"] = method_name;
         return result;
     }
+    
+    if (operation == "signals.disconnect") {
+        Node *source_node = require_path(result);
+        if (!source_node) return result;
+        
+        String signal_name = p_args.get("signal_name", p_args.get("signal", ""));
+        String target_path = p_args.get("target_path", p_args.get("target", ""));
+        String method_name = p_args.get("method", p_args.get("method_name", ""));
+        
+        if (signal_name.is_empty()) {
+            result["success"] = false;
+            result["message"] = "Missing 'signal_name' parameter";
+            return result;
+        }
+        
+        if (target_path.is_empty()) {
+            result["success"] = false;
+            result["message"] = "Missing 'target_path' parameter";
+            return result;
+        }
+        
+        if (method_name.is_empty()) {
+            result["success"] = false;
+            result["message"] = "Missing 'method' parameter";
+            return result;
+        }
+        
+        // Get target node
+        Dictionary target_error;
+        Node *target_node = _get_node_from_path(target_path, target_error);
+        if (!target_node) {
+            result["success"] = false;
+            result["message"] = "Target node not found: " + target_path;
+            return result;
+        }
+        
+        // Create callable and disconnect
+        Callable callable = Callable(target_node, method_name);
+        source_node->disconnect(signal_name, callable);
+        
+        result["success"] = true;
+        result["message"] = "Disconnected signal '" + signal_name + "' from method '" + method_name + "'";
+        result["source_node"] = String(source_node->get_path());
+        result["target_node"] = String(target_node->get_path());
+        result["signal"] = signal_name;
+        result["method"] = method_name;
+        return result;
+    }
+    
+    if (operation == "signals.open_dialog") {
+        Node *node = require_path(result);
+        if (!node) return result;
+        
+        // Open the connections dialog for the specified node
+        result["success"] = false;
+        result["message"] = "signals.open_dialog: Opening connections dialog is not yet implemented";
+        result["note"] = "This would open the Godot editor's signal connections dialog";
+        return result;
+    }
+    
+    if (operation == "signals.trace.start") {
+        result["success"] = false;
+        result["message"] = "signals.trace.start: Signal tracing is not yet implemented";
+        result["note"] = "This would start tracing signal emissions for debugging";
+        return result;
+    }
+    
+    if (operation == "signals.trace.stop") {
+        result["success"] = false;
+        result["message"] = "signals.trace.stop: Signal tracing is not yet implemented";
+        result["note"] = "This would stop signal tracing and return collected data";
+        return result;
+    }
+    
+    if (operation == "signals.trace.events") {
+        result["success"] = false;
+        result["message"] = "signals.trace.events: Signal tracing is not yet implemented";
+        result["note"] = "This would return collected signal trace events";
+        return result;
+    }
 
     // Catch-all for truly unknown operations
     result["success"] = false;
@@ -7125,9 +7362,21 @@ Dictionary EditorTools::project_manager(const Dictionary &p_args) {
         result["arguments_to_forward"] = p_args;
         return result;
     } else if (op == "fs.copy") {
-        return copy_file(p_args);
+        // Map project_manager parameters to copy_file format
+        Dictionary args = p_args;
+        // Ensure we have the right parameter names
+        if (!args.has("source") && args.has("path")) {
+            args["source"] = args["path"];
+        }
+        return copy_file(args);
     } else if (op == "fs.move") {
-        return move_file(p_args);
+        // Map project_manager parameters to move_file format
+        Dictionary args = p_args;
+        // Ensure we have the right parameter names
+        if (!args.has("source") && args.has("path")) {
+            args["source"] = args["path"];
+        }
+        return move_file(args);
     } else if (op == "fs.delete") {
         return delete_file(p_args);
     } else if (op == "fs.mkdir") {
@@ -7137,11 +7386,20 @@ Dictionary EditorTools::project_manager(const Dictionary &p_args) {
     } else if (op == "fs.refresh") {
         return refresh_filesystem(p_args);
     } else if (op == "project.analyze_dir") {
-        return universal_project_manager(p_args);
+        // Map project_manager parameters to universal_project_manager format
+        Dictionary args = p_args;
+        args["operation"] = "analyze_directory";
+        return universal_project_manager(args);
     } else if (op == "project.copy_dir") {
-        return universal_project_manager(p_args);
+        // Map project_manager parameters to universal_project_manager format  
+        Dictionary args = p_args;
+        args["operation"] = "copy_directory";
+        return universal_project_manager(args);
     } else if (op == "project.update_refs") {
-        return universal_project_manager(p_args);
+        // Map project_manager parameters to universal_project_manager format
+        Dictionary args = p_args;
+        args["operation"] = "update_references";
+        return universal_project_manager(args);
     } else {
         result["success"] = false;
         result["error"] = String("Unknown project_manager operation: ") + op;
@@ -7199,19 +7457,35 @@ Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
         inspect_args["resource_path"] = p_args.get("target", "");
         return resource_info(inspect_args);
     } else if (op == "res.modify") {
-        return universal_resource_manager(p_args);
+        // Convert new schema to universal_resource_manager format
+        Dictionary modify_args = p_args;
+        modify_args["operation"] = "modify";  // Convert "op" to "operation"
+        return universal_resource_manager(modify_args);
     } else if (op == "res.assign") {
         return assign_resource_to_node_property(p_args);
     } else if (op == "res.copy_from_template") {
-        return universal_resource_manager(p_args);
+        // Convert new schema to universal_resource_manager format  
+        Dictionary copy_args = p_args;
+        copy_args["operation"] = "copy_from_template";  // Convert "op" to "operation"
+        return universal_resource_manager(copy_args);
     } else if (op == "res.refresh") {
         return refresh_filesystem(p_args);
     } else if (op == "res.load_and_assign") {
         return load_and_assign_resource(p_args);
     } else if (op == "import.set_options") {
-        return set_import_preset(p_args);
+        // Convert new schema parameter names
+        Dictionary import_args = p_args;
+        if (p_args.has("import_path")) {
+            import_args["resource_path"] = p_args["import_path"];  // Convert import_path to resource_path
+        }
+        return set_import_preset(import_args);
     } else if (op == "import.reimport") {
-        return reimport_resource(p_args);
+        // Convert new schema parameter names
+        Dictionary reimport_args = p_args;
+        if (p_args.has("import_path")) {
+            reimport_args["resource_path"] = p_args["import_path"];  // Convert import_path to resource_path
+        }
+        return reimport_resource(reimport_args);
     } else if (op == "image.save") {
         // This would be handled by frontend image saving logic
         result["success"] = false;

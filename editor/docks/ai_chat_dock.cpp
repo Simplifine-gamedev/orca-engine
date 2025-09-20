@@ -52,6 +52,18 @@
 // Initialize static singleton
 AIChatDock *AIChatDock::singleton = nullptr;
 
+// Version constants - Auto-generated from version.py during build
+// If build system doesn't generate these, fallback to hardcoded values
+#ifndef GODOT_FRONTEND_VERSION
+#define GODOT_FRONTEND_VERSION "1.0.0"
+#endif
+#ifndef GODOT_API_VERSION  
+#define GODOT_API_VERSION "1.0"
+#endif
+
+const String AIChatDock::FRONTEND_VERSION = GODOT_FRONTEND_VERSION;
+const String AIChatDock::API_VERSION = GODOT_API_VERSION;
+
 void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results) {
     if (tool_calls_ui_applied.has(p_tool_call_id)) {
         return;
@@ -75,6 +87,7 @@ void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, con
 
 #include "../ai/editor_tools.h"
 #include "diff_viewer.h"
+#include "core/version_generated.h"
 
 void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_send_button_pressed"), &AIChatDock::_on_send_button_pressed);
@@ -1030,12 +1043,15 @@ void AIChatDock::_notification(int p_notification) {
     if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
         api_endpoint = "http://127.0.0.1:5050/chat";
     } else {
-        api_endpoint = "https://gamechat.simplifine.com/chat";
+        api_endpoint = "https://api.orcaengine.ai/chat";
     }
 		} break;
 			case NOTIFICATION_READY: {
 			// Clear any lingering preview overlays from previous sessions
 			EditorTools::clear_all_preview_overlays();
+			
+			// Check version compatibility with backend on startup
+			_check_version_compatibility_on_startup();
 			
 			// Auto-verify saved authentication when everything is fully ready
 			_auto_verify_saved_credentials();
@@ -1332,6 +1348,7 @@ void AIChatDock::_send_stop_request() {
 	
     PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
+	_add_version_headers_to_request(headers);
 	
 	// Extract stop endpoint from main API endpoint
 	String stop_endpoint = api_endpoint;
@@ -1848,6 +1865,7 @@ void AIChatDock::_check_authentication_status() {
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
+	_add_version_headers_to_request(headers);
 	
 	Dictionary data;
 		data["machine_id"] = OS::get_singleton()->get_unique_id();
@@ -2765,7 +2783,7 @@ void AIChatDock::_perform_project_reindex() {
 	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
 		base_url = "http://127.0.0.1:5050";
 	} else {
-		base_url = "https://gamechat.simplifine.com";
+		base_url = "https://api.orcaengine.ai";
 	}
 	
 	// Allow override via editor settings or environment variable
@@ -3810,6 +3828,49 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		return; // Stop further processing for this line
 	}
 	
+    // Handle frontend_only responses from backend - execute operations locally
+    if (response_data.has("tool_result") && response_data["tool_result"].get_type() == Variant::DICTIONARY) {
+        Dictionary tool_result = response_data["tool_result"];
+        if (tool_result.get("frontend_only", false)) {
+            String tool_executed = response_data.get("tool_executed", "");
+            String tool_call_id = response_data.get("tool_call_id", "");
+            String operation = tool_result.get("operation", "");
+            Dictionary arguments_to_forward = tool_result.get("arguments_to_forward", Dictionary());
+            
+            print_line("AI Chat: Backend returned frontend_only response for " + tool_executed + " operation: " + operation);
+            print_line("AI Chat: Executing operation locally...");
+            
+            // Execute the operation locally using EditorTools
+            Dictionary local_result;
+            if (tool_executed == "project_manager") {
+                local_result = EditorTools::project_manager(arguments_to_forward);
+            } else if (tool_executed == "script_manager") {
+                local_result = EditorTools::script_manager(arguments_to_forward);
+            } else if (tool_executed == "scene_manager") {
+                local_result = EditorTools::scene_manager(arguments_to_forward);
+            } else if (tool_executed == "resource_manager") {
+                local_result = EditorTools::resource_manager(arguments_to_forward);
+            } else if (tool_executed == "settings_manager") {
+                local_result = EditorTools::settings_manager(arguments_to_forward);
+            } else if (tool_executed == "runtime_manager") {
+                local_result = EditorTools::runtime_manager(arguments_to_forward);
+            } else {
+                // Handle other tools that might have frontend_only operations
+                local_result["success"] = false;
+                local_result["error"] = "Frontend execution not implemented for tool: " + tool_executed;
+            }
+            
+            print_line("AI Chat: Local execution result: " + String(local_result.get("success", false) ? "success" : "failed"));
+            
+            // Create a proper tool_completed response to continue the conversation flow
+            if (!tool_call_id.is_empty()) {
+                _add_tool_response_to_chat(tool_call_id, tool_executed, arguments_to_forward, local_result);
+            }
+            
+            return; // Stop further processing for this line
+        }
+    }
+
     // Handle completed tool execution results
     if (response_data.has("status") && response_data["status"] == "tool_completed") {
         String tool_executed = response_data.get("tool_executed", "");
@@ -4320,7 +4381,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
 				base_url = "http://127.0.0.1:5050";
 			} else {
-				base_url = "https://gamechat.simplifine.com";
+				base_url = "https://api.orcaengine.ai";
 			}
 			if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
 				String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
@@ -4411,7 +4472,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 					if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
 						base_url = "http://127.0.0.1:5050";
 					} else {
-						base_url = "https://gamechat.simplifine.com";
+						base_url = "https://api.orcaengine.ai";
 					}
 					if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
 						String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
@@ -8966,6 +9027,7 @@ void AIChatDock::_finalize_chat_request() {
 
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
+	_add_version_headers_to_request(headers);
 	
 	// Add authentication headers
 	if (!auth_token.is_empty()) {
@@ -9445,7 +9507,7 @@ void AIChatDock::_load_layout_from_config(Ref<ConfigFile> p_layout, const String
     if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
         base_url = "http://127.0.0.1:5050";
     } else {
-        base_url = "https://gamechat.simplifine.com";
+        base_url = "https://api.orcaengine.ai";
     }
     
     // Allow override via editor settings or environment variable
@@ -10999,7 +11061,7 @@ void AIChatDock::_on_export_file_selected(const String &p_file_path) {
 	export_data["created_timestamp"] = conv.created_timestamp;
 	export_data["last_modified_timestamp"] = conv.last_modified_timestamp;
 	export_data["exported_at"] = _get_timestamp();
-	export_data["godot_ai_chat_version"] = "1.0";
+		export_data["godot_ai_chat_version"] = FRONTEND_VERSION;
 	
 	// Export messages
 	Array messages_array;
@@ -11721,6 +11783,7 @@ void AIChatDock::_send_embedding_request(const String &p_action, const Dictionar
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
+	_add_version_headers_to_request(headers);
 	
 	// Add authentication headers
 	if (!auth_token.is_empty()) {
@@ -12782,7 +12845,7 @@ String AIChatDock::_get_api_base_url() {
 	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
 		base_url = "http://127.0.0.1:5050";
 	} else {
-		base_url = "https://gamechat.simplifine.com";
+		base_url = "https://api.orcaengine.ai";
 	}
 	
 	// Allow override via editor settings or environment variable
@@ -14264,6 +14327,99 @@ Dictionary AIChatDock::_summarize_scene_node_for_context(const Dictionary &p_nod
 	}
 	
 	return out;
+}
+
+// Version compatibility methods implementation
+void AIChatDock::_add_version_headers_to_request(PackedStringArray &p_headers) {
+	p_headers.push_back("X-Frontend-Version: " + FRONTEND_VERSION);
+	p_headers.push_back("X-Frontend-API-Version: " + API_VERSION);
+}
+
+void AIChatDock::_check_version_compatibility_on_startup() {
+	print_line("AI Chat: Checking version compatibility with backend");
+	
+	// Create HTTP request for version checking
+	if (!version_check_request) {
+		version_check_request = memnew(HTTPRequest);
+		add_child(version_check_request);
+		version_check_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_version_check_completed));
+	}
+	
+	String version_url = _get_api_base_url() + "/version";
+	
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	_add_version_headers_to_request(headers);
+	
+	Error err = version_check_request->request(version_url, headers, HTTPClient::METHOD_GET);
+	if (err != OK) {
+		print_line("AI Chat: Failed to send version check request: " + String::num_int64(err));
+	}
+}
+
+void AIChatDock::_on_version_check_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		print_line("AI Chat: Version check failed - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_code));
+		return;
+	}
+	
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	
+	Ref<JSON> json;
+	json.instantiate();
+	Error err = json->parse(response_text);
+	
+	if (err != OK) {
+		print_line("AI Chat: Failed to parse version check response");
+		return;
+	}
+	
+	Dictionary response = json->get_data();
+	
+	if (!response.get("success", false)) {
+		print_line("AI Chat: Version check returned error: " + String(response.get("error", "Unknown error")));
+		return;
+	}
+	
+	// Check if versions are compatible
+	String backend_api_version = response.get("api_version", "");
+	String backend_version = response.get("backend_version", "");
+	
+	print_line("AI Chat: Version check successful - Backend API: " + backend_api_version + ", Backend: " + backend_version);
+	print_line("AI Chat: Frontend API: " + API_VERSION + ", Frontend: " + FRONTEND_VERSION);
+	
+	// For now, just log version mismatch warnings
+	if (backend_api_version != API_VERSION) {
+		print_line("AI Chat: WARNING - API version mismatch! Backend: " + backend_api_version + ", Frontend: " + API_VERSION);
+		_handle_version_mismatch(response);
+	} else {
+		print_line("AI Chat: Version compatibility check passed");
+	}
+}
+
+void AIChatDock::_handle_version_mismatch(const Dictionary &p_version_info) {
+	String backend_api_version = p_version_info.get("api_version", "");
+	String backend_version = p_version_info.get("backend_version", "");
+	
+	String message = "Version Mismatch Warning\n\n";
+	message += "Backend API Version: " + backend_api_version + "\n";
+	message += "Frontend API Version: " + API_VERSION + "\n";
+	message += "Backend Version: " + backend_version + "\n"; 
+	message += "Frontend Version: " + FRONTEND_VERSION + "\n\n";
+	message += "Some features may not work correctly. Please update your Godot editor or contact support.";
+	
+	// Show warning dialog
+	AcceptDialog *version_dialog = memnew(AcceptDialog);
+	version_dialog->set_title("Version Compatibility Warning");
+	version_dialog->set_text(message);
+	version_dialog->set_min_size(Size2(400, 200));
+	
+	get_tree()->get_root()->add_child(version_dialog);
+	version_dialog->popup_centered();
+	
+	// Clean up dialog when closed
+	version_dialog->connect("confirmed", callable_mp(this, &AIChatDock::_cleanup_popup).bind(version_dialog));
+	version_dialog->connect("cancelled", callable_mp(this, &AIChatDock::_cleanup_popup).bind(version_dialog));
 }
 
 AIChatDock::~AIChatDock() {

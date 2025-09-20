@@ -8387,7 +8387,7 @@ EditorNode::EditorNode() {
         ai_chat_dock = memnew(AIChatDock);
     }
     // Force local backend during development; comment out cloud URL
-    // ai_chat_dock->set_api_endpoint("https://gamechat.simplifine.com/chat");
+    // ai_chat_dock->set_api_endpoint("https://api.orcaengine.ai/chat");
     // AIChatDock resolves its endpoint based on IS_DEV/DEV_MODE; no hardcoded override here
     // ai_chat_dock->set_api_endpoint("http://127.0.0.1:8000/chat");
 

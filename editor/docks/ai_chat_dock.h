@@ -73,6 +73,10 @@ public:
 	static AIChatDock *get_singleton() { return singleton; }
 
 private:
+	// Version Management - These should match version.py values
+	static const String FRONTEND_VERSION;
+	static const String API_VERSION;
+	
 	DiffViewer *diff_viewer;
 	Ref<AIToolServer> tool_server;
 	// Helper to find RichTextLabel recursively.
@@ -417,6 +421,13 @@ private:
 
 	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
 	void _load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section);
+
+	// Version compatibility methods
+	void _add_version_headers_to_request(PackedStringArray &p_headers);
+	void _check_version_compatibility_on_startup();
+	void _on_version_check_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _handle_version_mismatch(const Dictionary &p_version_info);
+	HTTPRequest *version_check_request = nullptr;
 
 	// Markdown to BBCode conversion
 	String _markdown_to_bbcode(const String &p_markdown);

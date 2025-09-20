@@ -1485,6 +1485,7 @@ godot_tools = [
                     "path": {"type": "string", "description": "Node path (for get/attach/detach)"},
                     "script_path": {"type": "string", "description": "Script file path (attach/reload)"},
                     "pattern": {"type": "string", "description": "Filter for custom classes"},
+                    "check_path": {"type": "string", "description": "Script file path to check (only used when op='compile.check' and check_all=false)"},
                     "check_all": {"type": "boolean", "default": False},
                     "check_mode": {"type": "string", "enum": ["scripts", "output"], "default": "scripts"}
                 },
