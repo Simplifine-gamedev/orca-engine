@@ -240,13 +240,13 @@ const Preloader = /** @constructor */ function () { // eslint-disable-line no-un
 };
 
 /**
- * An object used to configure the Engine instance based on orca export options, and to override those in custom HTML
+ * An object used to configure the Engine instance based on godot export options, and to override those in custom HTML
  * templates if needed.
  *
  * @header Engine configuration
  * @summary The Engine configuration object. This is just a typedef, create it like a regular object, e.g.:
  *
- * ``const MyConfig = { executable: 'orca', unloadAfterInit: false }``
+ * ``const MyConfig = { executable: 'godot', unloadAfterInit: false }``
  *
  * @typedef {Object} EngineConfig
  */
@@ -383,7 +383,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 		 * @ignore
 		 * @type {number}
 		 */
-		orcaPoolSize: 4,
+		godotPoolSize: 4,
 		/**
 		 * A callback function for handling Godot's ``OS.execute`` calls.
 		 *
@@ -511,7 +511,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 		this.gdextensionLibs = parse('gdextensionLibs', this.gdextensionLibs);
 		this.fileSizes = parse('fileSizes', this.fileSizes);
 		this.emscriptenPoolSize = parse('emscriptenPoolSize', this.emscriptenPoolSize);
-		this.orcaPoolSize = parse('orcaPoolSize', this.orcaPoolSize);
+		this.godotPoolSize = parse('godotPoolSize', this.godotPoolSize);
 		this.args = parse('args', this.args);
 		this.onExecute = parse('onExecute', this.onExecute);
 		this.onExit = parse('onExit', this.onExit);
@@ -547,7 +547,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 				return {};
 			},
 			'locateFile': function (path) {
-				if (!path.startsWith('orca.')) {
+				if (!path.startsWith('godot.')) {
 					return path;
 				} else if (path.endsWith('.audio.worklet.js')) {
 					return `${loadPath}.audio.worklet.js`;
@@ -604,7 +604,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 			'locale': locale,
 			'persistentDrops': this.persistentDrops,
 			'virtualKeyboard': this.experimentalVK,
-			'orcaPoolSize': this.orcaPoolSize,
+			'godotPoolSize': this.godotPoolSize,
 			'focusCanvas': this.focusCanvas,
 			'onExecute': this.onExecute,
 			'onExit': function (p_code) {

@@ -36,6 +36,7 @@
 #include "editor/docks/scene_tree_dock.h"
 #include "editor/docks/ai_chat_dock.h"
 #include "editor/run/editor_run_bar.h"
+#include "editor/run/editor_run.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/script/script_text_editor.h"
 #include "scene/main/node.h"
@@ -5045,33 +5046,106 @@ void EditorTools::_get_all_project_files(const String &p_path, List<String> &r_f
 }
 
 void EditorTools::_get_all_project_files_limited(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files) {
+    // PERFORMANCE FIX: Use EditorFileSystem instead of manual directory traversal
+    // This prevents UI blocking by using Godot's already-indexed file system
+    
+    EditorFileSystem *efs = EditorFileSystem::get_singleton();
+    if (!efs) {
+        print_line("AI Chat: EditorFileSystem not available, falling back to fast directory scan");
+        _get_project_files_fast_fallback(p_path, r_files, p_extensions, p_max_files);
+        return;
+    }
+    
+    // Use the already-indexed file system - this is much faster
+    EditorFileSystemDirectory *root = efs->get_filesystem();
+    if (!root) {
+        print_line("AI Chat: EditorFileSystem root not available, falling back to fast directory scan");
+        _get_project_files_fast_fallback(p_path, r_files, p_extensions, p_max_files);
+        return;
+    }
+    
+    // Recursively collect files from the indexed filesystem
+    _collect_files_from_efs_directory(root, r_files, p_extensions, p_max_files);
+}
+
+// Fast fallback that limits depth and operations to prevent blocking
+void EditorTools::_get_project_files_fast_fallback(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files) {
     Error err;
     Ref<DirAccess> dir = DirAccess::open(p_path, &err);
     if (err != OK) {
         return;
     }
     
-    dir->list_dir_begin();
-    String file_name = dir->get_next();
+    const int MAX_DEPTH = 3; // Limit recursion depth to prevent deep scanning
+    const int MAX_DIRS_PER_LEVEL = 20; // Limit directories per level
     
+    _get_project_files_with_limits(dir, p_path, r_files, p_extensions, p_max_files, 0, MAX_DEPTH, MAX_DIRS_PER_LEVEL);
+}
+
+void EditorTools::_get_project_files_with_limits(Ref<DirAccess> p_dir, const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files, int p_current_depth, int p_max_depth, int p_max_dirs) {
+    if (r_files.size() >= p_max_files || p_current_depth >= p_max_depth) {
+        return;
+    }
+    
+    p_dir->list_dir_begin();
+    String file_name = p_dir->get_next();
+    int dirs_processed = 0;
+    
+    // First pass: collect files in current directory
     while (!file_name.is_empty() && r_files.size() < p_max_files) {
         String full_path = p_path.path_join(file_name);
         
-        if (dir->current_is_dir() && !file_name.begins_with(".")) {
-            // Recurse into subdirectories (with remaining limit)
-            _get_all_project_files_limited(full_path, r_files, p_extensions, p_max_files);
-        } else if (!dir->current_is_dir()) {
-            // Check if file has one of the desired extensions
+        if (!p_dir->current_is_dir()) {
             String ext = file_name.get_extension().to_lower();
             if (p_extensions.has(ext)) {
                 r_files.push_back(full_path);
             }
         }
         
-        file_name = dir->get_next();
+        file_name = p_dir->get_next();
     }
     
-    dir->list_dir_end();
+    // Second pass: recurse into subdirectories (limited)
+    p_dir->list_dir_begin();
+    file_name = p_dir->get_next();
+    
+    while (!file_name.is_empty() && r_files.size() < p_max_files && dirs_processed < p_max_dirs) {
+        String full_path = p_path.path_join(file_name);
+        
+        if (p_dir->current_is_dir() && !file_name.begins_with(".")) {
+            Error sub_err;
+            Ref<DirAccess> sub_dir = DirAccess::open(full_path, &sub_err);
+            if (sub_err == OK) {
+                _get_project_files_with_limits(sub_dir, full_path, r_files, p_extensions, p_max_files, p_current_depth + 1, p_max_depth, p_max_dirs);
+                dirs_processed++;
+            }
+        }
+        
+        file_name = p_dir->get_next();
+    }
+    
+    p_dir->list_dir_end();
+}
+
+void EditorTools::_collect_files_from_efs_directory(EditorFileSystemDirectory *p_dir, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files) {
+    if (!p_dir || r_files.size() >= p_max_files) {
+        return;
+    }
+    
+    // Collect files from current directory
+    for (int i = 0; i < p_dir->get_file_count() && r_files.size() < p_max_files; i++) {
+        String file_path = p_dir->get_file_path(i);
+        String ext = file_path.get_extension().to_lower();
+        if (p_extensions.has(ext)) {
+            r_files.push_back(file_path);
+        }
+    }
+    
+    // Recurse into subdirectories
+    for (int i = 0; i < p_dir->get_subdir_count() && r_files.size() < p_max_files; i++) {
+        EditorFileSystemDirectory *subdir = p_dir->get_subdir(i);
+        _collect_files_from_efs_directory(subdir, r_files, p_extensions, p_max_files);
+    }
 }
 
 // Helper function for setting owner recursively
@@ -5671,29 +5745,13 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 			// CRITICAL: Clear any previous screenshot results to prevent stale data
 			_current_screenshot_results.clear();
 			
-			// Use the exact same approach as the working "Snap to Chat" button
-			// This mirrors GameView::_snap_to_chat_pressed() implementation precisely
-			GameView *game_view = GameView::get_singleton();
+			// Use EditorRun::request_screenshot (the correct API) instead of direct GameView access
 			bool requested = false;
 			Callable screenshot_callback = callable_mp_static(&EditorTools::_on_game_screenshot_ready_for_tool);
 			
-			if (game_view) {
-				// First, try embedded screenshot (works when game is embedded in editor)
-				requested = game_view->request_game_screenshot(screenshot_callback);
-				print_line(String("AI Chat: Embedded screenshot request = ") + (requested ? "success" : "failed"));
-				
-				if (!requested) {
-					// Fallback for floating/non-embedded game windows: use debugger directly
-					// This is the same fallback logic as GameView::_snap_to_chat_pressed()
-					Ref<GameViewDebugger> debugger = game_view->debugger;
-					if (!debugger.is_null()) {
-						requested = debugger->add_screenshot_callback(screenshot_callback, Rect2i());
-						print_line(String("AI Chat: Debugger fallback screenshot request = ") + (requested ? "success" : "failed"));
-					}
-				}
-			} else {
-				print_line("AI Chat: GameView singleton not available");
-			}
+			// Request screenshot through the proper EditorRun API
+			requested = EditorRun::request_screenshot(screenshot_callback);
+			print_line(String("AI Chat: Game screenshot request = ") + (requested ? "success" : "failed"));
 			
 			if (requested) {
 				// Wait a reasonable time for the screenshot to be processed

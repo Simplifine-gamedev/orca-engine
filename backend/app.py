@@ -3507,7 +3507,7 @@ def chat():
                                     print(f"ASSET_INSTALL_PREP: Converted res:// path '{project_path_arg}' to '{resolved_path}'")
                             
                             from threading import Thread
-                            _tool_result_holder = {"done": False, "result": None}
+                            _tool_result_holder = {"done": False, "result": None, "progress_step": 0}
                             def _run_asset_install():
                                 try:
                                     _tool_result_holder["result"] = install_godot_asset_internal(arguments)
@@ -3515,12 +3515,60 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_asset_install, daemon=True)
                             t.start()
+                            
+                            # Enhanced progress messages for cloud vs local mode
+                            if hasattr(g, 'project_root') and not os.path.exists(g.project_root if hasattr(g, 'project_root') else ''):
+                                # Cloud mode - more detailed progress for download-only workflow
+                                progress_messages = [
+                                    "Fetching asset information from Godot Asset Library...",
+                                    "Downloading asset package from remote server...", 
+                                    "Preparing asset for client-side installation...",
+                                    "Encoding asset data for secure transfer...",
+                                    "Finalizing cloud download..."
+                                ]
+                            else:
+                                # Local mode - traditional installation progress
+                                progress_messages = [
+                                    "Fetching asset information...",
+                                    "Downloading asset package...", 
+                                    "Extracting files...",
+                                    "Installing to project...",
+                                    "Finalizing installation..."
+                                ]
+                            progress_step = 0
+                            last_progress_time = time.time()
+                            
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during install_godot_asset")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
                                     return
-                                time.sleep(0.1)  # Slightly longer delay for install operations
+                                
+                                # Send progress updates every 2 seconds to keep UI responsive
+                                current_time = time.time()
+                                if current_time - last_progress_time >= 2.0:
+                                    if progress_step < len(progress_messages):
+                                        yield json.dumps({
+                                            "status": "tool_progress",
+                                            "tool_name": "install_godot_asset",
+                                            "tool_id": tool_id,
+                                            "current": progress_step + 1,
+                                            "total": len(progress_messages),
+                                            "message": progress_messages[progress_step]
+                                        }) + '\n'
+                                        progress_step += 1
+                                        last_progress_time = current_time
+                                    else:
+                                        # Cycle through "Working..." messages for long installations
+                                        yield json.dumps({
+                                            "status": "tool_progress", 
+                                            "tool_name": "install_godot_asset",
+                                            "tool_id": tool_id,
+                                            "message": "Still working..."
+                                        }) + '\n'
+                                        last_progress_time = current_time
+                                
+                                time.sleep(0.2)  # Check more frequently for better responsiveness
                             
                             install_result = _tool_result_holder["result"] or {"success": False, "error": "install_godot_asset returned no result"}
                             
@@ -5764,13 +5812,23 @@ def install_godot_asset_internal(arguments: dict) -> dict:
         if project_path == 'res://':
             return {"success": False, "error": "project_path cannot be 'res://' - a real filesystem path is required"}
         
-        # Check if we're running in cloud mode (project path won't exist on cloud server)
+        # Enhanced cloud mode detection for GCP deployment
+        # Cloud mode is when the backend can't access the user's local project files
         is_cloud_mode = not os.path.exists(project_path)
         
+        # Additional cloud mode indicators for robust deployment detection
+        deployment_mode = os.getenv('DEPLOYMENT_MODE', 'local')
+        is_gcp_deployment = deployment_mode == 'cloud' or os.getenv('GAE_APPLICATION') is not None
+        
+        # Force cloud mode if we're definitely running on GCP/cloud
+        if is_gcp_deployment:
+            is_cloud_mode = True
+            print(f"ASSET_INSTALL: GCP/Cloud deployment detected - forcing cloud mode")
+        
         if is_cloud_mode:
-            print(f"ASSET_INSTALL: Cloud mode detected - project path {project_path} not accessible from server")
+            print(f"ASSET_INSTALL: Cloud mode active - project path {project_path} not accessible from server")
         else:
-            print(f"ASSET_INSTALL: Local mode detected - project path {project_path} exists")
+            print(f"ASSET_INSTALL: Local mode active - project path {project_path} exists and accessible")
         
         print(f"ASSET_INSTALL: Installing asset {asset_id} to {project_path}")
         

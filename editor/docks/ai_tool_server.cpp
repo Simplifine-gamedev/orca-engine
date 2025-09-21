@@ -56,6 +56,27 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 	
 	// Handle tool execution
     // NOTE: apply_edit is now handled in the backend, not here
+    
+    // CRITICAL FIX: Reject backend-only tools to prevent UI freezing
+    static HashSet<String> backend_only_tools;
+    if (backend_only_tools.is_empty()) {
+        backend_only_tools.insert("image_operation");
+        backend_only_tools.insert("search_across_project");
+        backend_only_tools.insert("search_across_godot_docs");
+        backend_only_tools.insert("slice_spritesheet");
+        backend_only_tools.insert("search_godot_assets");
+        backend_only_tools.insert("install_godot_asset");
+        backend_only_tools.insert("generate_3d_model");
+    }
+    
+    if (backend_only_tools.has(function_name)) {
+        print_line("AI Tool Server: Rejecting backend-only tool: " + function_name);
+        result["success"] = false;
+        result["error"] = "Tool " + function_name + " must be handled by backend, not local tool server";
+        result["backend_only"] = true;
+        return result;
+    }
+    
     if (function_name == "list_project_files") {
 		result = EditorTools::list_project_files(args);
     } else if (function_name == "read_file") {

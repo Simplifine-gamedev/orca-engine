@@ -13,6 +13,8 @@
 #include "core/templates/hash_set.h"
 
 class Node;
+class DirAccess;
+class EditorFileSystemDirectory;
 
 class EditorTools : public Object {
 	GDCLASS(EditorTools, Object);
@@ -45,6 +47,9 @@ public:
 	static void _check_all_scripts_errors(Array &r_errors);
 	static void _get_all_project_files(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions);
 	static void _get_all_project_files_limited(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files);
+	static void _get_project_files_fast_fallback(const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files);
+	static void _get_project_files_with_limits(Ref<DirAccess> p_dir, const String &p_path, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files, int p_current_depth, int p_max_depth, int p_max_dirs);
+	static void _collect_files_from_efs_directory(EditorFileSystemDirectory *p_dir, List<String> &r_files, const HashSet<String> &p_extensions, int p_max_files);
     static void set_api_endpoint(const String &p_endpoint);
 
     // Pending preview overlay management (in-memory edited content before save)

@@ -148,6 +148,9 @@
 #endif // TOOLS_ENABLED && !GDSCRIPT_NO_LSP
 #endif // MODULE_GDSCRIPT_ENABLED
 
+// C string utilities
+#include <string.h>
+
 /* Static members */
 
 // Singletons
@@ -2807,7 +2810,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Setup");
 	// Orca minimal analytics: app session end
-	{
+    {
 		Error __err = OK;
 		Ref<FileAccess> rf = FileAccess::open("user://app_session_id.txt", FileAccess::READ, &__err);
 		String session_id;
@@ -2823,7 +2826,25 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 			f->flush();
 		};
 		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
-		String user_id = OS::get_singleton()->get_unique_id();
+        String user_id;
+#ifdef WEB_ENABLED
+        // Persist a pseudo user id on web since OS::get_unique_id() is unavailable there.
+        {
+            Ref<FileAccess> uidf = FileAccess::open("user://.orca_user_id", FileAccess::READ);
+            if (uidf.is_valid()) {
+                user_id = uidf->get_line().strip_edges();
+            }
+            if (user_id.is_empty()) {
+                String seed = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name() + String("_") + String::num(OS::get_singleton()->get_unix_time()) + String::num(OS::get_singleton()->get_ticks_usec());
+                seed = seed.replace(" ", "_").replace("(", "").replace(")", "");
+                user_id = String("web-") + seed.md5_text().substr(0, 16);
+                Ref<FileAccess> uow = FileAccess::open("user://.orca_user_id", FileAccess::WRITE);
+                if (uow.is_valid()) { uow->store_line(user_id); }
+            }
+        }
+#else
+        user_id = OS::get_singleton()->get_unique_id();
+#endif
 		_log_line(vformat("{\"t\":\"%s\",\"type\":\"app_end\",\"session\":\"%s\",\"user_id\":\"%s\"}", _now_iso(), session_id, user_id));
 	}
 
@@ -3814,7 +3835,7 @@ void Main::setup_boot_logo() {
 			RenderingServer::get_singleton()->set_boot_image(splash, boot_bg_color, false);
 		}
 
-#if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED)
+#if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED) && !defined(WEB_ENABLED)
 		if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON)) {
 			// Try new Logo.png first, then fallback to dock icon.png
 			Ref<Image> icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/Logo.png");
@@ -3883,7 +3904,25 @@ int Main::start() {
 			f->flush();
 		};
 		auto _now_iso = []() -> String { return Time::get_singleton()->get_datetime_string_from_system(true); };
-		String user_id = OS::get_singleton()->get_unique_id();
+		String user_id;
+#ifdef WEB_ENABLED
+		// Use a persisted pseudo user id on web since OS::get_unique_id() is unavailable there.
+		{
+			Ref<FileAccess> uidf = FileAccess::open("user://.orca_user_id", FileAccess::READ);
+			if (uidf.is_valid()) {
+				user_id = uidf->get_line().strip_edges();
+			}
+			if (user_id.is_empty()) {
+				String seed = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name() + String("_") + String::num(OS::get_singleton()->get_unix_time()) + String::num(OS::get_singleton()->get_ticks_usec());
+				seed = seed.replace(" ", "_").replace("(", "").replace(")", "");
+				user_id = String("web-") + seed.md5_text().substr(0, 16);
+				Ref<FileAccess> uow = FileAccess::open("user://.orca_user_id", FileAccess::WRITE);
+				if (uow.is_valid()) { uow->store_line(user_id); }
+			}
+		}
+#else
+		user_id = OS::get_singleton()->get_unique_id();
+#endif
 		if (!FileAccess::exists("user://.installed")) {
 			Ref<FileAccess> mf = FileAccess::open("user://.installed", FileAccess::WRITE, &__err);
 			if (mf.is_valid()) { mf->store_line(_now_iso()); mf->flush(); }

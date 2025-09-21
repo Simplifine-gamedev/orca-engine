@@ -9,154 +9,424 @@
 		<meta name="apple-mobile-web-app-capable" content="yes">
 		<meta name="application-name" content="Orca">
 		<meta name="apple-mobile-web-app-title" content="Orca">
-		<meta name="theme-color" content="#202531">
-		<meta name="msapplication-navbutton-color" content="#202531">
+		<meta name="theme-color" content="#0b0b12">
+		<meta name="msapplication-navbutton-color" content="#0b0b12">
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-		<meta name="msapplication-starturl" content="/latest">
 		<meta property="og:site_name" content="Orca Engine Web Editor">
-		<meta property="og:url" name="twitter:url" content="https://editor.orcaengine.ai/releases/latest/">
-		<meta property="og:title" name="twitter:title" content="Free and open source 2D and 3D game engine">
-		<meta property="og:description" name="twitter:description" content="Use the Orca Engine editor directly in your web browser, without having to install anything.">
-		<meta property="og:image" name="twitter:image" content="https://orcaengine.ai/themes/godotengine/assets/og_image.png">
+		<meta property="og:title" content="Orca Engine Web Editor - AI-Powered Game Development">
+		<meta property="og:description" content="Use the Orca Engine editor directly in your web browser, without having to install anything.">
+		<meta property="og:image" content="https://editor.orcaengine.ai/logo.png">
 		<meta property="og:type" content="website">
 		<meta name="twitter:card" content="summary">
 		<link id="-gd-engine-icon" rel="icon" type="image/png" href="favicon.png">
 		<link rel="apple-touch-icon" type="image/png" href="favicon.png">
-		<link rel="manifest" href="manifest.json">
-		<title>Orca Engine Web Editor (Orca Engine v1.0)</title>
+		<title>Orca Engine Web Editor</title>
 		<style>
+/* Reset and Base Styles */
+* {
+	box-sizing: border-box;
+}
+
 *:focus {
-	/* More visible outline for better keyboard navigation. */
-	outline: 0.125rem solid hsl(220, 100%, 62.5%);
-	/* Make the outline always appear above other elements. */
-	/* Otherwise, one of its sides can be hidden by tabs in the Download and More layouts. */
-	position: relative;
+	outline: 2px solid #8b5cf6;
+	outline-offset: 2px;
 }
 
 body {
 	touch-action: none;
-	font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 	margin: 0;
-	border: 0 none;
 	padding: 0;
-	text-align: center;
-	background-color: #333b4f;
+	background: #0b0b12;
+	color: #ffffff;
 	overflow: hidden;
 }
 
-a {
-	color: hsl(205, 100%, 75%);
-	text-decoration-color: hsla(205, 100%, 75%, 0.3);
-	text-decoration-thickness: 0.125rem;
+/* Welcome Screen Styles */
+.welcome-container {
+	display: flex;
+	flex-direction: column;
+	min-height: 100vh;
+	background: linear-gradient(135deg, #0b0b12 0%, #1a1a2e 50%, #16213e 100%);
 }
 
-a:hover {
-	filter: brightness(117.5%);
+.welcome-header {
+	text-align: center;
+	padding: 2rem 1rem 1rem;
 }
 
-a:active {
-	filter: brightness(82.5%);
+.logo {
+	width: 120px;
+	height: auto;
+	margin-bottom: 1rem;
+	filter: drop-shadow(0 4px 8px rgba(139, 92, 246, 0.3));
 }
 
+.welcome-title {
+	font-size: 2.5rem;
+	font-weight: 700;
+	margin: 0 0 0.5rem;
+	background: linear-gradient(135deg, #8b5cf6, #a855f7);
+	-webkit-background-clip: text;
+	-webkit-text-fill-color: transparent;
+	background-clip: text;
+}
+
+.welcome-subtitle {
+	font-size: 1.1rem;
+	color: #a0a0a0;
+	margin: 0;
+	font-weight: 400;
+}
+
+.welcome-content {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	padding: 2rem;
+	max-width: 1200px;
+	margin: 0 auto;
+	width: 100%;
+}
+
+/* Main Actions Grid */
+.main-actions {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 2rem;
+	margin-bottom: 3rem;
+}
+
+@media (min-width: 768px) {
+	.main-actions {
+		grid-template-columns: 1fr 1fr;
+	}
+}
+
+.action-card {
+	background: rgba(255, 255, 255, 0.03);
+	border: 1px solid rgba(139, 92, 246, 0.2);
+	border-radius: 16px;
+	padding: 2rem;
+	text-align: center;
+	transition: all 0.3s ease;
+	cursor: pointer;
+	position: relative;
+	overflow: hidden;
+}
+
+.action-card:hover {
+	transform: translateY(-4px);
+	border-color: rgba(139, 92, 246, 0.5);
+	box-shadow: 0 20px 40px rgba(139, 92, 246, 0.15);
+}
+
+.action-card:active {
+	transform: translateY(-2px);
+}
+
+.action-card::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 4px;
+	background: linear-gradient(90deg, #8b5cf6, #a855f7);
+	opacity: 0;
+	transition: opacity 0.3s ease;
+}
+
+.action-card:hover::before {
+	opacity: 1;
+}
+
+.action-icon {
+	width: 64px;
+	height: 64px;
+	margin: 0 auto 1.5rem;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+	border-radius: 16px;
+	color: white;
+}
+
+.action-title {
+	font-size: 1.5rem;
+	font-weight: 600;
+	margin: 0 0 0.5rem;
+	color: #ffffff;
+}
+
+.action-subtitle {
+	font-size: 1rem;
+	color: #a0a0a0;
+	margin: 0 0 1.5rem;
+	line-height: 1.4;
+}
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 12px 24px;
+	background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+	border: none;
+	border-radius: 8px;
+	color: white;
+	font-size: 1rem;
+	font-weight: 500;
+	text-decoration: none;
+	cursor: pointer;
+	transition: all 0.2s ease;
+	gap: 8px;
+}
+
+.btn:hover {
+	transform: translateY(-1px);
+	box-shadow: 0 8px 16px rgba(139, 92, 246, 0.3);
+}
+
+.btn:active {
+	transform: translateY(0);
+}
+
+.btn-secondary {
+	background: transparent;
+	border: 1px solid #8b5cf6;
+	color: #8b5cf6;
+}
+
+.btn-secondary:hover {
+	background: #8b5cf6;
+	color: white;
+}
+
+/* Recent Projects Section */
+.recent-section {
+	margin-top: 2rem;
+}
+
+.recent-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 1.5rem;
+}
+
+.recent-title {
+	font-size: 1.25rem;
+	font-weight: 600;
+	margin: 0;
+	color: #ffffff;
+}
+
+.clear-recent {
+	background: none;
+	border: none;
+	color: #8b5cf6;
+	font-size: 0.9rem;
+	cursor: pointer;
+	padding: 4px 8px;
+	border-radius: 4px;
+	transition: background 0.2s ease;
+}
+
+.clear-recent:hover {
+	background: rgba(139, 92, 246, 0.1);
+}
+
+.recent-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	gap: 1rem;
+	max-height: 300px;
+	overflow-y: auto;
+}
+
+.recent-item {
+	background: rgba(255, 255, 255, 0.02);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 12px;
+	padding: 1rem;
+	cursor: pointer;
+	transition: all 0.2s ease;
+	display: flex;
+	align-items: center;
+	gap: 1rem;
+}
+
+.recent-item:hover {
+	background: rgba(139, 92, 246, 0.1);
+	border-color: rgba(139, 92, 246, 0.3);
+}
+
+.recent-icon {
+	width: 40px;
+	height: 40px;
+	background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+	border-radius: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.recent-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.recent-name {
+	font-weight: 500;
+	margin: 0 0 4px;
+	color: #ffffff;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.recent-date {
+	font-size: 0.8rem;
+	color: #a0a0a0;
+	margin: 0;
+}
+
+.empty-recent {
+	text-align: center;
+	padding: 3rem 2rem;
+	color: #666;
+}
+
+.empty-recent svg {
+	width: 48px;
+	height: 48px;
+	margin-bottom: 1rem;
+	opacity: 0.5;
+}
+
+/* File Input Styles */
+.file-input {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+}
+
+/* Welcome Modal (Error/Warning) */
 .welcome-modal {
 	display: none;
 	position: fixed;
-	z-index: 1;
+	z-index: 1000;
 	left: 0;
 	top: 0;
 	width: 100%;
 	height: 100%;
-	overflow: auto;
-	background-color: hsla(0, 0%, 0%, 0.5);
-	text-align: left;
+	background-color: rgba(0, 0, 0, 0.8);
+	backdrop-filter: blur(4px);
+}
+
+.welcome-modal-content {
+	background: #1a1a2e;
+	border: 1px solid rgba(139, 92, 246, 0.3);
+	border-radius: 16px;
+	max-width: 500px;
+	margin: 10vh auto 0;
+	padding: 2rem;
+	color: white;
+	box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
 }
 
 .welcome-modal-title {
 	text-align: center;
+	font-size: 1.25rem;
+	font-weight: 600;
+	margin: 0 0 1rem;
+	color: #8b5cf6;
 }
 
-.welcome-modal-content {
-	background-color: #333b4f;
-	box-shadow: 0 0.25rem 0.25rem hsla(0, 0%, 0%, 0.5);
+.welcome-modal p {
 	line-height: 1.5;
-	max-width: 38rem;
-	margin: 4rem auto 0 auto;
-	color: white;
-	border-radius: 0.5rem;
-	padding: 1rem 1rem 2rem 1rem;
+	margin: 0 0 1rem;
+	color: #e2e8f0;
 }
 
+.welcome-modal a {
+	color: #8b5cf6;
+	text-decoration: none;
+}
+
+.welcome-modal a:hover {
+	text-decoration: underline;
+}
+
+/* Tabs (Hidden during welcome) */
 #tabs-buttons {
-	/* Match the default background color of the editor window for a seamless appearance. */
-	background-color: #202531;
+	display: none;
+	background-color: #0b0b12;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+	padding: 0.5rem 1rem;
+	gap: 0.5rem;
 }
 
-#tab-game {
-	/* Use a pure black background to better distinguish the running project */
-	/* from the editor window, and to use a more neutral background color (no tint). */
-	background-color: black;
-	/* Make the background span the entire page height. */
+#tabs-buttons.active {
+	display: flex;
+}
+
+.tab-btn {
+	background: transparent;
+	border: 1px solid rgba(139, 92, 246, 0.3);
+	color: #8b5cf6;
+	padding: 8px 16px;
+	border-radius: 6px;
+	cursor: pointer;
+	font-size: 0.9rem;
+	transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+	background: rgba(139, 92, 246, 0.1);
+}
+
+.tab-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.close-btn {
+	background: transparent;
+	border: 1px solid rgba(239, 68, 68, 0.3);
+	color: #ef4444;
+	padding: 8px 12px;
+	margin-left: -4px;
+}
+
+.close-btn:hover {
+	background: rgba(239, 68, 68, 0.1);
+}
+
+/* Canvas Containers */
+#tabs > div {
+	display: none;
+}
+
+#tabs > div.active {
+	display: block;
+}
+
+#tab-editor, #tab-game {
 	min-height: 100vh;
 }
 
-#canvas, #gameCanvas {
+canvas {
 	display: block;
 	margin: 0;
-	color: white;
+	background: #000;
 }
 
-/* Don't show distracting focus outlines for the main tabs' contents. */
-#tab-editor canvas:focus,
-#tab-game canvas:focus,
-#canvas:focus,
-#gameCanvas:focus {
-	outline: none;
-}
-
-.godot {
-	color: #e0e0e0;
-	background-color: #3b3943;
-	background-image: linear-gradient(to bottom, #403e48, #35333c);
-	border: 1px solid #45434e;
-	box-shadow: 0 0 1px 1px #2f2d35;
-}
-
-.btn {
-	appearance: none;
-	color: #e0e0e0;
-	background-color: #262c3b;
-	border: 1px solid #202531;
-	padding: 0.5rem 1rem;
-	margin: 0 0.5rem;
-}
-
-.btn:not(:disabled):hover {
-	color: #e0e1e5;
-	border-color: #666c7b;
-}
-
-.btn:active {
-	border-color: #699ce8;
-	color: #699ce8;
-}
-
-.btn:disabled {
-	color: #aaa;
-	border-color: #242937;
-}
-
-.btn.tab-btn {
-	padding: 0.3rem 1rem;
-}
-
-.btn.close-btn {
-	padding: 0.3rem 1rem;
-	margin-left: -0.75rem;
-	font-weight: 700;
-}
-
-/* Status display */
-
+/* Status Display */
 #status {
 	position: absolute;
 	left: 0;
@@ -166,321 +436,1173 @@ a:active {
 	display: flex;
 	justify-content: center;
 	align-items: center;
-	/* don't consume click events - make children visible explicitly */
 	visibility: hidden;
+	background: #0b0b12;
 }
 
 #status-progress {
-	width: 366px;
-	height: 7px;
-	background-color: #38363A;
-	border: 1px solid #444246;
-	padding: 1px;
-	box-shadow: 0 0 2px 1px #1B1C22;
-	border-radius: 2px;
+	width: 300px;
+	height: 6px;
+	background: rgba(255, 255, 255, 0.1);
+	border-radius: 3px;
+	overflow: hidden;
 	visibility: visible;
-}
-
-@media only screen and (orientation:portrait) {
-	#status-progress {
-		width: 61.8%;
-	}
 }
 
 #status-progress-inner {
 	height: 100%;
 	width: 0;
-	box-sizing: border-box;
-	transition: width 0.5s linear;
-	background-color: #202020;
-	border: 1px solid #222223;
-	box-shadow: 0 0 1px 1px #27282E;
+	background: linear-gradient(90deg, #8b5cf6, #a855f7);
 	border-radius: 3px;
+	transition: width 0.5s ease;
 }
 
 #status-indeterminate {
 	visibility: visible;
 	position: relative;
+	width: 40px;
+	height: 40px;
 }
 
 #status-indeterminate > div {
-	width: 4.5px;
-	height: 0;
-	border-style: solid;
-	border-width: 9px 3px 0 3px;
-	border-color: #2b2b2b transparent transparent transparent;
-	transform-origin: center 21px;
 	position: absolute;
+	width: 2px;
+	height: 12px;
+	background: #8b5cf6;
+	border-radius: 1px;
+	transform-origin: center 20px;
+	animation: spin 1s linear infinite;
 }
 
-#status-indeterminate > div:nth-child(1) { transform: rotate( 22.5deg); }
-#status-indeterminate > div:nth-child(2) { transform: rotate( 67.5deg); }
-#status-indeterminate > div:nth-child(3) { transform: rotate(112.5deg); }
-#status-indeterminate > div:nth-child(4) { transform: rotate(157.5deg); }
-#status-indeterminate > div:nth-child(5) { transform: rotate(202.5deg); }
-#status-indeterminate > div:nth-child(6) { transform: rotate(247.5deg); }
-#status-indeterminate > div:nth-child(7) { transform: rotate(292.5deg); }
-#status-indeterminate > div:nth-child(8) { transform: rotate(337.5deg); }
+#status-indeterminate > div:nth-child(1) { transform: rotate(0deg); animation-delay: -0.9s; }
+#status-indeterminate > div:nth-child(2) { transform: rotate(45deg); animation-delay: -0.8s; }
+#status-indeterminate > div:nth-child(3) { transform: rotate(90deg); animation-delay: -0.7s; }
+#status-indeterminate > div:nth-child(4) { transform: rotate(135deg); animation-delay: -0.6s; }
+#status-indeterminate > div:nth-child(5) { transform: rotate(180deg); animation-delay: -0.5s; }
+#status-indeterminate > div:nth-child(6) { transform: rotate(225deg); animation-delay: -0.4s; }
+#status-indeterminate > div:nth-child(7) { transform: rotate(270deg); animation-delay: -0.3s; }
+#status-indeterminate > div:nth-child(8) { transform: rotate(315deg); animation-delay: -0.2s; }
+
+@keyframes spin {
+	0%, 40%, 100% { opacity: 0.3; }
+	20% { opacity: 1; }
+}
 
 #status-notice {
-	margin: 0 100px;
-	line-height: 1.3;
 	visibility: visible;
-	padding: 4px 6px;
+	background: rgba(239, 68, 68, 0.1);
+	border: 1px solid rgba(239, 68, 68, 0.3);
+	border-radius: 8px;
+	padding: 1rem 1.5rem;
+	margin: 0 2rem;
+	color: #fca5a5;
+	text-align: center;
+	max-width: 500px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+	.welcome-content {
+		padding: 1rem;
+	}
+	
+	.welcome-title {
+		font-size: 2rem;
+	}
+	
+	.action-card {
+		padding: 1.5rem;
+	}
+	
+	.recent-grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+/* Video Mode Selector */
+.video-mode-section {
+	margin-top: 2rem;
+	padding: 1.5rem;
+	background: rgba(255, 255, 255, 0.03);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 12px;
+}
+
+.video-mode-title {
+	font-size: 1rem;
+	font-weight: 500;
+	margin: 0 0 1rem;
+	color: #ffffff;
+}
+
+.video-mode-select {
+	width: 100%;
+	padding: 8px 12px;
+	background: rgba(255, 255, 255, 0.05);
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 6px;
+	color: #ffffff;
+	font-size: 0.9rem;
+}
+
+.video-mode-select:focus {
+	outline: none;
+	border-color: #8b5cf6;
+}
+
+option {
+	background: #1a1a2e;
+	color: #ffffff;
+}
+
+/* Footer */
+.welcome-footer {
+	text-align: center;
+	padding: 1rem;
+	color: #666;
+	font-size: 0.9rem;
+}
+
+.welcome-footer a {
+	color: #8b5cf6;
+	text-decoration: none;
+}
+
+.welcome-footer a:hover {
+	text-decoration: underline;
+}
+
+/* Enhanced Modal Styles */
+input[type="text"]:focus,
+input[type="email"]:focus,
+textarea:focus,
+select:focus {
+	border-color: #8b5cf6 !important;
+	box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.1);
+}
+
+input[type="radio"] {
+	accent-color: #8b5cf6;
+}
+
+input[type="checkbox"] {
+	accent-color: #8b5cf6;
+}
+
+/* Project Type Radio Labels */
+input[name="projectType"]:checked + span {
+	font-weight: 600;
+}
+
+/* Loading Spinner Animation */
+@keyframes spin {
+	0% { transform: rotate(0deg); }
+	100% { transform: rotate(360deg); }
+}
+
+/* Responsive Modal */
+@media (max-width: 768px) {
+	.welcome-modal-content {
+		margin: 5vh 1rem 0 !important;
+		max-width: none !important;
+	}
+	
+	.main-actions {
+		grid-template-columns: 1fr !important;
+	}
+	
+	#project-creation-modal .welcome-modal-content {
+		max-height: 90vh !important;
+	}
+}
+
+/* Form Validation Styles */
+input:invalid {
+	border-color: rgba(239, 68, 68, 0.5);
+}
+
+input:valid {
+	border-color: rgba(34, 197, 94, 0.3);
 }
 		</style>
+		<!-- Preload engine loader before inline scripts -->
+		<script>
+		// Strictly disable service worker caching in local/dev to avoid stale assets.
+		(function () {
+			if ('serviceWorker' in navigator) {
+				// Unregister all service workers in this scope.
+				navigator.serviceWorker.getRegistrations().then(function (regs) {
+					regs.forEach(function (r) { r.unregister(); });
+				});
+			}
+			// Clear CacheStorage buckets created by previous service workers.
+			if (window.caches && caches.keys) {
+				caches.keys().then(function (keys) {
+					return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+				}).catch(function () { /* ignore */ });
+			}
+		})();
+		</script>
 	</head>
 	<body>
-		<div
-			id="welcome-modal"
-			class="welcome-modal"
-			role="dialog"
-			aria-labelledby="welcome-modal-title"
-			aria-describedby="welcome-modal-description"
-			onclick="if (event.target === this) closeWelcomeModal(false)"
-		>
+		<!-- Welcome Screen -->
+		<div id="welcome-screen" class="welcome-container">
+			<div class="welcome-header">
+				<img src="logo.png" alt="Orca Engine" class="logo">
+				<h1 class="welcome-title">Orca Engine</h1>
+				<p class="welcome-subtitle">AI-Powered Game Development in Your Browser</p>
+			</div>
+			
+			<div class="welcome-content">
+				<!-- Main Actions -->
+				<div class="main-actions">
+					<div class="action-card" onclick="handleNewProject()">
+						<div class="action-icon">
+							<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+							</svg>
+						</div>
+						<h3 class="action-title">Create New Project</h3>
+						<p class="action-subtitle">Start fresh with a new Orca Engine project and unleash your creativity</p>
+						<button class="btn">
+							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M12 5v14M5 12h14"/>
+							</svg>
+							Create Project
+						</button>
+					</div>
+					
+					<div class="action-card" onclick="handleImportProject()">
+						<div class="action-icon">
+							<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+								<polyline points="14,2 14,8 20,8"/>
+								<line x1="16" y1="13" x2="8" y2="13"/>
+								<line x1="16" y1="17" x2="8" y2="17"/>
+								<polyline points="10,9 9,9 8,9"/>
+							</svg>
+						</div>
+						<h3 class="action-title">Import Project</h3>
+						<p class="action-subtitle">Upload and continue working on an existing Godot/Orca project</p>
+						<button class="btn btn-secondary">
+							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+								<polyline points="17,8 12,3 7,8"/>
+								<line x1="12" y1="3" x2="12" y2="15"/>
+							</svg>
+							Import ZIP
+						</button>
+						<input type="file" id="zip-file" accept=".zip,.pck" class="file-input">
+					</div>
+				</div>
+				
+				<!-- Recent Projects -->
+				<div class="recent-section">
+					<div class="recent-header">
+						<h2 class="recent-title">Recent Projects</h2>
+						<button class="clear-recent" onclick="clearRecentProjects()">Clear All</button>
+					</div>
+					<div class="recent-grid" id="recent-projects">
+						<div class="empty-recent" id="empty-recent">
+							<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+								<path d="M20 6L9 17l-5-5"/>
+							</svg>
+							<p>No recent projects yet</p>
+							<p>Your recently opened projects will appear here</p>
+						</div>
+					</div>
+				</div>
+				
+				<!-- Video Mode Selection -->
+				<div class="video-mode-section">
+					<div class="video-mode-title">Graphics Settings</div>
+					<select id="videoMode" class="video-mode-select">
+						<option value="" selected>Auto (Recommended)</option>
+						<option value="opengl3">WebGL 2</option>
+					</select>
+				</div>
+			</div>
+			
+			<div class="welcome-footer">
+				<p>
+					<a href="https://docs.orcaengine.ai" target="_blank">Documentation</a> • 
+					<a href="https://discord.gg/orcaengine" target="_blank">Community</a> • 
+					<a href="https://github.com/Simplifine-gamedev/orca-engine" target="_blank">GitHub</a>
+				</p>
+			</div>
+		</div>
+
+		<!-- Warning/Error Modal -->
+		<div id="welcome-modal" class="welcome-modal" role="dialog" aria-labelledby="welcome-modal-title" aria-describedby="welcome-modal-description" onclick="if (event.target === this) closeWelcomeModal(false)">
 			<div class="welcome-modal-content">
 				<h2 id="welcome-modal-title" class="welcome-modal-title">Important - Please read before continuing</h2>
 				<div id="welcome-modal-description">
-					<p>
-						The Orca Web Editor has some limitations compared to the native version.
-						Its main focus is education and experimentation;
-						<strong>it is not recommended for production</strong>.
-					</p>
-					<p>
-						Refer to the
-						<a
-							href="https://docs.orcaengine.ai/en/latest/tutorials/editor/using_the_web_editor.html"
-							target="_blank"
-							rel="noopener"
-						>Web editor documentation</a> for usage instructions and limitations.
-					</p>
+					<p>The Orca Web Editor has some limitations compared to the native version. Its main focus is education and experimentation; <strong>it is not recommended for production</strong>.</p>
+					<p>Refer to the <a href="https://docs.orcaengine.ai/en/latest/tutorials/editor/using_the_web_editor.html" target="_blank" rel="noopener">Web editor documentation</a> for usage instructions and limitations.</p>
 				</div>
 				<div id="welcome-modal-missing-description" style="display: none">
-					<p>
-						<strong>The following features required by the Orca Web Editor are missing:</strong>
-					</p>
-					<ul id="welcome-modal-missing-list">
-					</ul>
-					<p>
-						If you are self-hosting the web editor,
-						refer to
-						<a
-							href="https://docs.orcaengine.ai/en/latest/tutorials/export/exporting_for_web.html"
-							target="_blank"
-							rel="noopener"
-						>Exporting for the Web</a> for more information.
-					</p>
+					<p><strong>The following features required by the Orca Web Editor are missing:</strong></p>
+					<ul id="welcome-modal-missing-list"></ul>
+					<p>If you are self-hosting the web editor, refer to <a href="https://docs.orcaengine.ai/en/latest/tutorials/export/exporting_for_web.html" target="_blank" rel="noopener">Exporting for the Web</a> for more information.</p>
 				</div>
-				<div style="text-align: center">
-					<button id="welcome-modal-dismiss" class="btn" type="button" onclick="closeWelcomeModal(true)" style="margin-top: 1rem">
+				<div style="text-align: center; margin-top: 1.5rem;">
+					<button id="welcome-modal-dismiss" class="btn" type="button" onclick="closeWelcomeModal(true)">
 						OK, don't show again
 					</button>
 				</div>
 			</div>
 		</div>
-		<div id="tabs-buttons">
-			<button id="btn-tab-loader" class="btn tab-btn" onclick="showTab('loader')">Loader</button>
-			<button id="btn-tab-editor" class="btn tab-btn" disabled="disabled" onclick="showTab('editor')">Editor</button>
-			<button id="btn-close-editor" class="btn close-btn" disabled="disabled" onclick="closeEditor()">×</button>
-			<button id="btn-tab-game" class="btn tab-btn" disabled="disabled" onclick="showTab('game')">Game</button>
-			<button id="btn-close-game" class="btn close-btn" disabled="disabled" onclick="closeGame()">×</button>
-			<button id="btn-tab-update" class="btn tab-btn" style="display: none;">Update</button>
+
+		<!-- Enhanced Project Creation Modal -->
+		<div id="project-creation-modal" class="welcome-modal" style="display: none;" role="dialog" aria-labelledby="project-modal-title" onclick="if (event.target === this) closeProjectCreationModal()">
+			<div class="welcome-modal-content" style="max-width: 600px; max-height: 80vh; overflow-y: auto;">
+				<h2 id="project-modal-title" class="welcome-modal-title">
+					<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 0.5rem;">
+						<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+					</svg>
+					Create New Orca Project
+				</h2>
+				
+				<form id="project-creation-form" onsubmit="handleProjectCreation(event)">
+					<!-- Project Basics -->
+					<div style="margin-bottom: 1.5rem;">
+						<h3 style="font-size: 1.1rem; margin: 0 0 0.75rem; color: #8b5cf6;">Project Details</h3>
+						
+						<div style="margin-bottom: 1rem;">
+							<label for="project-name" style="display: block; margin-bottom: 0.5rem; color: #e2e8f0; font-weight: 500;">
+								Project Name <span style="color: #ef4444;">*</span>
+							</label>
+							<input type="text" id="project-name" name="projectName" required
+								style="width: 100%; padding: 0.75rem; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px; color: #ffffff; font-size: 1rem;"
+								placeholder="My Awesome Game" maxlength="50">
+						</div>
+						
+						<div style="margin-bottom: 1rem;">
+							<label for="project-description" style="display: block; margin-bottom: 0.5rem; color: #e2e8f0; font-weight: 500;">
+								Project Description
+							</label>
+							<textarea id="project-description" name="projectDescription" rows="3"
+								style="width: 100%; padding: 0.75rem; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px; color: #ffffff; font-size: 1rem; resize: vertical;"
+								placeholder="Describe your game idea..."></textarea>
+						</div>
+					</div>
+
+					<!-- Project Type -->
+					<div style="margin-bottom: 1.5rem;">
+						<h3 style="font-size: 1.1rem; margin: 0 0 0.75rem; color: #8b5cf6;">Project Type</h3>
+						<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+							<label style="display: flex; align-items: center; padding: 0.75rem; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">
+								<input type="radio" name="projectType" value="2d" checked style="margin-right: 0.5rem;">
+								<span>2D Game</span>
+							</label>
+							<label style="display: flex; align-items: center; padding: 0.75rem; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; cursor: pointer; transition: all 0.2s ease;">
+								<input type="radio" name="projectType" value="3d" style="margin-right: 0.5rem;">
+								<span>3D Game</span>
+							</label>
+						</div>
+					</div>
+
+					<!-- Genre Selection -->
+					<div style="margin-bottom: 1.5rem;">
+						<h3 style="font-size: 1.1rem; margin: 0 0 0.75rem; color: #8b5cf6;">Genre</h3>
+						<select id="project-genre" name="projectGenre" 
+							style="width: 100%; padding: 0.75rem; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px; color: #ffffff; font-size: 1rem;">
+							<option value="">Select a genre...</option>
+							<option value="platformer">Platformer</option>
+							<option value="rpg">RPG</option>
+							<option value="puzzle">Puzzle</option>
+							<option value="arcade">Arcade</option>
+							<option value="shooter">Shooter</option>
+							<option value="racing">Racing</option>
+							<option value="strategy">Strategy</option>
+							<option value="adventure">Adventure</option>
+							<option value="simulation">Simulation</option>
+							<option value="other">Other</option>
+						</select>
+					</div>
+
+					<!-- AI Assistant Options -->
+					<div style="margin-bottom: 1.5rem;">
+						<h3 style="font-size: 1.1rem; margin: 0 0 0.75rem; color: #8b5cf6;">
+							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 0.25rem;">
+								<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+							</svg>
+							AI Project Assistant
+						</h3>
+						
+						<div style="margin-bottom: 1rem;">
+							<label style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+								<input type="checkbox" id="enable-ai-assistance" name="enableAiAssistance" style="margin-right: 0.5rem;">
+								<span style="color: #e2e8f0;">Generate starter code and templates</span>
+							</label>
+						</div>
+						
+						<div id="ai-options" style="display: none;">
+							<label for="ai-requirements" style="display: block; margin-bottom: 0.5rem; color: #e2e8f0; font-weight: 500;">
+								Special Requirements or Features
+							</label>
+							<textarea id="ai-requirements" name="aiRequirements" rows="2"
+								style="width: 100%; padding: 0.75rem; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px; color: #ffffff; font-size: 1rem; resize: vertical;"
+								placeholder="e.g., inventory system, dialogue system, multiplayer support..."></textarea>
+						</div>
+					</div>
+
+					<!-- Project Structure Options -->
+					<div style="margin-bottom: 2rem;">
+						<h3 style="font-size: 1.1rem; margin: 0 0 0.75rem; color: #8b5cf6;">Project Structure</h3>
+						<div style="display: grid; gap: 0.5rem;">
+							<label style="display: flex; align-items: center;">
+								<input type="checkbox" name="includeExampleScenes" checked style="margin-right: 0.5rem;">
+								<span style="color: #e2e8f0;">Include example scenes</span>
+							</label>
+							<label style="display: flex; align-items: center;">
+								<input type="checkbox" name="includeAssetFolders" checked style="margin-right: 0.5rem;">
+								<span style="color: #e2e8f0;">Setup organized asset folders</span>
+							</label>
+							<label style="display: flex; align-items: center;">
+								<input type="checkbox" name="includeBasicScripts" style="margin-right: 0.5rem;">
+								<span style="color: #e2e8f0;">Generate basic gameplay scripts</span>
+							</label>
+						</div>
+					</div>
+
+					<!-- Loading State -->
+					<div id="project-creation-loading" style="display: none; text-align: center; margin: 1rem 0;">
+						<div style="display: inline-block; position: relative; width: 40px; height: 40px;">
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(45deg); animation-delay: -0.875s;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(90deg); animation-delay: -0.75s;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(135deg); animation-delay: -0.625s;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(180deg); animation-delay: -0.5s;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(225deg); animation-delay: -0.375s;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(270deg); animation-delay: -0.25s;"></div>
+							<div style="position: absolute; width: 2px; height: 12px; background: #8b5cf6; border-radius: 1px; transform-origin: center 20px; animation: spin 1s linear infinite; transform: rotate(315deg); animation-delay: -0.125s;"></div>
+						</div>
+						<p style="margin-top: 1rem; color: #8b5cf6;">Creating your project...</p>
+					</div>
+
+					<!-- Buttons -->
+					<div style="display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem;">
+						<button type="button" onclick="closeProjectCreationModal()" class="btn btn-secondary">
+							Cancel
+						</button>
+						<button type="submit" class="btn" id="create-project-btn">
+							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M12 5v14M5 12h14"/>
+							</svg>
+							Create Project
+						</button>
+					</div>
+				</form>
+			</div>
 		</div>
+
+		<!-- Editor Interface (Initially Hidden) -->
+		<div id="tabs-buttons">
+			<button id="btn-tab-loader" class="tab-btn" onclick="showWelcome()">Home</button>
+			<button id="btn-tab-editor" class="tab-btn" disabled="disabled" onclick="showTab('editor')">Editor</button>
+			<button id="btn-close-editor" class="close-btn" disabled="disabled" onclick="closeEditor()">×</button>
+			<button id="btn-tab-game" class="tab-btn" disabled="disabled" onclick="showTab('game')">Game</button>
+			<button id="btn-close-game" class="close-btn" disabled="disabled" onclick="closeGame()">×</button>
+			<button id="btn-tab-update" class="tab-btn" style="display: none;">Update</button>
+		</div>
+		
 		<div id="tabs">
 			<div id="tab-loader">
-				<div style="color: #e0e0e0;" id="persistence">
-					<br >
-					<img src="logo.svg" alt="Orca Engine logo" width="1024" height="414" style="width: auto; height: auto; max-width: min(85%, 50vh); max-height: 250px">
-					<br >
-					Orca Engine v1.0
-					<br >
-					<a href="releases/">Need an old version?</a>
-					<br >
-					<br >
-					<br >
-					<label for="videoMode" style="margin-right: 1rem">Video driver:</label>
-					<select id="videoMode">
-						<option value="" selected="selected">Auto</option>
-						<option value="opengl3">WebGL 2</option>
-					</select>
-					<br >
-					<br >
-					<label for="zip-file" style="margin-right: 1rem">Preload project ZIP:</label>
-					<input id="zip-file" type="file" name="files" style="margin-bottom: 1rem">
-					<br >
-					<a href="demo.zip">(Try this for example)</a>
-					<br >
-					<br >
-					<button id="startButton" class="btn" style="margin-bottom: 4rem; font-weight: 700">Start Orca editor</button>
-					<br >
-					<button class="btn" onclick="clearPersistence()" style="margin-bottom: 1.5rem">Clear persistent data</button>
-					<br >
-					<a href="https://docs.orcaengine.ai/en/latest/tutorials/editor/using_the_web_editor.html">Web editor documentation</a>
+				<!-- Welcome screen is shown by default -->
 				</div>
-			</div>
-			<div id="tab-editor" style="display: none;">
+			<div id="tab-editor">
 				<canvas id="editor-canvas" tabindex="1">
-					HTML5 canvas appears to be unsupported in the current browser.<br >
+					HTML5 canvas appears to be unsupported in the current browser.<br>
 					Please try updating or use a different browser.
 				</canvas>
 			</div>
-			<div id="tab-game" style="display: none;">
+			<div id="tab-game">
 				<canvas id="game-canvas" tabindex="2">
-					HTML5 canvas appears to be unsupported in the current browser.<br >
+					HTML5 canvas appears to be unsupported in the current browser.<br>
 					Please try updating or use a different browser.
 				</canvas>
 			</div>
-			<div id="tab-status" style="display: none;">
+			<div id="tab-status">
 				<div id="status-progress" style="display: none;" oncontextmenu="event.preventDefault();">
 					<div id="status-progress-inner"></div>
 				</div>
 				<div id="status-indeterminate" style="display: none;" oncontextmenu="event.preventDefault();">
-					<div></div>
-					<div></div>
-					<div></div>
-					<div></div>
-					<div></div>
-					<div></div>
-					<div></div>
-					<div></div>
+					<div></div><div></div><div></div><div></div>
+					<div></div><div></div><div></div><div></div>
 				</div>
-				<div id="status-notice" class="godot" style="display: none;"></div>
+				<div id="status-notice" style="display: none;"></div>
 			</div>
 		</div>
+
 		<script>
-window.addEventListener('load', () => {
-	function notifyUpdate(sw) {
-		const btn = document.getElementById('btn-tab-update');
-		btn.onclick = function () {
-			if (!window.confirm('Are you sure you want to update?\nClicking "OK" will reload all active instances!')) {
-				return;
-			}
-			sw.postMessage('update');
-			btn.innerHTML = 'Updating...';
-			btn.disabled = true;
-		};
-		btn.style.display = '';
-	}
-	if ('serviceWorker' in navigator) {
-		try {
-			navigator.serviceWorker.register('service.worker.js').then(function (reg) {
-				if (reg.waiting) {
-					notifyUpdate(reg.waiting);
-				}
-				reg.addEventListener('updatefound', function () {
-					const update = reg.installing;
-					update.addEventListener('statechange', function () {
-						if (update.state === 'installed') {
-							// It's a new install, claim and perform aggressive caching.
-							if (!reg.active) {
-								update.postMessage('claim');
-							} else {
-								notifyUpdate(update);
-							}
-						}
-					});
-				});
-			});
-		} catch (e) {
-			console.error('Error while registering service worker:', e);
-		}
-	}
+// Recent Projects Management
+let recentProjects = JSON.parse(localStorage.getItem('orcaRecentProjects') || '[]');
 
-	const missing = Engine.getMissingFeatures({
-		threads: true,
+function updateRecentProjects() {
+	const container = document.getElementById('recent-projects');
+	const emptyState = document.getElementById('empty-recent');
+	
+	// Guard against missing DOM nodes or malformed state
+	if (!container || !emptyState) {
+		return;
+	}
+	if (!Array.isArray(recentProjects)) {
+		recentProjects = [];
+	}
+	
+	if (recentProjects.length === 0) {
+		emptyState.style.display = 'block';
+		container.innerHTML = '';
+		container.appendChild(emptyState);
+		return;
+	}
+	
+	emptyState.style.display = 'none';
+	container.innerHTML = '';
+	
+	recentProjects.slice(0, 6).forEach((project, index) => {
+		const item = document.createElement('div');
+		item.className = 'recent-item';
+		item.onclick = () => openRecentProject(project);
+		
+		const date = new Date(project.lastOpened);
+		const timeAgo = getTimeAgo(date);
+		
+		item.innerHTML = `
+			<div class="recent-icon">
+				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M2 3h20v18H2zM8 21l4-4 4 4"/>
+				</svg>
+			</div>
+			<div class="recent-info">
+				<div class="recent-name">${project.name}</div>
+				<div class="recent-date">${timeAgo}</div>
+			</div>
+		`;
+		
+		container.appendChild(item);
 	});
-	if (missing.length) {
-		// Display error dialog as threading support is required for the editor.
-		document.getElementById('startButton').disabled = 'disabled';
-		document.getElementById('welcome-modal-description').style.display = 'none';
-		document.getElementById('welcome-modal-missing-description').style.display = 'block';
-		document.getElementById('welcome-modal-dismiss').style.display = 'none';
-		const list = document.getElementById('welcome-modal-missing-list');
-		for (let i = 0; i < missing.length; i++) {
-			const node = document.createElement('li');
-			node.innerText = missing[i];
-			list.appendChild(node);
+}
+
+function addRecentProject(name, data) {
+	const project = {
+		id: Date.now().toString(),
+		name: name,
+		lastOpened: new Date().toISOString(),
+		data: data
+	};
+	
+	// Remove existing entry if it exists
+	recentProjects = recentProjects.filter(p => p.name !== name);
+	
+	// Add to beginning
+	recentProjects.unshift(project);
+	
+	// Keep only last 10 projects
+	recentProjects = recentProjects.slice(0, 10);
+	
+	localStorage.setItem('orcaRecentProjects', JSON.stringify(recentProjects));
+	updateRecentProjects();
+}
+
+function clearRecentProjects() {
+	if (confirm('Clear all recent projects?')) {
+		recentProjects = [];
+		localStorage.setItem('orcaRecentProjects', JSON.stringify(recentProjects));
+		updateRecentProjects();
+	}
+}
+
+function openRecentProject(project) {
+	// Update last opened time
+	project.lastOpened = new Date().toISOString();
+	localStorage.setItem('orcaRecentProjects', JSON.stringify(recentProjects));
+	
+	// Start editor with project data
+	startEditor(project.data);
+}
+
+function getTimeAgo(date) {
+	const now = new Date();
+	const diffMs = now - date;
+	const diffMins = Math.floor(diffMs / 60000);
+	const diffHours = Math.floor(diffMs / 3600000);
+	const diffDays = Math.floor(diffMs / 86400000);
+	
+	if (diffMins < 60) return `${diffMins} minutes ago`;
+	if (diffHours < 24) return `${diffHours} hours ago`;
+	if (diffDays < 7) return `${diffDays} days ago`;
+	return date.toLocaleDateString();
+}
+
+// Project Actions
+function handleNewProject() {
+	// Skip custom modal for now - directly open Godot project manager
+	startEditor();
+}
+
+function handleImportProject() {
+	document.getElementById('zip-file').click();
+}
+
+// Enhanced Project Creation Functions
+function showProjectCreationModal() {
+	document.getElementById('project-creation-modal').style.display = 'block';
+	document.getElementById('project-name').focus();
+}
+
+function closeProjectCreationModal() {
+	document.getElementById('project-creation-modal').style.display = 'none';
+	// Reset form
+	document.getElementById('project-creation-form').reset();
+	document.getElementById('ai-options').style.display = 'none';
+	document.getElementById('project-creation-loading').style.display = 'none';
+}
+
+async function handleProjectCreation(event) {
+	event.preventDefault();
+	
+	const formData = new FormData(event.target);
+	const projectData = {
+		name: formData.get('projectName'),
+		description: formData.get('projectDescription'),
+		type: formData.get('projectType'),
+		genre: formData.get('projectGenre'),
+		enableAi: formData.get('enableAiAssistance') === 'on',
+		aiRequirements: formData.get('aiRequirements'),
+		includeExampleScenes: formData.get('includeExampleScenes') === 'on',
+		includeAssetFolders: formData.get('includeAssetFolders') === 'on',
+		includeBasicScripts: formData.get('includeBasicScripts') === 'on'
+	};
+	
+	// Show loading state
+	document.getElementById('project-creation-loading').style.display = 'block';
+	document.getElementById('create-project-btn').disabled = true;
+	
+	try {
+		// Generate project structure if AI is enabled
+		if (projectData.enableAi) {
+			await generateAiProjectStructure(projectData);
+		}
+		
+		// Add to recent projects
+		addRecentProject(projectData.name, null);
+		
+		// Close modal and start editor
+		closeProjectCreationModal();
+		
+		// Create project with metadata
+		await createOrcaProject(projectData);
+		
+	} catch (error) {
+		console.error('Project creation failed:', error);
+		alert('Failed to create project: ' + error.message);
+	} finally {
+		document.getElementById('project-creation-loading').style.display = 'none';
+		document.getElementById('create-project-btn').disabled = false;
+	}
+}
+
+async function generateAiProjectStructure(projectData) {
+	// This function will integrate with your backend AI service
+	// For now, we'll create a basic structure based on the selections
+	
+	const projectStructure = {
+		metadata: {
+			name: projectData.name,
+			description: projectData.description,
+			type: projectData.type,
+			genre: projectData.genre,
+			created: new Date().toISOString()
+		},
+		folders: [],
+		scripts: [],
+		scenes: []
+	};
+	
+	// Add basic folder structure
+	if (projectData.includeAssetFolders) {
+		projectStructure.folders = [
+			'assets/sprites',
+			'assets/sounds',
+			'assets/music',
+			'assets/fonts',
+			'scripts/player',
+			'scripts/ui',
+			'scripts/game_logic',
+			'scenes/levels',
+			'scenes/ui'
+		];
+		
+		if (projectData.type === '3d') {
+			projectStructure.folders.push('assets/models', 'assets/textures');
 		}
 	}
-
-	if (missing.length || localStorage.getItem('welcomeModalDismissed') !== 'true') {
-		document.getElementById('welcome-modal').style.display = 'block';
-		document.getElementById('welcome-modal-dismiss').focus();
+	
+	// Generate example scenes based on genre
+	if (projectData.includeExampleScenes) {
+		projectStructure.scenes = generateExampleScenes(projectData);
 	}
+	
+	// Generate basic scripts
+	if (projectData.includeBasicScripts) {
+		projectStructure.scripts = await generateBasicScripts(projectData);
+	}
+	
+	// Store project structure for use in editor
+	window.pendingProjectStructure = projectStructure;
+	
+	return projectStructure;
+}
+
+function generateExampleScenes(projectData) {
+	const scenes = ['Main.tscn'];
+	
+	switch (projectData.genre) {
+		case 'platformer':
+			scenes.push('Player.tscn', 'Level.tscn', 'Enemy.tscn');
+			break;
+		case 'rpg':
+			scenes.push('Player.tscn', 'World.tscn', 'UI.tscn', 'Battle.tscn');
+			break;
+		case 'puzzle':
+			scenes.push('Game.tscn', 'Piece.tscn', 'Menu.tscn');
+			break;
+		case 'arcade':
+		case 'shooter':
+			scenes.push('Player.tscn', 'Enemy.tscn', 'Bullet.tscn', 'UI.tscn');
+			break;
+		default:
+			scenes.push('Player.tscn', 'Game.tscn');
+	}
+	
+	return scenes;
+}
+
+async function generateBasicScripts(projectData) {
+	const scripts = [];
+	
+	// Generate basic player script based on project type and genre
+	const playerScript = generatePlayerScript(projectData);
+	if (playerScript) {
+		scripts.push({
+			name: 'Player.gd',
+			content: playerScript,
+			path: 'scripts/player/'
+		});
+	}
+	
+	// Generate game manager script
+	const gameManagerScript = generateGameManagerScript(projectData);
+	if (gameManagerScript) {
+		scripts.push({
+			name: 'GameManager.gd',
+			content: gameManagerScript,
+			path: 'scripts/game_logic/'
+		});
+	}
+	
+	// If AI requirements are specified, try to generate additional scripts
+	if (projectData.aiRequirements && projectData.aiRequirements.trim()) {
+		const aiScripts = await generateAiBasedScripts(projectData);
+		scripts.push(...aiScripts);
+	}
+	
+	return scripts;
+}
+
+function generatePlayerScript(projectData) {
+	const is3D = projectData.type === '3d';
+	const baseClass = is3D ? 'CharacterBody3D' : 'CharacterBody2D';
+	const velocityProperty = is3D ? 'velocity' : 'velocity';
+	const moveFunction = is3D ? 'move_and_slide' : 'move_and_slide';
+	
+	let script = `extends ${baseClass}
+
+@export var speed = 300.0
+`;
+	
+	if (is3D) {
+		script += `@export var jump_velocity = 4.5
+
+# Get the gravity from the project settings to be synced with RigidBody nodes.
+var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
+
+func _physics_process(delta):
+	# Add the gravity.
+	if not is_on_floor():
+		${velocityProperty}.y -= gravity * delta
+
+	# Handle jump.
+	if Input.is_action_just_pressed("ui_accept") and is_on_floor():
+		${velocityProperty}.y = jump_velocity
+
+	# Get the input direction and handle the movement/deceleration.
+	var input_dir = Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
+	var direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
+	if direction:
+		${velocityProperty}.x = direction.x * speed
+		${velocityProperty}.z = direction.z * speed
+	else:
+		${velocityProperty}.x = move_toward(${velocityProperty}.x, 0, speed)
+		${velocityProperty}.z = move_toward(${velocityProperty}.z, 0, speed)
+
+	${moveFunction}()
+`;
+	} else {
+		if (projectData.genre === 'platformer') {
+			script += `@export var jump_velocity = -400.0
+
+# Get the gravity from the project settings to be synced with RigidBody nodes.
+var gravity = ProjectSettings.get_setting("physics/2d/default_gravity")
+
+func _physics_process(delta):
+	# Add the gravity.
+	if not is_on_floor():
+		${velocityProperty}.y += gravity * delta
+
+	# Handle jump.
+	if Input.is_action_just_pressed("ui_accept") and is_on_floor():
+		${velocityProperty}.y = jump_velocity
+
+	# Get the input direction and handle the movement/deceleration.
+	var direction = Input.get_axis("ui_left", "ui_right")
+	if direction:
+		${velocityProperty}.x = direction * speed
+	else:
+		${velocityProperty}.x = move_toward(${velocityProperty}.x, 0, speed)
+
+	${moveFunction}()
+`;
+		} else {
+			script += `
+func _physics_process(delta):
+	# Get the input direction and handle the movement.
+	var direction = Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
+	${velocityProperty} = direction * speed
+	${moveFunction}()
+`;
+		}
+	}
+	
+	return script;
+}
+
+function generateGameManagerScript(projectData) {
+	return `extends Node
+
+signal game_started
+signal game_ended
+signal score_changed(new_score)
+
+var score = 0 : set = set_score
+var game_state = "menu" # menu, playing, paused, game_over
+
+func _ready():
+	# Initialize game manager
+	pass
+
+func start_game():
+	game_state = "playing"
+	score = 0
+	game_started.emit()
+
+func end_game():
+	game_state = "game_over"
+	game_ended.emit()
+
+func pause_game():
+	if game_state == "playing":
+		game_state = "paused"
+		get_tree().paused = true
+
+func resume_game():
+	if game_state == "paused":
+		game_state = "playing"
+		get_tree().paused = false
+
+func set_score(value):
+	score = value
+	score_changed.emit(score)
+
+func add_score(points):
+	self.score += points
+`;
+}
+
+async function generateAiBasedScripts(projectData) {
+	// This is where you would integrate with your AI backend
+	// For now, return empty array - this can be enhanced with actual AI integration
+	console.log('AI requirements:', projectData.aiRequirements);
+	
+	// You could make an API call to your backend here:
+	// try {
+	//     const response = await fetch('/api/generate-scripts', {
+	//         method: 'POST',
+	//         headers: { 'Content-Type': 'application/json' },
+	//         body: JSON.stringify(projectData)
+	//     });
+	//     return await response.json();
+	// } catch (error) {
+	//     console.error('AI script generation failed:', error);
+	// }
+	
+	return [];
+}
+
+async function createOrcaProject(projectData) {
+	// Start the editor with project metadata
+	startEditor(null, projectData);
+}
+
+// Project Structure Setup (runs after editor initializes)
+function setupProjectStructure(projectStructure, projectMetadata) {
+	try {
+		console.log('Setting up project structure:', projectStructure);
+		
+		// Store project metadata in editor's file system
+		if (editor && editor.rtenv) {
+			const metadataContent = JSON.stringify({
+				...projectMetadata,
+				structure: projectStructure,
+				orcaVersion: "1.0.0",
+				createdWith: "Orca Web Editor"
+			}, null, 2);
+			
+			// Create .orca-project file with metadata
+			try {
+				editor.rtenv.FS.writeFile('/home/web_user/.orca-project', metadataContent);
+				console.log('Project metadata saved successfully');
+			} catch (e) {
+				console.warn('Could not save project metadata:', e);
+			}
+			
+			// Create folder structure
+			if (projectStructure.folders && projectStructure.folders.length > 0) {
+				createProjectFolders(projectStructure.folders);
+			}
+			
+			// Create basic scripts
+			if (projectStructure.scripts && projectStructure.scripts.length > 0) {
+				createProjectScripts(projectStructure.scripts);
+			}
+			
+			// Create scene templates
+			if (projectStructure.scenes && projectStructure.scenes.length > 0) {
+				createProjectScenes(projectStructure.scenes, projectMetadata);
+			}
+			
+			console.log('Project structure setup completed');
+		}
+	} catch (error) {
+		console.error('Failed to setup project structure:', error);
+	}
+}
+
+function createProjectFolders(folders) {
+	if (!editor || !editor.rtenv || !editor.rtenv.FS) return;
+	
+	folders.forEach(folder => {
+		try {
+			const fullPath = `/home/web_user/${folder}`;
+			editor.rtenv.FS.mkdirTree(fullPath);
+			console.log('Created folder:', folder);
+		} catch (e) {
+			console.warn('Could not create folder:', folder, e);
+		}
+	});
+}
+
+function createProjectScripts(scripts) {
+	if (!editor || !editor.rtenv || !editor.rtenv.FS) return;
+	
+	scripts.forEach(script => {
+		try {
+			const fullPath = `/home/web_user/${script.path}${script.name}`;
+			// Ensure directory exists
+			const dirPath = fullPath.substring(0, fullPath.lastIndexOf('/'));
+			editor.rtenv.FS.mkdirTree(dirPath);
+			// Write script file
+			editor.rtenv.FS.writeFile(fullPath, script.content);
+			console.log('Created script:', script.name);
+		} catch (e) {
+			console.warn('Could not create script:', script.name, e);
+		}
+	});
+}
+
+function createProjectScenes(scenes, projectMetadata) {
+	if (!editor || !editor.rtenv || !editor.rtenv.FS) return;
+	
+	scenes.forEach(sceneName => {
+		try {
+			const fullPath = `/home/web_user/${sceneName}`;
+			const sceneContent = generateSceneTemplate(sceneName, projectMetadata);
+			editor.rtenv.FS.writeFile(fullPath, sceneContent);
+			console.log('Created scene:', sceneName);
+		} catch (e) {
+			console.warn('Could not create scene:', sceneName, e);
+		}
+	});
+}
+
+function generateSceneTemplate(sceneName, projectMetadata) {
+	// Generate basic Godot scene file structure
+	const nodeType = projectMetadata.type === '3d' ? 'Node3D' : 'Node2D';
+	
+	if (sceneName === 'Main.tscn') {
+		return `[gd_scene load_steps=1 format=3]
+
+[node name="Main" type="${nodeType}"]
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Label" type="Label" parent="UI"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -50.0
+offset_top = -12.0
+offset_right = 50.0
+offset_bottom = 12.0
+grow_horizontal = 2
+grow_vertical = 2
+text = "${projectMetadata.name}"
+horizontal_alignment = 1
+`;
+	}
+	
+	// Generate basic scene template
+	return `[gd_scene load_steps=1 format=3]
+
+[node name="${sceneName.replace('.tscn', '')}" type="${nodeType}"]
+`;
+}
+
+// UI Management
+function showWelcome() {
+	document.getElementById('welcome-screen').style.display = 'flex';
+	document.getElementById('tabs-buttons').classList.remove('active');
+	document.getElementById('tabs').style.display = 'none';
+}
+
+function hideWelcome() {
+	document.getElementById('welcome-screen').style.display = 'none';
+	document.getElementById('tabs-buttons').classList.add('active');
+	document.getElementById('tabs').style.display = 'block';
+}
+
+function showTab(name) {
+	// Hide all tabs
+	const tabs = document.querySelectorAll('#tabs > div');
+	tabs.forEach(tab => tab.classList.remove('active'));
+	
+	// Show selected tab
+	const selectedTab = document.getElementById(`tab-${name}`);
+	if (selectedTab) {
+		selectedTab.classList.add('active');
+		if (name === 'editor' || name === 'game') {
+			const canvas = document.getElementById(`${name}-canvas`);
+			if (canvas) canvas.focus();
+		}
+	}
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', function() {
+	updateRecentProjects();
+	
+	// File input handler
+	document.getElementById('zip-file').addEventListener('change', function(e) {
+		if (e.target.files.length > 0) {
+			const file = e.target.files[0];
+			const reader = new FileReader();
+			reader.onload = function(event) {
+				const fileName = file.name.replace(/\.(zip|pck)$/i, '');
+				addRecentProject(fileName, event.target.result);
+				startEditor(event.target.result);
+			};
+			reader.readAsArrayBuffer(file);
+		}
+	});
+	
+	// AI assistance checkbox handler
+	document.getElementById('enable-ai-assistance').addEventListener('change', function(e) {
+		const aiOptions = document.getElementById('ai-options');
+		if (e.target.checked) {
+			aiOptions.style.display = 'block';
+		} else {
+			aiOptions.style.display = 'none';
+		}
+	});
+	
+	// Radio button styling
+	document.querySelectorAll('input[name="projectType"]').forEach(radio => {
+		radio.addEventListener('change', function() {
+			// Update visual feedback for radio buttons
+			document.querySelectorAll('input[name="projectType"]').forEach(r => {
+				const label = r.closest('label');
+				if (r.checked) {
+					label.style.background = 'rgba(139, 92, 246, 0.2)';
+					label.style.borderColor = 'rgba(139, 92, 246, 0.5)';
+				} else {
+					label.style.background = 'rgba(255, 255, 255, 0.03)';
+					label.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+				}
+			});
+		});
+	});
 });
 
-function closeWelcomeModal(dontShowAgain) { // eslint-disable-line no-unused-vars
+// Modal functions
+function closeWelcomeModal(dontShowAgain) {
 	document.getElementById('welcome-modal').style.display = 'none';
 	if (dontShowAgain) {
 		localStorage.setItem('welcomeModalDismissed', 'true');
 	}
 }
-		</script>
-		<script src="godot.editor.js"></script>
-		<script>
+
+// Engine management variables
 let editor = null;
 let game = null;
 let setStatusMode;
 let setStatusNotice;
 let video_driver = '';
 
-function clearPersistence() { // eslint-disable-line no-unused-vars
-	function deleteDB(path) {
-		return new Promise(function (resolve, reject) {
-			const req = indexedDB.deleteDatabase(path);
-			req.onsuccess = function () {
-				resolve();
-			};
-			req.onerror = function (err) {
-				reject(err);
-			};
-			req.onblocked = function (err) {
-				reject(err);
-			};
-		});
-	}
-	if (!window.confirm('Are you sure you want to delete all the locally stored files?\nClicking "OK" will permanently remove your projects and editor settings!')) {
-		return;
-	}
-	Promise.all([
-		deleteDB('/home/web_user'),
-	]).then(function (results) {
-		alert('Done.');
-	}).catch(function (err) {
-		alert('Error deleting local files. Please retry after reloading the page.');
-	});
-}
-
 function selectVideoMode() {
 	const select = document.getElementById('videoMode');
 	video_driver = select.selectedOptions[0].value;
 }
 
-const tabs = [
-	document.getElementById('tab-loader'),
-	document.getElementById('tab-editor'),
-	document.getElementById('tab-game'),
-];
-function showTab(name) {
-	tabs.forEach(function (elem) {
-		if (elem.id === `tab-${name}`) {
-			elem.style.display = 'block';
-			if (name === 'editor' || name === 'game') {
-				const canvas = document.getElementById(`${name}-canvas`);
-				canvas.focus();
-			}
-		} else {
-			elem.style.display = 'none';
-		}
+function clearPersistence() {
+	function deleteDB(path) {
+		return new Promise(function (resolve, reject) {
+			const req = indexedDB.deleteDatabase(path);
+			req.onsuccess = () => resolve();
+			req.onerror = (err) => reject(err);
+			req.onblocked = (err) => reject(err);
+		});
+	}
+	if (!confirm('Are you sure you want to delete all locally stored files?\nThis will permanently remove your projects and editor settings!')) {
+		return;
+	}
+	Promise.all([
+		deleteDB('/home/web_user'),
+	]).then(() => {
+		alert('Done.');
+		clearRecentProjects();
+	}).catch(() => {
+		alert('Error deleting local files. Please retry after reloading the page.');
 	});
 }
 
 function setButtonEnabled(id, enabled) {
-	if (enabled) {
-		document.getElementById(id).disabled = '';
-	} else {
-		document.getElementById(id).disabled = 'disabled';
+	const btn = document.getElementById(id);
+	if (btn) {
+		btn.disabled = !enabled;
 	}
 }
 
@@ -501,14 +1623,27 @@ function closeGame() {
 	}
 }
 
-function closeEditor() { // eslint-disable-line no-unused-vars
+function closeEditor() {
 	closeGame();
 	if (editor) {
 		editor.requestQuit();
 	}
 }
 
-function startEditor(zip) {
+function preloadZip(target) {
+	return new Promise(function (resolve) {
+		if (target && target.files && target.files.length > 0) {
+			target.files[0].arrayBuffer().then(resolve);
+		} else {
+			resolve(target); // target is already ArrayBuffer
+		}
+	});
+}
+
+function startEditor(zipData, projectMetadata = null) {
+	hideWelcome();
+	showTab('status');
+	
 	const INDETERMINATE_STATUS_STEP_MS = 100;
 	const persistentPaths = ['/home/web_user'];
 
@@ -522,8 +1657,6 @@ function startEditor(zip) {
 
 	let initializing = true;
 	let statusMode = 'hidden';
-
-	showTab('status');
 
 	let animationCallbacks = [];
 	function animate(time) {
@@ -568,7 +1701,7 @@ function startEditor(zip) {
 			Array.prototype.slice.call(statusIndeterminate.children).forEach((child) => {
 				child.style.borderTopColor = '';
 			});
-			statusIndeterminate.children[i].style.borderTopColor = '#dfdfdf';
+			statusIndeterminate.children[i].style.borderTopColor = '#8b5cf6';
 		}
 	}
 
@@ -626,17 +1759,15 @@ function startEditor(zip) {
 	};
 
 	let OnEditorExit = function () {
-		showTab('loader');
+		showWelcome();
 		setLoaderEnabled(true);
 	};
+
 	function Execute(args) {
-		const is_editor = args.filter(function (v) {
-			return v === '--editor' || v === '-e';
-		}).length !== 0;
-		const is_project_manager = args.filter(function (v) {
-			return v === '--project-manager';
-		}).length !== 0;
+		const is_editor = args.filter(v => v === '--editor' || v === '-e').length !== 0;
+		const is_project_manager = args.filter(v => v === '--project-manager').length !== 0;
 		const is_game = !is_editor && !is_project_manager;
+		
 		if (video_driver) {
 			args.push('--rendering-driver', video_driver);
 		}
@@ -656,14 +1787,14 @@ function startEditor(zip) {
 					});
 				});
 			});
-		} else { // New editor instances will be run in the same canvas. We want to wait for it to exit.
+		} else {
 			OnEditorExit = function (code) {
 				setLoaderEnabled(true);
 				setTimeout(function () {
 					editor.init().then(function () {
 						setLoaderEnabled(false);
 						OnEditorExit = function () {
-							showTab('loader');
+							showWelcome();
 							setLoaderEnabled(true);
 						};
 						editor.start({ 'args': args, 'persistentDrops': is_project_manager, 'canvas': editorCanvas });
@@ -675,8 +1806,6 @@ function startEditor(zip) {
 	}
 
 	const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-	// We need at least 6 free threads from the pool to start the editor.
-	// At least 4 more will be reserved for the godot thread pool (3 is the bare minimum with the multithreaded variant of the servers).
 	const concurrency = clamp(navigator.hardwareConcurrency ?? 1, 12, 24);
 	const editorConfig = {
 		'unloadAfterInit': false,
@@ -685,7 +1814,6 @@ function startEditor(zip) {
 				statusProgressInner.style.width = `${(current / total) * 100}%`;
 				setStatusMode('progress');
 				if (current === total) {
-					// wait for progress bar animation
 					setTimeout(() => {
 						setStatusMode('indeterminate');
 					}, 100);
@@ -705,7 +1833,7 @@ function startEditor(zip) {
 		'onExecute': Execute,
 		'persistentPaths': persistentPaths,
 		'emscriptenPoolSize': concurrency,
-		'godotPoolSize': Math.floor(concurrency / 3), // Ensures at least 4 threads for the pool (see above).
+		'godotPoolSize': Math.floor(concurrency / 3),
 	};
 	editor = new Engine(editorConfig);
 
@@ -722,52 +1850,138 @@ function startEditor(zip) {
 		initializing = false;
 	}
 
+	// Validate engine availability early
+	if (typeof Engine === 'undefined') {
+		displayFailureNotice('Engine loader not found. Missing orca.web.editor.wasm32.js');
+		return;
+	}
+
 	if (!Engine.isWebGLAvailable()) {
 		displayFailureNotice('WebGL not available');
 	} else {
 		setStatusMode('indeterminate');
-		editor.init('godot.editor').then(function () {
-			if (zip) {
-				editor.copyToFS('/tmp/preload.zip', zip);
+		selectVideoMode();
+
+		// Engine module name matches the loader file prefix
+		var detectedModule = 'orca.web.editor.wasm32';
+
+		function initAndStart(moduleName) {
+			return editor.init(moduleName).then(function () {
+			if (zipData) {
+				if (zipData instanceof ArrayBuffer) {
+					editor.copyToFS('/tmp/preload.zip', zipData);
+				} else {
+					// Handle file input case
+					return preloadZip(zipData).then(function (data) {
+						if (data) {
+							editor.copyToFS('/tmp/preload.zip', data);
+						}
+					});
+				}
 			}
+			
 			try {
-				// Avoid user creating project in the persistent root folder.
 				editor.copyToFS('/home/web_user/keep', new Uint8Array());
 			} catch (e) {
 				// File exists
 			}
-			selectVideoMode();
+			
 			showTab('editor');
 			setLoaderEnabled(false);
 			const args = ['--project-manager', '--single-window'];
+			// On Web, avoid AudioWorklet failures by forcing Dummy audio driver
+			args.push('--audio-driver', 'Dummy');
 			if (video_driver) {
 				args.push('--rendering-driver', video_driver);
 			}
-			editor.start({ 'args': args, 'persistentDrops': true }).then(function () {
+			
+			return editor.start({ 'args': args, 'persistentDrops': true });
+		});
+		}
+
+		// Try detected module first, fall back to common names
+		initAndStart(detectedModule)
+			.then(function () {
 				setStatusMode('hidden');
 				initializing = false;
-			});
-		}).catch(displayFailureNotice);
+				
+				// If we have project metadata, set up the project structure
+				if (projectMetadata && window.pendingProjectStructure) {
+					setupProjectStructure(window.pendingProjectStructure, projectMetadata);
+					window.pendingProjectStructure = null;
+				}
+			})
+			.catch(function (err) { displayFailureNotice(err); });
 	}
 }
 
-function preloadZip(target) {
-	return new Promise(function (resolve, reject) {
-		if (target.files.length > 0) {
-			target.files[0].arrayBuffer().then(function (data) {
-				resolve(data);
-			});
+// Service Worker and Feature Detection
+window.addEventListener('load', () => {
+	function notifyUpdate(sw) {
+		const btn = document.getElementById('btn-tab-update');
+		btn.onclick = function () {
+			if (!confirm('Are you sure you want to update?\nClicking "OK" will reload all active instances!')) {
+				return;
+			}
+			sw.postMessage('update');
+			btn.innerHTML = 'Updating...';
+			btn.disabled = true;
+		};
+		btn.style.display = '';
+	}
+	
+	// Disable service worker for local/dev to avoid caching 404s and isolation issues
+	if (false && 'serviceWorker' in navigator) {
+		try {
+			navigator.serviceWorker.register('orca.web.editor.wasm32.service.worker.js').then(function (reg) {
+				if (reg.waiting) {
+					notifyUpdate(reg.waiting);
+				}
+				reg.addEventListener('updatefound', function () {
+					const update = reg.installing;
+					update.addEventListener('statechange', function () {
+						if (update.state === 'installed') {
+							if (!reg.active) {
+								update.postMessage('claim');
 		} else {
-			resolve();
+								notifyUpdate(update);
+							}
+						}
+					});
+				});
+			});
+		} catch (e) {
+			console.error('Error while registering service worker:', e);
+		}
+	}
+
+	// Check for missing features
+	// Perform feature detection only after the engine loader is present
+	(window.EngineReady || Promise.resolve()).then(function () {
+		if (typeof Engine === 'undefined') {
+			return;
+		}
+		const missing = Engine.getMissingFeatures({ threads: true });
+		if (missing.length) {
+			document.getElementById('welcome-modal-description').style.display = 'none';
+			document.getElementById('welcome-modal-missing-description').style.display = 'block';
+			document.getElementById('welcome-modal-dismiss').style.display = 'none';
+			const list = document.getElementById('welcome-modal-missing-list');
+			for (let i = 0; i < missing.length; i++) {
+				const node = document.createElement('li');
+				node.innerText = missing[i];
+				list.appendChild(node);
+			}
+		}
+		if (missing.length || localStorage.getItem('welcomeModalDismissed') !== 'true') {
+			document.getElementById('welcome-modal').style.display = 'block';
+			document.getElementById('welcome-modal-dismiss').focus();
 		}
 	});
-}
-
-document.getElementById('startButton').onclick = function () {
-	preloadZip(document.getElementById('zip-file')).then(function (zip) {
-		startEditor(zip);
-	});
-};
+});
 		</script>
+		<!-- Load WASM module first to ensure Godot function is available -->
+		<script src="orca.web.editor.wasm32.js"></script>
+		<script src="orca.web.editor.wasm32.engine.js"></script>
 	</body>
 </html>

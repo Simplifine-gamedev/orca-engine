@@ -390,6 +390,7 @@ private:
 	void _on_chat_scroll_changed(float p_value);
 	void _on_chat_content_min_size_changed();
 	void _scroll_to_bottom_smooth();
+	void _animate_backend_tool_progress(Label *p_progress_label);
 
 	// Request completion helper
 	void _request_completed();
@@ -471,6 +472,9 @@ private:
 	
 	// Utility: save base64-encoded GLB model to a path
 	bool _save_glb_model_to_path(const String &p_glb_data, const String &p_file_path);
+	
+	// Cloud asset extraction for GCP deployment
+	bool _extract_cloud_asset_automatically(const String &p_asset_data, const String &p_intended_path, const String &p_asset_name);
 
 	// Apply edited content directly to disk for non-script resources (e.g., .tscn)
 	void _apply_file_edit_immediate(const String &p_path, const String &p_content);
@@ -513,6 +517,7 @@ private:
 
 	// Embedding system for project indexing
 	void _initialize_embedding_system();
+	void _initialize_embedding_system_ui_only();
 	void _perform_initial_indexing();
 	void _check_index_status_and_start_if_needed();
 	void _on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -533,10 +538,19 @@ private:
 
 	// Cloud-ready file indexing methods
 	void _scan_and_index_project_files();
+	void _scan_project_files_chunked(int p_start_directory_index);
+	void _build_directory_list(const String &p_root_path, Vector<String> &p_directories);
+	void _scan_single_directory(const String &p_dir_path, const String &p_project_root, Array &p_file_contents, int &p_files_processed, int &p_files_skipped);
 	void _scan_directory_recursive(const String &p_dir_path, const String &p_project_root, Array &p_file_contents, int &p_files_processed, int &p_files_skipped);
 	Dictionary _read_file_for_indexing(const String &p_file_path, const String &p_project_root);
 	String _calculate_content_hash(const String &p_content);
 	void _send_file_batch(const Array &p_all_files, int p_start_index, int p_batch_size, int p_current_batch, int p_total_batches);
+	
+	// Chunked scanning state to prevent UI blocking
+	Array _scanning_file_contents;
+	Vector<String> _scanning_directories;
+	int _scanning_files_processed = 0;
+	int _scanning_files_skipped = 0;
 	
 	// Smart context attachment based on embeddings
 	void _suggest_relevant_files(const String &p_query);
