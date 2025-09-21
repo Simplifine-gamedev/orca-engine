@@ -1,38 +1,20 @@
-# Ignore everything except web export
+# Orca Engine Web Deployment Configuration
+# Only allow web-deployment directory and config files
+
+# Ignore everything by default
 *
-!bin/
-bin/*
-!bin/web_export/
+
+# Allow essential config files
 !vercel.json
 !package.json
 
-# Allow root-level Orca web export files  
-!*.html
-!*.js
-!*.wasm
-!*.png  
-!*.zip
-!favicon.png
-!logo.png
-!index.html
+# Allow web-deployment directory and all its contents
+!web-deployment/
+!web-deployment/**
 
-# Specifically allow Orca files
-!orca.web.editor.wasm32.*
-
-# Core files for deployment (legacy paths)
-!bin/web_export/*.html
-!bin/web_export/*.js  
-!bin/web_export/*.wasm
-!bin/web_export/*.json
-!bin/web_export/*.svg
-!bin/web_export/*.png
-!bin/web_export/favicon.png
-!bin/web_export/offline.html
-
-# Don't ignore these build artifacts
-!bin/web_export/godot.editor.audio.position.worklet.js
-!bin/web_export/godot.editor.audio.worklet.js
-!bin/web_export/godot.editor.js
-!bin/web_export/godot.editor.wasm
-!bin/web_export/service.worker.js
+# Legacy: Allow bin/web_export as backup
+!bin/
+bin/*
+!bin/web_export/
+!bin/web_export/**
 
