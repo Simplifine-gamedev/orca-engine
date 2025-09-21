@@ -21,7 +21,6 @@
 #include "editor/docks/import_dock.h"
 #include "core/io/config_file.h"
 #include "core/object/script_language.h"
-#include "editor/run/game_view_plugin.h"
 #include "core/config/project_settings.h"
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
@@ -563,9 +562,6 @@ EditorTools *EditorTools::tracer_instance = nullptr;
 Dictionary EditorTools::trace_registry;
 Dictionary EditorTools::property_watch_registry;
 
-// Static members for screenshot management
-Vector<int> EditorTools::_pending_screenshot_requests;
-Vector<Dictionary> EditorTools::_current_screenshot_results;
 
 EditorTools *EditorTools::ensure_tracer() {
     if (!tracer_instance) {
@@ -1613,95 +1609,7 @@ Dictionary EditorTools::refresh_filesystem(const Dictionary &p_args) {
     Dictionary result; result["success"] = true; return result;
 }
 
-void EditorTools::_on_game_screenshot_ready(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
-    // This callback is triggered when GameView captures a screenshot
-    // The screenshot is automatically attached to AI Chat by GameView::_on_snapshot_ready
-    print_line("AI Chat: Game screenshot ready - " + String::num_int64(p_w) + "x" + String::num_int64(p_h) + " saved to: " + p_path);
-}
 
-void EditorTools::_on_game_screenshot_ready_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect) {
-    // This callback processes screenshot data for the AI tool system
-    print_line("AI Chat: Tool screenshot ready - " + String::num_int64(p_w) + "x" + String::num_int64(p_h) + " at: " + p_path);
-    
-    if (p_path.is_empty()) {
-        print_line("AI Chat: Screenshot path is empty, cannot process");
-        return;
-    }
-    
-    // Load the screenshot file and convert to base64 for AI processing
-    Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
-    if (file.is_null()) {
-        print_line("AI Chat: Cannot open screenshot file: " + p_path);
-        return;
-    }
-    
-    PackedByteArray data = file->get_buffer(file->get_length());
-    file->close();
-    
-    if (data.is_empty()) {
-        print_line("AI Chat: Screenshot file is empty: " + p_path);
-        return;
-    }
-    
-    // Load and potentially downscale the image to prevent token explosions
-    Ref<Image> image = memnew(Image);
-    Error load_err = image->load(p_path);
-    if (load_err != OK) {
-        print_line("AI Chat: Failed to load screenshot image: " + p_path);
-        return;
-    }
-    
-    Vector2i original_size = Vector2i(image->get_width(), image->get_height());
-    Vector2i final_size = original_size;
-    bool was_downsampled = false;
-    
-    // Downscale if too large - aim for reasonable size to prevent token explosion
-    const int MAX_DIMENSION = 800; // Keep images under 800px on any side
-    const int MAX_PIXELS = 400000; // Keep total pixels reasonable (~640x625)
-    
-    int total_pixels = original_size.x * original_size.y;
-    if (original_size.x > MAX_DIMENSION || original_size.y > MAX_DIMENSION || total_pixels > MAX_PIXELS) {
-        float scale_x = (float)MAX_DIMENSION / original_size.x;
-        float scale_y = (float)MAX_DIMENSION / original_size.y; 
-        float pixel_scale = sqrt((float)MAX_PIXELS / total_pixels);
-        
-        float scale = MIN(MIN(scale_x, scale_y), pixel_scale);
-        if (scale < 1.0f) {
-            final_size.x = (int)(original_size.x * scale);
-            final_size.y = (int)(original_size.y * scale);
-            
-            image->resize(final_size.x, final_size.y, Image::INTERPOLATE_LANCZOS);
-            was_downsampled = true;
-            
-            print_line(vformat("AI Chat: Screenshot downscaled from %dx%d to %dx%d (scale: %.2f)", 
-                              original_size.x, original_size.y, final_size.x, final_size.y, scale));
-        }
-    }
-    
-    // Convert to PNG bytes for consistent base64 encoding
-    PackedByteArray png_data = image->save_png_to_buffer();
-    String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_data);
-    
-    // Store the screenshot result for later retrieval
-    Dictionary screenshot_result;
-    screenshot_result["source"] = "game";
-    screenshot_result["width"] = final_size.x;
-    screenshot_result["height"] = final_size.y; 
-    screenshot_result["size"] = final_size;
-    screenshot_result["original_size"] = original_size;
-    screenshot_result["was_downsampled"] = was_downsampled;
-    screenshot_result["path"] = p_path;
-    screenshot_result["base64"] = base64_data;
-    screenshot_result["success"] = true;
-    screenshot_result["timestamp"] = Time::get_singleton()->get_ticks_msec();
-    
-    _current_screenshot_results.push_back(screenshot_result);
-    
-    print_line("AI Chat: Screenshot processed successfully, final base64 length: " + String::num_int64(base64_data.length()));
-    
-    // Store the screenshot for tool result attachment instead of chat input
-    print_line("AI Chat: Screenshot processed and stored for tool result attachment");
-}
 
 // === UNIVERSAL SMART TOOLS ===
 
@@ -5657,117 +5565,6 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 				screenshots.push_back(editor_failure);
 			}
 		}
-	}
-	
-	// Capture game viewport using existing GameView functionality  
-	if (target == "game" || target == "both") {
-		bool game_running = false;
-		EditorRunBar *run_bar = EditorRunBar::get_singleton();
-		if (run_bar) {
-			game_running = run_bar->is_playing();
-		}
-		
-		if (game_running) {
-			// CRITICAL: Clear any previous screenshot results to prevent stale data
-			_current_screenshot_results.clear();
-			
-			// Use the exact same approach as the working "Snap to Chat" button
-			// This mirrors GameView::_snap_to_chat_pressed() implementation precisely
-			GameView *game_view = GameView::get_singleton();
-			bool requested = false;
-			Callable screenshot_callback = callable_mp_static(&EditorTools::_on_game_screenshot_ready_for_tool);
-			
-			if (game_view) {
-				// First, try embedded screenshot (works when game is embedded in editor)
-				requested = game_view->request_game_screenshot(screenshot_callback);
-				print_line(String("AI Chat: Embedded screenshot request = ") + (requested ? "success" : "failed"));
-				
-				if (!requested) {
-					// Fallback for floating/non-embedded game windows: use debugger directly
-					// This is the same fallback logic as GameView::_snap_to_chat_pressed()
-					Ref<GameViewDebugger> debugger = game_view->debugger;
-					if (!debugger.is_null()) {
-						requested = debugger->add_screenshot_callback(screenshot_callback, Rect2i());
-						print_line(String("AI Chat: Debugger fallback screenshot request = ") + (requested ? "success" : "failed"));
-					}
-				}
-			} else {
-				print_line("AI Chat: GameView singleton not available");
-			}
-			
-			if (requested) {
-				// Wait a reasonable time for the screenshot to be processed
-				uint64_t start_time = Time::get_singleton()->get_ticks_msec();
-				uint64_t max_wait_time = 2000; // 2 seconds max
-
-				print_line("AI Chat: Waiting for screenshot to be processed...");
-
-				// Process messages to allow the callback to execute
-				while ((Time::get_singleton()->get_ticks_msec() - start_time) < max_wait_time && 
-				       _current_screenshot_results.is_empty()) {
-					// Allow message processing without blocking the UI
-					MessageQueue::get_singleton()->flush();
-					OS::get_singleton()->delay_usec(50000); // Wait 50ms
-				}
-
-				if (!_current_screenshot_results.is_empty()) {
-					uint64_t elapsed = Time::get_singleton()->get_ticks_msec() - start_time;
-					print_line("AI Chat: Screenshot completed successfully after " + String::num_int64(elapsed) + "ms");
-					// Screenshot completed - it will be processed below
-					captured_any = true;
-				} else {
-					uint64_t elapsed = Time::get_singleton()->get_ticks_msec() - start_time;
-					print_line("AI Chat: Screenshot timed out after " + String::num_int64(elapsed) + "ms");
-				Dictionary game_capture;
-				game_capture["source"] = "game";
-					game_capture["message"] = "Game screenshot requested but timed out - try again in a moment";
-					game_capture["running"] = true;
-				game_capture["success"] = false;
-					game_capture["method"] = "gameview_with_timeout";
-				screenshots.push_back(game_capture);
-				}
-			} else {
-				Dictionary game_capture;
-				game_capture["source"] = "game"; 
-				game_capture["message"] = "Game screenshot request failed - no active debugger sessions or embedded game process";
-				game_capture["running"] = true;
-				game_capture["success"] = false;
-				screenshots.push_back(game_capture);
-			}
-		} else {
-			Dictionary game_capture;
-			game_capture["source"] = "game";
-			game_capture["message"] = "No game running";
-			game_capture["running"] = false;
-			game_capture["success"] = false;
-			screenshots.push_back(game_capture);
-		}
-	}
-	
-	// CRITICAL: Process any completed screenshots from callbacks before returning results
-	if (!_current_screenshot_results.is_empty()) {
-		print_line("AI Chat: Processing " + String::num_int64(_current_screenshot_results.size()) + " completed screenshot(s) from callbacks");
-		for (int i = 0; i < _current_screenshot_results.size(); i++) {
-			Dictionary screenshot_data = _current_screenshot_results[i];
-			// Convert callback data to expected format
-			Dictionary processed_shot;
-			processed_shot["source"] = screenshot_data.get("source", "game");
-			processed_shot["success"] = true;
-			processed_shot["base64"] = screenshot_data.get("base64", "");
-			processed_shot["mime_type"] = screenshot_data.get("mime_type", "image/png");
-			processed_shot["size"] = screenshot_data.get("size", Vector2i(0, 0));
-			processed_shot["display_size"] = screenshot_data.get("display_size", Vector2i(0, 0));
-			processed_shot["original_size"] = screenshot_data.get("original_size", Vector2i(0, 0));
-			processed_shot["was_downsampled"] = screenshot_data.get("was_downsampled", false);
-			processed_shot["timestamp"] = screenshot_data.get("timestamp", 0);
-			processed_shot["message"] = "Screenshot ready";
-			
-			screenshots.push_back(processed_shot);
-			captured_any = true;
-			
-			print_line("AI Chat: Processed completed screenshot, base64 length: " + String::num_int64(String(screenshot_data.get("base64", "")).length()));
-		}
-		_current_screenshot_results.clear();
 	}
 	
 	result["success"] = captured_any;

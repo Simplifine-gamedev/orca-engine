@@ -123,14 +123,6 @@ public:
 
 	// Multiplexed introspection/debug tool
 	static Dictionary editor_introspect(const Dictionary &p_args);
-	
-	// GameView screenshot callbacks  
-	static void _on_game_screenshot_ready(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
-	static void _on_game_screenshot_ready_for_tool(int64_t p_w, int64_t p_h, const String &p_path, const Rect2i &p_rect);
-	
-	// Screenshot management for AI tools
-	static Vector<int> _pending_screenshot_requests;
-	static Vector<Dictionary> _current_screenshot_results;
 
 	// New capabilities for structural edits and resources
 	static Dictionary change_node_type(const Dictionary &p_args); // { path:String, new_type:String, preserve_children:bool=true, strategy:String="wrap_root" }
