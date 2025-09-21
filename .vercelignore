@@ -6,7 +6,20 @@ bin/*
 !vercel.json
 !package.json
 
-# Core files for deployment
+# Allow root-level Orca web export files  
+!*.html
+!*.js
+!*.wasm
+!*.png  
+!*.zip
+!favicon.png
+!logo.png
+!index.html
+
+# Specifically allow Orca files
+!orca.web.editor.wasm32.*
+
+# Core files for deployment (legacy paths)
 !bin/web_export/*.html
 !bin/web_export/*.js  
 !bin/web_export/*.wasm
