@@ -441,3 +441,11 @@ releases/
 backend/vertex-ai-key.json
 bin/
 *.wasm
+# Allow Orca web export files for Vercel deployment
+!orca.web.editor.wasm32.wasm
+!orca.web.editor.wasm32.js
+!orca.web.editor.wasm32.*.js
+!index.html
+!favicon.png
+!logo.png
+!*.zip

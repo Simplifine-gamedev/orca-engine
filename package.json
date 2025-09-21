@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Orca Engine - Web Editor (Godot Engine rebrand)",
   "scripts": {
-    "build": "./build_web.sh",
+    "build": "echo 'Using pre-built web files in root directory' && ls -la *.wasm *.js *.html && echo 'Build complete'",
     "serve": "python3 platform/web/serve.py --root bin/web_export/",
     "deploy": "./deploy_to_vercel.sh",
     "install-emscripten": "echo 'Please install Emscripten from: https://emscripten.org/docs/getting_started/downloads.html'"

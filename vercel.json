@@ -1,5 +1,5 @@
 {
-  "outputDirectory": "bin/web_export",
+  "outputDirectory": ".",
   "framework": null,
   "headers": [
     {
