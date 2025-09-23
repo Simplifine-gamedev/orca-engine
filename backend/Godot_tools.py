@@ -1297,10 +1297,12 @@ godot_tools = [
                     "include_details": {"type": "boolean", "default": True},
 
                     # fs.list
-                    "dir": {"type": "string"},
-                    "filter": {"type": "string"},
-                    "recursive": {"type": "boolean", "default": False},
-                    "full_paths": {"type": "boolean", "default": True},
+                    "dir": {"type": "string", "description": "Directory to list (alternative to 'path')"},
+                    "path": {"type": "string", "description": "Directory path to list (alternative to 'dir')"},
+                    "filter": {"type": "string", "description": "Basic file filter pattern (e.g., '*.gd')"},
+                    "file_patterns": {"type": "array", "items": {"type": "string"}, "description": "Array of file patterns to filter by (e.g., ['*.glb', '*.gltf'])"},
+                    "recursive": {"type": "boolean", "default": False, "description": "If true, recursively list all subdirectories"},
+                    "full_paths": {"type": "boolean", "default": True, "description": "If true, return full paths; otherwise relative paths"},
 
                     # fs.read / fs.write (whole file replacement)
                     "path": {"type": "string", "description": "File path"},

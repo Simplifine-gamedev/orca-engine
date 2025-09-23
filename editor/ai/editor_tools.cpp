@@ -3789,40 +3789,116 @@ Dictionary EditorTools::generalnodeeditor(const Dictionary &p_args) {
 
 Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 	Dictionary result;
-	String path = p_args.has("dir") ? p_args["dir"] : "res://";
+	
+	// Handle both 'path' and 'dir' parameters for flexibility
+	String path;
+	if (p_args.has("path")) {
+		path = p_args["path"];
+	} else if (p_args.has("dir")) {
+		path = p_args["dir"];
+	} else {
+		path = "res://";
+	}
+	
 	String filter = p_args.has("filter") ? p_args["filter"] : "";
+	bool recursive = p_args.has("recursive") ? bool(p_args["recursive"]) : false;
+	bool full_paths = p_args.has("full_paths") ? bool(p_args["full_paths"]) : true;
+	
+	// Handle file_patterns parameter (array of patterns like ["*.glb", "*.gltf"])
+	Array file_patterns;
+	if (p_args.has("file_patterns")) {
+		file_patterns = p_args["file_patterns"];
+	}
 
 	Array files;
 	Array dirs;
-	Ref<DirAccess> dir = DirAccess::open(path);
-	if (dir.is_valid()) {
+	
+	// Recursive helper function
+	std::function<void(const String&, const String&)> scan_directory = 
+		[&](const String& current_path, const String& relative_path) {
+		
+		Ref<DirAccess> dir = DirAccess::open(current_path);
+		if (!dir.is_valid()) {
+			return;
+		}
+		
 		dir->list_dir_begin();
 		String file_name = dir->get_next();
+		
 		while (file_name != "") {
 			if (dir->current_is_dir()) {
 				if (file_name != "." && file_name != "..") {
-					dirs.push_back(file_name);
+					String dir_relative = relative_path.is_empty() ? file_name : relative_path + "/" + file_name;
+					String dir_full_path = current_path.ends_with("/") ? current_path + file_name : current_path + "/" + file_name;
+					
+					// Add directory to list
+					if (full_paths) {
+						dirs.push_back(dir_full_path);
+					} else {
+						dirs.push_back(dir_relative);
+					}
+					
+					// Recurse if requested
+					if (recursive) {
+						scan_directory(dir_full_path, dir_relative);
+					}
 				}
 			} else {
-				if (filter.is_empty() || file_name.match(filter)) {
-					String full_path = path.ends_with("/") ? path + file_name : path + String("/") + file_name;
+				// Apply filters
+				bool include_file = true;
+				
+				// Apply basic filter
+				if (!filter.is_empty() && !file_name.match(filter)) {
+					include_file = false;
+				}
+				
+				// Apply file patterns
+				if (include_file && file_patterns.size() > 0) {
+					bool matches_pattern = false;
+					for (int i = 0; i < file_patterns.size(); i++) {
+						String pattern = file_patterns[i];
+						if (file_name.match(pattern)) {
+							matches_pattern = true;
+							break;
+						}
+					}
+					include_file = matches_pattern;
+				}
+				
+				if (include_file) {
+					String file_relative = relative_path.is_empty() ? file_name : relative_path + "/" + file_name;
+					String file_full_path = current_path.ends_with("/") ? current_path + file_name : current_path + "/" + file_name;
+					
 					Dictionary info;
 					info["name"] = file_name;
-					info["path"] = full_path;
-					info["line_count"] = get_file_line_count(full_path, 512 * 1024); // up to ~512KB
+					info["path"] = full_paths ? file_full_path : file_relative;
+					info["line_count"] = get_file_line_count(file_full_path, 512 * 1024); // up to ~512KB
 					files.push_back(info);
 				}
 			}
 			file_name = dir->get_next();
 		}
+	};
+	
+	// Start scanning from the requested path
+	if (DirAccess::dir_exists_absolute(path)) {
+		scan_directory(path, "");
+		result["success"] = true;
+		result["files"] = files;
+		result["directories"] = dirs;
+		result["path_scanned"] = path;
+		result["recursive"] = recursive;
+		if (file_patterns.size() > 0) {
+			result["file_patterns"] = file_patterns;
+		}
+		if (!filter.is_empty()) {
+			result["filter"] = filter;
+		}
 	} else {
 		result["success"] = false;
 		result["message"] = "Could not open directory: " + path;
-		return result;
 	}
-	result["success"] = true;
-	result["files"] = files;
-	result["directories"] = dirs;
+	
 	return result;
 }
 
