@@ -658,17 +658,32 @@ def _is_thinking_mode(model_friendly_name: str) -> bool:
     """Check if a model name indicates thinking mode is enabled"""
     return "(thinking)" in model_friendly_name.lower()
 
-def _get_reasoning_params(model_friendly_name: str) -> dict:
-    """Get reasoning parameters for LiteLLM based on model name"""
+def _get_reasoning_params(model_friendly_name: str, model_id: str | None = None) -> dict:
+    """Get reasoning/thinking params for LiteLLM based on model/provider.
+
+    Rules (per LiteLLM v1.63+ docs):
+    - Use reasoning_effort="low" when thinking is requested
+    - Anthropic can additionally accept thinking={"type":"enabled","budget_tokens":1024}
+    - Always keep temperature=1.0 when thinking is enabled
+    - Pass drop_params=True so LiteLLM drops unsupported thinking params on provider switch
+    """
     if not _is_thinking_mode(model_friendly_name):
         return {}
-    
-    # Default to low effort for faster responses while still getting reasoning
-    # CRITICAL: Anthropic requires temperature=1 when thinking is enabled
-    return {
+
+    params: dict = {
         "reasoning_effort": "low",
-        "temperature": 1.0  # Required by Anthropic when thinking is enabled
+        "temperature": 1.0,
+        "drop_params": True,
     }
+
+    try:
+        if model_id and str(model_id).startswith("anthropic/"):
+            # Enable Anthropic thinking blocks explicitly
+            params["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+    except Exception:
+        pass
+
+    return params
 
 # Initialize Authentication Manager
 auth_manager = AuthManager()
@@ -2822,9 +2837,9 @@ def chat():
                 # We need to retry the ENTIRE streaming process, not just the initial call
                 while True:
                     try:
-                        # Get reasoning parameters based on model name
+                        # Get reasoning parameters based on model name and provider id
                         # Use preserved friendly name instead of unreliable reverse lookup
-                        reasoning_params = _get_reasoning_params(model_friendly_name)
+                        reasoning_params = _get_reasoning_params(model_friendly_name, model_try)
                         
                         completion_params = {
                             "model": model_try,
@@ -2842,7 +2857,20 @@ def chat():
                         else:
                             print(f"THINKING_MODE: Not requested for {model_friendly_name}")
                         
-                        response = completion(**completion_params)
+                        # Execute request; if provider rejects thinking params, retry without them
+                        try:
+                            response = completion(**completion_params)
+                        except Exception as e_comp:
+                            err_msg = str(e_comp).lower()
+                            if reasoning_params and ("reasoning" in err_msg or "thinking" in err_msg or "unsupported" in err_msg or "invalid" in err_msg):
+                                print("THINKING_MODE: Provider rejected thinking params; retrying without reasoning/thinking")
+                                completion_params_fallback = dict(completion_params)
+                                completion_params_fallback.pop("reasoning_effort", None)
+                                completion_params_fallback.pop("thinking", None)
+                                completion_params_fallback.pop("reasoning", None)
+                                response = completion(**completion_params_fallback)
+                            else:
+                                raise
                         
                         # Process the stream inside the try block to catch streaming errors
                         full_text_response = ""
@@ -4007,7 +4035,7 @@ def generate_script():
                 model_id = get_validated_chat_model(model_for_script)
                 # Use the original model name to preserve thinking mode selection
                 model_friendly = model_for_script if model_for_script in ALLOWED_CHAT_MODELS else DEFAULT_MODEL
-                reasoning_params = _get_reasoning_params(model_friendly)
+                reasoning_params = _get_reasoning_params(model_friendly, model_id)
                 
                 completion_params = {
                     "model": model_id,
@@ -4015,7 +4043,19 @@ def generate_script():
                 }
                 completion_params.update(reasoning_params)
                 
-                response = completion(**completion_params)
+                try:
+                    response = completion(**completion_params)
+                except Exception as e_comp:
+                    err_msg = str(e_comp).lower()
+                    if reasoning_params and ("reasoning" in err_msg or "thinking" in err_msg or "unsupported" in err_msg or "invalid" in err_msg):
+                        print("GENERATE_SCRIPT: Provider rejected thinking params; retrying without reasoning/thinking")
+                        completion_params_no_reason = dict(completion_params)
+                        completion_params_no_reason.pop("reasoning_effort", None)
+                        completion_params_no_reason.pop("thinking", None)
+                        completion_params_no_reason.pop("reasoning", None)
+                        response = completion(**completion_params_no_reason)
+                    else:
+                        raise
                 break
             except Exception as e:
                 err_name = e.__class__.__name__
@@ -4352,7 +4392,7 @@ def predict_code_edit():
                 model_id = get_validated_chat_model(model_for_edit)
                 # Use the original model name to preserve thinking mode selection
                 model_friendly = model_for_edit if model_for_edit in ALLOWED_CHAT_MODELS else DEFAULT_MODEL
-                reasoning_params = _get_reasoning_params(model_friendly)
+                reasoning_params = _get_reasoning_params(model_friendly, model_id)
                 print(f"APPLY_EDIT: Using model '{model_for_edit}' -> friendly_name '{model_friendly}', thinking_mode: {_is_thinking_mode(model_friendly)}, reasoning_params: {reasoning_params}")
                 
                 completion_params = {
@@ -4369,7 +4409,19 @@ def predict_code_edit():
                 if not reasoning_params:  # Only set lower temp if NOT in thinking mode
                     completion_params["temperature"] = 0.2  # Lower temperature for precise indentation
                 
-                response = completion(**completion_params)
+                try:
+                    response = completion(**completion_params)
+                except Exception as e_comp:
+                    err_msg = str(e_comp).lower()
+                    if reasoning_params and ("reasoning" in err_msg or "thinking" in err_msg or "unsupported" in err_msg or "invalid" in err_msg):
+                        print("APPLY_EDIT: Provider rejected thinking params; retrying without reasoning/thinking")
+                        completion_params_no_reason = dict(completion_params)
+                        completion_params_no_reason.pop("reasoning_effort", None)
+                        completion_params_no_reason.pop("thinking", None)
+                        completion_params_no_reason.pop("reasoning", None)
+                        response = completion(**completion_params_no_reason)
+                    else:
+                        raise
                 break
             except Exception as e:
                 err_name = e.__class__.__name__

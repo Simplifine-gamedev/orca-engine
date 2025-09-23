@@ -1405,6 +1405,9 @@ godot_tools = [
                     "scene_path": {"type": "string"},
                     "parent_node": {"type": "string", "description": "Parent node path (required for instantiate/create operations)"},
                     "instance_name": {"type": "string"},
+                    "await_import": {"type": "boolean", "default": True, "description": "Whether to wait for import before loading (recommended for GLB/GLTF files)"},
+                    "timeout_ms": {"type": "integer", "default": 30000, "description": "Timeout in milliseconds for import waiting (30 seconds default)"},
+                    "skip_import_wait": {"type": "boolean", "default": False, "description": "Skip import waiting entirely - use for problematic files that cause import loops"},
                     "scope": {"type": "string"},
                     "targets": {"type": "array", "items": {"type": "string"}},
 
@@ -1535,6 +1538,10 @@ godot_tools = [
                     "resource": {"type": "object", "description": "Inline resource spec or {path: 'res://...'}"},
                     "resource_path": {"type": "string", "description": "Path to load resource from (res.load_and_assign)"},
                     "node_path": {"type": "string", "description": "Node path to assign loaded resource to"},
+                    "await_import": {"type": "boolean", "default": True, "description": "Whether to wait for import before loading (recommended for GLB/GLTF files)"},
+                    "timeout_ms": {"type": "integer", "default": 30000, "description": "Timeout in milliseconds for import waiting (30 seconds default)"},
+                    "force_reimport": {"type": "boolean", "default": False, "description": "Force reimport the resource before loading"},
+                    "skip_import_wait": {"type": "boolean", "default": False, "description": "Skip import waiting entirely - use for problematic files that cause import loops"},
                     "source_template": {"type": "string", "description": "Resource template path to clone from"},
 
                     # Import pipeline
