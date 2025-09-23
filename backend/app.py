@@ -2065,9 +2065,9 @@ def project_manager_internal(arguments: dict) -> dict:
             }
             return check_for_app_updates_internal(update_args)
             
-        elif op in ["context.get", "fs.list", "fs.read", "fs.write", "fs.copy", "fs.move", 
-                   "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", "project.analyze_dir", 
-                   "project.copy_dir", "project.update_refs"]:
+        elif op in ["context.get", "fs.list", "fs.read", "fs.write", "fs.write_lines", "fs.replace_string", 
+                   "fs.copy", "fs.move", "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", 
+                   "project.analyze_dir", "project.copy_dir", "project.update_refs"]:
             # These are frontend-only operations
             return {
                 "success": False,

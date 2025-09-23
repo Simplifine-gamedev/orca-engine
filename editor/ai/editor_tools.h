@@ -147,6 +147,11 @@ public:
 	static Dictionary delete_file(const Dictionary &p_args); // { path:String }
 	static Dictionary create_symlink(const Dictionary &p_args); // { target:String, link_path:String }
 	static Dictionary refresh_filesystem(const Dictionary &p_args); // {}
+	
+	// Enhanced file editing methods
+	static Dictionary fs_write_whole_file(const Dictionary &p_args); // { path:String, content:String }
+	static Dictionary fs_write_lines_range(const Dictionary &p_args); // { path:String, lines_content:String, start_line:int, end_line:int }
+	static Dictionary fs_replace_string_exact(const Dictionary &p_args); // { path:String, find_string:String, replace_string:String, replace_all:bool=false, case_sensitive:bool=true }
 
 	// Introspection & readiness
 	static Dictionary resource_info(const Dictionary &p_args); // { resource_path:String }

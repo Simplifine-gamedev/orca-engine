@@ -327,7 +327,7 @@ godot_tools_legacy = [
                     },
                     "parent": {
                         "type": "string",
-                        "description": "Parent node path (optional)"
+                        "description": "Parent node path (required for child nodes). Use full node path like '/root/Main/Player' or relative path. Omit only if creating at scene root."
                     }
                 },
                 "required": ["type", "name"]
@@ -562,7 +562,7 @@ godot_tools_legacy = [
                     },
                     "parent_node": {
                         "type": "string",
-                        "description": "Parent node path for instantiate operations"
+                        "description": "Parent node path for instantiate operations (required). Use full node path like '/root/Main' or relative path."
                     },
                     "instance_name": {
                         "type": "string",
@@ -1271,7 +1271,7 @@ godot_tools = [
                             # Context
                             "context.get",
                             # Filesystem
-                            "fs.list", "fs.read", "fs.write",
+                            "fs.list", "fs.read", "fs.write", "fs.write_lines", "fs.replace_string",
                             "fs.copy", "fs.move", "fs.delete",
                             "fs.mkdir", "fs.symlink", "fs.refresh",
                             # Project-level ops
@@ -1302,11 +1302,20 @@ godot_tools = [
                     "recursive": {"type": "boolean", "default": False},
                     "full_paths": {"type": "boolean", "default": True},
 
-                    # fs.read / fs.write (supports partial edit via line range)
+                    # fs.read / fs.write (whole file replacement)
                     "path": {"type": "string", "description": "File path"},
-                    "content": {"type": "string", "description": "New content for fs.write"},
-                    "start_line": {"type": "integer", "description": "If set with end_line, fs.write replaces only this range"},
-                    "end_line": {"type": "integer"},
+                    "content": {"type": "string", "description": "New content for fs.write (whole file replacement)"},
+                    
+                    # fs.write_lines (line range editing)
+                    "start_line": {"type": "integer", "description": "Starting line number for fs.write_lines (1-based)"},
+                    "end_line": {"type": "integer", "description": "Ending line number for fs.write_lines (1-based, inclusive)"},
+                    "lines_content": {"type": "string", "description": "New content for the specified line range"},
+                    
+                    # fs.replace_string (precise string replacement)
+                    "find_string": {"type": "string", "description": "String to find for fs.replace_string"},
+                    "replace_string": {"type": "string", "description": "String to replace with for fs.replace_string"},
+                    "replace_all": {"type": "boolean", "default": False, "description": "Replace all occurrences (default: false, replace first only)"},
+                    "case_sensitive": {"type": "boolean", "default": True, "description": "Case sensitive search (default: true)"},
 
                     # fs.copy / fs.move / fs.delete / fs.mkdir / fs.symlink
                     "source": {"type": "string"},
@@ -1392,7 +1401,7 @@ godot_tools = [
                     "root_type": {"type": "string"},
                     "include_current_as_child": {"type": "boolean", "default": False},
                     "scene_path": {"type": "string"},
-                    "parent_node": {"type": "string"},
+                    "parent_node": {"type": "string", "description": "Parent node path (required for instantiate/create operations)"},
                     "instance_name": {"type": "string"},
                     "scope": {"type": "string"},
                     "targets": {"type": "array", "items": {"type": "string"}},

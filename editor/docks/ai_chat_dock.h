@@ -31,6 +31,7 @@
 #pragma once
 
 #include "ai_tool_server.h"
+#include "ai_chat_history_manager.h"
 #include "common.h"
 #include "core/io/http_client.h"
 #include "core/io/image.h"
@@ -39,6 +40,7 @@
 #include "scene/gui/dialogs.h"
 #include "scene/gui/tab_container.h"
 #include "scene/gui/texture_rect.h"
+#include "scene/gui/progress_bar.h"
 #include "scene/main/http_request.h"
 
 class Button;
@@ -153,7 +155,8 @@ private:
 	ScrollContainer *chat_scroll = nullptr;
 	VBoxContainer *chat_container = nullptr;
 	OptionButton *model_dropdown = nullptr;
-	OptionButton *conversation_history_dropdown = nullptr;
+	AIChatHistoryManager *conversation_history_manager = nullptr;
+	OptionButton *conversation_history_dropdown = nullptr; // Keep for backward compatibility
 	Button *new_conversation_button = nullptr;
     Button *index_button = nullptr; // Removed from UI; kept to avoid widespread ref changes
 	TextEdit *input_field = nullptr;
@@ -341,6 +344,8 @@ private:
 	void _on_remove_attachment(const String &p_path);
 	void _on_conversation_selected(int p_index);
 	void _on_new_conversation_pressed();
+	void _on_conversation_rename_requested(int p_index, const String &p_new_name);
+	void _on_conversation_delete_requested(int p_index);
 	void _on_save_image_pressed(const String &p_base64_data, const String &p_format);
 	void _on_save_image_location_selected(const String &p_file_path);
 	void _on_save_3d_model_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path);
@@ -353,6 +358,7 @@ private:
 	void _execute_tool_calls(const Array &p_tool_calls);
   // Async apply_edit helpers
   void _execute_apply_edit_async(const String &p_tool_call_id, const Dictionary &p_args);
+  void _execute_file_edit_deferred(const String &p_tool_call_id, const String &p_operation, const Dictionary &p_args);
   static void _apply_edit_thread(void *p_userdata);
   void _on_apply_edit_thread_done();
   // Deferred frontend tool execution (for slow tools only)
@@ -620,6 +626,42 @@ private:
 	
 	// Windows-compatible helper function (replaces lambda for scene node summarization)
 	Dictionary _summarize_scene_node_for_context(const Dictionary &p_node, int p_max_depth, int p_max_children);
+	
+	// Performance optimization methods for conversation loading (no Vector<ChatMessage> parameters)
+	int _calculate_initial_message_start_index();
+	void _create_load_more_button(int p_older_messages_count);
+	void _on_load_more_pressed(int p_older_messages_count);
+	void _scroll_to_position_after_load_more(int p_loaded_messages_count);
+	void _rebuild_conversation_ui_full();
+	void _apply_simplified_tool_result(const String &p_tool_call_id, const String &p_tool_name, const String &p_content);
+	void _expand_simplified_tool_result(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, PanelContainer *p_placeholder);
+	bool _should_truncate_tool_result(const String &p_tool_name, const Dictionary &p_result);
+	void _create_truncated_tool_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result);
+	String _generate_tool_result_summary(const String &p_tool_name, const Dictionary &p_result, bool p_success);
+	void _expand_truncated_tool_result(Button *p_expand_button, VBoxContainer *p_content_vbox);
+	void _expand_full_nodes_list(Button *p_expand_button, VBoxContainer *p_nodes_vbox);
+	void _expand_full_files_tree(Button *p_expand_button, VBoxContainer *p_files_vbox);
+	void _expand_full_search_results(Button *p_expand_button, VBoxContainer *p_search_vbox);
+	
+	// Loading screen for chunked conversation loading
+	void _show_loading_screen(const String &p_message, int p_total_items);
+	void _hide_loading_screen();
+	void _update_loading_progress(const String &p_message, int p_current, int p_total);
+	void _start_chunked_conversation_loading(int p_conversation_index);
+	void _process_conversation_loading_chunk();
+	void _process_tool_results_chunk();
+	void _finish_chunked_conversation_loading();
+	
+	// Loading screen UI components
+	PanelContainer *loading_screen = nullptr;
+	Label *loading_progress_label = nullptr;
+	ProgressBar *loading_progress_bar = nullptr;
+	
+	// Loading state tracking
+	int loading_conversation_index = -1;
+	int loading_messages_processed = 0;
+	int loading_tool_results_processed = 0;
+	int loading_total_tool_results = 0;
 	
 public:
 	// Unified accept/reject system for all sources (tool call, diff editor, script save)

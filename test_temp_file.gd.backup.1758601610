@@ -1,0 +1,3 @@
+var old_speed = 100
+print(old_speed)
+var health = 50
