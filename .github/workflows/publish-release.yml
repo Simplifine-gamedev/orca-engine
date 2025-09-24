@@ -23,62 +23,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Wait for All Workflows
+      - name: Check All Workflows Complete
         id: wait
         run: |
           # Get the commit SHA from the triggering workflow
           COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
           echo "Checking workflows for commit: $COMMIT_SHA"
           
-          # Function to check if a workflow has completed successfully
-          check_workflow() {
-            local workflow_name="$1"
-            echo "Checking workflow: $workflow_name"
-            
-            # Get workflow runs for this commit
-            curl -s \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$COMMIT_SHA&event=push" \
-              | jq -r --arg workflow "$workflow_name" '.workflow_runs[] | select(.name == $workflow) | .conclusion'
-          }
+          # Check if all three required workflows have completed successfully
+          echo "Fetching workflow runs for commit $COMMIT_SHA..."
           
-          # Wait up to 30 minutes for all workflows to complete
-          max_wait=1800  # 30 minutes in seconds
-          wait_time=0
-          sleep_interval=60  # Check every minute
+          # Get all workflow runs for this commit
+          WORKFLOW_DATA=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$COMMIT_SHA&event=push")
           
-          while [ $wait_time -lt $max_wait ]; do
-            echo "Checking all workflows... (waited ${wait_time}s)"
-            
-            linux_status=$(check_workflow "🐧 Linux Production Build")
-            macos_status=$(check_workflow "🍎 macOS Clean Build")  
-            windows_status=$(check_workflow "🏁 Windows Production Build")
-            
-            echo "Status - Linux: $linux_status, macOS: $macos_status, Windows: $windows_status"
-            
-            if [[ "$linux_status" == "success" && "$macos_status" == "success" && "$windows_status" == "success" ]]; then
-              echo "✅ All workflows completed successfully!"
-              echo "all_complete=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            
-            # Check if any workflow failed
-            if [[ "$linux_status" == "failure" || "$macos_status" == "failure" || "$windows_status" == "failure" ]]; then
-              echo "❌ One or more workflows failed"
-              echo "Linux: $linux_status, macOS: $macos_status, Windows: $windows_status"
-              echo "all_complete=false" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-            
-            # Wait before checking again
-            sleep $sleep_interval
-            wait_time=$((wait_time + sleep_interval))
-          done
+          # Extract status for each required workflow
+          LINUX_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🐧 Linux Production Build") | .conclusion' | head -1)
+          MACOS_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🍎 macOS Clean Build") | .conclusion' | head -1)
+          WINDOWS_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🏁 Windows Production Build") | .conclusion' | head -1)
           
-          echo "⏰ Timeout waiting for all workflows to complete"
-          echo "all_complete=false" >> $GITHUB_OUTPUT
-          exit 1
+          echo "Workflow Status Check:"
+          echo "  Linux: '$LINUX_STATUS'"
+          echo "  macOS: '$MACOS_STATUS'"
+          echo "  Windows: '$WINDOWS_STATUS'"
+          
+          # Check if all workflows completed successfully
+          if [[ "$LINUX_STATUS" == "success" && "$MACOS_STATUS" == "success" && "$WINDOWS_STATUS" == "success" ]]; then
+            echo "✅ All workflows completed successfully!"
+            echo "all_complete=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Not all workflows have completed successfully yet"
+            echo "This is expected - will wait for other workflows to complete"
+            echo "all_complete=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Get Release Version
         id: version
