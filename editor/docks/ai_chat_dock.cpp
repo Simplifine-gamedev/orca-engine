@@ -5281,7 +5281,7 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	// Preserve full text in tooltip for accessibility
 	toggle_button->set_tooltip_text(toggle_button->get_text());
-	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+	// Remove icons for cleaner appearance - just use colored text
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	// Add subtle border to tool result buttons for better visual separation
 	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
@@ -5331,7 +5331,7 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	header_hbox->add_child(status_label);
 
-	content_vbox->add_child(memnew(HSeparator));
+	// Removed HSeparator to reduce spacing after tool results
 
 	// Use the shared tool-specific UI creation function
 	_create_tool_specific_ui(content_vbox, p_name, p_result, success, p_args);
@@ -6264,7 +6264,7 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 	toggle_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
     toggle_button->set_clip_text(true);
     toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+	// Remove icons for cleaner appearance - just use colored text
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	// Add subtle border to tool result buttons for better visual separation
 	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
@@ -6311,7 +6311,7 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	header_hbox->add_child(status_label);
 
-	content_vbox->add_child(memnew(HSeparator));
+	// Removed HSeparator to reduce spacing after tool results
 
     // Create specific UI based on the tool that was called
     _create_tool_specific_ui(content_vbox, p_tool_message.name, result, success, args);
@@ -8820,7 +8820,7 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	// Preserve full text in tooltip for accessibility
 	toggle_button->set_tooltip_text(toggle_button->get_text());
-	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+	// Remove icons for cleaner appearance - just use colored text
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	// Add subtle border to tool result buttons for better visual separation
 	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
@@ -8882,7 +8882,7 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	header_hbox->add_child(status_label);
 
-	content_vbox->add_child(memnew(HSeparator));
+	// Removed HSeparator to reduce spacing after tool results
 
 	// Create specific UI based on the tool that was called
 	_create_tool_specific_ui(content_vbox, p_tool_name, result, success, args);
@@ -15657,7 +15657,7 @@ void AIChatDock::_apply_simplified_tool_result(const String &p_tool_call_id, con
 	status_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 	status_button->set_clip_text(true);
 	status_button->set_tooltip_text("Click to view full details");
-	status_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+	// Remove icons for cleaner appearance - just use colored text
 	status_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	// Add subtle border to tool result buttons for better visual separation
 	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
@@ -15717,7 +15717,7 @@ void AIChatDock::_expand_simplified_tool_result(const String &p_tool_call_id, co
 	toggle_button->set_clip_text(true);
 	toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	toggle_button->set_tooltip_text(toggle_button->get_text());
-	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+	// Remove icons for cleaner appearance - just use colored text
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
 	// Add subtle border to tool result buttons for better visual separation
 	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
@@ -15754,7 +15754,7 @@ void AIChatDock::_expand_simplified_tool_result(const String &p_tool_call_id, co
 	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	header_hbox->add_child(status_label);
 
-	content_vbox->add_child(memnew(HSeparator));
+	// Removed HSeparator to reduce spacing after tool results
 
 	// Use the shared tool-specific UI creation function
 	_create_tool_specific_ui(content_vbox, p_tool_name, result, success, Dictionary());
