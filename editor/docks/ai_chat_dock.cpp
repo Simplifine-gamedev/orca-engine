@@ -5741,10 +5741,10 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
-		// Assistant messages: clean subtle background
-		panel_style->set_bg_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-		panel_style->set_border_width_all(1);
-		panel_style->set_border_color(get_theme_color(SNAME("dark_color_3"), SNAME("Editor")));
+		// Assistant messages: transparent background so text appears on chat history background
+		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
+		panel_style->set_border_width_all(0); // No border
+		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 		role_color = (p_message.role == "system") ? get_theme_color(SNAME("warning_color"), SNAME("Editor")) : get_theme_color(SNAME("font_color"), SNAME("Editor"));
 	}
 	message_panel->add_theme_style_override("panel", panel_style);
@@ -5931,10 +5931,10 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
-		// Assistant messages: clean subtle background
-		panel_style->set_bg_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-		panel_style->set_border_width_all(1);
-		panel_style->set_border_color(get_theme_color(SNAME("dark_color_3"), SNAME("Editor")));
+		// Assistant messages: transparent background so text appears on chat history background
+		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
+		panel_style->set_border_width_all(0); // No border
+		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 		role_color = (p_message.role == "system") ? get_theme_color(SNAME("warning_color"), SNAME("Editor")) : get_theme_color(SNAME("font_color"), SNAME("Editor"));
 	}
 	p_message_panel->add_theme_style_override("panel", panel_style);
