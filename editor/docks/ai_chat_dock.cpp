@@ -4304,9 +4304,16 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     // Ensure counter is sane at the start of a batch
     if (pending_tool_tasks < 0) pending_tool_tasks = 0;
     
-    print_line("AI Chat: _execute_tool_calls called with " + String::num_int64(p_tool_calls.size()) + " tool calls");
+    // SAFETY: Basic check before accessing Array
+    if (p_tool_calls.is_empty()) {
+        print_line("AI Chat: _execute_tool_calls called with empty tool calls array");
+        return;
+    }
     
-	for (int i = 0; i < p_tool_calls.size(); i++) {
+    int tool_count = p_tool_calls.size();
+    print_line("AI Chat: _execute_tool_calls called with " + String::num_int64(tool_count) + " tool calls");
+    
+	for (int i = 0; i < tool_count; i++) {
 		Dictionary tool_call = p_tool_calls[i];
 		String tool_call_id = tool_call.get("id", "");
 		Dictionary function_dict = tool_call.get("function", Dictionary());
@@ -5053,10 +5060,22 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 
 	// If this is an image generation/edit result, attach the image to the message so
 	// subsequent requests can reference it via top-level 'images' (derived at serialization).
-	if (p_name == "image_operation" && p_result.get("success", false) && p_result.has("image_data")) {
+	if ((p_name == "image_operation" || p_name == "resource_manager") && p_result.get("success", false) && p_result.has("image_data")) {
 		AIChatDock::AttachedFile gen_file;
 		gen_file.path = "generated://tool_result";
-        gen_file.name = String("generated_") + String::num_int64(OS::get_singleton()->get_ticks_msec());
+        
+        // Use backend-provided image_id if available, otherwise fallback to timestamp
+        String backend_image_id = p_result.get("image_id", "");
+        String backend_image_name = p_result.get("image_name", "");
+        if (!backend_image_id.is_empty()) {
+            gen_file.name = backend_image_id;
+        } else if (!backend_image_name.is_empty()) {
+            gen_file.name = backend_image_name;
+        } else {
+            // Fallback for backward compatibility
+            gen_file.name = String("generated_") + String::num_int64(OS::get_singleton()->get_ticks_msec());
+        }
+        
 		gen_file.content = "";
 		gen_file.is_image = true;
 		gen_file.mime_type = "image/png";
@@ -7422,6 +7441,13 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			img_metadata["model"] = p_result.get("model", "DALL-E");
 			img_metadata["path"] = "generated://tool_operation";
 			
+			// Include backend-provided image_id in metadata
+			String image_id = p_result.get("image_id", "");
+			if (!image_id.is_empty()) {
+				img_metadata["image_id"] = image_id;
+				img_metadata["name"] = image_id;
+			}
+			
 			_display_image_unified(p_content_vbox, base64_data, img_metadata);
 		} else {
 			// Fallback to text display if no image data - but strip any large data fields to prevent freeze
@@ -8954,8 +8980,8 @@ void AIChatDock::_send_chat_request() {
         if (msg.role == "tool") {
             api_msg["tool_call_id"] = msg.tool_call_id;
             api_msg["name"] = msg.name;
-            // Only strip image_data for image_operation; keep full content for other tools
-            if (msg.name == "image_operation") {
+            // Strip image_data for both image_operation and resource_manager tools that generate images
+            if (msg.name == "image_operation" || msg.name == "resource_manager") {
                 Dictionary raw;
                 if (!msg.tool_results.is_empty()) {
                     raw = msg.tool_results[0];
@@ -8966,7 +8992,7 @@ void AIChatDock::_send_chat_request() {
                         raw = json_tool->get_data();
                     }
                 }
-                // Promote assistant images to top-level 'images' so backend edits can find them
+                // Promote tool images to top-level 'images' so backend edits can find them
                 Array images_data;
                 for (const AttachedFile &file : msg.attached_files) {
                     if (file.is_image) {
@@ -9287,11 +9313,35 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			}
 		}
 		
-        if (p_msg.name == "image_operation") {
+        if (p_msg.name == "image_operation" || p_msg.name == "resource_manager") {
             Dictionary raw;
             if (!p_msg.tool_results.is_empty()) {
                 raw = p_msg.tool_results[0];
             }
+            
+            // For both image_operation and resource_manager, promote images to conversation context
+            String image_data_str = raw.get("image_data", "");
+            if (raw.has("image_data") && !image_data_str.is_empty()) {
+                // SAFETY: Check if attached_files is valid before iterating
+                if (!p_msg.attached_files.is_empty()) {
+                    // Add images array for backend tool context (like assistant messages)
+                    Array images_data;
+                    for (const AttachedFile &file : p_msg.attached_files) {
+                        if (file.is_image && !file.name.is_empty() && !file.base64_data.is_empty()) {
+                            Dictionary image_info;
+                            image_info["name"] = file.name;
+                            image_info["mime_type"] = file.mime_type;
+                            image_info["base64_data"] = file.base64_data;
+                            image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
+                            images_data.push_back(image_info);
+                        }
+                    }
+                    if (!images_data.is_empty()) {
+                        api_msg["images"] = images_data;
+                    }
+                }
+            }
+            
 			raw.erase("image_data");
 			Ref<JSON> json_min;
 			json_min.instantiate();
