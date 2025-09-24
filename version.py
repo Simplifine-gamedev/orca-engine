@@ -11,7 +11,8 @@ docs = "latest"
 # Version Management System
 # This version should be updated whenever there are breaking changes
 # between frontend and backend that require compatibility checking
-version = "1.0.0"  # Orca version for auto-updater
+# NOTE: This is only used as a fallback. The actual version is determined from git tags.
+version = "1.0.0"  # Orca version for auto-updater (fallback only - git tags are authoritative)
 
 # API Compatibility Version - increment when breaking API changes occur
 # Frontend and backend must have matching API versions to communicate

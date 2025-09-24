@@ -54,25 +54,59 @@ class AutoUpdateManager:
         print(f"AUTO_UPDATE: Initialized for Orca Engine v{self.current_version}")
     
     def _get_current_version(self) -> str:
-        """Get current version from version.py or environment"""
+        """Get current version matching the GitHub workflow format (0.01.{SHA})"""
+        import subprocess
+        
         try:
-            # Try to read from version.py in project root
+            # Method 1: Environment variable (for deployments) - highest priority
+            env_version = os.getenv('ORCA_VERSION')
+            if env_version:
+                print(f"AUTO_UPDATE: Version from environment: {env_version}")
+                return env_version
+            
+            # Method 2: Generate version matching GitHub workflow format
+            # This matches the format used in workflows: 0.01.{SHORT_SHA}
+            result = subprocess.run([
+                'git', 'rev-parse', '--short=8', 'HEAD'
+            ], capture_output=True, text=True, cwd=self._get_repo_root())
+            
+            if result.returncode == 0:
+                short_sha = result.stdout.strip()
+                version = f"0.01.{short_sha}"
+                print(f"AUTO_UPDATE: Version from git SHA (matching workflow): {version}")
+                return version
+                        
+        except Exception as e:
+            print(f"AUTO_UPDATE: Git version detection failed: {e}")
+        
+        # Method 3: Read from version.py as fallback
+        try:
             version_file = os.path.join(os.path.dirname(__file__), '..', 'version.py')
             if os.path.exists(version_file):
                 with open(version_file, 'r') as f:
                     content = f.read()
                     # Extract version from version.py
                     for line in content.split('\n'):
-                        if 'version' in line.lower() and '=' in line:
+                        if line.strip().startswith('version') and '=' in line:
                             version = line.split('=')[1].strip().strip('"\'')
+                            print(f"AUTO_UPDATE: Version from version.py: {version}")
                             return version
-            
-            # Fallback to environment variable
-            return os.getenv('ORCA_VERSION', '0.01.1')
-            
         except Exception as e:
-            print(f"AUTO_UPDATE: Error reading version: {e}")
-            return '0.01.1'
+            print(f"AUTO_UPDATE: Error reading version.py: {e}")
+            
+        # Final fallback
+        print("AUTO_UPDATE: Using fallback version 0.01.unknown")
+        return '0.01.unknown'
+    
+    def _get_repo_root(self) -> str:
+        """Find the git repository root directory"""
+        current = os.path.dirname(os.path.abspath(__file__))
+        while current != '/':
+            if os.path.exists(os.path.join(current, '.git')):
+                return current
+            current = os.path.dirname(current)
+        # Fallback to parent directory of backend
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     def register_update_callback(self, callback: Callable[[UpdateInfo], None]):
         """Register a callback to be called when an update is available"""
@@ -283,11 +317,24 @@ class AutoUpdateManager:
     def _is_newer_version(self, remote_version: str, current_version: str) -> bool:
         """Compare version strings to see if remote is newer"""
         try:
-            # Use semantic versioning comparison
-            remote_ver = semver.Version(remote_version)
-            current_ver = semver.Version(current_version)
-            return remote_ver > current_ver
-        except Exception:
+            # Handle the 0.01.{SHA} format used by GitHub workflows
+            if remote_version.startswith('0.01.') and current_version.startswith('0.01.'):
+                # Extract SHA parts for comparison
+                remote_sha = remote_version.split('0.01.')[1]
+                current_sha = current_version.split('0.01.')[1]
+                
+                # If they're different SHAs, consider remote as newer
+                # (This assumes any new commit is a potential update)
+                return remote_sha != current_sha
+            
+            # Try semantic versioning comparison for standard versions
+            try:
+                remote_ver = semver.Version(remote_version)
+                current_ver = semver.Version(current_version)
+                return remote_ver > current_ver
+            except Exception:
+                pass
+            
             # Fallback to simple string comparison
             try:
                 remote_parts = [int(x) for x in remote_version.split('.')]
@@ -300,7 +347,12 @@ class AutoUpdateManager:
                 
                 return remote_parts > current_parts
             except Exception:
-                return False
+                # If all else fails, assume different versions mean update available
+                return remote_version != current_version
+                
+        except Exception as e:
+            print(f"AUTO_UPDATE: Version comparison error: {e}")
+            return False
     
     def _is_critical_update(self, release_notes: str) -> bool:
         """Determine if an update is critical based on release notes"""
@@ -312,23 +364,129 @@ class AutoUpdateManager:
         notes_lower = release_notes.lower()
         return any(keyword in notes_lower for keyword in critical_keywords)
     
+    def _format_version_for_display(self, version: str) -> str:
+        """Format version string for user-friendly display"""
+        if not version:
+            return "Unknown"
+        
+        # Handle the 0.01.{SHA} format used by workflows
+        if version.startswith('0.01.') and len(version) > 5:
+            sha_part = version.split('0.01.')[1]
+            if sha_part == 'unknown':
+                return "0.01 (Unknown)"
+            else:
+                return f"0.01.{sha_part[:8]}"  # Show first 8 chars of SHA
+            
+        # Handle development builds
+        if '-dev.' in version:
+            # 1.0.0-dev.5+g1234567 -> "1.0.0 (Development Build)"
+            base = version.split('-dev.')[0]
+            return f"{base} (Development Build)"
+        elif '-beta.' in version:
+            # 1.0.0-beta.1 -> "1.0.0 Beta 1"
+            parts = version.split('-beta.')
+            if len(parts) == 2:
+                return f"{parts[0]} Beta {parts[1].split('+')[0]}"
+        elif '-alpha.' in version:
+            # 1.0.0-alpha.1 -> "1.0.0 Alpha 1"
+            parts = version.split('-alpha.')
+            if len(parts) == 2:
+                return f"{parts[0]} Alpha {parts[1].split('+')[0]}"
+        elif '-rc.' in version:
+            # 1.0.0-rc.1 -> "1.0.0 Release Candidate 1"
+            parts = version.split('-rc.')
+            if len(parts) == 2:
+                return f"{parts[0]} RC {parts[1].split('+')[0]}"
+        elif '-unknown' in version:
+            return version.replace('-unknown', ' (Unknown)')
+        
+        # Remove build metadata if present
+        if '+' in version:
+            version = version.split('+')[0]
+            
+        return version
+    
+    def _format_time_ago(self, timestamp: float) -> str:
+        """Format timestamp as human-readable time ago"""
+        if not timestamp:
+            return "Never"
+        
+        now = time.time()
+        diff = now - timestamp
+        
+        if diff < 60:
+            return "Just now"
+        elif diff < 3600:
+            minutes = int(diff / 60)
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif diff < 86400:
+            hours = int(diff / 3600)
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        elif diff < 604800:
+            days = int(diff / 86400)
+            return f"{days} day{'s' if days != 1 else ''} ago"
+        else:
+            return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')
+    
+    def _determine_update_type(self, current: str, new: str) -> str:
+        """Determine the type of update (major, minor, patch, prerelease)"""
+        try:
+            # Clean versions for comparison
+            curr_clean = current.split('-')[0].split('+')[0]
+            new_clean = new.split('-')[0].split('+')[0]
+            
+            curr_ver = semver.Version(curr_clean)
+            new_ver = semver.Version(new_clean)
+            
+            if new_ver.major > curr_ver.major:
+                return "major"
+            elif new_ver.minor > curr_ver.minor:
+                return "minor"
+            elif new_ver.patch > curr_ver.patch:
+                return "patch"
+            else:
+                # Check for prerelease differences
+                if '-' in new and '-' not in current:
+                    return "downgrade"  # Stable to prerelease
+                elif '-' not in new and '-' in current:
+                    return "stable"  # Prerelease to stable
+                else:
+                    return "prerelease"
+        except Exception as e:
+            print(f"AUTO_UPDATE: Error determining update type: {e}")
+            return "unknown"
+    
     def get_update_status(self) -> Dict[str, Any]:
-        """Get current update status"""
-        return {
+        """Get current update status with enhanced display information"""
+        current_display = self._format_version_for_display(self.current_version)
+        
+        status = {
             'current_version': self.current_version,
+            'current_version_display': current_display,
+            'is_development_build': '-dev.' in self.current_version,
+            'is_prerelease': any(pre in self.current_version for pre in ['-alpha.', '-beta.', '-rc.']),
             'last_check': self.last_check,
             'last_check_human': datetime.fromtimestamp(self.last_check).isoformat() if self.last_check else None,
             'update_available': self.cached_update_info is not None,
-            'update_info': {
-                'version': self.cached_update_info.version,
-                'download_url': self.cached_update_info.download_url,
-                'file_size': self.cached_update_info.file_size,
-                'is_critical': self.cached_update_info.is_critical,
-                'published_at': self.cached_update_info.published_at
-            } if self.cached_update_info else None,
             'background_checker_running': self.checker_thread and self.checker_thread.is_alive(),
             'check_interval': self.check_interval
         }
+        
+        if self.cached_update_info:
+            update_display = self._format_version_for_display(self.cached_update_info.version)
+            status['update_info'] = {
+                'version': self.cached_update_info.version,
+                'version_display': update_display,
+                'download_url': self.cached_update_info.download_url,
+                'file_size': self.cached_update_info.file_size,
+                'is_critical': self.cached_update_info.is_critical,
+                'published_at': self.cached_update_info.published_at,
+                'update_type': self._determine_update_type(self.current_version, self.cached_update_info.version)
+            }
+        else:
+            status['update_info'] = None
+            
+        return status
     
     def download_update(self, update_info: UpdateInfo, download_path: str = None) -> Dict[str, Any]:
         """Download an update file"""

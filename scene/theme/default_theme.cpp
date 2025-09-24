@@ -51,8 +51,8 @@ static const int default_font_size = 16;
 
 static float scale = 1.0;
 
-static const int default_margin = 4;
-static const int default_corner_radius = 3;
+static const int default_margin = 2;        // Reduced from 4 for sleeker look
+static const int default_corner_radius = 1; // Reduced from 3 for sharper, modern look
 
 static Ref<StyleBoxFlat> make_flat_stylebox(Color p_color, float p_margin_left = default_margin, float p_margin_top = default_margin, float p_margin_right = default_margin, float p_margin_bottom = default_margin, int p_corner_radius = default_corner_radius, bool p_draw_center = true, int p_border_width = 0) {
 	Ref<StyleBoxFlat> style(memnew(StyleBoxFlat));
@@ -97,31 +97,31 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 	theme->set_default_font_size(Math::round(default_font_size * scale));
 	theme->set_default_base_scale(scale);
 
-	// Font colors
-	const Color control_font_color = Color(0.875, 0.875, 0.875);
-	const Color control_font_low_color = Color(0.7, 0.7, 0.7);
-	const Color control_font_lower_color = Color(0.65, 0.65, 0.65);
-	const Color control_font_hover_color = Color(0.95, 0.95, 0.95);
-	const Color control_font_focus_color = Color(0.95, 0.95, 0.95);
-	const Color control_font_disabled_color = control_font_color * Color(1, 1, 1, 0.5);
-	const Color control_font_placeholder_color = Color(control_font_color.r, control_font_color.g, control_font_color.b, 0.6f);
-	const Color control_font_pressed_color = Color(1, 1, 1);
-	const Color control_selection_color = Color(0.5, 0.5, 0.5);
+	// VSCode-inspired grayscale color palette
+	// Font colors - softer grayscale like VSCode
+	const Color control_font_color = Color(0.827, 0.827, 0.827);           // #d4d4d4 - VSCode foreground
+	const Color control_font_low_color = Color(0.667, 0.667, 0.667);       // #aaaaaa - muted text
+	const Color control_font_lower_color = Color(0.522, 0.522, 0.522);     // #858585 - line numbers
+	const Color control_font_hover_color = Color(0.9, 0.9, 0.9);           // Subtle hover
+	const Color control_font_focus_color = Color(0.95, 0.95, 0.95);        // Focus state
+	const Color control_font_disabled_color = Color(0.4, 0.4, 0.4);        // Disabled text
+	const Color control_font_placeholder_color = Color(0.6, 0.6, 0.6);     // Placeholder text
+	const Color control_font_pressed_color = Color(1, 1, 1);               // White when pressed
+	const Color control_selection_color = Color(0.15, 0.31, 0.47);         // #264f78 - VSCode selection
 
-	// StyleBox colors
-	const Color style_normal_color = Color(0.1, 0.1, 0.1, 0.6);
-	const Color style_hover_color = Color(0.225, 0.225, 0.225, 0.6);
-	const Color style_hover_selected_color = Color(1, 1, 1, 0.4);
-	const Color style_pressed_color = Color(0, 0, 0, 0.6);
-	const Color style_disabled_color = Color(0.1, 0.1, 0.1, 0.3);
-	const Color style_focus_color = Color(1, 1, 1, 0.75);
-	const Color style_popup_color = Color(0.25, 0.25, 0.25, 1);
-	const Color style_popup_border_color = Color(0.175, 0.175, 0.175, 1);
-	const Color style_popup_hover_color = Color(0.4, 0.4, 0.4, 1);
-	const Color style_selected_color = Color(1, 1, 1, 0.3);
-	// Don't use a color too bright to keep the percentage readable.
-	const Color style_progress_color = Color(1, 1, 1, 0.4);
-	const Color style_separator_color = Color(0.5, 0.5, 0.5);
+	// StyleBox colors - VSCode-inspired backgrounds
+	const Color style_normal_color = Color(0.145, 0.145, 0.149);           // #252526 - VSCode sidebar
+	const Color style_hover_color = Color(0.2, 0.2, 0.204);                // Subtle hover
+	const Color style_hover_selected_color = Color(0.15, 0.31, 0.47, 0.3); // Selection with transparency
+	const Color style_pressed_color = Color(0.118, 0.118, 0.118);          // #1e1e1e - VSCode editor bg
+	const Color style_disabled_color = Color(0.1, 0.1, 0.1, 0.5);          // Disabled state
+	const Color style_focus_color = Color(0, 0.47, 0.8);                   // #007acc - VSCode accent blue
+	const Color style_popup_color = Color(0.196, 0.196, 0.196);            // #323233 - popup background
+	const Color style_popup_border_color = Color(0.3, 0.3, 0.3);           // Subtle borders
+	const Color style_popup_hover_color = Color(0.25, 0.25, 0.25);         // Popup hover
+	const Color style_selected_color = Color(0.15, 0.31, 0.47, 0.4);       // Selected items
+	const Color style_progress_color = Color(0, 0.47, 0.8, 0.6);           // Progress bars
+	const Color style_separator_color = Color(0.3, 0.3, 0.3);              // Separators
 
 	// Convert the generated icon sources to a dictionary for easier access.
 	// Unlike the editor icons, there is no central repository of icons in the Theme resource itself to keep it tidy.
@@ -139,9 +139,9 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 	const Ref<StyleBoxFlat> button_hover = make_flat_stylebox(style_hover_color);
 	const Ref<StyleBoxFlat> button_pressed = make_flat_stylebox(style_pressed_color);
 	const Ref<StyleBoxFlat> button_disabled = make_flat_stylebox(style_disabled_color);
-	Ref<StyleBoxFlat> focus = make_flat_stylebox(style_focus_color, default_margin, default_margin, default_margin, default_margin, default_corner_radius, false, 2);
+	Ref<StyleBoxFlat> focus = make_flat_stylebox(style_focus_color, default_margin, default_margin, default_margin, default_margin, default_corner_radius, false, 1);
 	// Make the focus outline appear to be flush with the buttons it's focusing, so not draw on top of the content.
-	focus->set_expand_margin_all(Math::round(2 * scale));
+	focus->set_expand_margin_all(Math::round(1 * scale));
 
 	theme->set_stylebox(CoreStringName(normal), "Button", button_normal);
 	theme->set_stylebox(SceneStringName(hover), "Button", button_hover);
@@ -404,7 +404,7 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 
 	Ref<StyleBoxFlat> style_line_edit = make_flat_stylebox(style_normal_color);
 	// Add a line at the bottom to make LineEdits distinguishable from Buttons.
-	style_line_edit->set_border_width(SIDE_BOTTOM, 2);
+	style_line_edit->set_border_width(SIDE_BOTTOM, 1);
 	style_line_edit->set_border_color(style_pressed_color);
 	theme->set_stylebox(CoreStringName(normal), "LineEdit", style_line_edit);
 
@@ -412,7 +412,7 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 
 	Ref<StyleBoxFlat> style_line_edit_read_only = make_flat_stylebox(style_disabled_color);
 	// Add a line at the bottom to make LineEdits distinguishable from Buttons.
-	style_line_edit_read_only->set_border_width(SIDE_BOTTOM, 2);
+	style_line_edit_read_only->set_border_width(SIDE_BOTTOM, 1);
 	style_line_edit_read_only->set_border_color(style_pressed_color * Color(1, 1, 1, 0.5));
 	theme->set_stylebox("read_only", "LineEdit", style_line_edit_read_only);
 
@@ -654,7 +654,7 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 	const Ref<StyleBoxFlat> focus_style = make_flat_stylebox(style_focus_color);
 	// Make the focus outline appear to be flush with the buttons it's focusing, so not draw on top of the content.
 	sb_expand(focus_style, 4, 4, 4, 4);
-	focus_style->set_border_width_all(Math::round(2 * scale));
+	focus_style->set_border_width_all(Math::round(1 * scale));
 	focus_style->set_draw_center(false);
 	focus_style->set_border_color(style_focus_color);
 	theme->set_stylebox("focus", "ScrollContainer", focus_style);
@@ -731,7 +731,7 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 
 	// Always display a border for PopupMenus so they can be distinguished from their background.
 	Ref<StyleBoxFlat> style_popup_panel = make_flat_stylebox(style_popup_color);
-	style_popup_panel->set_border_width_all(2);
+	style_popup_panel->set_border_width_all(1);
 	style_popup_panel->set_border_color(style_popup_border_color);
 
 	theme->set_stylebox(SceneStringName(panel), "PopupMenu", style_popup_panel);
@@ -954,7 +954,7 @@ void fill_default_theme(Ref<Theme> &theme, const Ref<Font> &default_font, const 
 	// TabContainer
 
 	Ref<StyleBoxFlat> style_tab_selected = make_flat_stylebox(style_normal_color, 10, 4, 10, 4, 0);
-	style_tab_selected->set_border_width(SIDE_TOP, Math::round(2 * scale));
+	style_tab_selected->set_border_width(SIDE_TOP, Math::round(1 * scale));
 	style_tab_selected->set_border_color(style_focus_color);
 	Ref<StyleBoxFlat> style_tab_unselected = make_flat_stylebox(style_pressed_color, 10, 4, 10, 4, 0);
 	// Add some spacing between unselected tabs to make them easier to distinguish from each other.

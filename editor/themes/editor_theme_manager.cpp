@@ -318,10 +318,10 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 				// Slight contrast for better depth perception
 				preset_contrast = 0.15;
 				preset_draw_extra_borders = true;
-			} else { // Default
-				preset_accent_color = Color(0.44, 0.73, 0.98);
-				preset_base_color = Color(0.21, 0.24, 0.29);
-				preset_contrast = config.default_contrast;
+			} else { // Default - VSCode-inspired theme
+				preset_accent_color = Color(0, 0.47, 0.8);        // #007acc - VSCode accent blue
+				preset_base_color = Color(0.145, 0.145, 0.149);   // #252526 - VSCode sidebar
+				preset_contrast = 0.25;  // Slightly higher contrast for better definition
 			}
 
 			config.accent_color = preset_accent_color;

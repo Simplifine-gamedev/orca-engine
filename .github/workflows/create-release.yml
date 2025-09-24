@@ -1,0 +1,182 @@
+name: 🚀 Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+        - prerelease
+        - custom
+      custom_version:
+        description: 'Custom version (only used if version_type is "custom")'
+        required: false
+        default: ''
+      release_notes:
+        description: 'Release notes (optional - will auto-generate if empty)'
+        required: false
+        default: ''
+
+jobs:
+  create-release:
+    name: Create and Tag Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Calculate Next Version
+        id: version
+        run: |
+          # Get current latest tag
+          CURRENT=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.9.0")
+          CURRENT=${CURRENT#v}
+          
+          echo "Current version: $CURRENT"
+          
+          # Handle custom version
+          if [[ "${{ github.event.inputs.version_type }}" == "custom" ]]; then
+            if [[ -z "${{ github.event.inputs.custom_version }}" ]]; then
+              echo "Error: Custom version is required when version_type is 'custom'"
+              exit 1
+            fi
+            NEW_VERSION="${{ github.event.inputs.custom_version }}"
+            NEW_VERSION=${NEW_VERSION#v}  # Remove v prefix if present
+          else
+            # Parse version components
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${CURRENT%%-*}"
+            
+            # Handle prerelease versions
+            PRERELEASE=""
+            if [[ "$CURRENT" == *"-"* ]]; then
+              PRERELEASE="${CURRENT#*-}"
+            fi
+            
+            case "${{ github.event.inputs.version_type }}" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+                ;;
+              prerelease)
+                if [[ "$PRERELEASE" == beta.* ]]; then
+                  # Increment beta number
+                  BETA_NUM=${PRERELEASE#beta.}
+                  BETA_NUM=$((BETA_NUM + 1))
+                  NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}-beta.${BETA_NUM}"
+                elif [[ "$PRERELEASE" == alpha.* ]]; then
+                  # Move from alpha to beta
+                  NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}-beta.1"
+                elif [[ "$PRERELEASE" == rc.* ]]; then
+                  # Increment RC number
+                  RC_NUM=${PRERELEASE#rc.}
+                  RC_NUM=$((RC_NUM + 1))
+                  NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}-rc.${RC_NUM}"
+                else
+                  # First prerelease - start with beta
+                  NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}-beta.1"
+                fi
+                ;;
+            esac
+          fi
+          
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version will be: v$NEW_VERSION"
+      
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          if [[ -n "${{ github.event.inputs.release_notes }}" ]]; then
+            # Use provided release notes
+            NOTES="${{ github.event.inputs.release_notes }}"
+          else
+            # Auto-generate release notes from commits
+            PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              echo "Generating release notes from $PREVIOUS_TAG to HEAD"
+              
+              NOTES="## What's Changed\n\n"
+              
+              # Get commit messages
+              COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s (%an)" --no-merges)
+              
+              if [[ -n "$COMMITS" ]]; then
+                NOTES="${NOTES}${COMMITS}\n\n"
+              fi
+              
+              # Add contributors
+              CONTRIBUTORS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%an" --no-merges | sort -u | sed 's/^/- @/')
+              
+              if [[ -n "$CONTRIBUTORS" ]]; then
+                NOTES="${NOTES}## Contributors\n\n${CONTRIBUTORS}\n"
+              fi
+            else
+              NOTES="Initial release of Orca Engine\n"
+            fi
+          fi
+          
+          # Save to file to handle multiline content
+          echo -e "$NOTES" > release_notes.txt
+          echo "Release notes generated"
+      
+      - name: Create and Push Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create annotated tag
+          git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
+          
+          # Push the tag
+          git push origin "v${{ steps.version.outputs.new_version }}"
+          
+          echo "✅ Tag v${{ steps.version.outputs.new_version }} created and pushed"
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.new_version }}
+          name: Orca Engine v${{ steps.version.outputs.new_version }}
+          body_path: release_notes.txt
+          draft: true
+          prerelease: ${{ contains(steps.version.outputs.new_version, '-') }}
+          generate_release_notes: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Summary
+        run: |
+          echo "# 🚀 Release Created Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** v${{ steps.version.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ github.event.inputs.version_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** Draft Release" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. The build workflows will automatically trigger for this tag" >> $GITHUB_STEP_SUMMARY
+          echo "2. Once all platform builds complete, the release will be published" >> $GITHUB_STEP_SUMMARY
+          echo "3. The appcast.yml workflow will update the auto-update feeds" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.new_version }})" >> $GITHUB_STEP_SUMMARY
