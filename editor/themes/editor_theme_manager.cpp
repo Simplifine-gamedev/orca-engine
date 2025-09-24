@@ -318,10 +318,10 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 				// Slight contrast for better depth perception
 				preset_contrast = 0.15;
 				preset_draw_extra_borders = true;
-			} else { // Default - VSCode-inspired theme
-				preset_accent_color = Color(0, 0.47, 0.8);        // #007acc - VSCode accent blue
-				preset_base_color = Color(0.145, 0.145, 0.149);   // #252526 - VSCode sidebar
-				preset_contrast = 0.25;  // Slightly higher contrast for better definition
+			} else { // Default - Shadcn Zinc theme
+				preset_accent_color = Color(0.631, 0.631, 0.667);  // zinc-400 #a1a1aa - subtle accent
+				preset_base_color = Color(0.035, 0.035, 0.043);    // zinc-950 #09090b - darkest background
+				preset_contrast = 0.4;  // Higher contrast for zinc palette
 			}
 
 			config.accent_color = preset_accent_color;
