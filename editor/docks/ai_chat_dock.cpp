@@ -5794,7 +5794,9 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
 		content_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
-		content_label->add_theme_color_override("background_color", Color(0, 0, 0, 0)); // Transparent background
+		// Create transparent StyleBox for RichTextLabel background
+		Ref<StyleBoxEmpty> transparent_style = memnew(StyleBoxEmpty);
+		content_label->add_theme_style_override("normal", transparent_style);
 	}
 	
 	message_vbox->add_child(content_label);
@@ -5991,7 +5993,9 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
 		content_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
-		content_label->add_theme_color_override("background_color", Color(0, 0, 0, 0)); // Transparent background
+		// Create transparent StyleBox for RichTextLabel background
+		Ref<StyleBoxEmpty> transparent_style = memnew(StyleBoxEmpty);
+		content_label->add_theme_style_override("normal", transparent_style);
 	}
 	
 	message_vbox->add_child(content_label);
