@@ -957,6 +957,11 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 cm_index += 1
                 if not isinstance(msg, dict):
                     continue
+                    
+                # Debug: Log all message details
+                role = msg.get('role', 'unknown')
+                print(f"    - msg[{cm_index}] role={role}, has_images={'images' in msg}, keys={list(msg.keys())}")
+                
                 if 'images' in msg and isinstance(msg['images'], list):
                     print(f"    - msg[{cm_index}] has images: {len(msg['images'])}")
                     for img in msg['images']:
@@ -965,9 +970,10 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                         if name and b64:
                             available_images[name] = img
                             print(f"      -> cached image '{name}' (base64 len={len(b64)})")
+                
                 # Also log tool/assistant markers present in content
                 content_preview = str(msg.get('content', ''))[:120].replace('\n', ' ')
-                if 'image_name' in content_preview or 'Image ID' in content_preview:
+                if 'image_name' in content_preview or 'Image ID' in content_preview or 'image_id' in content_preview:
                     print(f"    - msg[{cm_index}] content mentions image id: '{content_preview}'")
         else:
             print("IMAGE_OP DEBUG: No conversation_messages provided or empty")
@@ -1083,8 +1089,14 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
             image_base64 = gen.data[0].b64_json
             # Resize to exact target if requested
             image_base64, out_w, out_h = _maybe_resize_b64_to_exact(image_base64, t_w, t_h)
+            
+            # Generate unique image ID for conversation tracking
+            image_id = f"generated_{uuid.uuid4().hex[:8]}"
+            
             result = {
                 "success": True,
+                "image_id": image_id,
+                "image_name": image_id,  # For backward compatibility
                 "image_data": image_base64,
                 "prompt": description,
                 "style": style,
@@ -1153,8 +1165,14 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         image_base64 = edit.data[0].b64_json
         # Resize to exact target if requested
         image_base64, out_w, out_h = _maybe_resize_b64_to_exact(image_base64, t_w, t_h)
+        
+        # Generate unique image ID for edited image
+        image_id = f"edited_{uuid.uuid4().hex[:8]}"
+        
         result = {
             "success": True,
+            "image_id": image_id,
+            "image_name": image_id,  # For backward compatibility
             "image_data": image_base64,
             "prompt": description,
             "style": style,
@@ -1162,7 +1180,8 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
             "width": out_w,
             "height": out_h,
             "input_images": 1,
-            "requested_images": len(image_ids)
+            "requested_images": len(image_ids),
+            "edited_from": image_ids[0] if image_ids else None  # Track source image
         }
         if grid or tile_size:
             result["slice_hint"] = {
@@ -1343,9 +1362,15 @@ def slice_spritesheet_internal(arguments: dict) -> dict:
                 canvas.alpha_composite(cell, (dx, dy))
                 out_buf = io.BytesIO()
                 canvas.save(out_buf, format='PNG')
+                
+                # Generate unique ID for each frame
+                frame_id = f"frame_{r:02d}_{c:02d}_{uuid.uuid4().hex[:6]}"
+                
                 frames.append({
                     'row': r,
                     'col': c,
+                    'frame_id': frame_id,
+                    'image_id': frame_id,  # Consistent with other image operations
                     'filename': f'frame_{r:02d}_{c:02d}.png',
                     'width': canvas.size[0],
                     'height': canvas.size[1],
@@ -3340,10 +3365,17 @@ def chat():
                             # Prepare tool result for conversation history (exclude massive image data)
                             tool_result_for_openai = {
                                 "success": image_result.get("success"),
+                                "image_id": image_result.get("image_id"),
+                                "image_name": image_result.get("image_name"),
                                 "description": image_result.get("description"),
+                                "prompt": image_result.get("prompt"),
                                 "style": image_result.get("style"),
+                                "format": image_result.get("format"),
+                                "width": image_result.get("width"),
+                                "height": image_result.get("height"),
                                 "input_images": image_result.get("input_images", 0),
-                                "requested_images": image_result.get("requested_images", 0)
+                                "requested_images": image_result.get("requested_images", 0),
+                                "edited_from": image_result.get("edited_from")
                             }
                             # Exclude the massive 'image_data' field to save tokens
                             
@@ -3941,6 +3973,8 @@ def chat():
                                 "success": rm_result.get("success"),
                                 # Pass through high-signal fields only
                                 "op": (arguments.get("op") if isinstance(arguments, dict) else None),
+                                "image_id": rm_result.get("image_id"),
+                                "image_name": rm_result.get("image_name"),
                                 "message": rm_result.get("message"),
                                 "prompt": rm_result.get("prompt"),
                                 "style": rm_result.get("style"),
@@ -3948,7 +3982,8 @@ def chat():
                                 "width": rm_result.get("width"),
                                 "height": rm_result.get("height"),
                                 "input_images": rm_result.get("input_images", 0),
-                                "requested_images": rm_result.get("requested_images", 0)
+                                "requested_images": rm_result.get("requested_images", 0),
+                                "edited_from": rm_result.get("edited_from")
                             }
                             # Include slice hint if provided
                             if isinstance(rm_result.get("slice_hint"), dict):

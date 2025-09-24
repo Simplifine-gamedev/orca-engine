@@ -307,9 +307,9 @@ godot_tools = [
                     "import_options": {"type": "object", "description": "Importer-specific options (e.g., texture flags)"},
 
                     # Image generate/edit
-                    "description": {"type": "string"},
-                    "images": {"type": "array", "items": {"type": "string"}},
-                    "style": {"type": "string"},
+                    "description": {"type": "string", "description": "Text description of the image to generate or edit"},
+                    "images": {"type": "array", "items": {"type": "string"}, "description": "Array of image IDs to edit (leave empty to generate new image). Use image IDs from previous conversation like 'generated_abc123' or 'edited_def456'"},
+                    "style": {"type": "string", "description": "Art style for the image (e.g., 'pixel art', 'photorealistic', '3D render')"},
                     "size": {"type": "string"},
                     "exact_size": {"type": "string"},
                     "tile_size": {"type": "string"},
