@@ -83,7 +83,8 @@ else:
 if detailed_logging_enabled == 'true':
     print("🔍 DETAILED_LOGGING: ENABLED (forced via DETAILED_LOGGING=true)")
 elif detailed_logging_enabled == 'auto':
-    mode = "CLOUD" if STRUCTURED_LOGS else "LOCAL"
+    cloud_detected = bool(os.getenv('K_SERVICE') or os.getenv('GAE_ENV') or os.getenv('CLOUD_RUN_JOB'))
+    mode = "CLOUD" if cloud_detected else "LOCAL"
     print(f"📊 DETAILED_LOGGING: AUTO ({mode} mode)")
 else:
     print("🔇 DETAILED_LOGGING: DISABLED (default - set DETAILED_LOGGING=true to enable)")
@@ -2038,6 +2039,7 @@ def check_for_app_updates_internal(arguments: dict) -> dict:
             "error": f"Update check failed: {str(e)}"
         }
 
+
 # --- New Consolidated Tool Handlers ---
 
 def project_manager_internal(arguments: dict) -> dict:
@@ -2142,7 +2144,8 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
 def resource_manager_internal(arguments: dict, conversation_messages: list = None) -> dict:
     """Handle resource_manager tool operations"""
     try:
-        op = arguments.get('op', '')
+        # Accept both 'op' and legacy 'operation'
+        op = arguments.get('op', '') or arguments.get('operation', '')
         if not op:
             return {"success": False, "error": "Operation 'op' parameter is required"}
             
@@ -2180,6 +2183,7 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
                 'normalize_to': arguments.get('normalize_to')
             }
             return slice_spritesheet_internal(slice_args)
+            
         
         # All resource operations should be handled by frontend (direct Godot engine access needed)
         elif op in ["res.create", "res.inspect", "res.modify", "res.assign", "res.copy_from_template", 
@@ -2587,10 +2591,24 @@ def chat():
             recovery_attempts = 0
             max_recovery_attempts = 2
             
+            # CRITICAL FIX: Track conversation state for better debugging
+            total_user_messages = 0
+            total_assistant_messages = 0
+            total_tool_messages = 0
+            
             # Log tool results that come from frontend
             for msg in messages:
                 if msg is not None and isinstance(msg, dict) and msg.get('role'):
                     conversation_messages.append(msg)
+                    
+                    # Track message types for debugging
+                    role = msg.get('role', '')
+                    if role == 'user':
+                        total_user_messages += 1
+                    elif role == 'assistant':
+                        total_assistant_messages += 1
+                    elif role == 'tool':
+                        total_tool_messages += 1
                     
                     # Log tool results when they come back from frontend
                     if msg.get('role') == 'tool':
@@ -2598,6 +2616,12 @@ def chat():
                             tool_name = msg.get('name', 'unknown_tool')
                             tool_call_id = msg.get('tool_call_id', 'unknown_id')
                             content = msg.get('content', '{}')
+                            
+                            print(f"TOOL_RESULT_RECEIVED: {tool_name} (ID: {tool_call_id}) from frontend")
+                            
+                            # CRITICAL FIX: Validate tool call ID presence
+                            if not tool_call_id or tool_call_id == 'unknown_id':
+                                print(f"TOOL_RESULT_ERROR: Missing tool_call_id for {tool_name}")
                             
                             # Parse tool result
                             try:
@@ -2616,6 +2640,32 @@ def chat():
                     print(f"STOP_DETECTED: Request {request_id} stopped during message filtering")
                     yield json.dumps({"status": "stopped", "message": "Request stopped"}) + '\n'
                     return
+
+            # CRITICAL DEBUG: Log conversation state before processing
+            print(f"CONVERSATION_INIT: Starting conversation with {len(conversation_messages)} messages")
+            print(f"CONVERSATION_BREAKDOWN: {total_user_messages} user, {total_assistant_messages} assistant, {total_tool_messages} tool messages")
+            
+            # Validate conversation structure for tool call consistency
+            unmatched_tool_calls = []
+            for i, msg in enumerate(conversation_messages):
+                if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                    for tool_call in msg['tool_calls']:
+                        tc_id = tool_call.get('id', '')
+                        if tc_id:
+                            # Look for matching tool response
+                            found_response = False
+                            for j in range(i + 1, len(conversation_messages)):
+                                if (conversation_messages[j].get('role') == 'tool' and 
+                                    conversation_messages[j].get('tool_call_id') == tc_id):
+                                    found_response = True
+                                    break
+                            if not found_response:
+                                unmatched_tool_calls.append(tc_id)
+            
+            if unmatched_tool_calls:
+                print(f"CONVERSATION_WARNING: Found {len(unmatched_tool_calls)} unmatched tool calls: {unmatched_tool_calls}")
+            else:
+                print(f"CONVERSATION_VALID: All tool calls have matching responses")
 
             # Log incoming headers for project root troubleshooting
             try:
@@ -2713,7 +2763,19 @@ def chat():
                 except Exception:
                     return "{}"
 
+            conversation_turn = 0
+            max_conversation_turns = 10  # Prevent infinite loops
+            
             while True:  # Loop to handle tool calling and responses
+                conversation_turn += 1
+                print(f"CONVERSATION_TURN: Starting turn {conversation_turn}/{max_conversation_turns}")
+                
+                # Prevent infinite conversation loops
+                if conversation_turn > max_conversation_turns:
+                    print(f"CONVERSATION_TURN: Max turns ({max_conversation_turns}) reached, ending conversation")
+                    yield json.dumps({"status": "completed", "message": "Maximum conversation turns reached"}) + '\n'
+                    return
+                
                 # Check for stop before each major operation
                 if check_stop():
                     print(f"STOP_DETECTED: Request {request_id} stopped before OpenAI call")
@@ -2727,7 +2789,18 @@ def chat():
                 if conversation_messages:
                     last_msg = conversation_messages[-1]
                     if last_msg and isinstance(last_msg, dict):
-                        print(f"CONVERSATION_LOOP: Last message: {last_msg.get('role', 'unknown')}")
+                        last_role = last_msg.get('role', 'unknown')
+                        print(f"CONVERSATION_LOOP: Last message: {last_role}")
+                        
+                        # CRITICAL DEBUG: Check if this is a continuation after frontend tools
+                        if last_role == 'tool':
+                            tool_name = last_msg.get('name', 'unknown')
+                            tool_id = last_msg.get('tool_call_id', 'unknown')
+                            print(f"CONVERSATION_CONTINUATION: Detected tool result continuation - {tool_name} (ID: {tool_id})")
+                            print(f"CONVERSATION_CONTINUATION: This should trigger AI's final response")
+                        elif last_role == 'assistant' and last_msg.get('tool_calls'):
+                            num_tool_calls = len(last_msg.get('tool_calls', []))
+                            print(f"CONVERSATION_CONTINUATION: Last message has {num_tool_calls} tool calls - expecting tool responses next")
                     else:
                         print(f"CONVERSATION_LOOP: Last message is invalid: {type(last_msg)}")
                     
@@ -2881,6 +2954,10 @@ def chat():
                         current_tool_index = None
                         chunk_count = 0
                         
+                        # CRITICAL FIX: Track tool call IDs for debugging orphaned tool calls
+                        processed_tool_call_ids = set()
+                        print(f"STREAM_PROCESSING: Starting stream processing for conversation turn {conversation_turn}")
+                        
                         for chunk in response:
                             # Check for stop during streaming - this is critical for mid-stream stopping
                             if check_stop():
@@ -2946,7 +3023,11 @@ def chat():
                                                 "name": "",
                                                 "arguments": ""
                                             }
-                                            tool_ids[key] = tc_id or f"call_{index}"
+                                            final_tool_id = tc_id or f"call_{index}_{int(time.time() * 1000)}"
+                                            tool_ids[key] = final_tool_id
+                                            # Track all tool call IDs being processed
+                                            processed_tool_call_ids.add(final_tool_id)
+                                            print(f"TOOL_CALL_TRACK: Registered tool call ID: {final_tool_id}")
                                         
                                         # Accumulate function name and arguments
                                         if fn_name:
@@ -2966,7 +3047,18 @@ def chat():
                         except Exception:
                             pass
                         if tool_call_aggregator:
-                            print(f"RESPONSE_DEBUG: Tool calls: {[f['name'] for f in tool_call_aggregator.values()]}")
+                            tool_names = [f.get('name', 'unknown') for f in tool_call_aggregator.values()]
+                            tool_ids_list = list(tool_ids.values())
+                            print(f"RESPONSE_DEBUG: Tool calls: {tool_names}")
+                            print(f"TOOL_CALL_IDS: Processed IDs: {tool_ids_list}")
+                            
+                            # CRITICAL FIX: Validate all tool calls have proper IDs
+                            for i, (key, tool_func) in enumerate(tool_call_aggregator.items()):
+                                if key not in tool_ids or not tool_ids[key]:
+                                    missing_id = f"missing_id_{int(time.time() * 1000)}_{i}"
+                                    tool_ids[key] = missing_id
+                                    print(f"TOOL_CALL_RECOVERY: Generated missing ID: {missing_id} for tool: {tool_func.get('name', 'unknown')}")
+                        
                         if not full_text_response and not tool_call_aggregator:
                             print("RESPONSE_DEBUG: WARNING - OpenAI responded with NO content and NO tool calls!")
                         
@@ -3165,12 +3257,8 @@ def chat():
                     # This is a backend-only tool call, so we will execute it,
                     # add the results to the conversation, and loop again for the AI's final response.
                     
-                    # We need the original tool call data to append to the history
+                    # CRITICAL: Send executing_tools status first so frontend creates assistant message with tool calls
                     original_tool_calls_for_history = []
-                    
-                    # Execute image operation
-                    tool_results_for_history = []
-                    
                     for i, func in backend_calls.items():
                         tool_id = tool_ids[i]
                         original_tool_calls_for_history.append({
@@ -3178,6 +3266,22 @@ def chat():
                             "type": "function",
                             "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
                         })
+                    
+                    # Send executing_tools to frontend BEFORE executing backend tools
+                    yield json.dumps({
+                        "status": "executing_tools",
+                        "assistant_message": {
+                            "role": "assistant", 
+                            "content": full_text_response or None,
+                            "tool_calls": [{"id": tc["id"], "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}} for tc in original_tool_calls_for_history]
+                        }
+                    }) + '\n'
+                    
+                    # Execute tools
+                    tool_results_for_history = []
+                    
+                    for i, func in backend_calls.items():
+                        tool_id = tool_ids[i]
                         
                         if func["name"] == "image_operation":
                             # Check for stop before tool execution
@@ -3809,10 +3913,16 @@ def chat():
                                 time.sleep(0.1)
                             rm_result = _tool_result_holder["result"] or {"success": False, "error": "resource_manager returned no result"}
                             
+                            # Debug: Log the result to see what we got
+                            print(f"RESOURCE_MANAGER_DEBUG: Got result: success={rm_result.get('success')}, keys={list(rm_result.keys()) if isinstance(rm_result, dict) else 'not_dict'}")
+                            
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
+                            
+                            # Debug: About to send tool_completed
+                            print(f"RESOURCE_MANAGER_DEBUG: Sending tool_completed for {tool_id}")
                             
                             yield json.dumps({
                                 "tool_executed": "resource_manager",
@@ -3821,11 +3931,34 @@ def chat():
                                 "status": "tool_completed"
                             }) + '\n'
                             
+                            print(f"RESOURCE_MANAGER_DEBUG: tool_completed sent for {tool_id}")
+                            
+                            # Log tool result for debugging
+                            log_tool_result("resource_manager", tool_id, rm_result, duration_ms=0)
+                            
+                            # Prepare compact tool result for conversation history to avoid token bloat
+                            tool_result_for_openai = {
+                                "success": rm_result.get("success"),
+                                # Pass through high-signal fields only
+                                "op": (arguments.get("op") if isinstance(arguments, dict) else None),
+                                "message": rm_result.get("message"),
+                                "prompt": rm_result.get("prompt"),
+                                "style": rm_result.get("style"),
+                                "format": rm_result.get("format"),
+                                "width": rm_result.get("width"),
+                                "height": rm_result.get("height"),
+                                "input_images": rm_result.get("input_images", 0),
+                                "requested_images": rm_result.get("requested_images", 0)
+                            }
+                            # Include slice hint if provided
+                            if isinstance(rm_result.get("slice_hint"), dict):
+                                tool_result_for_openai["slice_hint"] = rm_result.get("slice_hint")
+
                             tool_results_for_history.append({
                                 "tool_call_id": tool_id,
                                 "role": "tool",
                                 "name": "resource_manager",
-                                "content": json.dumps(rm_result)
+                                "content": json.dumps(tool_result_for_openai)
                             })
                 
                     # Add the assistant's decision to call the tool to history
@@ -3859,6 +3992,21 @@ def chat():
                 # If we get here, it means no backend tools were called.
                 # It's either a final text response or tool calls for the frontend.
                 
+                # CRITICAL FIX: Create original_tool_calls_for_history for frontend tools
+                original_tool_calls_for_history = []
+                print(f"FRONTEND_PROCESSING: Creating tool calls for history from {len(tool_call_aggregator)} aggregated tools")
+                for i, func in tool_call_aggregator.items():
+                    tool_id = tool_ids[i]
+                    tool_call_entry = {
+                        "id": tool_id,
+                        "type": "function",
+                        "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
+                    }
+                    original_tool_calls_for_history.append(tool_call_entry)
+                    print(f"FRONTEND_TOOL_CALL: Created tool call for {func['name']} (ID: {tool_id})")
+                    
+                print(f"FRONTEND_PROCESSING: Created {len(original_tool_calls_for_history)} tool calls for history")
+                
                 # Append assistant message (will include tool calls if any)
                 assistant_message = {
                     "role": "assistant",
@@ -3874,16 +4022,11 @@ def chat():
                 if tool_call_aggregator:
                     print(f"FRONTEND_PROCESSING: Processing {len(tool_call_aggregator)} frontend tool calls")
                     # Prepare tool calls for both history and frontend
-                    tool_calls_for_history = []
+                    tool_calls_for_history = original_tool_calls_for_history  # Use the already created list
                     tool_calls_for_frontend = []
                     for i, func in tool_call_aggregator.items():
                         tool_id = tool_ids[i]
                         print(f"FRONTEND_PROCESSING: Processing tool {func['name']} with id {tool_id}")
-                        tool_calls_for_history.append({
-                            "id": tool_id,
-                            "type": "function",
-                            "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
-                        })
                         tool_calls_for_frontend.append({
                             "id": tool_id,
                             "function": {
@@ -3918,6 +4061,9 @@ def chat():
                         }
                     }
                     yield json.dumps(frontend_response) + '\n'
+                    
+                    # The assistant message was already added above, so don't add it again
+                    
                     # Signal that the stream is ending but the overall task is waiting on the frontend.
                     yield json.dumps({"status": "awaiting_frontend_action"}) + '\n'
                     print(f"FRONTEND_PROCESSING: Tool calls sent, stream closing. Awaiting frontend tool execution in next request.")
@@ -3934,7 +4080,9 @@ def chat():
                     })
                 except Exception:
                     pass
+                print(f"BACKEND_DEBUG: About to send final status: completed")
                 yield json.dumps({"status": "completed"}) + '\n'
+                print(f"BACKEND_DEBUG: Final status completed sent")
                 break # Exit loop
         
         except Exception as e:

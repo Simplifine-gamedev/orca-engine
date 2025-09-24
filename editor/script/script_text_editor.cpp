@@ -229,7 +229,36 @@ void ScriptTextEditor::apply_code() {
 	if (script.is_null()) {
 		return;
 	}
-	script->set_source_code(code_editor->get_text_editor()->get_text());
+	
+	String content = code_editor->get_text_editor()->get_text();
+	
+	// Safety check: prevent saving content with diff markers
+	if (content.contains("\n+ ") || content.contains("\n- ") || 
+		content.begins_with("+ ") || content.begins_with("- ")) {
+		print_line("WARNING: apply_code() detected diff markers in content! Auto-accepting diff to save clean content.");
+		if (has_pending_diffs) {
+			accept_all_diffs();
+			return; // accept_all_diffs will call apply_code again with clean content
+		} else {
+			// Clean the content manually as a last resort
+			Vector<String> lines = content.split("\n");
+			String cleaned;
+			for (const String &line : lines) {
+				if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+					cleaned += line.substr(2) + "\n";
+				} else {
+					cleaned += line + "\n";
+				}
+			}
+			if (cleaned.ends_with("\n")) {
+				cleaned = cleaned.substr(0, cleaned.length() - 1);
+			}
+			content = cleaned;
+			code_editor->get_text_editor()->set_text(content);
+		}
+	}
+	
+	script->set_source_code(content);
 	script->update_exports();
 	code_editor->get_text_editor()->get_syntax_highlighter()->update_cache();
 }
@@ -2078,6 +2107,15 @@ void ScriptTextEditor::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			_load_theme_settings();
+		} break;
+		case NOTIFICATION_WM_CLOSE_REQUEST:
+		case NOTIFICATION_EXIT_TREE: {
+			// If we have pending diffs when the app is closing, automatically accept them
+			// to prevent saving diff markers in the file
+			if (has_pending_diffs) {
+				print_line("ScriptTextEditor: App closing with pending diffs, auto-accepting to save clean content");
+				accept_all_diffs();
+			}
 		} break;
 	}
 }

@@ -3537,8 +3537,18 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 	}
 
 	Dictionary response_data = json->get_data();
+	
+	// Debug: Log tool-related messages to trace the issue
+	if (response_data.has("status")) {
+		String status = response_data["status"];
+		if (status == "tool_starting" || status == "tool_completed" || status == "tool_progress") {
+			String tool_name = response_data.get("tool_starting", response_data.get("tool_executed", "unknown"));
+			String tool_id = response_data.get("tool_id", response_data.get("tool_call_id", ""));
+			print_line("AI Chat: DEBUG - Received " + status + " for " + tool_name + " (ID: " + tool_id + ")");
+		}
+	}
 
-	if (response_data.has("error")) {
+    if (response_data.has("error")) {
 		String error_msg = String(response_data["error"]);
 		String error_category = response_data.get("error_category", "unknown_error");
 		String user_message = response_data.get("user_message", error_msg);
@@ -3565,26 +3575,63 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			_show_connection_status_notification("Backend error", display_message);
 		}
 		
-		// PRODUCTION FIX: Clear waiting state on terminal errors to unblock UI
-		is_waiting_for_response = false;
-		stop_requested = false;
-		current_request_id = "";
-		_update_ui_state();
-		return;
+        // New: Treat specific transient transport errors as non-terminal to avoid flipping UI to idle
+        bool is_transient_transport = false;
+        String em = error_msg.to_lower();
+        if (error_category == "unknown_error") {
+            if (em.find("sslv3_alert_bad_record_mac") != -1 || em.find("connection reset") != -1 || em.find("ssl") != -1) {
+                is_transient_transport = true;
+            }
+        }
+        if (is_transient_transport) {
+            // Keep waiting state; do not clear request id; show soft banner only
+            print_line("AI Chat: Transient transport error detected; maintaining waiting state");
+            // keep is_waiting_for_response as-is; just return
+            return;
+        } else {
+            // Terminal errors: clear waiting state to unblock UI
+            is_waiting_for_response = false;
+            stop_requested = false;
+            current_request_id = "";
+            _update_ui_state();
+            return;
+        }
 	}
 
     if (response_data.has("status") && (response_data["status"] == "finished" || response_data["status"] == "completed" || response_data["status"] == "awaiting_frontend_action")) {
         String status = response_data["status"];
-        print_line("AI Chat: Stream status: " + status);
+        print_line("AI Chat: TERMINAL STATUS RECEIVED: " + status);
 
         if (status == "awaiting_frontend_action") {
             // The backend has sent tool calls for us to execute.
             // The stream is technically "done" from the backend's perspective for this request,
             // but the overall operation is not complete. We keep the UI in a busy state.
             http_status = STATUS_DONE;
+            
+            // CRITICAL FIX: Mark that stream completed successfully to avoid connection error notifications
+            stream_completed_successfully = true;
+            
             // We don't call _request_completed() here because we are waiting for tool results.
             // The UI should remain in a "streaming" state with the stop button visible.
-            print_line("AI Chat: Awaiting frontend tool execution.");
+            print_line("AI Chat: Awaiting frontend tool execution. Maintaining waiting state for tool completion.");
+            
+            // CRITICAL FIX: Validate that we have pending tool tasks or tool calls to execute
+            bool has_tool_work = pending_tool_tasks > 0;
+            if (!has_tool_work) {
+                print_line("AI Chat: WARNING - awaiting_frontend_action but no pending tool tasks");
+                // Check if there are unprocessed tool calls in the UI
+                Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
+                if (!history.is_empty() && history[history.size() - 1].role == "assistant" && 
+                    !history[history.size() - 1].tool_calls.is_empty()) {
+                    print_line("AI Chat: Found assistant message with tool calls, executing now");
+                    _execute_tool_calls(history[history.size() - 1].tool_calls);
+                } else {
+                    print_line("AI Chat: ERROR - No tool calls found to execute");
+                    // Continue anyway to avoid hanging
+                    call_deferred("_send_chat_request");
+                }
+            }
+            
             return; // Exit without calling _request_completed()
         }
 
@@ -3895,9 +3942,9 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 				_add_message_to_chat("assistant", assistant_content, tool_calls);
 			}
 
-			if (assistant_message.has("tool_calls")) {
-				_execute_tool_calls(assistant_message.get("tool_calls", Array()));
-			}
+			// CRITICAL FIX: Don't execute tool_calls from executing_tools - backend will handle them
+			// executing_tools means backend is about to execute these tools, so frontend should NOT execute them
+			print_line("AI Chat: executing_tools received - backend will handle " + String::num_int64(tool_calls.size()) + " tool(s), not executing locally");
 		}
 		return; // Stop further processing for this line
 	}
@@ -3938,7 +3985,22 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
             
             // Create a proper tool_completed response to continue the conversation flow
             if (!tool_call_id.is_empty()) {
+                print_line("AI Chat: Adding frontend_only tool result to conversation for " + tool_executed + " (ID: " + tool_call_id + ")");
                 _add_tool_response_to_chat(tool_call_id, tool_executed, arguments_to_forward, local_result);
+                
+                // CRITICAL FIX: After executing frontend_only tool, continue conversation if no pending tasks
+                if (pending_tool_tasks == 0) {
+                    print_line("AI Chat: Frontend_only tool completed, continuing conversation");
+                    // Ensure we maintain waiting state
+                    if (!is_waiting_for_response) {
+                        is_waiting_for_response = true;
+                        _update_ui_state();
+                    }
+                    // Send conversation back to continue processing
+                    call_deferred("_send_chat_request");
+                }
+            } else {
+                print_line("AI Chat: ERROR - frontend_only tool missing tool_call_id: " + tool_executed);
             }
             
             return; // Stop further processing for this line
@@ -3949,9 +4011,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
     if (response_data.has("status") && response_data["status"] == "tool_completed") {
         String tool_executed = response_data.get("tool_executed", "");
         Dictionary tool_result = response_data.get("tool_result", Dictionary());
-        print_line("AI Chat: Tool completed: " + tool_executed + " (success: " + String(tool_result.get("success", false) ? "true" : "false") + ")");
-
         String tool_call_id = response_data.get("tool_call_id", "");
+        print_line("AI Chat: Tool completed: " + tool_executed + " (ID: " + tool_call_id + ") (success: " + String(tool_result.get("success", false) ? "true" : "false") + ")");
 
         // Check if we already have an assistant message with this tool_call_id
         // Don't create duplicates as they break the conversation format
@@ -4012,6 +4073,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
         if (!tool_call_id.is_empty()) {
             Dictionary args; // Optionally populate with inputs
             _add_tool_response_to_chat(tool_call_id, tool_executed, args, tool_result);
+            print_line("AI Chat: DEBUG - tool_completed processed, continuing to listen for final response");
         } else {
             print_line("AI Chat: Warning - tool_completed missing tool_call_id, cannot update placeholder");
         }
@@ -4081,6 +4143,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 	// This handles the final message of a stream.
 	if (response_data.has("assistant_message")) {
 		Dictionary assistant_message = response_data["assistant_message"];
+
+		print_line("AI Chat: DEBUG - Processing final assistant_message");
 
 		// If this final message has tool calls, we shouldn't be processing it here.
 		// It should have been handled by the "executing_tools" status.
@@ -4239,12 +4303,38 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     // Ensure counter is sane at the start of a batch
     if (pending_tool_tasks < 0) pending_tool_tasks = 0;
+    
+    print_line("AI Chat: _execute_tool_calls called with " + String::num_int64(p_tool_calls.size()) + " tool calls");
+    
 	for (int i = 0; i < p_tool_calls.size(); i++) {
 		Dictionary tool_call = p_tool_calls[i];
 		String tool_call_id = tool_call.get("id", "");
 		Dictionary function_dict = tool_call.get("function", Dictionary());
 		String function_name = function_dict.get("name", "");
 		String arguments_str = function_dict.get("arguments", "{}");
+
+        // CRITICAL FIX: Validate tool call ID is present and valid
+        if (tool_call_id.is_empty()) {
+            print_line("AI Chat: ERROR - Tool call missing ID, generating fallback ID");
+            tool_call_id = "frontend_generated_" + String::num_int64(OS::get_singleton()->get_ticks_msec()) + "_" + String::num_int64(i);
+        }
+        
+        print_line("AI Chat: Processing tool call: " + function_name + " (ID: " + tool_call_id + ")");
+
+		// Route certain resource_manager ops to backend (image generation/slicing)
+		if (function_name == "resource_manager") {
+			Ref<JSON> op_json;
+			op_json.instantiate();
+			if (op_json->parse(arguments_str) == OK) {
+				Dictionary op_args = op_json->get_data();
+				String op = op_args.get("op", op_args.get("operation", ""));
+				if (op == "image.generate_or_edit" || op == "image.slice_spritesheet") {
+					print_line("AI Chat: resource_manager op '" + op + "' will be handled by backend; skipping frontend execution");
+					// Placeholder bubbles were created by the executing_tools message; wait for tool_completed from backend.
+					continue;
+				}
+			}
+		}
 
 		// CRITICAL FIX: Check if this tool should be handled by backend instead of frontend
 		static HashSet<String> backend_only_tools;
@@ -4522,6 +4612,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else {
 			result["success"] = false;
 			result["message"] = "Unknown tool: " + function_name;
+			print_line("AI Chat: ERROR - Unknown tool: " + function_name + " (ID: " + tool_call_id + ")");
 		}
 
 		// Capture any new runtime errors
@@ -4530,8 +4621,17 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		int new_error_count = post_error_count - pre_error_count;
 		if (new_error_count > 0) {
 			result["new_runtime_errors"] = new_error_count;
+			print_line("AI Chat: Tool execution generated " + String::num_int64(new_error_count) + " new runtime errors");
 		}
 
+		// CRITICAL FIX: Validate tool call ID before adding response
+		if (tool_call_id.is_empty()) {
+			print_line("AI Chat: ERROR - Tool " + function_name + " completed but missing tool_call_id");
+			tool_call_id = "frontend_fallback_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+			print_line("AI Chat: Generated fallback tool_call_id: " + tool_call_id);
+		}
+		
+		print_line("AI Chat: Adding tool response for " + function_name + " (ID: " + tool_call_id + ") success: " + String(result.get("success", false) ? "true" : "false"));
 		_add_tool_response_to_chat(tool_call_id, function_name, args, result);
 	}
 	
@@ -4541,6 +4641,26 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         return;
     }
 
+    print_line("AI Chat: All frontend tools completed, preparing to send conversation back to backend");
+    
+    // CRITICAL FIX: Validate conversation state before sending back to backend
+    Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+    int assistant_tool_calls = 0;
+    int tool_responses = 0;
+    
+    // Count tool calls and responses in recent messages to ensure they match
+    for (int i = MAX(0, chat_history.size() - 10); i < chat_history.size(); i++) {
+        const ChatMessage &msg = chat_history[i];
+        if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+            assistant_tool_calls += msg.tool_calls.size();
+        } else if (msg.role == "tool") {
+            tool_responses++;
+        }
+    }
+    
+    print_line("AI Chat: Recent conversation state - Assistant tool calls: " + String::num_int64(assistant_tool_calls) + 
+              ", Tool responses: " + String::num_int64(tool_responses));
+    
     // We've finished with this turn's tool calls. Clear the current label
     // so the next content_delta or assistant_message creates a new bubble
     // or finds the correct existing one.
@@ -4550,8 +4670,17 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     current_thinking_section = nullptr;
     current_thinking_label = nullptr;
     current_thinking_content = "";
+    
+    // CRITICAL FIX: Ensure we're still in waiting state for continuation
+    if (!is_waiting_for_response) {
+        print_line("AI Chat: ERROR - Not in waiting state after tool completion, restoring waiting state");
+        is_waiting_for_response = true;
+        _update_ui_state();
+    }
+    
     // Send the conversation with tool results back to backend to continue processing
     // This is expected by the backend after frontend tool execution
+    print_line("AI Chat: Sending conversation with tool results back to backend for continuation");
     _send_chat_request();
 }
 
@@ -4662,7 +4791,18 @@ void AIChatDock::_execute_file_edit_deferred(const String &p_tool_call_id, const
     
     // If all tools done, continue to backend
     if (pending_tool_tasks == 0) {
+        print_line("AI Chat: All file edit tools completed, sending conversation back to backend");
+        
+        // CRITICAL FIX: Ensure we maintain waiting state across tool completion
+        if (!is_waiting_for_response) {
+            print_line("AI Chat: ERROR - Lost waiting state during file edit completion, restoring");
+            is_waiting_for_response = true;
+            _update_ui_state();
+        }
+        
         _send_chat_request();
+    } else {
+        print_line("AI Chat: Still waiting for " + String::num_int64(pending_tool_tasks) + " file edit tools to complete");
     }
 }
 
@@ -4829,6 +4969,22 @@ void AIChatDock::_on_apply_edit_thread_done() {
     }
 
     if (pending_tool_tasks == 0) {
+        print_line("AI Chat: All apply_edit threads completed, sending conversation back to backend");
+        
+        // CRITICAL FIX: Validate conversation state before sending
+        Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+        bool has_recent_tool_responses = false;
+        for (int i = MAX(0, chat_history.size() - 5); i < chat_history.size(); i++) {
+            if (chat_history[i].role == "tool") {
+                has_recent_tool_responses = true;
+                break;
+            }
+        }
+        
+        if (!has_recent_tool_responses) {
+            print_line("AI Chat: WARNING - No recent tool responses found after async completion");
+        }
+        
         // Keep UI in busy state across chained requests to avoid flicker back to Send
         is_waiting_for_response = true;
         _update_ui_state();
@@ -4837,6 +4993,8 @@ void AIChatDock::_on_apply_edit_thread_done() {
         current_thinking_section = nullptr;
         current_thinking_label = nullptr;
         current_thinking_content = "";
+        
+        print_line("AI Chat: Sending continuation request with " + String::num_int64(chat_history.size()) + " messages");
         _send_chat_request();
     }
 }
@@ -6104,8 +6262,17 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 	Ref<JSON> json;
 	json.instantiate();
 	
-	// PERFORMANCE: Check if we should truncate this tool result for faster loading
-	if (_should_truncate_tool_result(p_tool_name, p_result)) {
+    // If this is node.props.get, render a lazy placeholder to avoid loading huge property sets until clicked
+    if (p_tool_name == "scene_manager") {
+        String op = p_args.get("op", p_args.get("operation", ""));
+        if (op == "node.props.get") {
+            _create_lazy_node_props_ui(p_content_vbox, p_result, p_args);
+            return;
+        }
+    }
+
+    // PERFORMANCE: Check if we should truncate this tool result for faster loading
+    if (_should_truncate_tool_result(p_tool_name, p_result)) {
 		_create_truncated_tool_ui(p_content_vbox, p_tool_name, p_result);
 		return;
 	}
@@ -7244,8 +7411,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				error_vbox->add_child(error_label);
 			}
 		}
-	} else if (p_tool_name == "image_operation" && p_success) {
-		// Special handling for image generation results
+	} else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager") && p_success) {
+		// Special handling for image generation results (both direct image_operation and resource_manager with image ops)
 		String base64_data = p_result.get("image_data", "");
 		
 		if (!base64_data.is_empty()) {
@@ -7257,10 +7424,16 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			
 			_display_image_unified(p_content_vbox, base64_data, img_metadata);
 		} else {
-			// Fallback to text display if no image data
+			// Fallback to text display if no image data - but strip any large data fields to prevent freeze
+			Dictionary safe_result = p_result;
+			safe_result.erase("image_data");
+			safe_result.erase("glb_data");
+			safe_result.erase("asset_data");
+			safe_result.erase("frames");
+			
 			RichTextLabel *content_label = memnew(RichTextLabel);
 			content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
-			content_label->set_text(json->stringify(p_result, "  "));
+			content_label->set_text(json->stringify(safe_result, "  "));
 			content_label->set_fit_content(true);
 			content_label->set_selection_enabled(true);
 			p_content_vbox->add_child(content_label);
@@ -8033,6 +8206,21 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 
 	} else {
 		// Default case - show formatted JSON output with better styling
+		// CRITICAL: Strip large data fields to prevent UI freeze
+		Dictionary safe_result = p_result;
+		safe_result.erase("image_data");
+		safe_result.erase("glb_data");
+		safe_result.erase("asset_data");
+		safe_result.erase("frames");
+		// Remove any fields that look like base64 payloads
+		Array keys = safe_result.keys();
+		for (int k = 0; k < keys.size(); k++) {
+			String key = keys[k];
+			if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes")) {
+				safe_result.erase(key);
+			}
+		}
+		
 		VBoxContainer *json_container = memnew(VBoxContainer);
 		p_content_vbox->add_child(json_container);
 		
@@ -8044,7 +8232,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		RichTextLabel *content_label = memnew(RichTextLabel);
 		content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
-		content_label->set_text(json->stringify(p_result, "  "));
+		content_label->set_text(json->stringify(safe_result, "  "));
 		content_label->set_fit_content(true);
 		content_label->set_selection_enabled(true);
 		content_label->set_custom_minimum_size(Size2(0, 150));
@@ -8052,7 +8240,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 	}
 	
 	// If the tool provided a path_to_save for images, save it now (non-intrusive for other tools)
-	if (p_tool_name == "image_operation" && p_success) {
+	if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager") && p_success) {
 		String path_to_save = p_args.get("path_to_save", "");
 		if (path_to_save.is_empty()) path_to_save = p_args.get("path", "");
 		String image_b64 = p_result.get("image_data", "");
@@ -8071,6 +8259,95 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
 	}
+}
+
+void AIChatDock::_create_lazy_node_props_ui(VBoxContainer *p_content_vbox, const Dictionary &p_result, const Dictionary &p_args) {
+    // Show a slim summary and a button to load full properties on demand.
+    HBoxContainer *row = memnew(HBoxContainer);
+    p_content_vbox->add_child(row);
+    
+    Label *summary = memnew(Label);
+    int count = p_result.get("properties_count", 0);
+    bool truncated = p_result.get("properties_truncated", false);
+    summary->set_text("Node properties: " + String::num_int64(count) + (truncated ? String(" (truncated)") : String("")));
+    summary->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.8));
+    summary->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    row->add_child(summary);
+
+    Button *load_btn = memnew(Button);
+    load_btn->set_text("Load properties");
+    load_btn->set_flat(true);
+    load_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("GuiVisibilityVisible"), SNAME("EditorIcons")));
+    row->add_child(load_btn);
+
+    // Target container for rendering when expanded
+    VBoxContainer *target = memnew(VBoxContainer);
+    target->set_name("node_props_target");
+    p_content_vbox->add_child(target);
+
+    // Stash args/result on button
+    load_btn->set_meta("args", p_args);
+    load_btn->set_meta("initial_result", p_result);
+    load_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_load_node_props_pressed).bind(load_btn, target));
+}
+
+void AIChatDock::_on_load_node_props_pressed(Button *p_button, VBoxContainer *p_target_vbox) {
+    if (!p_button || !p_target_vbox) return;
+    Dictionary args = p_button->get_meta("args", Dictionary());
+
+    // Force unlimited fetch but with safe defaults
+    Dictionary exec_args = args;
+    exec_args["op"] = "node.props.get";
+    exec_args["max_properties"] = -1; // unlimited
+    exec_args["editor_only"] = false; // include all properties
+
+    // Execute locally via EditorTools to avoid backend trip
+    Dictionary full_result = EditorTools::scene_manager(exec_args);
+
+    // Clear placeholder
+    for (int i = p_target_vbox->get_child_count() - 1; i >= 0; i--) {
+        Node *child = p_target_vbox->get_child(i);
+        child->queue_free();
+    }
+    _render_full_node_props(p_target_vbox, full_result);
+}
+
+void AIChatDock::_render_full_node_props(VBoxContainer *p_target_vbox, const Dictionary &p_full_result) {
+    // Render a simple tree-like list of properties
+    Dictionary values = p_full_result.get("property_values", Dictionary());
+    Array keys = values.keys();
+    keys.sort();
+
+    Label *title = memnew(Label);
+    title->set_text("Properties (" + String::num_int64(keys.size()) + ")");
+    title->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.9));
+    p_target_vbox->add_child(title);
+
+    // Use a scrollable list if very large
+    ScrollContainer *sc = memnew(ScrollContainer);
+    sc->set_custom_minimum_size(Size2(0, 260));
+    sc->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+    sc->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    p_target_vbox->add_child(sc);
+
+    VBoxContainer *list = memnew(VBoxContainer);
+    sc->add_child(list);
+
+    for (int i = 0; i < keys.size(); i++) {
+        String k = keys[i];
+        HBoxContainer *row = memnew(HBoxContainer);
+        list->add_child(row);
+        Label *klabel = memnew(Label);
+        klabel->set_text(k + ":");
+        klabel->set_h_size_flags(Control::SIZE_SHRINK_END);
+        row->add_child(klabel);
+
+        Label *vlabel = memnew(Label);
+        Variant v = values[k];
+        vlabel->set_text(v.stringify());
+        vlabel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+        row->add_child(vlabel);
+    }
 }
 void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_label_path) {
     if (p_path.is_empty()) {
@@ -8767,7 +9044,18 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
     
     // If all tools done, continue to backend
     if (pending_tool_tasks == 0) {
+        print_line("AI Chat: All deferred tools completed, sending conversation back to backend");
+        
+        // CRITICAL FIX: Ensure we maintain waiting state across tool completion
+        if (!is_waiting_for_response) {
+            print_line("AI Chat: ERROR - Lost waiting state during deferred tool completion, restoring");
+            is_waiting_for_response = true;
+            _update_ui_state();
+        }
+        
         _send_chat_request();
+    } else {
+        print_line("AI Chat: Still waiting for " + String::num_int64(pending_tool_tasks) + " deferred tools to complete");
     }
 }
 
@@ -8980,6 +9268,25 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 	if (p_msg.role == "tool") {
 		api_msg["tool_call_id"] = p_msg.tool_call_id;
 		api_msg["name"] = p_msg.name;
+		
+		// CRITICAL FIX: Validate tool call ID is present for tool messages
+		if (p_msg.tool_call_id.is_empty()) {
+			print_line("AI Chat: ERROR - Tool message missing tool_call_id for tool: " + p_msg.name);
+			// Try to extract from content if possible
+			Ref<JSON> json_check;
+			json_check.instantiate();
+			if (json_check->parse(p_msg.content) == OK) {
+				Dictionary data = json_check->get_data();
+				String fallback_id = data.get("tool_call_id", "");
+				if (!fallback_id.is_empty()) {
+					api_msg["tool_call_id"] = fallback_id;
+					print_line("AI Chat: Recovered tool_call_id from content: " + fallback_id);
+				} else {
+					print_line("AI Chat: ERROR - Cannot recover tool_call_id, tool response may be orphaned");
+				}
+			}
+		}
+		
         if (p_msg.name == "image_operation") {
             Dictionary raw;
             if (!p_msg.tool_results.is_empty()) {

@@ -118,8 +118,9 @@ void AIChatHistoryManager::_setup_edit_dialog() {
 	name_edit_field->set_placeholder("Conversation name");
 	vbox->add_child(name_edit_field);
 	
-	edit_name_dialog->connect("confirmed", callable_mp(this, &AIChatHistoryManager::_on_edit_name_confirmed));
-	edit_name_dialog->connect("cancelled", callable_mp(this, &AIChatHistoryManager::_on_edit_name_cancelled));
+    edit_name_dialog->connect("confirmed", callable_mp(this, &AIChatHistoryManager::_on_edit_name_confirmed));
+    // Godot 4 uses 'canceled' (single 'l')
+    edit_name_dialog->connect("canceled", callable_mp(this, &AIChatHistoryManager::_on_edit_name_cancelled));
 	
 	add_child(edit_name_dialog);
 }
@@ -129,8 +130,9 @@ void AIChatHistoryManager::_setup_delete_dialog() {
 	delete_confirmation_dialog->set_title("Delete Conversation");
 	delete_confirmation_dialog->get_label()->set_text("Are you sure you want to delete this conversation?\nThis action cannot be undone.");
 	
-	delete_confirmation_dialog->connect("confirmed", callable_mp(this, &AIChatHistoryManager::_on_delete_confirmed));
-	delete_confirmation_dialog->connect("cancelled", callable_mp(this, &AIChatHistoryManager::_on_delete_cancelled));
+    delete_confirmation_dialog->connect("confirmed", callable_mp(this, &AIChatHistoryManager::_on_delete_confirmed));
+    // Godot 4 uses 'canceled' (single 'l')
+    delete_confirmation_dialog->connect("canceled", callable_mp(this, &AIChatHistoryManager::_on_delete_cancelled));
 	
 	add_child(delete_confirmation_dialog);
 }

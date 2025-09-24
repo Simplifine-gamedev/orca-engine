@@ -338,8 +338,10 @@ Dictionary EditorTools::reimport_resource(const Dictionary &p_args) {
 Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
     Dictionary out;
     String res_path = p_args.get("resource_path", "");
-    int timeout_ms = (int)p_args.get("timeout_ms", 10000);
+    int timeout_ms = (int)p_args.get("timeout_ms", 30000);
     int poll_ms = (int)p_args.get("poll_ms", 100);
+    bool force_reimport = p_args.get("force_reimport", false);
+    
     if (res_path.is_empty()) {
         out["ok"] = false;
         out["error_code"] = "INVALID_ARGUMENT";
@@ -347,25 +349,125 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
         return out;
     }
 
+    print_line("AI Tools: Waiting for import: " + res_path + " (timeout: " + String::num_int64(timeout_ms) + "ms)");
+    
+    // If file doesn't exist, fail immediately
+    if (!FileAccess::exists(res_path)) {
+        out["ok"] = false;
+        out["error_code"] = "FILE_NOT_FOUND";
+        out["error"] = "File does not exist: " + res_path;
+        return out;
+    }
+    
+    // Check if EditorFileSystem is available
+    if (!EditorFileSystem::get_singleton()) {
+        out["ok"] = false;
+        out["error_code"] = "UNAVAILABLE";
+        out["error"] = "EditorFileSystem not available";
+        return out;
+    }
+
+    // Force reimport if requested
+    if (force_reimport) {
+        print_line("AI Tools: Force reimporting: " + res_path);
+        Vector<String> to_reimport;
+        to_reimport.push_back(res_path);
+        EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+    }
+
     uint64_t start = OS::get_singleton()->get_ticks_msec();
     String status = "unknown";
+    int attempts = 0;
+    int max_attempts = 50; // Prevent infinite loops
+    int consecutive_pending = 0;
+    
     while (true) {
+        attempts++;
         Dictionary info;
         info["resource_path"] = res_path;
         Dictionary ri = resource_info(info);
         status = String(ri.get("import_status", "unknown"));
-        if (status == "ok") {
+        bool exists = ri.get("exists", false);
+        bool loadable = ri.get("loadable", false);
+        
+        print_line("AI Tools: Import attempt " + String::num_int64(attempts) + " - Status: " + status + ", Exists: " + (exists ? "true" : "false") + ", Loadable: " + (loadable ? "true" : "false"));
+        
+        // SUCCESS CONDITIONS
+        if (status == "ok" && loadable) {
             out["ok"] = true;
             out["status"] = status;
+            out["attempts"] = attempts;
+            print_line("AI Tools: Import successful after " + String::num_int64(attempts) + " attempts");
             return out;
         }
-        if ((int)(OS::get_singleton()->get_ticks_msec() - start) > timeout_ms) {
+        
+        // If status is unknown but file is loadable, consider it successful
+        if (status == "unknown" && exists && loadable) {
+            print_line("AI Tools: Import status unknown but file is loadable - considering success");
+            out["ok"] = true;
+            out["status"] = "loadable";
+            out["attempts"] = attempts;
+            return out;
+        }
+        
+        // FAILURE CONDITIONS
+        
+        // Track consecutive pending attempts
+        if (status == "pending" && !loadable) {
+            consecutive_pending++;
+        } else {
+            consecutive_pending = 0;
+        }
+        
+        // If stuck in "pending" for too long, consider it failed
+        if (consecutive_pending >= 15) {
+            out["ok"] = false;
+            out["error_code"] = "IMPORT_STUCK";
+            out["error"] = "Import stuck in 'pending' state for " + String::num_int64(consecutive_pending) + " consecutive attempts";
+            out["status"] = status;
+            out["attempts"] = attempts;
+            out["resource_info"] = ri;
+            print_line("AI Tools: Import appears stuck in pending state, giving up");
+            return out;
+        }
+        
+        // Maximum attempts reached
+        if (attempts >= max_attempts) {
+            out["ok"] = false;
+            out["error_code"] = "MAX_ATTEMPTS_REACHED";
+            out["error"] = "Reached maximum attempts (" + String::num_int64(max_attempts) + ") waiting for import";
+            out["status"] = status;
+            out["attempts"] = attempts;
+            out["resource_info"] = ri;
+            print_line("AI Tools: Max attempts reached, giving up");
+            return out;
+        }
+        
+        // Import marked as broken/failed
+        if (status == "broken") {
+            out["ok"] = false;
+            out["error_code"] = "IMPORT_BROKEN";
+            out["error"] = "Import marked as broken/failed by Godot";
+            out["status"] = status;
+            out["attempts"] = attempts;
+            out["resource_info"] = ri;
+            print_line("AI Tools: Import marked as broken");
+            return out;
+        }
+        
+        // Timeout
+        uint64_t elapsed = OS::get_singleton()->get_ticks_msec() - start;
+        if ((int)elapsed > timeout_ms) {
             out["ok"] = false;
             out["error_code"] = "IMPORT_TIMEOUT";
-            out["error"] = "Timed out waiting for import";
+            out["error"] = "Timed out waiting for import after " + String::num_int64(elapsed) + "ms";
             out["status"] = status;
+            out["attempts"] = attempts;
+            out["resource_info"] = ri;
+            print_line("AI Tools: Import timeout after " + String::num_int64(attempts) + " attempts, " + String::num_int64(elapsed) + "ms");
             return out;
         }
+        
         OS::get_singleton()->delay_usec(1000 * poll_ms);
     }
 }
@@ -638,7 +740,6 @@ Dictionary EditorTools::_get_node_info(Node *p_node) {
 	node_info["child_count"] = p_node->get_child_count();
 	return node_info;
 }
-
 Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error_result) {
 	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
 	if (!root) {
@@ -910,7 +1011,9 @@ Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
 		}
 	}
 	
-	Array nodes;
+    Array nodes;
+    // Only include nodes that are actually part of the edited scene (owned) by default
+    bool owned_only = p_args.get("owned_only", true);
 	
 	// PERFORMANCE LIMIT: Prevent UI freezing on huge scenes
 	int max_nodes = p_args.get("max_nodes", 500); // Default limit: 500 nodes
@@ -920,10 +1023,18 @@ Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
 	print_line("AI Chat: get_all_nodes starting with max_nodes limit: " + String::num_int64(max_nodes));
 	
 	// Helper lambda to recursively collect nodes with limit
-	std::function<void(Node*)> collect_nodes = [&](Node* node) {
+    int nodes_traversed = 0;
+    std::function<void(Node*)> collect_nodes = [&](Node* node) {
 		if (node && nodes_collected < max_nodes) {
-			nodes.push_back(_get_node_info(node));
-			nodes_collected++;
+            nodes_traversed++;
+            bool include = true;
+            if (owned_only) {
+                include = (node == root) || (node->get_owner() != nullptr);
+            }
+            if (include) {
+                nodes.push_back(_get_node_info(node));
+                nodes_collected++;
+            }
 			
 			// Recursively collect children (up to limit)
 			for (int i = 0; i < node->get_child_count() && nodes_collected < max_nodes; i++) {
@@ -939,8 +1050,10 @@ Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
 	
 	result["success"] = true;
 	result["nodes"] = nodes;
-	result["node_count"] = nodes.size();
-	result["total_nodes_in_scene"] = nodes.size(); // Could be higher if hit limit
+    result["node_count"] = nodes.size();
+    result["total_nodes_traversed"] = nodes_traversed;
+    result["owned_only"] = owned_only;
+    result["max_nodes"] = max_nodes;
 	if (hit_limit) {
 		result["truncated"] = true;
 		result["message"] = "Result limited to " + String::num_int64(max_nodes) + " nodes to prevent UI freezing. Use smaller scenes or increase max_nodes parameter.";
@@ -1033,43 +1146,129 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 		return result;
 	}
 
-	List<PropertyInfo> properties;
-	node->get_property_list(&properties);
+    List<PropertyInfo> properties;
+    node->get_property_list(&properties);
 
-	Dictionary props_dict; // name -> value
-	Array props_info; // [{name,type,hint,hint_string,class_name,usage}]
-	
-	// PERFORMANCE LIMIT: Prevent UI freezing on nodes with hundreds of properties
-	int max_properties = p_args.get("max_properties", 50); // Default limit: 50 properties
-	int properties_processed = 0;
-	bool hit_properties_limit = false;
-	
-	print_line("AI Chat: get_node_properties starting with max_properties limit: " + String::num_int64(max_properties));
-	
-	for (const PropertyInfo &prop_info : properties) {
-		if (properties_processed >= max_properties) {
-			hit_properties_limit = true;
-			break;
-		}
-		
-		// Collect property metadata for introspection
-		Dictionary pi;
-		pi["name"] = String(prop_info.name);
-		pi["type"] = (int)prop_info.type;
-		pi["hint"] = (int)prop_info.hint;
-		pi["hint_string"] = String(prop_info.hint_string);
+    Dictionary props_dict; // name -> value
+    Array props_info; // [{name,type,hint,hint_string,class_name,usage}]
+
+    // Filtering & pagination controls
+    Array include_list = p_args.get("include", Array()); // explicit names to include
+    Array ensure_list = p_args.get("ensure", Array()); // always include these, even past limits
+    String prefix_filter = p_args.get("prefix", String()); // include names beginning with
+    int offset = p_args.get("offset", 0); // skip first N matching properties
+
+    // PERFORMANCE LIMIT: Prevent UI freezing on nodes with hundreds of properties
+    // Default 50 unless explicitly overridden by caller. Use -1 for unlimited.
+    int max_properties = 50;
+    if (p_args.has("max_properties")) {
+        max_properties = (int)p_args.get("max_properties", 50);
+    }
+
+    bool has_filters = (include_list.size() > 0) || !prefix_filter.is_empty();
+
+    // Build ensure set, and add class-specific critical properties if none provided
+    HashSet<String> ensure_set;
+    for (int i = 0; i < ensure_list.size(); i++) {
+        ensure_set.insert(String(ensure_list[i]));
+    }
+    String node_class = node->get_class();
+    if (ensure_set.is_empty()) {
+        if (node_class == "Camera3D") {
+            ensure_set.insert("current");
+            ensure_set.insert("projection");
+            ensure_set.insert("fov");
+            ensure_set.insert("size");
+            ensure_set.insert("near");
+            ensure_set.insert("far");
+            ensure_set.insert("keep_aspect");
+            ensure_set.insert("cull_mask");
+            ensure_set.insert("environment");
+            ensure_set.insert("doppler_tracking");
+            ensure_set.insert("attributes");
+            ensure_set.insert("priority");
+        }
+    }
+
+    int properties_processed = 0;
+    int properties_matched = 0; // after filters, before pagination/limit
+    bool hit_properties_limit = false;
+
+    print_line("AI Chat: get_node_properties start | max=" + String::num_int64(max_properties) +
+        " offset=" + String::num_int64(offset) + (has_filters ? String(" filters=1") : String(" filters=0")));
+
+    for (const PropertyInfo &prop_info : properties) {
+        // Filter by explicit include list or prefix if provided
+        bool passes = true;
+        if (has_filters) {
+            passes = false;
+            // include list wins
+            if (!passes && include_list.size() > 0) {
+                for (int i = 0; i < include_list.size(); i++) {
+                    if (String(prop_info.name) == String(include_list[i])) {
+                        passes = true; break;
+                    }
+                }
+            }
+            // prefix filter
+            if (!passes && !prefix_filter.is_empty()) {
+                if (String(prop_info.name).begins_with(prefix_filter)) {
+                    passes = true;
+                }
+            }
+        }
+        if (!passes) {
+            continue;
+        }
+
+        // Determine if this property is in ensure_set (ignore case and underscores)
+        String prop_name = String(prop_info.name);
+        String norm = prop_name.to_lower().replace("_", "");
+        bool is_ensure = false;
+        if (!ensure_set.is_empty()) {
+            // compare by normalized
+            for (const String &en : ensure_set) {
+                String en_norm = en.to_lower().replace("_", "");
+                if (norm == en_norm) { is_ensure = true; break; }
+            }
+        }
+
+        // Pagination: skip first `offset` matching properties (only for non-ensure)
+        if (!is_ensure) {
+            if (properties_matched < offset) {
+                properties_matched++;
+                continue;
+            }
+            // Enforce limit if non-negative and this is not an ensure prop
+            if (max_properties >= 0 && properties_processed >= max_properties) {
+                hit_properties_limit = true;
+                continue; // keep looping to possibly include any remaining ensure props
+            }
+        }
+
+        // Collect property metadata for introspection
+        Dictionary pi;
+        pi["name"] = String(prop_info.name);
+        pi["type"] = (int)prop_info.type;
+        pi["hint"] = (int)prop_info.hint;
+        pi["hint_string"] = String(prop_info.hint_string);
 #ifdef TOOLS_ENABLED
-		pi["class_name"] = String(prop_info.class_name);
+        pi["class_name"] = String(prop_info.class_name);
 #endif
-		pi["usage"] = (int)prop_info.usage;
-		props_info.push_back(pi);
-		// Include values for editor-visible props
-		if (prop_info.usage & PROPERTY_USAGE_EDITOR) {
-			props_dict[prop_info.name] = node->get(prop_info.name);
-		}
-		
-		properties_processed++;
-	}
+        pi["usage"] = (int)prop_info.usage;
+        props_info.push_back(pi);
+
+        // Include values for editor-visible props (or all if editor_only=false)
+        bool editor_only = p_args.get("editor_only", true);
+        if (!editor_only || (prop_info.usage & PROPERTY_USAGE_EDITOR)) {
+            props_dict[prop_info.name] = node->get(prop_info.name);
+        }
+
+        if (!is_ensure) {
+            properties_processed++;
+            properties_matched++;
+        }
+    }
 
 	// Optionally include script-defined properties (exported vars) from attached script
 	bool include_script_props = p_args.get("include_script_properties", true);
@@ -1334,9 +1533,16 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
     // Apply properties (enhanced for Curve)
     Dictionary props = p_args.get("properties", Dictionary());
     if (!props.is_empty()) {
-        for (const Variant *k = props.next(); k; k = props.next(k)) {
-            StringName key = *k;
-            Variant value = props[*k];
+        print_line("EditorTools::create_resource - Processing " + itos(props.size()) + " properties for " + type);
+        
+        // Use modern Godot 4.x Dictionary iteration
+        Array keys = props.keys();
+        for (int i = 0; i < keys.size(); i++) {
+            Variant key_var = keys[i];
+            StringName key = key_var;
+            Variant value = props[key_var];
+            
+            print_line("  Property: " + String(key) + " = " + value.stringify());
             
             // Special handling for Curve points
             if (type == "Curve" && key == StringName("points")) {
@@ -1355,6 +1561,81 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
                         }
                     }
                     continue; // Skip normal property setting
+                }
+            }
+            
+            // Handle Vector3/Vector2/Color Dictionary conversions
+            if (value.get_type() == Variant::DICTIONARY) {
+                Dictionary dict = value;
+                
+                // Convert Dictionary to Vector3 if it has x, y, z components
+                if (dict.has("x") && dict.has("y") && dict.has("z")) {
+                    Vector3 vec3(dict.get("x", 0.0f), dict.get("y", 0.0f), dict.get("z", 0.0f));
+                    res->set(key, vec3);
+                    continue;
+                }
+                // Convert Dictionary to Vector2 if it has x, y components (but not z)
+                else if (dict.has("x") && dict.has("y") && !dict.has("z")) {
+                    Vector2 vec2(dict.get("x", 0.0f), dict.get("y", 0.0f));
+                    res->set(key, vec2);
+                    continue;
+                }
+                // Convert Dictionary to Color if it has r, g, b components
+                else if (dict.has("r") && dict.has("g") && dict.has("b")) {
+                    Color color(dict.get("r", 1.0f), dict.get("g", 1.0f), dict.get("b", 1.0f), dict.get("a", 1.0f));
+                    res->set(key, color);
+                    continue;
+                }
+            }
+
+            // Handle Array -> Vector conversions
+            if (value.get_type() == Variant::ARRAY) {
+                Array arr = value;
+                if (arr.size() >= 3 && (arr[0].get_type() == Variant::FLOAT || arr[0].get_type() == Variant::INT)) {
+                    Vector3 vec3((double)arr[0], (double)arr[1], (double)arr[2]);
+                    res->set(key, vec3);
+                    continue;
+                }
+                if (arr.size() >= 2 && (arr[0].get_type() == Variant::FLOAT || arr[0].get_type() == Variant::INT)) {
+                    Vector2 vec2((double)arr[0], (double)arr[1]);
+                    res->set(key, vec2);
+                    continue;
+                }
+            }
+
+            // Handle String -> Vector3/Vector2/Color simple parsing
+            if (value.get_type() == Variant::STRING) {
+                String s = ((String)value).strip_edges();
+                if (s.begins_with("Vector3(") && s.ends_with(")")) {
+                    String inner = s.substr(8, s.length() - 9);
+                    PackedStringArray parts = inner.split(",", false);
+                    if (parts.size() == 3) {
+                        double x = parts[0].strip_edges().to_float();
+                        double y = parts[1].strip_edges().to_float();
+                        double z = parts[2].strip_edges().to_float();
+                        res->set(key, Vector3(x, y, z));
+                        continue;
+                    }
+                } else if (s.begins_with("Vector2(") && s.ends_with(")")) {
+                    String inner = s.substr(8, s.length() - 9);
+                    PackedStringArray parts = inner.split(",", false);
+                    if (parts.size() == 2) {
+                        double x = parts[0].strip_edges().to_float();
+                        double y = parts[1].strip_edges().to_float();
+                        res->set(key, Vector2(x, y));
+                        continue;
+                    }
+                } else if (s.begins_with("Color(") && s.ends_with(")")) {
+                    String inner = s.substr(6, s.length() - 7);
+                    PackedStringArray parts = inner.split(",", false);
+                    if (parts.size() >= 3) {
+                        double r = parts[0].strip_edges().to_float();
+                        double g = parts[1].strip_edges().to_float();
+                        double b = parts[2].strip_edges().to_float();
+                        double a = parts.size() >= 4 ? parts[3].strip_edges().to_float() : 1.0;
+                        res->set(key, Color(r, g, b, a));
+                        continue;
+                    }
                 }
             }
             
@@ -1379,7 +1660,6 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
     result["rid"] = (int64_t)res; // For same-process subsequent calls; not persisted
     return result;
 }
-
 // Assign a resource to a node property. Resource can be provided by path, by RID (from create_resource), or by inline spec.
 Dictionary EditorTools::assign_resource_to_node_property(const Dictionary &p_args) {
     Dictionary result;
@@ -2050,10 +2330,38 @@ Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
         Ref<Resource> res = ResourceLoader::load(target);
         if (!res.is_valid()) { result["success"] = false; result["message"] = "Resource not found"; return result; }
         
-        // Apply properties with type-aware handling
-        for (const Variant *k = properties.next(); k; k = properties.next(k)) {
-            StringName key = *k;
-            Variant value = properties[*k];
+        // Build property name index for robust matching
+        HashMap<String, StringName> prop_index; // normalized -> actual
+        List<PropertyInfo> res_props;
+        res->get_property_list(&res_props);
+        for (const PropertyInfo &pi : res_props) {
+            String actual = String(pi.name);
+            String norm = actual.to_lower();
+            norm = norm.replace("_", "");
+            prop_index.insert(norm, pi.name);
+        }
+
+        auto resolve_prop = [&](const String &p_key) -> StringName {
+            String norm = p_key.to_lower();
+            norm = norm.replace("_", "");
+            if (prop_index.has(norm)) {
+                return prop_index[norm];
+            }
+            // Standard/Spatial material aliases
+            if (norm == "albedocolor" || norm == "basecolor") {
+                if (prop_index.has("albedocolor")) return prop_index["albedocolor"]; 
+                if (prop_index.has("basecolor")) return prop_index["basecolor"]; 
+            }
+            return StringName(p_key);
+        };
+
+        // Apply properties with type-aware handling (support dict/array/string for Vector/Color)
+        Array keys = properties.keys();
+        for (int i = 0; i < keys.size(); i++) {
+            Variant key_var = keys[i];
+            String provided_key = String(key_var);
+            StringName key = resolve_prop(provided_key);
+            Variant value = properties[key_var];
             
             // Special handling for Curve points
             if (res->get_class() == "Curve" && key == StringName("points")) {
@@ -2074,6 +2382,63 @@ Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
                     continue;
                 }
             }
+            // Convert Dictionary to Vector3/Vector2/Color if shape matches
+            if (value.get_type() == Variant::DICTIONARY) {
+                Dictionary dict = value;
+                if (dict.has("x") && dict.has("y") && dict.has("z")) {
+                    res->set(key, Vector3(dict.get("x", 0.0f), dict.get("y", 0.0f), dict.get("z", 0.0f)));
+                    continue;
+                } else if (dict.has("x") && dict.has("y") && !dict.has("z")) {
+                    res->set(key, Vector2(dict.get("x", 0.0f), dict.get("y", 0.0f)));
+                    continue;
+                } else if (dict.has("r") && dict.has("g") && dict.has("b")) {
+                    res->set(key, Color(dict.get("r", 1.0f), dict.get("g", 1.0f), dict.get("b", 1.0f), dict.get("a", 1.0f)));
+                    continue;
+                }
+            }
+
+            if (value.get_type() == Variant::ARRAY) {
+                Array arr = value;
+                if (arr.size() >= 3 && (arr[0].get_type() == Variant::FLOAT || arr[0].get_type() == Variant::INT)) {
+                    res->set(key, Vector3((double)arr[0], (double)arr[1], (double)arr[2]));
+                    continue;
+                }
+                if (arr.size() >= 2 && (arr[0].get_type() == Variant::FLOAT || arr[0].get_type() == Variant::INT)) {
+                    res->set(key, Vector2((double)arr[0], (double)arr[1]));
+                    continue;
+                }
+            }
+
+            if (value.get_type() == Variant::STRING) {
+                String s = ((String)value).strip_edges();
+                if (s.begins_with("Vector3(") && s.ends_with(")")) {
+                    String inner = s.substr(8, s.length() - 9);
+                    PackedStringArray parts = inner.split(",", false);
+                    if (parts.size() == 3) {
+                        res->set(key, Vector3(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float(), parts[2].strip_edges().to_float()));
+                        continue;
+                    }
+                } else if (s.begins_with("Vector2(") && s.ends_with(")")) {
+                    String inner = s.substr(8, s.length() - 9);
+                    PackedStringArray parts = inner.split(",", false);
+                    if (parts.size() == 2) {
+                        res->set(key, Vector2(parts[0].strip_edges().to_float(), parts[1].strip_edges().to_float()));
+                        continue;
+                    }
+                } else if (s.begins_with("Color(") && s.ends_with(")")) {
+                    String inner = s.substr(6, s.length() - 7);
+                    PackedStringArray parts = inner.split(",", false);
+                    if (parts.size() >= 3) {
+                        double r = parts[0].strip_edges().to_float();
+                        double g = parts[1].strip_edges().to_float();
+                        double b = parts[2].strip_edges().to_float();
+                        double a = parts.size() >= 4 ? parts[3].strip_edges().to_float() : 1.0;
+                        res->set(key, Color(r, g, b, a));
+                        continue;
+                    }
+                }
+            }
+
             res->set(key, value);
         }
         
@@ -2096,7 +2461,6 @@ Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
     
     result["success"] = false; result["message"] = "Unknown operation: " + operation; return result;
 }
-
 Dictionary EditorTools::universal_scene_manager(const Dictionary &p_args) {
     Dictionary result;
     String operation = p_args.get("operation", "");
@@ -2574,7 +2938,6 @@ Dictionary EditorTools::set_node_type(const Dictionary &p_args) {
     result["message"] = "Provide 'type_name' or 'script_path'"; 
     return result;
 }
-
 Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
 	Dictionary result;
 	if (!p_args.has("path") || !p_args.has("property") || !p_args.has("value")) {
@@ -3157,12 +3520,84 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 		String scene_path = p_args["path"];
 		String parent_path = p_args.get("parent_node", "");
 		String instance_name = p_args.get("instance_name", "");
+		bool await_import = p_args.get("await_import", true);
+		bool skip_import_wait = p_args.get("skip_import_wait", false);
+		int timeout_ms = (int)p_args.get("timeout_ms", 30000);
+		
+		// Override await_import if skip_import_wait is true
+		if (skip_import_wait) {
+			await_import = false;
+			print_line("AI Tools: Skipping scene import wait as requested (skip_import_wait=true)");
+		}
+		
+		// Force filesystem scan first to ensure the file is detected
+		if (EditorFileSystem::get_singleton()) {
+			print_line("AI Tools: Forcing filesystem scan for scene: " + scene_path);
+			EditorFileSystem::get_singleton()->scan_changes();
+			// Brief wait for scan to register the file
+			OS::get_singleton()->delay_usec(500000); // 500ms
+		}
+		
+		// Wait for import if this is a GLB or other importable file
+		if (await_import && (scene_path.get_extension().to_lower() == "glb" || 
+		                    scene_path.get_extension().to_lower() == "gltf" ||
+		                    scene_path.get_extension().to_lower() == "fbx" ||
+		                    scene_path.get_extension().to_lower() == "dae")) {
+			Dictionary wi_args; 
+			wi_args["resource_path"] = scene_path; 
+			wi_args["timeout_ms"] = timeout_ms; 
+			wi_args["poll_ms"] = 100;
+			Dictionary waited = wait_for_import(wi_args);
+			if (!waited.get("ok", false)) {
+				String error_code = String(waited.get("error_code", "IMPORT_PENDING"));
+				String error_msg = String(waited.get("error", "Import not ready"));
+				
+				// For stuck/failed imports, try loading directly as a fallback
+				if (error_code == "IMPORT_STUCK" || error_code == "MAX_ATTEMPTS_REACHED" || error_code == "IMPORT_BROKEN") {
+					print_line("AI Tools: Scene import failed (" + error_code + "), attempting direct load as fallback...");
+					Ref<PackedScene> fallback_scene = ResourceLoader::load(scene_path);
+					if (fallback_scene.is_valid()) {
+						print_line("AI Tools: Direct scene load successful despite import failure");
+						// Continue with the successfully loaded scene
+					} else {
+						result["success"] = false;
+						result["error_code"] = error_code;
+						result["message"] = error_msg + " and direct load also failed (Scene: " + scene_path + ")";
+						result["fallback_attempted"] = true;
+						
+						// Add diagnostic info
+						Dictionary diag_args; diag_args["resource_path"] = scene_path;
+						Dictionary diag = resource_info(diag_args);
+						result["diagnostics"] = diag;
+						return result;
+					}
+				} else {
+					// Other import errors (timeout, file not found, etc.)
+					result["success"] = false;
+					result["error_code"] = error_code;
+					result["message"] = error_msg + " (Scene: " + scene_path + ", Timeout: " + String::num_int64(timeout_ms) + "ms)";
+					
+					// Add diagnostic info
+					Dictionary diag_args; diag_args["resource_path"] = scene_path;
+					Dictionary diag = resource_info(diag_args);
+					result["diagnostics"] = diag;
+					return result;
+				}
+			}
+		}
 		
 		// Load the scene resource
 		Ref<PackedScene> packed_scene = ResourceLoader::load(scene_path);
 		if (packed_scene.is_null()) {
 			result["success"] = false;
 			result["message"] = "Failed to load scene: " + scene_path;
+			
+			// Add diagnostic info for better debugging
+			Dictionary diag_args; diag_args["resource_path"] = scene_path;
+			Dictionary diag = resource_info(diag_args);
+			result["diagnostics"] = diag;
+			result["file_exists"] = FileAccess::exists(scene_path);
+			result["resource_type"] = ResourceLoader::get_resource_type(scene_path);
 			return result;
 		}
 		
@@ -3303,7 +3738,6 @@ Dictionary EditorTools::ensure_input_actions(const Dictionary &p_args) {
     ProjectSettings::get_singleton()->save();
     return out;
 }
-
 Dictionary EditorTools::ensure_autoload(const Dictionary &p_args) {
     Dictionary out;
     Array entries = p_args.get("entries", Array());
@@ -3384,17 +3818,63 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 	String property = p_args["property"];
 	bool validate = p_args.get("validate", true);
 	bool await_import = p_args.get("await_import", true);
-	int timeout_ms = (int)p_args.get("timeout_ms", 10000);
+	bool skip_import_wait = p_args.get("skip_import_wait", false);
+	// Increase default timeout to 30 seconds for GLB files
+	int timeout_ms = (int)p_args.get("timeout_ms", 30000);
+	
+	// Override await_import if skip_import_wait is true
+	if (skip_import_wait) {
+		await_import = false;
+		print_line("AI Tools: Skipping import wait as requested (skip_import_wait=true)");
+	}
+	
+	// Force filesystem scan first to ensure the file is detected
+	if (EditorFileSystem::get_singleton()) {
+		print_line("AI Tools: Forcing filesystem scan for: " + resource_path);
+		EditorFileSystem::get_singleton()->scan_changes();
+		// Brief wait for scan to register the file
+		OS::get_singleton()->delay_usec(500000); // 500ms
+	}
 	
 	// Load the resource
 	if (await_import) {
 		Dictionary wi_args; wi_args["resource_path"] = resource_path; wi_args["timeout_ms"] = timeout_ms; wi_args["poll_ms"] = 100;
 		Dictionary waited = wait_for_import(wi_args);
 		if (!waited.get("ok", false)) {
-			result["success"] = false;
-			result["error_code"] = String(waited.get("error_code", "IMPORT_PENDING"));
-			result["message"] = String(waited.get("error", "Import not ready"));
-			return result;
+			String error_code = String(waited.get("error_code", "IMPORT_PENDING"));
+			String error_msg = String(waited.get("error", "Import not ready"));
+			
+			// For stuck/failed imports, try loading directly as a fallback
+			if (error_code == "IMPORT_STUCK" || error_code == "MAX_ATTEMPTS_REACHED" || error_code == "IMPORT_BROKEN") {
+				print_line("AI Tools: Import failed (" + error_code + "), attempting direct load as fallback...");
+				Ref<Resource> fallback_resource = ResourceLoader::load(resource_path);
+				if (fallback_resource.is_valid()) {
+					print_line("AI Tools: Direct load successful despite import failure");
+					// Continue with the successfully loaded resource
+				} else {
+					result["success"] = false;
+					result["error_code"] = error_code;
+					result["message"] = error_msg + " and direct load also failed (Path: " + resource_path + ")";
+					result["fallback_attempted"] = true;
+					
+					// Add diagnostic info
+					Dictionary diag_args; diag_args["resource_path"] = resource_path;
+					Dictionary diag = resource_info(diag_args);
+					result["diagnostics"] = diag;
+					return result;
+				}
+			} else {
+				// Other import errors (timeout, file not found, etc.)
+				result["success"] = false;
+				result["error_code"] = error_code;
+				result["message"] = error_msg + " (Path: " + resource_path + ", Timeout: " + String::num_int64(timeout_ms) + "ms)";
+				
+				// Add diagnostic info
+				Dictionary diag_args; diag_args["resource_path"] = resource_path;
+				Dictionary diag = resource_info(diag_args);
+				result["diagnostics"] = diag;
+				return result;
+			}
 		}
 	}
 	Ref<Resource> resource = ResourceLoader::load(resource_path);
@@ -4043,7 +4523,6 @@ String EditorTools::smart_truncate_for_ai_context(const String &p_content, const
 	
 	return content;
 }
-
 Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	Dictionary result;
 	if (!p_args.has("path")) {
@@ -4799,7 +5278,6 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
     failed_result["has_errors"] = false;
     return failed_result;
 }
-
 String EditorTools::_clean_backend_content(const String &p_content) {
 	String content = p_content;
 	
@@ -5497,7 +5975,6 @@ Dictionary EditorTools::universal_file_manager(const Dictionary &p_args) {
 	result["message"] = "Unknown file operation: " + operation;
 	return result;
 }
-
 Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 	// Support both old "operation" and new "op" parameter names for backward compatibility
 	String operation = p_args.get("op", p_args.get("operation", ""));
@@ -6214,7 +6691,6 @@ Dictionary EditorTools::get_layers_and_zindex(const Dictionary &p_args) {
 	result["node_count"] = layer_info.size();
 	return result;
 }
-
 Dictionary EditorTools::search_across_project(const Dictionary &p_args) {
 	Dictionary result;
 	
@@ -7362,7 +7838,6 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         result["count"] = incoming_connections.size();
         return result;
     }
-    
     if (operation == "signals.validate") {
         Node *node = require_path(result);
         if (!node) return result;
@@ -7713,15 +8188,26 @@ Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
     }
     
     if (op == "res.create") {
-        return create_resource(p_args);
+        // Fix parameter name mismatch: new schema uses "props", old code expects "properties"
+        Dictionary create_args = p_args;
+        if (p_args.has("props") && !p_args.has("properties")) {
+            create_args["properties"] = p_args["props"];
+        }
+        return create_resource(create_args);
     } else if (op == "res.inspect") {
         Dictionary inspect_args = p_args;
         inspect_args["resource_path"] = p_args.get("target", "");
         return resource_info(inspect_args);
     } else if (op == "res.modify") {
-        // Convert new schema to universal_resource_manager format
+        // Convert new schema to universal_resource_manager format + map props/paths
         Dictionary modify_args = p_args;
         modify_args["operation"] = "modify";  // Convert "op" to "operation"
+        if (p_args.has("props") && !p_args.has("properties")) {
+            modify_args["properties"] = p_args["props"]; // Map props -> properties
+        }
+        if (p_args.has("resource_path") && !p_args.has("target")) {
+            modify_args["target"] = p_args["resource_path"]; // Map resource_path -> target
+        }
         return universal_resource_manager(modify_args);
     } else if (op == "res.assign") {
         return assign_resource_to_node_property(p_args);

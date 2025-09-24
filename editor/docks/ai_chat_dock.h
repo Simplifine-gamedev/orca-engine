@@ -292,6 +292,8 @@ private:
 	String current_request_id;
 	bool stop_requested = false;
 	bool stream_completed_successfully = false;
+	// Keep UI in waiting state across transient provider/SSL errors
+	bool transient_retry_in_flight = false;
 	// Timer to defer heavy conversation save to idle time
 	Timer *save_timer = nullptr;
 
@@ -367,6 +369,10 @@ private:
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);
 	void _create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args = Dictionary());
+	// Lazy node.props.get support
+	void _create_lazy_node_props_ui(VBoxContainer *p_content_vbox, const Dictionary &p_result, const Dictionary &p_args);
+	void _on_load_node_props_pressed(Button *p_button, VBoxContainer *p_target_vbox);
+	void _render_full_node_props(VBoxContainer *p_target_vbox, const Dictionary &p_full_result);
 	void _toggle_expand_label(RichTextLabel *p_label, Button *p_button, const String &p_full_text, const String &p_snippet_text);
 	void _toggle_docs_card(Control *p_snippet_node, Control *p_full_node, Button *p_button, VBoxContainer *p_holder);
 	void _rebuild_conversation_ui(const Vector<ChatMessage> &p_messages);
