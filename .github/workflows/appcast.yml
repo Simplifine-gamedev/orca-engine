@@ -3,6 +3,12 @@ name: appcast
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to update appcast for (e.g., v0.01.9046cb76)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -30,12 +36,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
-          gh release download "$GITHUB_REF_NAME" --dir dist || true
+          # Use input tag if workflow_dispatch, otherwise use GITHUB_REF_NAME
+          RELEASE_TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          echo "Downloading assets for release: $RELEASE_TAG"
+          gh release download "$RELEASE_TAG" --dir dist || true
 
       - name: Generate appcast (macOS)
         env:
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
         run: |
           set -e
           VERSION="${TAG#v}"
@@ -77,7 +86,7 @@ jobs:
       - name: Generate appcast (Windows)
         env:
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
         run: |
           set -e
           VERSION="${TAG#v}"
