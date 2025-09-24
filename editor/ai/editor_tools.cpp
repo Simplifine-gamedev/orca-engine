@@ -1564,9 +1564,24 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
                 }
             }
             
-            // Handle Vector3/Vector2/Color Dictionary conversions
+            // Handle Vector3/Vector2/Color Dictionary conversions and Resource loading
             if (value.get_type() == Variant::DICTIONARY) {
                 Dictionary dict = value;
+                
+                // Handle resource loading from Dictionary (e.g., {"path": "res://texture.png"})
+                if (dict.has("path")) {
+                    String resource_path = dict["path"];
+                    if (!resource_path.is_empty()) {
+                        Ref<Resource> loaded_resource = ResourceLoader::load(resource_path);
+                        if (loaded_resource.is_valid()) {
+                            print_line("CREATE_RESOURCE: Loaded resource for '" + String(key) + "' from " + resource_path);
+                            res->set(key, loaded_resource);
+                            continue;
+                        } else {
+                            print_line("CREATE_RESOURCE: Failed to load resource from " + resource_path);
+                        }
+                    }
+                }
                 
                 // Convert Dictionary to Vector3 if it has x, y, z components
                 if (dict.has("x") && dict.has("y") && dict.has("z")) {
@@ -1603,9 +1618,23 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
                 }
             }
 
-            // Handle String -> Vector3/Vector2/Color simple parsing
+            // Handle String -> Vector3/Vector2/Color simple parsing and Resource loading
             if (value.get_type() == Variant::STRING) {
                 String s = ((String)value).strip_edges();
+                
+                // Handle resource loading from string path
+                bool looks_like_resource = s.begins_with("res://") || s.ends_with(".tres") || s.ends_with(".res") || s.ends_with(".png") || s.ends_with(".jpg") || s.ends_with(".jpeg");
+                if (looks_like_resource) {
+                    Ref<Resource> loaded_resource = ResourceLoader::load(s);
+                    if (loaded_resource.is_valid()) {
+                        print_line("CREATE_RESOURCE: Loaded resource for '" + String(key) + "' from string path " + s);
+                        res->set(key, loaded_resource);
+                        continue;
+                    } else {
+                        print_line("CREATE_RESOURCE: Failed to load resource from string path " + s);
+                    }
+                }
+                
                 if (s.begins_with("Vector3(") && s.ends_with(")")) {
                     String inner = s.substr(8, s.length() - 9);
                     PackedStringArray parts = inner.split(",", false);
@@ -2382,9 +2411,25 @@ Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
                     continue;
                 }
             }
-            // Convert Dictionary to Vector3/Vector2/Color if shape matches
+            // Convert Dictionary to Vector3/Vector2/Color if shape matches, or load Resource if path provided
             if (value.get_type() == Variant::DICTIONARY) {
                 Dictionary dict = value;
+                
+                // Handle resource loading from Dictionary (e.g., {"path": "res://texture.png"})
+                if (dict.has("path")) {
+                    String resource_path = dict["path"];
+                    if (!resource_path.is_empty()) {
+                        Ref<Resource> loaded_resource = ResourceLoader::load(resource_path);
+                        if (loaded_resource.is_valid()) {
+                            print_line("MODIFY_RESOURCE: Loaded resource for '" + String(key) + "' from " + resource_path);
+                            res->set(key, loaded_resource);
+                            continue;
+                        } else {
+                            print_line("MODIFY_RESOURCE: Failed to load resource from " + resource_path);
+                        }
+                    }
+                }
+                
                 if (dict.has("x") && dict.has("y") && dict.has("z")) {
                     res->set(key, Vector3(dict.get("x", 0.0f), dict.get("y", 0.0f), dict.get("z", 0.0f)));
                     continue;
@@ -2411,6 +2456,20 @@ Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
 
             if (value.get_type() == Variant::STRING) {
                 String s = ((String)value).strip_edges();
+                
+                // Handle resource loading from string path
+                bool looks_like_resource = s.begins_with("res://") || s.ends_with(".tres") || s.ends_with(".res") || s.ends_with(".png") || s.ends_with(".jpg") || s.ends_with(".jpeg");
+                if (looks_like_resource) {
+                    Ref<Resource> loaded_resource = ResourceLoader::load(s);
+                    if (loaded_resource.is_valid()) {
+                        print_line("MODIFY_RESOURCE: Loaded resource for '" + String(key) + "' from string path " + s);
+                        res->set(key, loaded_resource);
+                        continue;
+                    } else {
+                        print_line("MODIFY_RESOURCE: Failed to load resource from string path " + s);
+                    }
+                }
+                
                 if (s.begins_with("Vector3(") && s.ends_with(")")) {
                     String inner = s.substr(8, s.length() - 9);
                     PackedStringArray parts = inner.split(",", false);

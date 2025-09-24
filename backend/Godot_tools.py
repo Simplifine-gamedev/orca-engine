@@ -288,7 +288,7 @@ godot_tools = [
 
                     # Resources
                     "type": {"type": "string", "description": "Resource type (e.g., 'StandardMaterial3D', 'BoxMesh', 'SphereMesh')"},
-                    "props": {"type": "object", "description": "Properties to set/modify. For BoxMesh use: {size: {x: 50, y: 0.2, z: 50}}. For SphereMesh: {radius: 1.0, radial_segments: 16, rings: 8}. For materials: {albedo_color: {r: 1, g: 0, b: 0, a: 1}, metallic: 0.5}"},
+                    "props": {"type": "object", "description": "Properties to set/modify. For BoxMesh use: {size: {x: 50, y: 0.2, z: 50}}. For SphereMesh: {radius: 1.0, radial_segments: 16, rings: 8}. For materials: {albedo_color: {r: 1, g: 0, b: 0, a: 1}, metallic: 0.5, albedo_texture: {path: 'res://texture.png'}} or {albedo_texture: 'res://texture.png'}"},
                     "save_path": {"type": "string"},
                     "target": {"type": "string", "description": "Resource target path to inspect/modify"},
                     "path": {"type": "string", "description": "Node path (for res.assign)"},
