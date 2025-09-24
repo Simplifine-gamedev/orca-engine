@@ -1522,7 +1522,7 @@ void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_me
 	// Add spacing before each message for cleaner layout
 	if (chat_container->get_child_count() > 0) {
 		Control *spacer = memnew(Control);
-		spacer->set_custom_minimum_size(Size2(0, 8)); // 8px gap between messages
+		spacer->set_custom_minimum_size(Size2(0, 4)); // 4px gap between messages - reduced for tighter layout
 		chat_container->add_child(spacer);
 	}
 	
@@ -5283,6 +5283,14 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	toggle_button->set_tooltip_text(toggle_button->get_text());
 	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	// Add subtle border to tool result buttons for better visual separation
+	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
+	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
+	tool_button_style->set_border_width_all(1);
+	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	tool_button_style->set_corner_radius_all(4);
+	tool_button_style->set_content_margin_all(6);
+	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
 	// Add accept/reject buttons for file editing tools after the main toggle button
@@ -5715,7 +5723,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	// Add spacing before each message for cleaner layout
 	if (chat_container->get_child_count() > 0) {
 		Control *spacer = memnew(Control);
-		spacer->set_custom_minimum_size(Size2(0, 8)); // 8px gap between messages
+		spacer->set_custom_minimum_size(Size2(0, 4)); // 4px gap between messages - reduced for tighter layout
 		chat_container->add_child(spacer);
 	}
 	
@@ -6258,6 +6266,14 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	// Add subtle border to tool result buttons for better visual separation
+	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
+	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
+	tool_button_style->set_border_width_all(1);
+	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	tool_button_style->set_corner_radius_all(4);
+	tool_button_style->set_content_margin_all(6);
+	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
     PanelContainer *content_panel = memnew(PanelContainer);
@@ -8806,6 +8822,14 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	toggle_button->set_tooltip_text(toggle_button->get_text());
 	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	// Add subtle border to tool result buttons for better visual separation
+	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
+	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
+	tool_button_style->set_border_width_all(1);
+	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	tool_button_style->set_corner_radius_all(4);
+	tool_button_style->set_content_margin_all(6);
+	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
 	// Add accept/reject buttons for file editing tools after the main toggle button
@@ -15635,6 +15659,14 @@ void AIChatDock::_apply_simplified_tool_result(const String &p_tool_call_id, con
 	status_button->set_tooltip_text("Click to view full details");
 	status_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	status_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	// Add subtle border to tool result buttons for better visual separation
+	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
+	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
+	tool_button_style->set_border_width_all(1);
+	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	tool_button_style->set_corner_radius_all(4);
+	tool_button_style->set_content_margin_all(6);
+	status_button->add_theme_style_override("normal", tool_button_style);
 	
 	// On click, expand to show full tool result
 	status_button->connect("pressed", callable_mp(this, &AIChatDock::_expand_simplified_tool_result).bind(p_tool_call_id, p_tool_name, p_content, placeholder));
@@ -15687,6 +15719,14 @@ void AIChatDock::_expand_simplified_tool_result(const String &p_tool_call_id, co
 	toggle_button->set_tooltip_text(toggle_button->get_text());
 	toggle_button->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
 	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+	// Add subtle border to tool result buttons for better visual separation
+	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
+	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
+	tool_button_style->set_border_width_all(1);
+	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+	tool_button_style->set_corner_radius_all(4);
+	tool_button_style->set_content_margin_all(6);
+	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
 	PanelContainer *content_panel = memnew(PanelContainer);
