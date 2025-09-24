@@ -57,7 +57,7 @@ jobs:
           BASENAME=$(basename "$ASSET")
           URL="https://github.com/${REPO}/releases/download/${TAG}/${BASENAME}"
           SIG=""
-          if [ -f /tmp/ed25519_priv.pem ]; then
+          if [ -f /tmp/ed25519_priv.pem ] && command -v sign_update >/dev/null 2>&1; then
             SIG=$(sign_update -s /tmp/ed25519_priv.pem "$ASSET")
           fi
           mkdir -p docs
