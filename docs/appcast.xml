@@ -1,10 +1,15 @@
-<?xml version='1.0' encoding='utf-8'?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
     <title>Orca Engine Updates</title>
-    <link>https://simplifine-gamedev.github.io/orca-engine/appcast.xml</link>
+    <link>https://Simplifine-gamedev.github.io/orca-engine/appcast.xml</link>
     <description>Update feed for Orca Engine</description>
     <language>en</language>
-    
-  <item><title>v0.0.1-test</title><sparkle:releaseNotesLink>https://github.com//releases/tag/v0.0.1-test</sparkle:releaseNotesLink><pubDate>Fri, 12 Sep 2025 07:51:03 +0000</pubDate><enclosure url="http://localhost:8000/docs/small.bin" length="262144" type="application/octet-stream" sparkle:version="0.0.1-test" /></item></channel>
+    <item>
+      <title>Version 0.01.9046cb76</title>
+      <sparkle:releaseNotesLink>https://github.com/Simplifine-gamedev/orca-engine/releases/tag/v0.01.9046cb76</sparkle:releaseNotesLink>
+      <pubDate>Wed, 24 Sep 2025 22:51:43 +0000</pubDate>
+      <enclosure url="https://github.com/Simplifine-gamedev/orca-engine/releases/download/v0.01.9046cb76/Orca.Mac.dmg" sparkle:version="0.01.9046cb76" sparkle:shortVersionString="0.01.9046cb76" length="70663071" type="application/octet-stream"/>
+    </item>
+  </channel>
 </rss>
