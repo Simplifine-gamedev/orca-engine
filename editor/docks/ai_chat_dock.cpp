@@ -6142,10 +6142,10 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		tools_container->add_child(placeholder);
 
 		Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
-		placeholder_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
+		placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
 		placeholder_style->set_content_margin_all(10);
-		placeholder_style->set_border_width_all(1);
-		placeholder_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+		placeholder_style->set_border_width_all(0); // No border
+		placeholder_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 		placeholder_style->set_corner_radius_all(5);
 		placeholder->add_theme_style_override("panel", placeholder_style);
 
@@ -12145,10 +12145,10 @@ void AIChatDock::_create_backend_tool_placeholder(const String &p_tool_id, const
 	bubble_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	
 	Ref<StyleBoxFlat> bubble_style = memnew(StyleBoxFlat);
-	bubble_style->set_bg_color(get_theme_color(SNAME("base_color"), SNAME("Editor")) * Color(0.9, 1.1, 0.9, 1.0)); // Slightly greenish for assistant
+	bubble_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
 	bubble_style->set_content_margin_all(15);
-	bubble_style->set_border_width_all(1);
-	bubble_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+	bubble_style->set_border_width_all(0); // No border
+	bubble_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 	bubble_style->set_corner_radius_all(10);
 	bubble_panel->add_theme_style_override("panel", bubble_style);
 	
