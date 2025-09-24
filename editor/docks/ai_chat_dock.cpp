@@ -3965,9 +3965,14 @@ void AIChatDock::_scroll_to_bottom_smooth() {
 
 void AIChatDock::_on_chat_content_min_size_changed() {
 	// Only auto-scroll when the user is already at the bottom.
-	if (auto_scroll_at_bottom) {
+	// Check current position in real-time to avoid forcing scroll during streaming
+	// when user has scrolled up to read previous messages.
+	bool is_at_bottom = _is_at_bottom();
+	if (is_at_bottom) {
 		call_deferred("_scroll_to_bottom");
 	}
+	// Update the cached state to keep it in sync
+	auto_scroll_at_bottom = is_at_bottom;
 }
 
 String AIChatDock::_truncate_text_for_context(const String &p_text, int p_max_chars) {
