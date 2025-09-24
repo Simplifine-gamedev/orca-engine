@@ -5790,6 +5790,13 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	content_label->set_selection_enabled(true);
 	content_label->set_use_bbcode(true);
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	
+	// Make assistant message text backgrounds transparent
+	if (p_message.role == "assistant") {
+		content_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
+		content_label->add_theme_color_override("background_color", Color(0, 0, 0, 0)); // Transparent background
+	}
+	
 	message_vbox->add_child(content_label);
 
 	if (p_message.role == "assistant") {
@@ -5980,11 +5987,18 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	content_label->set_selection_enabled(true);
 	content_label->set_use_bbcode(true);
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	
+	// Make assistant message text backgrounds transparent
+	if (p_message.role == "assistant") {
+		content_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
+		content_label->add_theme_color_override("background_color", Color(0, 0, 0, 0)); // Transparent background
+	}
+	
 	message_vbox->add_child(content_label);
 
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
-		
+
 		// Create thinking section if this assistant message has reasoning content
 		if (!p_message.reasoning_content.is_empty() || !p_message.thinking_blocks.is_empty()) {
 			_create_saved_thinking_section(message_vbox, p_message);
