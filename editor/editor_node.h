@@ -95,6 +95,7 @@ class FBXImporterManager;
 class AIChatDock;
 class FileSystemDock;
 class HistoryDock;
+class UpdateNotificationPopup;
 class OrphanResourcesDialog;
 class ProgressDialog;
 class ProjectExportDialog;
@@ -269,6 +270,7 @@ private:
 	EditorSettingsDialog *editor_settings_dialog = nullptr;
 	HistoryDock *history_dock = nullptr;
 	AIChatDock *ai_chat_dock = nullptr;
+	UpdateNotificationPopup *update_notification_popup = nullptr;
 
 	ProjectExportDialog *project_export = nullptr;
 	ProjectSettingsEditor *project_settings_editor = nullptr;
