@@ -5759,7 +5759,12 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	
 	Label *role_label = memnew(Label);
 	role_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-	role_label->set_text(p_message.role.capitalize());
+	// Only show role label for user messages, hide for assistant messages
+	if (p_message.role == "user") {
+		role_label->set_text(p_message.role.capitalize());
+	} else {
+		role_label->set_text(""); // Empty text for assistant messages
+	}
 	role_label->add_theme_color_override("font_color", role_color);
 	role_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	role_container->add_child(role_label);
@@ -5958,7 +5963,12 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	
 	Label *role_label = memnew(Label);
 	role_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-	role_label->set_text(p_message.role.capitalize());
+	// Only show role label for user messages, hide for assistant messages
+	if (p_message.role == "user") {
+		role_label->set_text(p_message.role.capitalize());
+	} else {
+		role_label->set_text(""); // Empty text for assistant messages
+	}
 	role_label->add_theme_color_override("font_color", role_color);
 	role_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	role_container->add_child(role_label);
