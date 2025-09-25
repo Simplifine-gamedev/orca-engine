@@ -241,30 +241,14 @@ void editor_copy_icons(const Ref<Theme> &p_theme, const Ref<Theme> &p_old_theme)
 
 // Returns the SVG code for the default project icon.
 String get_default_project_icon() {
-	// Try to create SVG wrapper for Logo.png from orcabranding directory
-	String png_path = "orcabranding/Logo.png";
-	if (FileAccess::exists(png_path)) {
-		// Create an SVG that embeds the PNG as base64
-		Ref<FileAccess> f = FileAccess::open(png_path, FileAccess::READ);
-		if (f.is_valid()) {
-			PackedByteArray png_data = f->get_buffer(f->get_length());
-			String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_data);
-			
-			// Create SVG wrapper with embedded PNG
-			String svg_content = String(
-				"<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"128\" height=\"128\">"
-				"<image width=\"128\" height=\"128\" xlink:href=\"data:image/png;base64,") + base64_data + String("\"/>"
-				"</svg>");
-			
-			return svg_content;
-		}
-	}
-	
-	// Fallback to compiled DefaultProjectIcon
-	for (int i = 0; i < editor_icons_count; i++) {
-		if (strcmp(editor_icons_names[i], "DefaultProjectIcon") == 0) {
-			return String(editor_icons_sources[i]);
-		}
-	}
-	return String();
+	// Use Orca logo SVG directly - embedded in source
+	return String(
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 512 512\">"
+		"<defs>"
+		"<style>.cls-1{fill:#fff;}</style>"
+		"</defs>"
+		"<path class=\"cls-1\" d=\"M256,32C132.29,32,32,132.29,32,256S132.29,480,256,480,480,379.71,480,256,379.71,32,256,32ZM352,320c0,35.35-28.65,64-64,64H224c-35.35,0-64-28.65-64-64V192c0-35.35,28.65-64,64-64h64c35.35,0,64,28.65,64,64V320Z\"/>"
+		"<circle class=\"cls-1\" cx=\"256\" cy=\"192\" r=\"32\"/>"
+		"</svg>"
+	);
 }

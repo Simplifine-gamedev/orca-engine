@@ -30,6 +30,7 @@
 
 #include "editor_node.h"
 #include "update/editor_updater.h"
+#include "update/update_notification_popup.h"
 
 #include "core/config/project_settings.h"
 #include "core/extension/gdextension_manager.h"
@@ -8386,6 +8387,10 @@ EditorNode::EditorNode() {
     } else {
         ai_chat_dock = memnew(AIChatDock);
     }
+
+    // Initialize update notification popup for background update checking
+    update_notification_popup = memnew(UpdateNotificationPopup);
+    gui_base->add_child(update_notification_popup);
     // Force local backend during development; comment out cloud URL
     // ai_chat_dock->set_api_endpoint("https://api.orcaengine.ai/chat");
     // AIChatDock resolves its endpoint based on IS_DEV/DEV_MODE; no hardcoded override here

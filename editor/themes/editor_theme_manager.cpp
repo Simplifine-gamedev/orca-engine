@@ -318,10 +318,10 @@ EditorThemeManager::ThemeConfiguration EditorThemeManager::_create_theme_config(
 				// Slight contrast for better depth perception
 				preset_contrast = 0.15;
 				preset_draw_extra_borders = true;
-			} else { // Default
-				preset_accent_color = Color(0.44, 0.73, 0.98);
-				preset_base_color = Color(0.21, 0.24, 0.29);
-				preset_contrast = config.default_contrast;
+			} else { // Default - Shadcn Zinc theme
+				preset_accent_color = Color(0.631, 0.631, 0.667);  // zinc-400 #a1a1aa - subtle accent
+				preset_base_color = Color(0.153, 0.153, 0.165);    // zinc-800 #27272a - lighter background
+				preset_contrast = 0.25;  // Reduced contrast to prevent panels from going too dark
 			}
 
 			config.accent_color = preset_accent_color;
