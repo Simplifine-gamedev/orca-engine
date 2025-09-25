@@ -41,6 +41,7 @@ private:
     void _on_dismiss_button_pressed();
     void _show_popup();
     void _hide_popup();
+    void _hide_panel_callback();
     void _get_current_version();
 
 protected:

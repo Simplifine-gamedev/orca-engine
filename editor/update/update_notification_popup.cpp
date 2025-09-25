@@ -7,8 +7,9 @@
 #include "core/io/json.h"
 #include "core/os/os.h"
 #include "editor/editor_node.h"
-#include "editor/editor_paths.h"
+#include "editor/file_system/editor_paths.h"
 #include "editor/themes/editor_scale.h"
+#include "editor/update/editor_updater.h"
 #include "scene/gui/margin_container.h"
 
 void UpdateNotificationPopup::_bind_methods() {
@@ -110,7 +111,7 @@ void UpdateNotificationPopup::_notification(int p_what) {
         
         case NOTIFICATION_PROCESS: {
             if (auto_check_enabled) {
-                float current_time = Time::get_singleton()->get_ticks_msec() / 1000.0f;
+                float current_time = OS::get_singleton()->get_ticks_msec() / 1000.0f;
                 if (current_time - last_check_time > check_interval) {
                     trigger_update_check();
                 }
@@ -147,7 +148,7 @@ void UpdateNotificationPopup::trigger_update_check() {
         return;
     }
     
-    last_check_time = Time::get_singleton()->get_ticks_msec() / 1000.0f;
+    last_check_time = OS::get_singleton()->get_ticks_msec() / 1000.0f;
     _check_for_updates();
 }
 
@@ -192,7 +193,7 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
         
         for (int i = 0; i < assets.size(); i++) {
             Dictionary asset = assets[i];
-            String asset_name = asset.get("name", "").to_lower();
+            String asset_name = String(asset.get("name", "")).to_lower();
             String asset_url = asset.get("browser_download_url", "");
             
             // Platform-specific asset selection
@@ -248,7 +249,7 @@ void UpdateNotificationPopup::_show_popup() {
     tween->set_trans(Tween::TRANS_BACK);
     
     popup_panel->set_position(Vector2(16 * EDSCALE, 20 * EDSCALE)); // Start below screen
-    tween->tween_property(popup_panel, "position", Vector2(16 * EDSCALE, -80 * EDSCALE), 0.5);
+    tween->tween_property(popup_panel, NodePath("position"), Vector2(16 * EDSCALE, -80 * EDSCALE), 0.5);
 }
 
 void UpdateNotificationPopup::_hide_popup() {
@@ -261,10 +262,14 @@ void UpdateNotificationPopup::_hide_popup() {
     tween->set_ease(Tween::EASE_IN);
     tween->set_trans(Tween::TRANS_BACK);
     
-    tween->tween_property(popup_panel, "position", Vector2(16 * EDSCALE, 20 * EDSCALE), 0.3);
-    tween->tween_callback(callable_mp(popup_panel, &Control::set_visible).bind(false));
+    tween->tween_property(popup_panel, NodePath("position"), Vector2(16 * EDSCALE, 20 * EDSCALE), 0.3);
+    tween->tween_callback(callable_mp(this, &UpdateNotificationPopup::_hide_panel_callback));
     
     is_visible_state = false;
+}
+
+void UpdateNotificationPopup::_hide_panel_callback() {
+    popup_panel->set_visible(false);
 }
 
 void UpdateNotificationPopup::hide_notification() {
