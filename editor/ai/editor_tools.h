@@ -172,4 +172,12 @@ public:
 	// Creation, calls, batching
 	static Dictionary ensure_node(const Dictionary &p_args);               // { type:String, name:String, parent?:String, unique?:bool }
 	static Dictionary batch_scene_ops(const Dictionary &p_args);           // { ops:Array<Dict>, stop_on_error?:bool }
+	
+	// Image saving
+	static Dictionary save_image_to_path(const Dictionary &p_args);        // { image_id:String, path:String, format?:String }
+	
+	// Batch operations
+	static Dictionary delete_nodes_batch(const Dictionary &p_args);        // { node_paths:Array, ignore_missing?:bool, skip_scene_root?:bool }
+	static Dictionary create_nodes_batch(const Dictionary &p_args);        // { nodes_to_create:Array, stop_on_error?:bool }
+	static Dictionary set_node_mesh_properties(const Dictionary &p_args);  // { path:String, mesh_property:String, mesh_value:Variant }
 }; 

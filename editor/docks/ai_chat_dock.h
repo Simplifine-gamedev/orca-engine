@@ -683,6 +683,10 @@ private:
 	void _remove_pending_edits_for_file(const String &p_file_path); // Remove all edits for same file
 	void _on_banner_clicked(); // Show detailed pending edits
 	void _cleanup_popup(AcceptDialog *p_popup); // Cleanup helper for popups
+	
+	// Tool status updates
+	void _update_tool_placeholder_with_description(const String &p_tool_id, const String &p_tool_name, const String &p_status, const String &p_description);
+	String _get_immediate_tool_status(const String &p_tool_name, const String &p_arguments_str);
 	PanelContainer *pending_edits_banner = nullptr;
 	Label *pending_edits_label = nullptr;
 	Button *pending_edits_details_btn = nullptr;
@@ -713,6 +717,9 @@ public:
 	String get_current_user_id() const { return current_user_id; }
 	String get_machine_id() const;
 	String get_auth_token() const { return auth_token; }
+	
+	// Image access for EditorTools
+	String get_conversation_image(const String &p_image_id) const;
 	
     // Git checkpoints system (uses project git directly)
     void _init_checkpoints_repo();

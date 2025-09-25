@@ -126,12 +126,12 @@ godot_tools = [
                             "scene.nodes.find_by_type", "editor.selection.get",
                             "scene.bulk_configure", "scene.copy_configuration",
                             # Node CRUD & type
-                            "node.create", "node.delete", "node.move",
+                            "node.create", "node.create_batch", "node.delete", "node.delete_batch", "node.move",
                             "node.type.change", "node.type.set", "node.rename",
                             # Groups
                             "groups.add", "groups.remove", "groups.list",
-                            # Props & methods
-                            "node.props.get", "node.props.set_batch", "node.method.call",
+                            # Props & methods  
+                            "node.props.get", "node.props.set_batch", "node.mesh.set_properties", "node.method.call",
                             # Resources & collisions
                             "node.assign_resource", "node.add_collision",
                             # Signals & connections
@@ -160,6 +160,13 @@ godot_tools = [
                     # Node create/find
                     "type": {"type": "string"},
                     "name": {"type": "string"},
+                    
+                    # Node batch operations
+                    "node_paths": {"type": "array", "items": {"type": "string"}, "description": "Array of node paths to delete (e.g., ['Floor/Cube', 'UI/Button1', 'Player/Weapon'])"},
+                    "ignore_missing": {"type": "boolean", "default": True, "description": "If true, continue deleting other nodes even if some don't exist"},
+                    "skip_scene_root": {"type": "boolean", "default": True, "description": "If true, automatically skip scene root nodes for safety"},
+                    "nodes_to_create": {"type": "array", "items": {"type": "object"}, "description": "Array of node specs to create: [{type: 'MeshInstance3D', name: 'Floor', parent: 'World'}, {type: 'Camera3D', name: 'MainCamera'}]"},
+                    "stop_on_error": {"type": "boolean", "default": True, "description": "If true, stop batch operation on first error"},
 
                     # Node move/type/rename
                     "new_parent": {"type": "string"},
@@ -188,6 +195,10 @@ godot_tools = [
                         }
                     },
                     "property": {"type": "string"},
+                    
+                    # Mesh property updates
+                    "mesh_property": {"type": "string", "enum": ["radius", "size", "height", "top_radius", "bottom_radius", "radial_segments", "rings"], "description": "Mesh property to update (e.g., 'radius' for SphereMesh)"},
+                    "mesh_value": {"description": "New value for the mesh property (e.g., 0.038 for radius, or {x: 1, y: 2, z: 3} for size)"},
 
                     # Node property inspection (node.props.get) - filtering/pagination
                     "include": {"type": "array", "items": {"type": "string"}, "description": "Exact property names to include"},
@@ -318,7 +329,8 @@ godot_tools = [
                     "path_to_save": {"type": "string"},
 
                     # Image save
-                    "image_id": {"type": "string"},
+                    "image_id": {"type": "string", "description": "ID of the image from conversation (e.g., 'generated_abc123', 'edited_def456')"},
+                    "path": {"type": "string", "description": "Path where to save the image in the project (e.g., 'res://textures/floor_texture.png')"},
                     "format": {"type": "string", "enum": ["png", "jpg", "jpeg"], "default": "png"},
 
                     # Spritesheet slicing
@@ -352,9 +364,6 @@ godot_tools = [
                         "enum": [
                             # ProjectSettings
                             "project_settings.get", "project_settings.set", "project_settings.list",
-                            # InputMap
-                            "inputmap.add_action", "inputmap.erase_action",
-                            "inputmap.action_add_event", "inputmap.action_erase_event",
                             # Autoloads
                             "autoload.add", "autoload.remove",
                             # Layer names
@@ -367,13 +376,6 @@ godot_tools = [
                     "key": {"type": "string", "description": "e.g., 'application/config/name'"},
                     "value": {},
                     "prefix": {"type": "string", "description": "List settings whose key starts with this prefix"},
-
-                    # InputMap
-                    "action": {"type": "string"},
-                    "event": {
-                        "type": "object",
-                        "description": "Serialized input event (e.g., {type:'key', scancode:'Key.SPACE', device:0})"
-                    },
 
                     # Autoloads
                     "autoload_name": {"type": "string"},

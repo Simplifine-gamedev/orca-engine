@@ -3377,7 +3377,10 @@ static bool _is_same_selection(const Vector<Node *> &p_first, const List<Node *>
 
 void SceneTreeDock::clear_previous_node_selection() {
 	for (Node *node : node_previous_selection) {
-		node->disconnect(CoreStringName(script_changed), callable_mp(this, &SceneTreeDock::_queue_update_script_button));
+		// Safety check: verify node is still valid before disconnecting signals - ORCA EDIT
+		if (node && ObjectDB::get_instance(node->get_instance_id()) != nullptr) {
+			node->disconnect(CoreStringName(script_changed), callable_mp(this, &SceneTreeDock::_queue_update_script_button));
+		}
 	}
 	node_previous_selection.clear();
 }

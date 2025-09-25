@@ -1337,8 +1337,55 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 	result["property_values"] = props_dict;
 	result["property_info"] = props_info;
 	result["signals"] = signals;
-	result["properties_count"] = properties_processed;
-	result["signals_count"] = signals_processed;
+    result["properties_count"] = properties_processed;
+    result["signals_count"] = signals_processed;
+    
+    // ENHANCED: Auto-expand mesh resource properties for better visibility
+    // If this node has mesh resources, expand their properties automatically
+    Array expanded_resources;
+    Array prop_keys = props_dict.keys();
+    for (int i = 0; i < prop_keys.size(); i++) {
+        String prop_name = prop_keys[i];
+        Variant prop_value = props_dict[prop_keys[i]];
+        
+        // Check if this property is a mesh resource
+        if (prop_value.get_type() == Variant::OBJECT) {
+            Ref<Resource> res = prop_value;
+            if (res.is_valid()) {
+                String res_class = res->get_class();
+                if (res_class == "SphereMesh" || res_class == "BoxMesh" || res_class == "CylinderMesh" || res_class == "PlaneMesh") {
+                    Dictionary expanded_mesh;
+                    expanded_mesh["property_name"] = prop_name;
+                    expanded_mesh["resource_type"] = res_class;
+                    
+                    // Get mesh-specific properties
+                    if (res_class == "SphereMesh") {
+                        expanded_mesh["radius"] = res->get("radius");
+                        expanded_mesh["radial_segments"] = res->get("radial_segments");
+                        expanded_mesh["rings"] = res->get("rings");
+                        print_line("MESH_EXPAND: SphereMesh on " + String(node->get_name()) + "." + prop_name + " - radius=" + String::num(res->get("radius")));
+                    } else if (res_class == "BoxMesh") {
+                        expanded_mesh["size"] = res->get("size");
+                        Vector3 size = res->get("size");
+                        print_line("MESH_EXPAND: BoxMesh on " + String(node->get_name()) + "." + prop_name + " - size=(" + String::num(size.x) + ", " + String::num(size.y) + ", " + String::num(size.z) + ")");
+                    } else if (res_class == "CylinderMesh") {
+                        expanded_mesh["top_radius"] = res->get("top_radius");
+                        expanded_mesh["bottom_radius"] = res->get("bottom_radius");
+                        expanded_mesh["height"] = res->get("height");
+                    } else if (res_class == "PlaneMesh") {
+                        expanded_mesh["size"] = res->get("size");
+                    }
+                    
+                    expanded_resources.push_back(expanded_mesh);
+                }
+            }
+        }
+    }
+    
+    if (!expanded_resources.is_empty()) {
+        result["expanded_mesh_resources"] = expanded_resources;
+        print_line("AI Chat: get_node_properties expanded " + String::num_int64(expanded_resources.size()) + " mesh resources for better visibility");
+    }
 	
 	// Add truncation information
 	if (hit_properties_limit) {
@@ -1510,6 +1557,323 @@ Dictionary EditorTools::delete_node(const Dictionary &p_args) {
 	return result;
 }
 
+// Batch delete multiple nodes efficiently
+Dictionary EditorTools::delete_nodes_batch(const Dictionary &p_args) {
+	Dictionary result;
+	Array node_paths = p_args.get("node_paths", Array());
+	bool ignore_missing = p_args.get("ignore_missing", true);
+	bool skip_scene_root = p_args.get("skip_scene_root", true);
+	
+	if (node_paths.is_empty()) {
+		result["success"] = false;
+		result["message"] = "node_paths parameter required for batch deletion";
+		return result;
+	}
+	
+	print_line("BATCH_DELETE: Deleting " + String::num_int64(node_paths.size()) + " nodes");
+	
+	Array deleted_nodes;
+	Array failed_nodes;
+	Array skipped_nodes;
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	
+	for (int i = 0; i < node_paths.size(); i++) {
+		String node_path = node_paths[i];
+		if (node_path.is_empty()) {
+			continue;
+		}
+		
+		Dictionary temp_result;
+		Node *node = _get_node_from_path(node_path, temp_result);
+		
+		if (!node) {
+			Dictionary failed_info;
+			failed_info["path"] = node_path;
+			failed_info["reason"] = temp_result.get("message", "Node not found");
+			failed_nodes.push_back(failed_info);
+			
+			if (!ignore_missing) {
+				result["success"] = false;
+				result["message"] = "Node not found: " + node_path + " (set ignore_missing=true to continue)";
+				result["deleted_nodes"] = deleted_nodes;
+				result["failed_nodes"] = failed_nodes;
+				result["skipped_nodes"] = skipped_nodes;
+				return result;
+			}
+			continue;
+		}
+		
+		// Safety checks
+		if (skip_scene_root && node == scene_root) {
+			Dictionary skipped_info;
+			skipped_info["path"] = node_path;
+			skipped_info["reason"] = "Scene root node (skipped for safety)";
+			skipped_nodes.push_back(skipped_info);
+			print_line("BATCH_DELETE: Skipped scene root: " + node_path);
+			continue;
+		}
+		
+		if (!node->is_inside_tree()) {
+			Dictionary failed_info;
+			failed_info["path"] = node_path;
+			failed_info["reason"] = "Node is not in the scene tree";
+			failed_nodes.push_back(failed_info);
+			
+			if (!ignore_missing) {
+				result["success"] = false;
+				result["message"] = "Node not in scene tree: " + node_path;
+				result["deleted_nodes"] = deleted_nodes;
+				result["failed_nodes"] = failed_nodes;
+				result["skipped_nodes"] = skipped_nodes;
+				return result;
+			}
+			continue;
+		}
+		
+		// Store node info before deletion
+		String node_name = node->get_name();
+		String node_type = node->get_class();
+		
+		// Queue for deletion (safer than immediate removal)
+		node->queue_free();
+		
+		Dictionary deleted_info;
+		deleted_info["path"] = node_path;
+		deleted_info["name"] = node_name;
+		deleted_info["type"] = node_type;
+		deleted_nodes.push_back(deleted_info);
+		
+		print_line("BATCH_DELETE: Queued for deletion: " + node_path + " (" + node_type + ")");
+	}
+	
+	// Summary
+	int total_requested = node_paths.size();
+	int deleted_count = deleted_nodes.size();
+	int failed_count = failed_nodes.size();
+	int skipped_count = skipped_nodes.size();
+	
+	result["success"] = true;
+	result["message"] = String("Batch deletion completed: ") + 
+		String::num_int64(deleted_count) + " deleted, " +
+		String::num_int64(failed_count) + " failed, " +
+		String::num_int64(skipped_count) + " skipped" +
+		" (total requested: " + String::num_int64(total_requested) + ")";
+	result["total_requested"] = total_requested;
+	result["deleted_count"] = deleted_count;
+	result["failed_count"] = failed_count;
+	result["skipped_count"] = skipped_count;
+	result["deleted_nodes"] = deleted_nodes;
+	result["failed_nodes"] = failed_nodes;
+	result["skipped_nodes"] = skipped_nodes;
+	
+	print_line("BATCH_DELETE: Completed - " + String::num_int64(deleted_count) + "/" + String::num_int64(total_requested) + " nodes deleted");
+	
+	return result;
+}
+
+// Update mesh properties directly on a node's mesh resource
+Dictionary EditorTools::set_node_mesh_properties(const Dictionary &p_args) {
+	Dictionary result;
+	
+	if (!p_args.has("path")) {
+		result["success"] = false;
+		result["message"] = "Missing 'path' argument";
+		return result;
+	}
+	
+	if (!p_args.has("mesh_property") || !p_args.has("mesh_value")) {
+		result["success"] = false;
+		result["message"] = "Missing 'mesh_property' or 'mesh_value' arguments";
+		return result;
+	}
+	
+	String node_path = p_args["path"];
+	String mesh_property = p_args["mesh_property"];
+	Variant mesh_value = p_args["mesh_value"];
+	
+	// Get the node
+	Dictionary temp_result;
+	Node *node = _get_node_from_path(node_path, temp_result);
+	if (!node) {
+		return temp_result;
+	}
+	
+	print_line("SET_MESH_PROPERTIES: Node=" + String(node->get_name()) + ", property=" + mesh_property + ", value=" + mesh_value.stringify());
+	
+	// Check if node has a mesh property
+	Ref<Mesh> mesh;
+	bool valid = false;
+	Variant mesh_variant = node->get("mesh", &valid);
+	if (valid && mesh_variant.get_type() == Variant::OBJECT) {
+		mesh = mesh_variant;
+	}
+	
+	if (mesh.is_null()) {
+		result["success"] = false;
+		result["message"] = "Node '" + node_path + "' does not have a mesh resource";
+		return result;
+	}
+	
+	String mesh_class = mesh->get_class();
+	print_line("SET_MESH_PROPERTIES: Found " + mesh_class + " on node");
+	
+	// Handle Vector3 conversion for size properties
+	if (mesh_property == "size" && mesh_value.get_type() == Variant::DICTIONARY) {
+		Dictionary size_dict = mesh_value;
+		if (size_dict.has("x") && size_dict.has("y") && size_dict.has("z")) {
+			Vector3 size_vec(size_dict.get("x", 1.0f), size_dict.get("y", 1.0f), size_dict.get("z", 1.0f));
+			mesh_value = size_vec;
+		}
+	}
+	
+	// Set the property on the mesh resource
+	bool prop_valid = false;
+	mesh->set(mesh_property, mesh_value, &prop_valid);
+	
+	if (prop_valid) {
+		// Verify the property was set correctly
+		Variant readback = mesh->get(mesh_property);
+		print_line("SET_MESH_PROPERTIES: ✅ Property set successfully - readback: " + readback.stringify());
+		
+		result["success"] = true;
+		result["message"] = "Mesh property '" + mesh_property + "' updated successfully";
+		result["mesh_type"] = mesh_class;
+		result["property_set"] = mesh_property;
+		result["new_value"] = readback;
+		
+		// Force scene to mark as dirty so changes persist
+		Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+		if (scene_root && node->get_owner() == scene_root) {
+			// Trigger change notification
+			node->notify_property_list_changed();
+		}
+	} else {
+		result["success"] = false;
+		result["message"] = "Failed to set mesh property '" + mesh_property + "' - property may not exist on " + mesh_class;
+		result["mesh_type"] = mesh_class;
+		result["attempted_property"] = mesh_property;
+		result["attempted_value"] = mesh_value;
+	}
+	
+	return result;
+}
+
+// Batch create multiple nodes efficiently
+Dictionary EditorTools::create_nodes_batch(const Dictionary &p_args) {
+	Dictionary result;
+	Array nodes_to_create = p_args.get("nodes_to_create", Array());
+	bool stop_on_error = p_args.get("stop_on_error", false);
+	
+	if (nodes_to_create.is_empty()) {
+		result["success"] = false;
+		result["message"] = "nodes_to_create parameter required for batch creation";
+		return result;
+	}
+	
+	print_line("BATCH_CREATE: Creating " + String::num_int64(nodes_to_create.size()) + " nodes");
+	
+	Array created_nodes;
+	Array failed_nodes;
+	
+	for (int i = 0; i < nodes_to_create.size(); i++) {
+		Variant node_spec_var = nodes_to_create[i];
+		if (node_spec_var.get_type() != Variant::DICTIONARY) {
+			Dictionary failed_info;
+			failed_info["index"] = i;
+			failed_info["reason"] = "Node spec must be a Dictionary";
+			failed_nodes.push_back(failed_info);
+			
+			if (stop_on_error) {
+				result["success"] = false;
+				result["message"] = "Invalid node spec at index " + String::num_int64(i) + " (not a Dictionary)";
+				result["created_nodes"] = created_nodes;
+				result["failed_nodes"] = failed_nodes;
+				return result;
+			}
+			continue;
+		}
+		
+		Dictionary node_spec = node_spec_var;
+		String node_type = node_spec.get("type", "Node");
+		String node_name = node_spec.get("name", "");
+		String parent_path = node_spec.get("parent", "");
+		
+		// Validate required fields
+		if (node_name.is_empty()) {
+			Dictionary failed_info;
+			failed_info["index"] = i;
+			failed_info["spec"] = node_spec;
+			failed_info["reason"] = "Node name is required";
+			failed_nodes.push_back(failed_info);
+			
+			if (stop_on_error) {
+				result["success"] = false;
+				result["message"] = "Node name missing at index " + String::num_int64(i);
+				result["created_nodes"] = created_nodes;
+				result["failed_nodes"] = failed_nodes;
+				return result;
+			}
+			continue;
+		}
+		
+		// Create individual node using existing create_node function
+		Dictionary create_args;
+		create_args["type"] = node_type;
+		create_args["name"] = node_name;
+		if (!parent_path.is_empty()) {
+			create_args["parent"] = parent_path;
+		}
+		
+		Dictionary create_result = create_node(create_args);
+		
+		if (create_result.get("success", false)) {
+			Dictionary created_info;
+			created_info["index"] = i;
+			created_info["spec"] = node_spec;
+			created_info["path"] = create_result.get("path", "");
+			created_info["type"] = node_type;
+			created_info["name"] = node_name;
+			created_nodes.push_back(created_info);
+			
+			print_line("BATCH_CREATE: Created " + node_type + " '" + node_name + "' at: " + String(create_result.get("path", "")));
+		} else {
+			Dictionary failed_info;
+			failed_info["index"] = i;
+			failed_info["spec"] = node_spec;
+			failed_info["reason"] = create_result.get("message", "Creation failed");
+			failed_nodes.push_back(failed_info);
+			
+			if (stop_on_error) {
+				result["success"] = false;
+				result["message"] = "Failed to create node at index " + String::num_int64(i) + ": " + String(create_result.get("message", "Unknown error"));
+				result["created_nodes"] = created_nodes;
+				result["failed_nodes"] = failed_nodes;
+				return result;
+			}
+		}
+	}
+	
+	// Summary
+	int total_requested = nodes_to_create.size();
+	int created_count = created_nodes.size();
+	int failed_count = failed_nodes.size();
+	
+	result["success"] = true;
+	result["message"] = String("Batch creation completed: ") + 
+		String::num_int64(created_count) + " created, " +
+		String::num_int64(failed_count) + " failed" +
+		" (total requested: " + String::num_int64(total_requested) + ")";
+	result["total_requested"] = total_requested;
+	result["created_count"] = created_count;
+	result["failed_count"] = failed_count;
+	result["created_nodes"] = created_nodes;
+	result["failed_nodes"] = failed_nodes;
+	
+	print_line("BATCH_CREATE: Completed - " + String::num_int64(created_count) + "/" + String::num_int64(total_requested) + " nodes created");
+	
+	return result;
+}
+
 // DISABLED: This tool causes crashes due to complex ownership issues
 Dictionary EditorTools::change_node_type(const Dictionary &p_args) {
     Dictionary result;
@@ -1668,8 +2032,22 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
                 }
             }
             
-            // Normal property setting
-            res->set(key, value);
+            // Normal property setting with enhanced debugging for mesh resources
+            if (type == "SphereMesh" || type == "BoxMesh" || type == "CylinderMesh") {
+                print_line("CREATE_MESH_RESOURCE: Setting " + String(key) + " = " + value.stringify() + " on " + type);
+                bool valid = false;
+                res->set(key, value, &valid);
+                if (valid) {
+                    print_line("CREATE_MESH_RESOURCE: ✅ Property " + String(key) + " set successfully");
+                    // Verify the property was actually set by reading it back
+                    Variant readback = res->get(key);
+                    print_line("CREATE_MESH_RESOURCE: 🔍 Readback value: " + readback.stringify());
+                } else {
+                    print_line("CREATE_MESH_RESOURCE: ❌ Failed to set property " + String(key));
+                }
+            } else {
+                res->set(key, value);
+            }
         }
     }
 
@@ -1711,13 +2089,32 @@ Dictionary EditorTools::assign_resource_to_node_property(const Dictionary &p_arg
                 res = Ref<Resource>(raw);
             }
         } else if (d.has("type")) {
-            // Inline creation
-            Dictionary create_args; create_args["type"] = d["type"]; create_args["properties"] = d.get("properties", Dictionary());
+            // Inline creation - handle both "properties" and "props" parameter names
+            Dictionary create_args; 
+            create_args["type"] = d["type"]; 
+            
+            // Support both parameter names for compatibility
+            Dictionary properties = d.get("properties", Dictionary());
+            if (properties.is_empty() && d.has("props")) {
+                properties = d.get("props", Dictionary());
+            }
+            create_args["properties"] = properties;
+            
+            print_line("INLINE_RESOURCE_CREATE: Creating " + String(d["type"]) + " with " + String::num_int64(properties.size()) + " properties");
+            for (int prop_i = 0; prop_i < properties.keys().size(); prop_i++) {
+                Variant key = properties.keys()[prop_i];
+                Variant value = properties[key];
+                print_line("  - " + String(key) + ": " + value.stringify());
+            }
+            
             Dictionary cr = create_resource(create_args);
             if (cr.get("success", false)) {
                 int64_t rid = (int64_t)cr.get("rid", (int64_t)0);
                 Resource *raw = (Resource*)rid;
                 if (Object::cast_to<Resource>(raw)) res = Ref<Resource>(raw);
+                print_line("INLINE_RESOURCE_CREATE: Successfully created and got resource reference");
+            } else {
+                print_line("INLINE_RESOURCE_CREATE: Failed to create resource: " + String(cr.get("message", "Unknown error")));
             }
         }
     } else if (res_spec.get_type() == Variant::STRING) {
@@ -1766,11 +2163,13 @@ Dictionary EditorTools::create_new_scene_with_root(const Dictionary &p_args) {
 // --- File system and project structure tools ---
 
 static bool _is_within_project(const String &p_path) {
-    String proj = ProjectSettings::get_singleton()->get_resource_path();
+    // FIXED: Use globalize_path("res://") to get actual project directory, not Godot source
+    String proj = ProjectSettings::get_singleton()->globalize_path("res://");
     String abs = p_path;
     if (p_path.begins_with("res://")) {
         abs = ProjectSettings::get_singleton()->globalize_path(p_path);
     }
+    print_line("_IS_WITHIN_PROJECT DEBUG: proj='" + proj + "', abs='" + abs + "', within=" + String(abs.begins_with(proj) ? "true" : "false"));
     return abs.begins_with(proj);
 }
 
@@ -1980,12 +2379,38 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
     // Set preview overlay for immediate feedback
     set_preview_overlay(path, content);
     
+    // CRITICAL FIX: For resource files (.tres, .res), write immediately to disk and trigger reload
+    String ext = path.get_extension().to_lower();
+    if (ext == "tres" || ext == "res") {
+        print_line("FS_WRITE_WHOLE: Resource file detected, writing immediately to disk: " + path);
+        
+        // Write directly to disk
+        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+        if (file.is_valid()) {
+            file->store_string(content);
+            file->close();
+            
+            // Trigger Godot to reload the resource from disk
+            if (EditorFileSystem::get_singleton()) {
+                EditorFileSystem::get_singleton()->update_file(path);
+                EditorFileSystem::get_singleton()->scan_changes();
+                print_line("FS_WRITE_WHOLE: Triggered resource reload for " + path);
+            }
+            
+            // Clear preview overlay since we've committed to disk
+            clear_preview_overlay(path);
+        } else {
+            result["success"] = false;
+            result["message"] = "Failed to write resource file to disk: " + path;
+            return result;
+        }
+    }
+    
     print_line("FS_WRITE_WHOLE: About to check compilation errors...");
     
-    // Check compilation errors for script files
+    // Check compilation errors for script files (ext already declared above)
     Array compilation_errors;
     bool has_errors = false;
-    String ext = path.get_extension().to_lower();
     bool is_script_file = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
     
     if (is_script_file && !p_args.get("skip_compilation_check", false)) {
@@ -2121,12 +2546,38 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
     // Set preview overlay for immediate feedback
     set_preview_overlay(path, final_content);
     
+    // CRITICAL FIX: For resource files (.tres, .res), write immediately to disk and trigger reload
+    String ext = path.get_extension().to_lower();
+    if (ext == "tres" || ext == "res") {
+        print_line("FS_WRITE_LINES: Resource file detected, writing immediately to disk: " + path);
+        
+        // Write directly to disk
+        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+        if (file.is_valid()) {
+            file->store_string(final_content);
+            file->close();
+            
+            // Trigger Godot to reload the resource from disk
+            if (EditorFileSystem::get_singleton()) {
+                EditorFileSystem::get_singleton()->update_file(path);
+                EditorFileSystem::get_singleton()->scan_changes();
+                print_line("FS_WRITE_LINES: Triggered resource reload for " + path);
+            }
+            
+            // Clear preview overlay since we've committed to disk
+            clear_preview_overlay(path);
+        } else {
+            result["success"] = false;
+            result["message"] = "Failed to write resource file to disk: " + path;
+            return result;
+        }
+    }
+    
     print_line("FS_WRITE_LINES: About to check compilation errors...");
     
-    // Check compilation errors for script files
+    // Check compilation errors for script files (ext already declared above)
     Array compilation_errors;
     bool has_errors = false;
-    String ext = path.get_extension().to_lower();
     bool is_script_file = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
     
     if (is_script_file && !p_args.get("skip_compilation_check", false)) {
@@ -2270,12 +2721,38 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
     // Set preview overlay for immediate feedback
     set_preview_overlay(path, final_content);
     
+    // CRITICAL FIX: For resource files (.tres, .res), write immediately to disk and trigger reload
+    String ext = path.get_extension().to_lower();
+    if (ext == "tres" || ext == "res") {
+        print_line("FS_REPLACE_STRING: Resource file detected, writing immediately to disk: " + path);
+        
+        // Write directly to disk
+        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+        if (file.is_valid()) {
+            file->store_string(final_content);
+            file->close();
+            
+            // Trigger Godot to reload the resource from disk
+            if (EditorFileSystem::get_singleton()) {
+                EditorFileSystem::get_singleton()->update_file(path);
+                EditorFileSystem::get_singleton()->scan_changes();
+                print_line("FS_REPLACE_STRING: Triggered resource reload for " + path);
+            }
+            
+            // Clear preview overlay since we've committed to disk
+            clear_preview_overlay(path);
+        } else {
+            result["success"] = false;
+            result["message"] = "Failed to write resource file to disk: " + path;
+            return result;
+        }
+    }
+    
     print_line("FS_REPLACE_STRING: About to check compilation errors...");
     
-    // Check compilation errors for script files
+    // Check compilation errors for script files (ext already declared above)
     Array compilation_errors;
     bool has_errors = false;
-    String ext = path.get_extension().to_lower();
     bool is_script_file = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
     
     if (is_script_file && !p_args.get("skip_compilation_check", false)) {
@@ -2345,6 +2822,22 @@ Dictionary EditorTools::universal_resource_manager(const Dictionary &p_args) {
                 }
                 props["curve_points"] = points_data;
             }
+        }
+        
+        // Special handling for SphereMesh to ensure radius is visible
+        if (res->get_class() == "SphereMesh") {
+            // Force include key SphereMesh properties that might not show up in normal property list
+            props["radius"] = res->get("radius");
+            props["radial_segments"] = res->get("radial_segments");
+            props["rings"] = res->get("rings");
+            print_line("INSPECT_SPHEREMESH: radius=" + String::num(res->get("radius")) + ", segments=" + String::num_int64(res->get("radial_segments")) + ", rings=" + String::num_int64(res->get("rings")));
+        }
+        
+        // Special handling for BoxMesh to ensure size is visible
+        if (res->get_class() == "BoxMesh") {
+            props["size"] = res->get("size");
+            Vector3 size = res->get("size");
+            print_line("INSPECT_BOXMESH: size=(" + String::num(size.x) + ", " + String::num(size.y) + ", " + String::num(size.z) + ")");
         }
         
         result["success"] = true;
@@ -2786,7 +3279,8 @@ Dictionary EditorTools::universal_project_manager(const Dictionary &p_args) {
         if (old_path.is_empty() || new_path.is_empty()) { result["success"] = false; result["message"] = "Missing old_path or new_path"; return result; }
         
         Array updated_files;
-        String project_root = ProjectSettings::get_singleton()->get_resource_path();
+        // FIXED: Use globalize_path("res://") to get actual project directory, not Godot source
+        String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
         
         // Simple recursive scan and replace
         std::function<void(const String&)> scan_and_update = [&](const String &dir_path) {
@@ -6147,8 +6641,12 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 			print_line("AI Tools: scene_manager - Mapping parent_node '" + String(p_args["parent_node"]) + "' to parent parameter");
 		}
 		return create_node(create_args);
+	} else if (operation == "node.create_batch") {
+		return create_nodes_batch(p_args);
 	} else if (operation == "node.delete") {
 		return delete_node(p_args);
+	} else if (operation == "node.delete_batch") {
+		return delete_nodes_batch(p_args);
 	} else if (operation == "node.move") {
 		return move_node(p_args);
 	} else if (operation == "node.type.change") {
@@ -6164,6 +6662,8 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 		return get_node_properties(p_args);
 	} else if (operation == "node.props.set_batch") {
 		return batch_set_node_properties(p_args);
+	} else if (operation == "node.mesh.set_properties") {
+		return set_node_mesh_properties(p_args);
 	} else if (operation == "node.method.call") {
 		return call_node_method(p_args);
 	} else if (operation == "node.assign_resource") {
@@ -6766,8 +7266,8 @@ Dictionary EditorTools::search_across_project(const Dictionary &p_args) {
 	String modality_filter = p_args.get("modality_filter", "");
 	int graph_depth = p_args.get("graph_depth", 2);
 	
-	// Get project root path
-	String project_root = ProjectSettings::get_singleton()->get_resource_path();
+	// Get project root path - FIXED: Use globalize_path("res://") to get actual project directory
+	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
 	
 	// Get authentication info from AIChatDock if available
 	AIChatDock *ai_chat_dock = nullptr;
@@ -8236,6 +8736,130 @@ Dictionary EditorTools::script_manager(const Dictionary &p_args) {
     }
 }
 
+// Save a generated image from AI conversation to a specific path in the project
+Dictionary EditorTools::save_image_to_path(const Dictionary &p_args) {
+    Dictionary result;
+    
+    // Get parameters
+    String image_id = p_args.get("image_id", "");
+    String path = p_args.get("path", "");
+    String format = String(p_args.get("format", "png")).to_lower();
+    
+    if (image_id.is_empty()) {
+        result["success"] = false;
+        result["message"] = "image_id parameter is required";
+        return result;
+    }
+    
+    if (path.is_empty()) {
+        result["success"] = false;
+        result["message"] = "path parameter is required";
+        return result;
+    }
+    
+    if (!_is_within_project(path)) {
+        result["success"] = false;
+        result["message"] = "Path must be within project: " + path;
+        return result;
+    }
+    
+    // Validate format
+    if (format != "png" && format != "jpg" && format != "jpeg") {
+        result["success"] = false;
+        result["message"] = "Unsupported format. Use 'png', 'jpg', or 'jpeg'";
+        return result;
+    }
+    
+    print_line("SAVE_IMAGE: Looking for image_id '" + image_id + "' to save to path '" + path + "'");
+    
+    // For frontend implementation, we need to get image data from the AI Chat system
+    // The image data should be available through the AI chat dock's conversation context
+    
+    // Get image data from the AI chat dock singleton
+    String base64_data = "";
+    
+    // Access the AI chat dock singleton to get conversation images
+    AIChatDock *ai_chat = AIChatDock::get_singleton();
+    if (ai_chat) {
+        base64_data = ai_chat->get_conversation_image(image_id);
+    } else {
+        result["success"] = false;
+        result["message"] = "AI Chat dock not available";
+        return result;
+    }
+    
+    if (base64_data.is_empty()) {
+        result["success"] = false;
+        result["message"] = "Image '" + image_id + "' not found in conversation context";
+        return result;
+    }
+    
+    print_line("SAVE_IMAGE: Found image data, length=" + String::num_int64(base64_data.length()));
+    
+    // Decode base64 to binary data
+    Vector<uint8_t> image_bytes = CoreBind::Marshalls::get_singleton()->base64_to_raw(base64_data);
+    if (image_bytes.size() == 0) {
+        result["success"] = false;
+        result["message"] = "Failed to decode base64 image data";
+        return result;
+    }
+    
+    // Create Image from binary data
+    Ref<Image> image;
+    image.instantiate();
+    
+    Error load_error;
+    if (format == "png") {
+        load_error = image->load_png_from_buffer(image_bytes);
+    } else {
+        load_error = image->load_jpg_from_buffer(image_bytes);
+    }
+    
+    if (load_error != OK) {
+        result["success"] = false;
+        result["message"] = "Failed to load image from " + format.to_upper() + " data";
+        return result;
+    }
+    
+    // Ensure directory exists
+    String abs_dir = ProjectSettings::get_singleton()->globalize_path(path.get_base_dir());
+    DirAccess::make_dir_recursive_absolute(abs_dir);
+    
+    // Save to specified path
+    String abs_path = ProjectSettings::get_singleton()->globalize_path(path);
+    Error save_error;
+    
+    if (format == "png") {
+        save_error = image->save_png(abs_path);
+    } else {
+        save_error = image->save_jpg(abs_path);
+    }
+    
+    if (save_error != OK) {
+        result["success"] = false;
+        result["message"] = "Failed to save image to " + path;
+        return result;
+    }
+    
+    // Trigger EditorFileSystem to recognize the new file
+    if (EditorFileSystem::get_singleton()) {
+        EditorFileSystem::get_singleton()->update_file(path);
+        EditorFileSystem::get_singleton()->scan_changes();
+        print_line("SAVE_IMAGE: Triggered filesystem update for " + path);
+    }
+    
+    result["success"] = true;
+    result["message"] = "Image saved successfully";
+    result["image_id"] = image_id;
+    result["saved_path"] = path;
+    result["format"] = format;
+    result["file_size"] = image_bytes.size();
+    
+    print_line("SAVE_IMAGE: Successfully saved " + image_id + " to " + path);
+    
+    return result;
+}
+
 Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
     Dictionary result;
     String op = p_args.get("op", "");
@@ -8294,10 +8918,8 @@ Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
         }
         return reimport_resource(reimport_args);
     } else if (op == "image.save") {
-        // This would be handled by frontend image saving logic
-        result["success"] = false;
-        result["message"] = "Image saving should be handled by frontend image_operation tool";
-        return result;
+        // Save a generated image from conversation context to a specific path
+        return save_image_to_path(p_args);
     } else {
         result["success"] = false;
         result["error"] = String("Unknown resource_manager operation: ") + op;
@@ -8347,7 +8969,14 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
         String prefix = p_args.get("prefix", "");
         Array settings_list;
         List<PropertyInfo> properties;
+        
+        // Get property list - this should be fast
         ProjectSettings::get_singleton()->get_property_list(&properties);
+        
+        // Process in smaller chunks to avoid UI freeze
+        int processed = 0;
+        const int CHUNK_SIZE = 50; // Process 50 at a time
+        
         for (const PropertyInfo &prop : properties) {
             if (prefix.is_empty() || prop.name.begins_with(prefix)) {
                 Dictionary setting;
@@ -8355,6 +8984,12 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
                 setting["value"] = ProjectSettings::get_singleton()->get_setting(prop.name);
                 setting["type"] = prop.type;
                 settings_list.push_back(setting);
+                
+                processed++;
+                // Yield to main thread periodically to prevent UI freeze
+                if (processed % CHUNK_SIZE == 0) {
+                    OS::get_singleton()->delay_usec(1); // Minimal delay to yield
+                }
             }
         }
         result["success"] = true;
@@ -8368,10 +9003,25 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
             result["error"] = "Action parameter required for inputmap.add_action";
             return result;
         }
+        // Update both runtime InputMap AND project settings
         InputMap::get_singleton()->add_action(action);
-        result["success"] = true;
+        
+        // Save to project settings for persistence
+        String setting_path = "input/" + action;
+        Dictionary action_dict;
+        action_dict["deadzone"] = 0.5;
+        action_dict["events"] = Array();
+        ProjectSettings::get_singleton()->set_setting(setting_path, action_dict);
+        Error err = ProjectSettings::get_singleton()->save();
+        
+        result["success"] = (err == OK);
         result["action"] = action;
-        result["message"] = "Input action added";
+        if (err == OK) {
+            result["message"] = "Input action added to runtime and saved to project";
+        } else {
+            result["message"] = "Input action added to runtime but failed to save to project";
+            result["warning"] = "Changes will be lost on restart";
+        }
         return result;
     } else if (op == "inputmap.erase_action") {
         String action = p_args.get("action", "");
@@ -8380,10 +9030,29 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
             result["error"] = "Action parameter required for inputmap.erase_action";
             return result;
         }
+        
+        // Remove from runtime InputMap
         InputMap::get_singleton()->erase_action(action);
-        result["success"] = true;
-        result["action"] = action;
-        result["message"] = "Input action removed";
+        
+        // Remove from project settings
+        String setting_path = "input/" + action;
+        if (ProjectSettings::get_singleton()->has_setting(setting_path)) {
+            ProjectSettings::get_singleton()->set_setting(setting_path, Variant());
+            Error err = ProjectSettings::get_singleton()->save();
+            
+            result["success"] = (err == OK);
+            result["action"] = action;
+            if (err == OK) {
+                result["message"] = "Input action removed from runtime and project";
+            } else {
+                result["message"] = "Input action removed from runtime but failed to save to project";
+                result["warning"] = "Action may reappear on restart";
+            }
+        } else {
+            result["success"] = true;
+            result["action"] = action;
+            result["message"] = "Input action removed from runtime (not found in project settings)";
+        }
         return result;
     } else if (op == "inputmap.action_add_event") {
         String action = p_args.get("action", "");
@@ -8393,6 +9062,14 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
             result["error"] = "Action and event parameters required for inputmap.action_add_event";
             return result;
         }
+        
+        // Ensure action exists first
+        if (!InputMap::get_singleton()->has_action(action)) {
+            result["success"] = false;
+            result["error"] = "Action '" + action + "' doesn't exist. Create it first with inputmap.add_action";
+            return result;
+        }
+        
         // Create InputEvent from dictionary - simplified implementation
         Ref<InputEvent> event;
         String type = event_dict.get("type", "");
@@ -8403,10 +9080,35 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
             event = key_event;
         }
         if (event.is_valid()) {
+            // Update runtime InputMap
             InputMap::get_singleton()->action_add_event(action, event);
-            result["success"] = true;
+            
+            // Update project settings
+            String setting_path = "input/" + action;
+            Dictionary action_dict = ProjectSettings::get_singleton()->get_setting(setting_path, Dictionary());
+            Array events = action_dict.get("events", Array());
+            
+            // Convert InputEvent back to dictionary for project settings
+            Dictionary event_for_settings;
+            Ref<InputEventKey> key_event = event;
+            if (key_event.is_valid()) {
+                event_for_settings["type"] = "key";
+                event_for_settings["keycode"] = (int)key_event->get_keycode();
+            }
+            events.push_back(event_for_settings);
+            action_dict["events"] = events;
+            
+            ProjectSettings::get_singleton()->set_setting(setting_path, action_dict);
+            Error err = ProjectSettings::get_singleton()->save();
+            
+            result["success"] = (err == OK);
             result["action"] = action;
-            result["message"] = "Event added to input action";
+            if (err == OK) {
+                result["message"] = "Event added to runtime and saved to project";
+            } else {
+                result["message"] = "Event added to runtime but failed to save to project";
+                result["warning"] = "Changes will be lost on restart";
+            }
         } else {
             result["success"] = false;
             result["error"] = "Failed to create input event from provided data";

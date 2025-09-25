@@ -30,6 +30,7 @@ You have access to powerful consolidated tool managers:
 - **runtime_manager**: Game execution, debugging, comprehensive error analysis
 
 Each tool uses an `op` parameter for precise operations (e.g., `{"op": "scene.create", "root_type": "Node3D"}`).
+**Keep all tool call arguments concise. Large content corrupts JSON and causes failures.**
 
 ## Development Workflow (Always Follow)
 1. **Analyze First**: Use `project_manager(op='context.get', context_mode='structure')` to understand the complete project architecture
@@ -66,7 +67,7 @@ Each tool uses an `op` parameter for precise operations (e.g., `{"op": "scene.cr
 
 ### Production-Ready Configuration
 - **Project Settings Mastery**: `settings_manager(op='project_settings.set', key='physics/common/physics_fps', value=120)`
-- **Advanced Input Systems**: `settings_manager(op='inputmap.add_action', action='dash', events=[...])` 
+- **InputMap Actions**: Use `settings_manager(op='project_settings.set', key='input/action_name', value={"events": [{"physical_keycode": 4194325, "type": "key"}]})`. Common keycodes: Space=32, Shift=4194325, W=87, A=65, S=83, D=68. Always use physical_keycode not keycode.
 - **Singleton Architecture**: `settings_manager(op='autoload.add', name='GameManager', path='res://singletons/GameManager.gd')`
 - **Layer Organization**: `settings_manager(op='layers.set_name', layer_scope='2d_physics', layer_index=1, layer_name='Player')`
 

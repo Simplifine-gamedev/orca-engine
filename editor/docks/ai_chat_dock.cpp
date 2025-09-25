@@ -4327,6 +4327,22 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         }
         
         print_line("AI Chat: Processing tool call: " + function_name + " (ID: " + tool_call_id + ")");
+        
+        // CRITICAL FIX: Show immediate status for ALL tools, with operation-specific descriptions
+        print_line("AI Chat: IMMEDIATE_STATUS - Getting status for " + function_name + " (ID: " + tool_call_id + ")");
+        String immediate_status = _get_immediate_tool_status(function_name, arguments_str);
+        print_line("AI Chat: IMMEDIATE_STATUS - Got status: '" + immediate_status + "'");
+        
+        if (!immediate_status.is_empty()) {
+            print_line("AI Chat: IMMEDIATE_STATUS - Calling _update_tool_placeholder_with_description");
+            _update_tool_placeholder_with_description(tool_call_id, function_name, "executing", immediate_status);
+            // Small delay to ensure UI updates are visible
+            OS::get_singleton()->delay_usec(50000); // 50ms delay
+        } else {
+            // Fallback: generic status for tools without specific descriptions
+            print_line("AI Chat: IMMEDIATE_STATUS - Using fallback generic status");
+            _update_tool_placeholder_status(tool_call_id, function_name, "starting");
+        }
 
 		// Route certain resource_manager ops to backend (image generation/slicing)
 		if (function_name == "resource_manager") {
@@ -4381,13 +4397,18 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			slow_tools.insert("universal_scene_manager"); // The "analyze" operation
 			slow_tools.insert("get_project_context"); // Heavy project scanning
 			slow_tools.insert("scene_manager"); // Can call expensive operations like scene.nodes.get_all
+			// Add file editing operations to slow tools for better status feedback
+			slow_tools.insert("apply_edit"); // Already handled as slow
 			// Add other slow tools as needed
 		}
 
 		if (slow_tools.has(function_name)) {
-			// Slow tools: use deferred execution
+			// Slow tools: use deferred execution with descriptive status
 			pending_tool_tasks++;
+			
+			// Use centralized status handler for consistent messaging
 			_update_tool_placeholder_status(tool_call_id, function_name, "running");
+			
 			call_deferred("_execute_frontend_tool_deferred", tool_call_id, function_name, arguments_str);
 			continue;
 		}
@@ -4602,9 +4623,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else if (function_name == "universal_project_manager") {
 			result = EditorTools::universal_project_manager(args);
 		} else if (function_name == "project_manager") {
-			// Check if this is a file editing operation that needs async handling like apply_edit
-			String op = args.get("op", "");
-			// All project_manager operations (including new file editing) run immediately and synchronously
+			// All project_manager operations run immediately and synchronously
 			result = EditorTools::project_manager(args);
 		} else if (function_name == "script_manager") {
 			result = EditorTools::script_manager(args);
@@ -8846,6 +8865,81 @@ void AIChatDock::_send_chat_request() {
 	
 	print_line("AI Chat: Sending chat request with " + String::num_int64(chat_history.size()) + " messages");
 	
+	// CRITICAL: Prevent HTTP corruption by limiting conversation size aggressively
+	if (chat_history.size() > 100) {
+		print_line("🚨 AI Chat: HUGE conversation detected (" + String::num_int64(chat_history.size()) + " messages) - HIGH HTTP CORRUPTION RISK!");
+		print_line("🔧 AI Chat: EMERGENCY PRUNE - Reducing messages to prevent HTTP chunked encoding failure");
+		
+		// Create a pruned conversation with only recent messages
+		Vector<ChatMessage> pruned_history;
+		
+		// SMART PRUNING: Preserve tool call/response structure
+		int target_recent_count = 40;  // Target 40 messages instead of 50
+		int start_index = MAX(0, chat_history.size() - target_recent_count);
+		
+		// Scan backwards to find a safe cut point (not in middle of tool call/response)
+		int safe_cut_point = start_index;
+		for (int i = start_index; i >= 0; i--) {
+			if (i >= chat_history.size()) continue;
+			const ChatMessage &msg = chat_history[i];
+			
+			if (msg.role == "assistant" && msg.tool_calls.is_empty()) {
+				// Found a clean assistant message with no tool calls - safe cut point
+				safe_cut_point = i;
+				break;
+			} else if (msg.role == "user") {
+				// User messages are always safe cut points
+				safe_cut_point = i;
+				break;
+			}
+		}
+		
+		print_line("🔧 AI Chat: SMART_PRUNE - Safe cut point found at index " + String::num_int64(safe_cut_point));
+		
+		// Add messages starting from safe cut point
+		for (int i = safe_cut_point; i < chat_history.size(); i++) {
+			pruned_history.push_back(chat_history[i]);
+		}
+		
+		// Validate no orphaned tool responses remain
+		HashSet<String> active_tool_calls;
+		for (const ChatMessage &msg : pruned_history) {
+			if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+				for (int j = 0; j < msg.tool_calls.size(); j++) {
+					Dictionary tc = msg.tool_calls[j];
+					String tc_id = tc.get("id", "");
+					if (!tc_id.is_empty()) {
+						active_tool_calls.insert(tc_id);
+					}
+				}
+			} else if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
+				active_tool_calls.erase(msg.tool_call_id);
+			}
+		}
+		
+		if (!active_tool_calls.is_empty()) {
+			print_line("🚨 AI Chat: PRUNE_ERROR - Found orphaned tool calls, using fallback minimal conversation");
+			// Fallback: just use the last user message
+			pruned_history.clear();
+			for (int i = chat_history.size() - 1; i >= 0; i--) {
+				if (chat_history[i].role == "user") {
+					pruned_history.push_back(chat_history[i]);
+					break;
+				}
+			}
+		}
+		
+		// Replace current conversation with pruned version
+		if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			conversations.write[current_conversation_index].messages = pruned_history;
+		}
+		
+		print_line("🔧 AI Chat: EMERGENCY PRUNE completed - reduced from " + String::num_int64(chat_history.size()) + " to " + String::num_int64(pruned_history.size()) + " messages");
+		
+		// Update chat_history reference to point to pruned version
+		chat_history = _get_current_chat_history();
+	}
+	
 	// For large conversation histories, process in chunks to prevent UI blocking
 	if (chat_history.size() > 50) {
 		print_line("AI Chat: Large conversation detected (" + String::num_int64(chat_history.size()) + " messages), processing in chunks");
@@ -9050,7 +9144,9 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
     }
 
     Dictionary result;
+    
     // Execute slow tool on main thread (safe for Godot APIs but deferred to prevent UI blocking)
+    // Status is already handled centrally in _execute_tool_calls
     if (p_function_name == "get_all_nodes") {
         result = EditorTools::get_all_nodes(args);
     } else if (p_function_name == "universal_scene_manager") {
@@ -9087,6 +9183,85 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
 
 void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	
+	// CRITICAL: Check for massive conversations that will cause HTTP corruption
+	if (p_start_index == 0 && chat_history.size() > 100) {
+		print_line("🚨 AI Chat: CHUNKED - HUGE conversation detected (" + String::num_int64(chat_history.size()) + " messages) - HIGH HTTP CORRUPTION RISK!");
+		print_line("🔧 AI Chat: CHUNKED EMERGENCY PRUNE - Using smart pruning to preserve tool call structure");
+		
+		// Create a pruned conversation with only recent messages
+		Vector<ChatMessage> pruned_history;
+		
+		// SMART PRUNING: Preserve tool call/response structure (same logic as main function)
+		int target_recent_count = 40;  // Target 40 messages
+		int start_index = MAX(0, chat_history.size() - target_recent_count);
+		
+		// Scan backwards to find a safe cut point (not in middle of tool call/response)
+		int safe_cut_point = start_index;
+		for (int i = start_index; i >= 0; i--) {
+			if (i >= chat_history.size()) continue;
+			const ChatMessage &msg = chat_history[i];
+			
+			if (msg.role == "assistant" && msg.tool_calls.is_empty()) {
+				// Found a clean assistant message with no tool calls - safe cut point
+				safe_cut_point = i;
+				break;
+			} else if (msg.role == "user") {
+				// User messages are always safe cut points
+				safe_cut_point = i;
+				break;
+			}
+		}
+		
+		print_line("🔧 AI Chat: CHUNKED SMART_PRUNE - Safe cut point found at index " + String::num_int64(safe_cut_point));
+		
+		// Add messages starting from safe cut point
+		for (int i = safe_cut_point; i < chat_history.size(); i++) {
+			pruned_history.push_back(chat_history[i]);
+		}
+		
+		// Validate no orphaned tool responses remain
+		HashSet<String> active_tool_calls;
+		for (const ChatMessage &msg : pruned_history) {
+			if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+				for (int j = 0; j < msg.tool_calls.size(); j++) {
+					Dictionary tc = msg.tool_calls[j];
+					String tc_id = tc.get("id", "");
+					if (!tc_id.is_empty()) {
+						active_tool_calls.insert(tc_id);
+					}
+				}
+			} else if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
+				active_tool_calls.erase(msg.tool_call_id);
+			}
+		}
+		
+		if (!active_tool_calls.is_empty()) {
+			print_line("🚨 AI Chat: CHUNKED PRUNE_ERROR - Found orphaned tool calls, using fallback minimal conversation");
+			// Fallback: just use the last user message
+			pruned_history.clear();
+			for (int i = chat_history.size() - 1; i >= 0; i--) {
+				if (chat_history[i].role == "user") {
+					pruned_history.push_back(chat_history[i]);
+					break;
+				}
+			}
+		}
+		
+		// Replace current conversation with pruned version
+		if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			conversations.write[current_conversation_index].messages = pruned_history;
+		}
+		
+		print_line("🔧 AI Chat: CHUNKED EMERGENCY PRUNE completed - reduced from " + String::num_int64(chat_history.size()) + " to " + String::num_int64(pruned_history.size()) + " messages");
+		
+		// Update chat_history reference to point to pruned version and restart the process
+		chat_history = _get_current_chat_history();
+		
+		// Restart with pruned conversation - call the main function again
+		call_deferred("_send_chat_request");
+		return;
+	}
 	
 	// Process messages in chunks of 10 to avoid blocking UI
 	const int CHUNK_SIZE = 10;
@@ -9747,7 +9922,7 @@ void AIChatDock::_update_ui_state() {
 		bool has_active_request = !current_request_id.is_empty();
 		bool has_pending_work = pending_tool_tasks > 0;
 		bool should_enable_stop = stop_requested || has_active_request || has_pending_work;
-		stop_button->set_disabled(!should_enable_stop);
+		stop_button->set_disabled(false); // Stop button should NEVER be grayed out
 
 		// Ensure red styling remains applied even when disabled
 		{
@@ -12109,10 +12284,12 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 		return;
 	}
 	
-	// Find the label in the placeholder and update its text
-	HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(placeholder->get_child(0));
-	if (tool_hbox) {
-		Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+	// Find the label in the placeholder and update its text (correct hierarchy: placeholder->VBox->HBox->Label)
+	VBoxContainer *tool_vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+	if (tool_vbox) {
+		HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(tool_vbox->get_child(0));
+		if (tool_hbox) {
+			Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
 		if (tool_label) {
 			if (p_status == "starting") {
 				tool_label->set_text("Executing: " + p_tool_name + "...");
@@ -12125,7 +12302,174 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
 		}
+		}
 	}
+}
+
+void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_id, const String &p_tool_name, const String &p_status, const String &p_description) {
+	if (chat_container == nullptr) {
+		return;
+	}
+	
+	// Find the placeholder for this tool
+	PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
+	
+	if (!placeholder) {
+		print_line("AI Chat: UPDATE_STATUS - No placeholder found for tool ID: " + p_tool_id);
+		return;
+	}
+	
+	print_line("AI Chat: UPDATE_STATUS - Found placeholder for tool ID: " + p_tool_id + ", updating to: " + p_description);
+	
+	// Find the label in the placeholder and update its text with description (correct hierarchy: placeholder->VBox->HBox->Label)
+	VBoxContainer *tool_vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+	if (tool_vbox) {
+		print_line("AI Chat: UPDATE_STATUS - Found VBoxContainer");
+		HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(tool_vbox->get_child(0));
+		if (tool_hbox) {
+			print_line("AI Chat: UPDATE_STATUS - Found HBoxContainer");
+			Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+			if (tool_label) {
+				print_line("AI Chat: UPDATE_STATUS - Found Label, updating text");
+			if (p_status == "executing") {
+				tool_label->set_text("⚡ " + p_description);
+				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
+			} else if (p_status == "starting") {
+				tool_label->set_text("🔄 Starting: " + p_description);
+				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for starting
+			} else if (p_status == "running") {
+				tool_label->set_text("⏳ " + p_description);
+				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			} else if (p_status == "completed") {
+				tool_label->set_text("✅ Completed: " + p_tool_name);
+				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			}
+			
+			// Force immediate UI update
+			tool_label->queue_redraw();
+			if (placeholder) {
+				placeholder->queue_redraw();
+			}
+			}
+		}
+	}
+}
+
+String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const String &p_arguments_str) {
+	// Parse arguments to determine operation-specific status message
+	print_line("AI Chat: GET_STATUS - Parsing arguments for " + p_tool_name + ": " + p_arguments_str.substr(0, 100) + (p_arguments_str.length() > 100 ? "..." : ""));
+	
+	Ref<JSON> json;
+	json.instantiate();
+	Error err = json->parse(p_arguments_str);
+	if (err != OK) {
+		print_line("AI Chat: GET_STATUS - JSON parse failed for " + p_tool_name + ", error: " + String::num_int64(err));
+		return ""; // Return empty for generic fallback
+	}
+	
+	Dictionary args = json->get_data();
+	String op = args.get("op", args.get("operation", ""));
+	print_line("AI Chat: GET_STATUS - Parsed op: '" + op + "' for " + p_tool_name);
+	
+	if (p_tool_name == "project_manager") {
+		if (op == "fs.write") {
+			String path = args.get("path", "Unknown file");
+			return "Writing file: " + _convert_to_godot_path(path);
+		} else if (op == "fs.write_lines") {
+			String path = args.get("path", "Unknown file");
+			int start_line = args.get("start_line", 0);
+			int end_line = args.get("end_line", 0);
+			return "Editing lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + _convert_to_godot_path(path);
+		} else if (op == "fs.replace_string") {
+			String path = args.get("path", "Unknown file");
+			String find_str = args.get("find_string", "text");
+			return "Replacing '" + find_str.substr(0, 20) + (find_str.length() > 20 ? "..." : "") + "' in: " + _convert_to_godot_path(path);
+		} else if (op == "fs.read") {
+			String path = args.get("path", "Unknown file");
+			return "Reading file: " + _convert_to_godot_path(path);
+		} else if (op == "fs.list") {
+			String dir = args.get("dir", args.get("path", "res://"));
+			return "Listing files in: " + _convert_to_godot_path(dir);
+		} else if (op == "context.get") {
+			return "Analyzing project structure...";
+		}
+	} else if (p_tool_name == "scene_manager") {
+		if (op == "node.create") {
+			String type = args.get("type", "Node");
+			String name = args.get("name", "NewNode");
+			return "Creating " + type + " node: " + name;
+		} else if (op == "node.delete") {
+			String path = args.get("path", "Unknown node");
+			return "Deleting node: " + path;
+		} else if (op == "node.delete_batch") {
+			Array node_paths = args.get("node_paths", Array());
+			int count = node_paths.size();
+			return "Deleting " + String::num_int64(count) + " node" + (count > 1 ? "s" : "");
+		} else if (op == "node.create_batch") {
+			Array nodes_to_create = args.get("nodes_to_create", Array());
+			int count = nodes_to_create.size();
+			return "Creating " + String::num_int64(count) + " node" + (count > 1 ? "s" : "");
+		} else if (op == "scene.open") {
+			String scene_path = args.get("scene_path", "Unknown scene");
+			return "Opening scene: " + _convert_to_godot_path(scene_path);
+		} else if (op == "scene.save_as") {
+			String path = args.get("path", "Unknown path");
+			return "Saving scene as: " + _convert_to_godot_path(path);
+		} else if (op == "scene.nodes.get_all") {
+			return "Loading all scene nodes...";
+		} else if (op == "node.mesh.set_properties") {
+			String path = args.get("path", "Unknown node");
+			String mesh_property = args.get("mesh_property", "property");
+			return "Setting mesh " + mesh_property + " on: " + path;
+		}
+	} else if (p_tool_name == "resource_manager") {
+		if (op == "image.save") {
+			String path = args.get("path", "Unknown path");
+			String image_id = args.get("image_id", "image");
+			return "Saving " + image_id + " to: " + _convert_to_godot_path(path);
+		} else if (op == "res.create") {
+			String type = args.get("type", "Resource");
+			String save_path = args.get("save_path", "");
+			if (!save_path.is_empty()) {
+				return "Creating " + type + " at: " + _convert_to_godot_path(save_path);
+			} else {
+				return "Creating " + type + " resource";
+			}
+		} else if (op == "res.modify") {
+			String target = args.get("target", "Unknown resource");
+			return "Modifying resource: " + _convert_to_godot_path(target);
+		} else if (op == "image.generate_or_edit") {
+			String description = args.get("description", "image");
+			return "Processing image: " + description.substr(0, 40) + (description.length() > 40 ? "..." : "");
+		}
+	} else if (p_tool_name == "search_manager") {
+		if (op == "project.search") {
+			String query = args.get("query", "");
+			return "Searching project for: " + query.substr(0, 30) + (query.length() > 30 ? "..." : "");
+		} else if (op == "docs.search") {
+			String query = args.get("query", "");
+			return "Searching docs for: " + query.substr(0, 30) + (query.length() > 30 ? "..." : "");
+		}
+	} else if (p_tool_name == "script_manager") {
+		if (op == "script.attach") {
+			String path = args.get("path", "Unknown node");
+			String script_path = args.get("script_path", "Unknown script");
+			return "Attaching script " + _convert_to_godot_path(script_path) + " to: " + path;
+		} else if (op == "compile.check") {
+			String check_path = args.get("check_path", "");
+			if (!check_path.is_empty()) {
+				return "Checking compilation: " + _convert_to_godot_path(check_path);
+			} else {
+				return "Checking all script compilation...";
+			}
+		}
+	} else if (p_tool_name == "apply_edit") {
+		String file_path = args.get("path", args.get("file_path", "Unknown file"));
+		return "Applying AI edit to: " + _convert_to_godot_path(file_path);
+	}
+	
+	// Return empty string for generic fallback
+	return "";
 }
 
 void AIChatDock::_create_assistant_message_for_backend_tool(const String &p_tool_name) {
@@ -12364,6 +12708,72 @@ String AIChatDock::get_machine_id() const {
 		machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
 	}
 	return machine_id;
+}
+
+String AIChatDock::get_conversation_image(const String &p_image_id) const {
+	// Search through current conversation for image with matching ID
+	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
+		return "";
+	}
+	
+	const Conversation &current_conv = conversations[current_conversation_index];
+	
+	// Look through all messages for attached images
+	for (const ChatMessage &msg : current_conv.messages) {
+		for (const AttachedFile &file : msg.attached_files) {
+			if (file.is_image) {
+				// Try multiple ID matching strategies
+				String file_name = file.name;
+				String file_path = file.path;
+				
+				// Direct name match
+				if (file_name == p_image_id) {
+					print_line("GET_CONVERSATION_IMAGE: Found image by name: " + p_image_id);
+					return file.base64_data;
+				}
+				
+				// Check if image_id matches file path basename
+				if (file_path.get_file().get_basename() == p_image_id) {
+					print_line("GET_CONVERSATION_IMAGE: Found image by path basename: " + p_image_id);
+					return file.base64_data;
+				}
+				
+				// Check for generated image IDs (like "generated_abc123")
+				if (file_path.begins_with("generated://") && file_path.contains(p_image_id)) {
+					print_line("GET_CONVERSATION_IMAGE: Found generated image: " + p_image_id);
+					return file.base64_data;
+				}
+				
+				// Fuzzy match for generated images (backend creates names like "generated_abc123", frontend creates "gen_img_123")
+				if (p_image_id.begins_with("generated_") && file_name.begins_with("gen_img_")) {
+					print_line("GET_CONVERSATION_IMAGE: Found fuzzy match for generated image: " + p_image_id);
+					return file.base64_data;
+				}
+				
+				// Also check tool results for images (when images come from backend tool execution)
+			}
+		}
+		
+		// Also check tool_results array for images (backend tool responses)
+		for (int i = 0; i < msg.tool_results.size(); i++) {
+			Dictionary tool_result = msg.tool_results[i];
+			if (tool_result.has("image_id") && tool_result.has("image_data")) {
+				String result_image_id = tool_result.get("image_id", "");
+				String result_image_name = tool_result.get("image_name", "");
+				
+				if (result_image_id == p_image_id || result_image_name == p_image_id) {
+					String image_data = tool_result.get("image_data", "");
+					if (!image_data.is_empty()) {
+						print_line("GET_CONVERSATION_IMAGE: Found image in tool results: " + p_image_id);
+						return image_data;
+					}
+				}
+			}
+		}
+	}
+	
+	print_line("GET_CONVERSATION_IMAGE: Image not found: " + p_image_id);
+	return "";
 }
 
 // ========== EMBEDDING SYSTEM IMPLEMENTATION ==========

@@ -375,11 +375,11 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     """Manage conversation length to prevent token limit exceeded errors"""
     # Model-specific token limits (leaving safety margin)
     TOKEN_LIMITS = {
-        "anthropic/claude-sonnet-4-20250514": 180000,  # 200k limit - 20k safety margin
-        "openai/gpt-5": 120000,  # 128k limit - 8k safety margin  
-        "openai/gpt-4o": 120000,  # 128k limit - 8k safety margin
-        "openai/gpt-4-turbo": 120000,  # 128k limit - 8k safety margin
-        "anthropic/claude-3-5-sonnet-20241022": 180000,  # 200k limit - 20k safety margin
+        "anthropic/claude-sonnet-4-20250514": 80000,  # Moderate limit to prevent HTTP corruption
+        "openai/gpt-5": 80000,  # Moderate limit to prevent HTTP corruption  
+        "openai/gpt-4o": 80000,  # Moderate limit to prevent HTTP corruption
+        "openai/gpt-4-turbo": 80000,  # Moderate limit to prevent HTTP corruption
+        "anthropic/claude-3-5-sonnet-20241022": 80000,  # Moderate limit to prevent HTTP corruption
     }
     
     limit = TOKEN_LIMITS.get(model, 100000)  # Default conservative limit
@@ -2072,6 +2072,16 @@ def project_manager_internal(arguments: dict) -> dict:
     try:
         op = arguments.get('op', '')
         if not op:
+            # DEBUG: Show what arguments were actually received when op is missing
+            print("🚨 PROJECT_MANAGER ERROR: Missing 'op' parameter!")
+            print("📋 RECEIVED ARGUMENTS:")
+            for key, value in arguments.items():
+                if isinstance(value, str) and len(value) > 200:
+                    display_value = value[:200] + "... (truncated)"
+                else:
+                    display_value = value
+                print(f"   {key}: {display_value}")
+            print("❌ Tool execution failed due to missing 'op' parameter")
             return {"success": False, "error": "Operation 'op' parameter is required"}
         
         if op == "assets.search":
@@ -2131,6 +2141,16 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
     try:
         op = arguments.get('op', '')
         if not op:
+            # DEBUG: Show what arguments were actually received when op is missing
+            print("🚨 SEARCH_MANAGER ERROR: Missing 'op' parameter!")
+            print("📋 RECEIVED ARGUMENTS:")
+            for key, value in arguments.items():
+                if isinstance(value, str) and len(value) > 200:
+                    display_value = value[:200] + "... (truncated)"
+                else:
+                    display_value = value
+                print(f"   {key}: {display_value}")
+            print("❌ Tool execution failed due to missing 'op' parameter")
             return {"success": False, "error": "Operation 'op' parameter is required"}
             
         if op == "project.search":
@@ -2172,6 +2192,16 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
         # Accept both 'op' and legacy 'operation'
         op = arguments.get('op', '') or arguments.get('operation', '')
         if not op:
+            # DEBUG: Show what arguments were actually received when op is missing
+            print("🚨 RESOURCE_MANAGER ERROR: Missing 'op' parameter!")
+            print("📋 RECEIVED ARGUMENTS:")
+            for key, value in arguments.items():
+                if isinstance(value, str) and len(value) > 200:
+                    display_value = value[:200] + "... (truncated)"
+                else:
+                    display_value = value
+                print(f"   {key}: {display_value}")
+            print("❌ Tool execution failed due to missing 'op' parameter")
             return {"success": False, "error": "Operation 'op' parameter is required"}
             
         # Backend-processed image operations
@@ -2288,6 +2318,21 @@ def runtime_manager_internal(arguments: dict) -> dict:
 
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
+    
+    # ============ CLEAR TOOL CALL LOGGING ============
+    print("=" * 80)
+    print(f"🔧 TOOL CALLED: {function_name}")
+    print("📋 ARGUMENTS:")
+    for key, value in arguments.items():
+        # Truncate very long values for readability
+        if isinstance(value, str) and len(value) > 200:
+            display_value = value[:200] + "... (truncated)"
+        else:
+            display_value = value
+        print(f"   {key}: {display_value}")
+    print("=" * 80)
+    # ===============================================
+    
     # New consolidated tools
     if function_name == "project_manager":
         return project_manager_internal(arguments)
@@ -2764,6 +2809,31 @@ def chat():
                     s = str(arguments_value or "")
                     if not s:
                         return "{}"
+                    
+                    # ENHANCED: Handle large content that corrupts JSON
+                    # If the string is very large, it likely contains content that's breaking JSON
+                    if len(s) > 10000:  # 10KB threshold
+                        print(f"TOOL_ARGS_WARNING: Very large tool arguments ({len(s)} chars) - potential JSON corruption risk")
+                        
+                        # Try to extract just the key-value pairs and handle large content specially
+                        try:
+                            # Look for the 'content' field and truncate it for parsing, then restore it
+                            content_match = _re.search(r'"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', s)
+                            if content_match:
+                                large_content = content_match.group(1)
+                                # Replace the large content with a placeholder for JSON parsing
+                                s_safe = s.replace(content_match.group(0), '"content": "__LARGE_CONTENT_PLACEHOLDER__"')
+                                try:
+                                    obj = _json.loads(s_safe)
+                                    # Restore the actual content (unescaped)
+                                    obj['content'] = large_content.encode().decode('unicode_escape')
+                                    return _json.dumps(obj, separators=(",", ":"))
+                                except Exception as e:
+                                    print(f"TOOL_ARGS_ERROR: Large content parsing failed: {e}")
+                        except Exception as e:
+                            print(f"TOOL_ARGS_ERROR: Large content extraction failed: {e}")
+                    
+                    # Original parsing logic for normal-sized content
                     try:
                         obj = _json.loads(s)
                         return _json.dumps(obj, separators=(",", ":"))
@@ -2925,6 +2995,72 @@ def chat():
                     print(f"LITELLM_PREP: WARNING - High token count ({total_tokens} tokens), may hit limits!")
                 if total_chars > 500000:
                     print(f"LITELLM_PREP: CRITICAL - Massive char count ({total_chars} chars), likely has unprocessed base64!")
+                
+                # CRITICAL: Check for HTTP corruption risk
+                if total_chars > 300000:
+                    print(f"🚨 HTTP_CORRUPTION_RISK: Conversation is {total_chars} chars - may cause chunked encoding errors!")
+                    print("💡 SOLUTION: Start a new conversation to prevent HTTP streaming failures")
+                    
+                    # Force conversation pruning to prevent corruption
+                    print("🔧 EMERGENCY_PRUNE: Forcing SMART conversation pruning to prevent HTTP failure")
+                    
+                    # SMART PRUNING: Preserve tool call/response structure
+                    pruned_messages = []
+                    
+                    # Always keep system message if present
+                    if openai_messages and openai_messages[0].get('role') == 'system':
+                        pruned_messages.append(openai_messages[0])
+                        start_idx = 1
+                    else:
+                        start_idx = 0
+                    
+                    # Keep only last 15 messages, but ensure tool call/response pairs are preserved
+                    target_recent_count = 15
+                    recent_start = max(start_idx, len(openai_messages) - target_recent_count)
+                    
+                    # Scan backwards to find a safe cut point (not in middle of tool call/response)
+                    safe_cut_point = recent_start
+                    for i in range(recent_start, 0, -1):  # Scan backwards
+                        msg = openai_messages[i]
+                        if msg.get('role') == 'assistant' and not msg.get('tool_calls'):
+                            # Found a clean assistant message with no tool calls - safe cut point
+                            safe_cut_point = i
+                            break
+                        elif msg.get('role') == 'user':
+                            # User messages are always safe cut points
+                            safe_cut_point = i
+                            break
+                    
+                    # Add recent messages starting from safe cut point
+                    for i in range(safe_cut_point, len(openai_messages)):
+                        pruned_messages.append(openai_messages[i])
+                    
+                    # Validate no orphaned tool responses
+                    active_tool_calls = set()
+                    for msg in pruned_messages:
+                        if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                            for tc in msg['tool_calls']:
+                                if 'id' in tc:
+                                    active_tool_calls.add(tc['id'])
+                        elif msg.get('role') == 'tool' and msg.get('tool_call_id'):
+                            active_tool_calls.discard(msg['tool_call_id'])
+                    
+                    if active_tool_calls:
+                        print(f"🚨 PRUNE_ERROR: Found orphaned tool calls: {active_tool_calls}")
+                        # Fallback: just use last user+assistant pair
+                        user_assistant_pair = []
+                        if openai_messages and openai_messages[0].get('role') == 'system':
+                            user_assistant_pair.append(openai_messages[0])
+                        # Find last complete user message
+                        for i in range(len(openai_messages) - 1, -1, -1):
+                            if openai_messages[i].get('role') == 'user':
+                                user_assistant_pair.append(openai_messages[i])
+                                break
+                        pruned_messages = user_assistant_pair
+                    
+                    openai_messages = pruned_messages
+                    total_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages)
+                    print(f"🔧 EMERGENCY_PRUNE: Reduced to {len(openai_messages)} messages, {total_chars} chars")
                 
                 # Resilient model call with 5 retries (1 second each) then fallback to GPT-5
                 attempts = 0
@@ -3317,12 +3453,36 @@ def chat():
                             
                             yield json.dumps({"tool_starting": "image_operation", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
                             
-                            # Log tool call
-                            log_tool_call("image_operation", tool_id, arguments)
+                            # ============ CLEAR TOOL CALL LOGGING ============
+                            print("=" * 80)
+                            print(f"BACKEND TOOL CALLED: image_operation")
+                            print(f"TOOL ID: {tool_id}")
+                            print("ARGUMENTS:")
                             try:
                                 arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
                             except json.JSONDecodeError:
                                 arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            # ===============================================
+                            
+                            # EARLY VALIDATION: Check for oversized arguments that could corrupt JSON
+                            total_args_size = sum(len(str(v)) for v in arguments.values() if v is not None)
+                            if total_args_size > 10000:  # 10KB threshold
+                                print(f"⚠️  LARGE_ARGS_WARNING: Tool {func['name']} has {total_args_size} chars of arguments - potential corruption risk")
+                                # Check for specific large content fields
+                                if 'content' in arguments and isinstance(arguments['content'], str) and len(arguments['content']) > 5000:
+                                    print(f"⚠️  LARGE_CONTENT_WARNING: 'content' field has {len(arguments['content'])} chars - this may corrupt tool calls")
+                                    print("💡 SUGGESTION: Break large files into smaller chunks or use incremental operations")
+                            
+                            # Log tool call
+                            log_tool_call("image_operation", tool_id, arguments)
                             
                             # AI now intelligently specifies which images to use via the 'images' parameter
                             # Execute the operation with conversation context (with cooperative cancellation)
@@ -3395,12 +3555,27 @@ def chat():
                             
                             yield json.dumps({"tool_starting": "search_across_project", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
                             
-                            # Log tool call
-                            log_tool_call("search_across_project", tool_id, arguments)
+                            # ============ CLEAR TOOL CALL LOGGING ============
+                            print("=" * 80)
+                            print(f"🔍 BACKEND TOOL CALLED: search_across_project")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            print("📋 ARGUMENTS:")
                             try:
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
                             except Exception:
                                 arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            # ===============================================
+                            
+                            # Log tool call
+                            log_tool_call("search_across_project", tool_id, arguments)
                             # Ensure project_root is provided (fallback to header)
                             if not arguments.get('project_root'):
                                 hdr_root = request.headers.get('X-Project-Root')
@@ -3480,12 +3655,27 @@ def chat():
                             
                             yield json.dumps({"tool_starting": "search_across_godot_docs", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
                             
-                            # Log tool call
-                            log_tool_call("search_across_godot_docs", tool_id, arguments)
+                            # ============ CLEAR TOOL CALL LOGGING ============
+                            print("=" * 80)
+                            print(f"📚 BACKEND TOOL CALLED: search_across_godot_docs")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            print("📋 ARGUMENTS:")
                             try:
                                 arguments = json.loads(func["arguments"]) if func.get("arguments") else {}
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
                             except Exception:
                                 arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            # ===============================================
+                            
+                            # Log tool call
+                            log_tool_call("search_across_godot_docs", tool_id, arguments)
                             # Execute docs search with cancellation poll
                             from threading import Thread
                             _tool_result_holder = {"done": False, "result": None}
@@ -3830,10 +4020,25 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "project_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # ============ CLEAR TOOL CALL LOGGING ============
+                            print("=" * 80)
+                            print(f"📁 BACKEND TOOL CALLED: project_manager")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            print("📋 ARGUMENTS:")
                             try:
                                 arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
                             except json.JSONDecodeError:
                                 arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            # ===============================================
                             
                             # Inject project_root/project_path from Flask context if not provided
                             if not arguments.get('project_root') and not arguments.get('project_path') and hasattr(g, 'project_root') and g.project_root:
@@ -3869,10 +4074,25 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "search_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # ============ CLEAR TOOL CALL LOGGING ============
+                            print("=" * 80)
+                            print(f"🔎 BACKEND TOOL CALLED: search_manager")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            print("📋 ARGUMENTS:")
                             try:
                                 arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
                             except json.JSONDecodeError:
                                 arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            # ===============================================
                             
                             # Inject project_root from Flask context if not provided
                             if not arguments.get('project_root') and hasattr(g, 'project_root') and g.project_root:
@@ -3922,10 +4142,25 @@ def chat():
                                 return
                             
                             yield json.dumps({"tool_starting": "resource_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # ============ CLEAR TOOL CALL LOGGING ============
+                            print("=" * 80)
+                            print(f"BACKEND TOOL CALLED: resource_manager")
+                            print(f"TOOL ID: {tool_id}")
+                            print("📋 ARGUMENTS:")
                             try:
                                 arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
                             except json.JSONDecodeError:
                                 arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            # ===============================================
                             
                             # Execute resource_manager with threading support for image operations
                             from threading import Thread
@@ -4165,7 +4400,18 @@ def chat():
                 pass
 
     # Preserve request context during streaming to avoid 'Working outside of request context'.
-    return Response(stream_with_context(generate_stream()), mimetype='application/x-ndjson')
+    # Add error handling for large responses that can corrupt HTTP chunked encoding
+    try:
+        return Response(stream_with_context(generate_stream()), mimetype='application/x-ndjson')
+    except Exception as e:
+        print(f"STREAMING_ERROR: {e}")
+        # Fallback: return a simple error response instead of streaming
+        return jsonify({
+            "error": "Streaming failed due to large conversation size",
+            "suggestion": "Try starting a new conversation or using shorter responses",
+            "status": "error",
+            "error_type": "streaming_failure"
+        }), 500
 
 @app.route('/generate_script', methods=['POST'])
 def generate_script():
