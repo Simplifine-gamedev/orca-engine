@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "ai_chat_dock_types.h"
 #include "ai_tool_server.h"
 #include "ai_chat_history_manager.h"
 #include "common.h"
@@ -69,6 +70,19 @@ class HFlowContainer;
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
 
+	// Friend classes for modular access to private members
+	friend class AIChatDockEmbedding;
+	friend class AIChatDockAuth;
+	friend class AIChatDockTools;
+	friend class AIChatDockUI;
+	friend class AIChatDockMedia;
+	friend class AIChatDockAttachment;
+	friend class AIChatDockNotification;
+	friend class AIChatDockNetwork;
+	friend class AIChatDockCheckpoint;
+	friend class AIChatDockDiff;
+	friend class AIChatDockAsset;
+
 public:
 	// Static singleton-like access for script editor integration
 	static AIChatDock *singleton;
@@ -99,54 +113,14 @@ private:
 		return nullptr;
 	}
 
-	struct AttachedFile {
-		String path;
-		String name;
-		String content;
-		bool is_image = false;
-		String mime_type;
-		String base64_data; // For images encoded for API
-		Vector2i original_size = Vector2i(0, 0);
-		Vector2i display_size = Vector2i(0, 0);
-		bool was_downsampled = false;
-		// Node support
-		bool is_node = false;
-		NodePath node_path;
-		String node_type;
-	};
-
-	struct ChatMessage {
-		String role; // "user", "assistant", or "tool"
-		String content;
-		String timestamp;
-		// For assistant tool calls.
-		Array tool_calls;
-		// For tool responses.
-		String tool_call_id;
-		String name;
-		// For attached files
-		Vector<AttachedFile> attached_files;
-		// For storing tool execution results (like generated images)
-		Array tool_results;
-		// For automatic project context injection (not displayed in UI)
-		String project_context;
-		// For thinking mode (reasoning content)
-		String reasoning_content;
-		Array thinking_blocks;
-	};
+	// Type aliases for backward compatibility and convenience
+	using AttachedFile = AIChatDockTypes::AttachedFile;
+	using ChatMessage = AIChatDockTypes::ChatMessage;
 
 	// Track pending apply_edit operations: path -> {bubble_node_path, status_label_path, bubble_container}
 	Dictionary pending_edits;
 
-	struct Conversation {
-		String id;
-		String title;
-		String created_timestamp;
-		String last_modified_timestamp;
-		Vector<ChatMessage> messages;
-		// Persistent pending edits - only for edits that haven't been accepted/rejected
-		HashMap<String, String> pending_apply_edits; // tool_call_id -> file_path
-	};
+	using Conversation = AIChatDockTypes::Conversation;
 
 	// Attachment safety limits to protect model context
 	static const int64_t MAX_TEXT_ATTACHMENT_PREVIEW_BYTES = 64 * 1024; // Read at most 64 KiB from disk
@@ -301,6 +275,7 @@ private:
 	void _on_stop_button_pressed();
 	void _on_show_project_graph_pressed();
 	void _reset_connection_error_flag();
+	void _setup_ui_components();
 	void _process_send_request_async();
 	void _send_stop_request();
 	void _on_stop_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -423,8 +398,8 @@ private:
 	void _switch_to_conversation(int p_index);
 	void _update_conversation_dropdown();
 	String _generate_conversation_id();
-	String _generate_conversation_title(const Vector<AIChatDock::ChatMessage> &p_messages);
-	Vector<AIChatDock::ChatMessage> &_get_current_chat_history();
+	String _generate_conversation_title(const Vector<ChatMessage> &p_messages);
+	Vector<ChatMessage> &_get_current_chat_history();
 
 	void _on_tool_file_link_pressed(const String &p_path);
 	String _convert_to_godot_path(const String &p_path);

@@ -1,0 +1,265 @@
+/*
+ * © 2025 Simplifine Corp.
+ * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
+ * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from Simplifine.
+ */
+
+#include "ai_chat_dock_notification.h"
+#include "ai_chat_dock.h"
+#include "core/os/os.h"
+#include "core/os/time.h"
+#include "scene/gui/label.h"
+#include "scene/gui/button.h"
+#include "scene/gui/panel_container.h"
+#include "scene/resources/style_box_flat.h"
+#include "scene/main/scene_tree.h"
+#include "editor/editor_node.h"
+
+// ========== NOTIFICATION SYSTEM IMPLEMENTATION ==========
+
+void AIChatDockNotification::show_status_notification(AIChatDock *p_dock, const String &p_type, const String &p_message, const String &p_icon, float p_duration) {
+	// Implementation moved from main file - simplified for now
+	print_line("AI Chat: Status notification: [" + p_type + "] " + p_message);
+	// TODO: Restore full notification UI implementation
+}
+
+void AIChatDockNotification::show_summarization_notification(AIChatDock *p_dock, int p_original_count, int p_summary_tokens) {
+	print_line("AI Chat: Summarization notification: " + String::num_int64(p_original_count) + " -> " + String::num_int64(p_summary_tokens) + " tokens");
+}
+
+void AIChatDockNotification::show_connection_status_notification(AIChatDock *p_dock, const String &p_status, const String &p_message) {
+	print_line("AI Chat: Connection status: " + p_status + " - " + p_message);
+}
+
+void AIChatDockNotification::show_rate_limit_notification(AIChatDock *p_dock, const String &p_provider, const String &p_message) {
+	print_line("AI Chat: Rate limit: " + p_provider + " - " + p_message);
+}
+
+void AIChatDockNotification::show_model_switch_notification(AIChatDock *p_dock, const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
+	print_line("AI Chat: Model switch: " + p_from_provider + " -> " + p_to_provider + " (" + p_reason + ")");
+}
+
+void AIChatDockNotification::hide_status_notification(AIChatDock *p_dock) {
+	// TODO: Implement
+}
+
+void AIChatDockNotification::on_status_notification_timer_timeout(AIChatDock *p_dock) {
+	// TODO: Implement
+}
+
+void AIChatDockNotification::show_rate_limit_popup(AIChatDock *p_dock, const String &p_provider, const String &p_message) {
+	print_line("AI Chat: Rate limit popup: " + p_provider + " - " + p_message);
+}
+
+void AIChatDockNotification::show_provider_switch_popup(AIChatDock *p_dock, const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
+	print_line("AI Chat: Provider switch popup: " + p_from_provider + " -> " + p_to_provider + " (" + p_reason + ")");
+}
+
+void AIChatDockNotification::hide_popup_after_delay(AIChatDock *p_dock, float p_delay_seconds) {
+	// TODO: Implement
+}
+
+void AIChatDockNotification::hide_rate_limit_popup(AIChatDock *p_dock) {
+	// TODO: Implement
+}
+void AIChatDock::_show_rate_limit_popup(const String &p_provider, const String &p_message) {
+	if (!rate_limit_popup) return;
+	
+	String popup_text = "[WARN] Rate Limit Reached\n\n";
+	popup_text += "Provider: " + p_provider + "\n";
+	popup_text += "Status: " + p_message + "\n\n";
+	popup_text += "The system will automatically retry and may switch to a different AI provider if needed.\n";
+	popup_text += "This popup will close automatically in 5 seconds.";
+	
+	rate_limit_popup->set_text(popup_text);
+	rate_limit_popup->popup_centered_ratio(0.4);
+	
+	// Auto-close after 5 seconds
+	call_deferred("_hide_popup_after_delay", 5.0);
+}
+
+void AIChatDock::_show_provider_switch_popup(const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
+	if (!rate_limit_popup) return;
+	
+	String popup_text = "[SWITCH] AI Provider Switched\n\n";
+	popup_text += "From: " + p_from_provider + "\n";
+	popup_text += "To: " + p_to_provider + "\n";
+	popup_text += "Reason: " + p_reason + "\n\n";
+	popup_text += "Your conversation will continue seamlessly with the new provider.\n";
+	popup_text += "This popup will close automatically in 4 seconds.";
+	
+	rate_limit_popup->set_text(popup_text);
+	rate_limit_popup->popup_centered_ratio(0.4);
+	
+	// Auto-close after 4 seconds
+	call_deferred("_hide_popup_after_delay", 4.0);
+}
+
+void AIChatDock::_hide_popup_after_delay(float p_delay_seconds) {
+	if (!rate_limit_popup || !rate_limit_popup->is_visible()) return;
+	
+	// Use a timer to hide the popup after delay
+	SceneTree *tree = get_tree();
+	if (tree) {
+		Ref<SceneTreeTimer> timer = tree->create_timer(p_delay_seconds);
+		timer->connect("timeout", callable_mp(this, &AIChatDock::_hide_rate_limit_popup));
+	}
+}
+
+void AIChatDock::_hide_rate_limit_popup() {
+	if (rate_limit_popup && rate_limit_popup->is_visible()) {
+		rate_limit_popup->hide();
+	}
+}
+
+void AIChatDock::_show_status_notification(const String &p_type, const String &p_message, const String &p_icon, float p_duration) {
+	if (!status_notification_panel) return;
+	
+	// Clear any existing content
+	for (int i = 0; i < status_notification_panel->get_child_count(); i++) {
+		Node *child = status_notification_panel->get_child(i);
+		child->queue_free();
+	}
+	
+	// Style the panel based on notification type
+	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
+	panel_style->set_content_margin_all(12);
+	panel_style->set_corner_radius_all(6);
+	panel_style->set_border_width_all(1);
+	
+	Color bg_color;
+	Color border_color;
+	Color text_color;
+	
+	if (p_type == "summarization") {
+		bg_color = get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("success_color"), SNAME("Editor"));
+	} else if (p_type == "rate_limit") {
+		bg_color = get_theme_color(SNAME("warning_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("warning_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("warning_color"), SNAME("Editor"));
+	} else if (p_type == "connection_error") {
+		bg_color = get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("error_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("error_color"), SNAME("Editor"));
+	} else if (p_type == "recovery") {
+		bg_color = get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 0.15); // Light blue for recovery
+		border_color = get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0);
+		text_color = get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0);
+	} else if (p_type == "model_switch") {
+		bg_color = get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
+	} else {
+		// Default info style
+		bg_color = get_theme_color(SNAME("base_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15);
+		border_color = get_theme_color(SNAME("contrast_color_1"), SNAME("Editor"));
+		text_color = get_theme_color(SNAME("font_color"), SNAME("Editor"));
+	}
+	
+	panel_style->set_bg_color(bg_color);
+	panel_style->set_border_color(border_color);
+	status_notification_panel->add_theme_style_override("panel", panel_style);
+	
+	// Create content
+	HBoxContainer *content_container = memnew(HBoxContainer);
+	status_notification_panel->add_child(content_container);
+	
+	// Icon
+	Label *icon_label = memnew(Label);
+	String icon_text = p_icon;
+	if (icon_text.is_empty()) {
+		if (p_type == "summarization") {
+			icon_text = "[INFO]";
+		} else if (p_type == "rate_limit") {
+			icon_text = "[WARN]";
+		} else if (p_type == "connection_error") {
+			icon_text = "[ERROR]";
+		} else if (p_type == "recovery") {
+			icon_text = "[TOOL]";
+		} else if (p_type == "model_switch") {
+			icon_text = "[SWITCH]";
+		} else {
+			icon_text = "[INFO]";
+		}
+	}
+	icon_label->set_text(icon_text);
+	icon_label->add_theme_font_size_override("font_size", 16);
+	content_container->add_child(icon_label);
+	
+	// Add some spacing
+	Control *spacer = memnew(Control);
+	spacer->set_custom_minimum_size(Size2(10, 0));
+	content_container->add_child(spacer);
+	
+	// Message text
+	Label *message_label = memnew(Label);
+	message_label->set_text(p_message);
+	message_label->add_theme_color_override("font_color", text_color);
+	message_label->add_theme_font_override("font", get_theme_font(SNAME("main"), SNAME("EditorFonts")));
+	message_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	message_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	content_container->add_child(message_label);
+	
+	// Close button
+	Button *close_button = memnew(Button);
+	close_button->set_text("X");
+	close_button->add_theme_font_size_override("font_size", 18);
+	close_button->add_theme_color_override("font_color", text_color);
+	close_button->set_custom_minimum_size(Size2(24, 24));
+	close_button->set_flat(true);
+	close_button->connect("pressed", callable_mp(this, &AIChatDock::_hide_status_notification));
+	content_container->add_child(close_button);
+	
+	// Show the notification
+	status_notification_panel->set_visible(true);
+	
+	// Set timer duration and start it
+	status_notification_timer->set_wait_time(p_duration);
+	status_notification_timer->start();
+}
+
+void AIChatDock::_show_summarization_notification(int p_original_count, int p_summary_tokens) {
+	Array format_args;
+	format_args.push_back(p_original_count);
+	format_args.push_back(p_summary_tokens);
+	String message = String("Conversation automatically summarized to manage context window ({0} messages -> {1} tokens)").format(format_args);
+	_show_status_notification("summarization", message, "[INFO]", 4.0);
+}
+
+void AIChatDock::_show_connection_status_notification(const String &p_status, const String &p_message) {
+	String display_message = p_message.is_empty() ? p_status : p_message;
+	_show_status_notification("connection_error", display_message, "[ERROR]", 5.0);
+}
+
+void AIChatDock::_show_rate_limit_notification(const String &p_provider, const String &p_message) {
+	Array format_args;
+	format_args.push_back(p_provider);
+	format_args.push_back(p_message);
+	String message = String("Rate limit reached for {0}. {1}").format(format_args);
+	_show_status_notification("rate_limit", message, "[WARN]", 5.0);
+}
+
+void AIChatDock::_show_model_switch_notification(const String &p_from_provider, const String &p_to_provider, const String &p_reason) {
+	Array format_args;
+	format_args.push_back(p_from_provider);
+	format_args.push_back(p_to_provider);
+	format_args.push_back(p_reason);
+	String message = String("Switched from {0} to {1}. Reason: {2}").format(format_args);
+	_show_status_notification("model_switch", message, "[SWITCH]", 4.0);
+}
+
+void AIChatDock::_hide_status_notification() {
+	if (status_notification_panel) {
+		status_notification_panel->set_visible(false);
+	}
+	if (status_notification_timer) {
+		status_notification_timer->stop();
+	}
+}
+
+void AIChatDock::_on_status_notification_timer_timeout() {
+	_hide_status_notification();
+}
+

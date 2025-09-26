@@ -1,0 +1,2454 @@
+/*
+ * © 2025 Simplifine Corp.
+ * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
+ * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from Simplifine.
+ */
+
+#include "ai_chat_dock_tools.h"
+#include "ai_chat_dock.h"
+#include "core/io/json.h"
+#include "core/os/os.h"
+#include "core/os/time.h"
+#include "scene/gui/button.h"
+#include "scene/gui/label.h"
+#include "scene/gui/tree.h"
+#include "scene/gui/text_edit.h"
+#include "scene/gui/rich_text_label.h"
+#include "scene/gui/scroll_container.h"
+#include "scene/gui/separator.h"
+#include "scene/gui/panel_container.h"
+#include "scene/gui/texture_rect.h"
+#include "scene/gui/code_edit.h"
+#include "scene/resources/style_box_flat.h"
+#include "core/config/project_settings.h"
+#include "editor/editor_node.h"
+#include "editor/editor_interface.h"
+#include "editor/settings/editor_settings.h"
+#include "../ai/editor_tools.h"
+
+// ========== TOOL EXECUTION IMPLEMENTATION ==========
+
+void AIChatDockTools::create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
+	// Implementation moved from main file - simplified for now
+	print_line("AI Chat: Creating tool UI for: " + p_tool_name + " (success: " + String(p_success ? "true" : "false") + ")");
+	// TODO: Restore full tool UI implementation
+}
+void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
+	Ref<JSON> json;
+	json.instantiate();
+	
+    // If this is node.props.get, render a lazy placeholder to avoid loading huge property sets until clicked
+    if (p_tool_name == "scene_manager") {
+        String op = p_args.get("op", p_args.get("operation", ""));
+        if (op == "node.props.get") {
+            _create_lazy_node_props_ui(p_content_vbox, p_result, p_args);
+            return;
+        }
+    }
+
+    // PERFORMANCE: Check if we should truncate this tool result for faster loading
+    if (_should_truncate_tool_result(p_tool_name, p_result)) {
+		_create_truncated_tool_ui(p_content_vbox, p_tool_name, p_result);
+		return;
+	}
+	
+	// Create specific UI based on the tool that was called
+	if (p_tool_name == "list_project_files" && p_success) {
+		VBoxContainer *files_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(files_vbox);
+
+		Array files = p_result.get("files", Array());
+		
+		Label *count_label = memnew(Label);
+		count_label->set_text("Found " + String::num_int64(files.size()) + " files:");
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		files_vbox->add_child(count_label);
+		
+		// PERFORMANCE: Limit files display for faster UI
+		int max_display_files = 20; // Show max 20 files initially
+		int files_to_show = MIN(files.size(), max_display_files);
+		bool files_truncated = files.size() > max_display_files;
+		
+		if (files_truncated) {
+			Label *truncation_warning = memnew(Label);
+			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_files) + " files only (performance optimized)");
+			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			files_vbox->add_child(truncation_warning);
+			
+			// Add expand button for full tree view
+			Button *expand_files_button = memnew(Button);
+			expand_files_button->set_text("Show all " + String::num_int64(files.size()) + " files");
+			expand_files_button->set_flat(true);
+			expand_files_button->add_theme_icon_override("icon", get_theme_icon(SNAME("GuiVisibilityVisible"), SNAME("EditorIcons")));
+			expand_files_button->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			expand_files_button->set_meta("full_files", files);
+			expand_files_button->connect("pressed", callable_mp(this, &AIChatDock::_expand_full_files_tree).bind(expand_files_button, files_vbox));
+			files_vbox->add_child(expand_files_button);
+		}
+		
+		// Create simplified file list for better performance
+		VBoxContainer *files_list = memnew(VBoxContainer);
+		files_list->set_name("files_list_container");
+		
+		for (int i = 0; i < files_to_show; i++) {
+			Variant f = files[i];
+			String file_path;
+			int64_t line_count = -1;
+			
+			if (f.get_type() == Variant::DICTIONARY) {
+				Dictionary fd = f;
+				file_path = fd.get("path", String());
+				line_count = (int64_t)fd.get("line_count", (int64_t)-1);
+				if (file_path.is_empty() && fd.has("name")) {
+					file_path = String(fd.get("name", String()));
+				}
+			} else {
+				file_path = String(f);
+			}
+			
+			if (file_path.is_empty()) continue;
+			
+			HBoxContainer *file_row = memnew(HBoxContainer);
+			files_list->add_child(file_row);
+			
+			// File icon
+			TextureRect *file_icon = memnew(TextureRect);
+			file_icon->set_texture(get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+			file_icon->set_custom_minimum_size(Size2(16, 16));
+			file_row->add_child(file_icon);
+			
+			// File path button (clickable)
+			Button *file_button = memnew(Button);
+			file_button->set_text(file_path);
+			file_button->set_flat(true);
+			file_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+			file_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			file_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(file_path));
+			file_row->add_child(file_button);
+			
+			// Line count info
+			if (line_count >= 0) {
+				Label *line_count_label = memnew(Label);
+				line_count_label->set_text("(" + String::num_int64(line_count) + " lines)");
+				line_count_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+				line_count_label->add_theme_font_size_override("font_size", 10);
+				file_row->add_child(line_count_label);
+			}
+		}
+		
+		// Wrap in scroll container
+		ScrollContainer *files_scroll = memnew(ScrollContainer);
+		files_scroll->set_custom_minimum_size(Size2(0, 200));
+		files_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+		files_scroll->add_child(files_list);
+		files_vbox->add_child(files_scroll);
+
+    } else if ((p_tool_name == "read_file" || p_tool_name == "read_file_content" || p_tool_name == "read_file_advanced") && p_success) {
+		VBoxContainer *file_content_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(file_content_vbox);
+
+		// Get the file path from the original arguments
+        String file_path = p_args.get("path", p_result.get("file_path", "Unknown file"));
+		String display_path = _convert_to_godot_path(file_path);
+		
+		Button *file_link = memnew(Button);
+		file_link->set_text(display_path);
+		file_link->set_flat(true);
+		file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		file_link->add_theme_icon_override("icon", get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+		file_link->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(file_path));
+		file_content_vbox->add_child(file_link);
+
+		TextEdit *file_content = memnew(TextEdit);
+		file_content->set_text(p_result.get("content", ""));
+		file_content->set_editable(false);
+		file_content->set_custom_minimum_size(Size2(0, 300));
+		file_content_vbox->add_child(file_content);
+
+	} else if (p_tool_name == "get_scene_info" && p_success) {
+		VBoxContainer *scene_info_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(scene_info_vbox);
+
+		Dictionary root_node = p_result.get("root_node", Dictionary());
+		String scene_name = p_result.get("scene_name", "Unknown");
+		
+		// Scene info summary
+		Label *scene_label = memnew(Label);
+		scene_label->set_text("Scene: " + scene_name);
+		scene_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		scene_info_vbox->add_child(scene_label);
+		
+		if (!root_node.is_empty()) {
+			HBoxContainer *root_hbox = memnew(HBoxContainer);
+			scene_info_vbox->add_child(root_hbox);
+			
+			Label *root_label = memnew(Label);
+			String root_name = root_node.get("name", "Unknown");
+			String root_type = root_node.get("type", "Unknown");
+			root_label->set_text("Root Node: " + root_name + " (" + root_type + ")");
+			root_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Node"), SNAME("EditorIcons")));
+			root_hbox->add_child(root_label);
+			
+			// Child count
+			int child_count = root_node.get("child_count", 0);
+			Label *child_label = memnew(Label);
+			child_label->set_text("Children: " + String::num_int64(child_count));
+			root_hbox->add_child(child_label);
+		}
+
+	} else if (p_tool_name == "get_all_nodes" && p_success) {
+		VBoxContainer *nodes_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(nodes_vbox);
+
+		Array nodes = p_result.get("nodes", Array());
+		bool truncated = p_result.get("truncated", false);
+		
+		Label *count_label = memnew(Label);
+		String count_text = "Found " + String::num_int64(nodes.size()) + " nodes";
+		if (truncated) {
+			count_text += " (truncated - scene has more nodes)";
+		}
+		count_text += ":";
+		count_label->set_text(count_text);
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		nodes_vbox->add_child(count_label);
+		
+		// AGGRESSIVE PERFORMANCE FIX: Much smaller limits for UI responsiveness
+		int max_display_nodes = 15; // Reduced from 50 to 15 for faster loading
+		int nodes_to_show = MIN(nodes.size(), max_display_nodes);
+		bool ui_truncated = nodes.size() > max_display_nodes;
+		
+		if (ui_truncated) {
+			Label *truncation_warning = memnew(Label);
+			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " nodes only (performance optimized)");
+			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			nodes_vbox->add_child(truncation_warning);
+			
+			// Add expand button for full view
+			Button *expand_all_button = memnew(Button);
+			expand_all_button->set_text("Show all " + String::num_int64(nodes.size()) + " nodes");
+			expand_all_button->set_flat(true);
+			expand_all_button->add_theme_icon_override("icon", get_theme_icon(SNAME("GuiVisibilityVisible"), SNAME("EditorIcons")));
+			expand_all_button->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			expand_all_button->set_meta("full_nodes", nodes);
+			expand_all_button->connect("pressed", callable_mp(this, &AIChatDock::_expand_full_nodes_list).bind(expand_all_button, nodes_vbox));
+			nodes_vbox->add_child(expand_all_button);
+		}
+		
+		// Create a simplified list instead of tree for better performance
+		VBoxContainer *nodes_list = memnew(VBoxContainer);
+		nodes_list->set_name("nodes_list_container");
+		
+		// Only populate UI with limited number of nodes to prevent freezing
+		for (int i = 0; i < nodes_to_show; i++) {
+			Dictionary node = nodes[i];
+			
+			HBoxContainer *node_row = memnew(HBoxContainer);
+			nodes_list->add_child(node_row);
+			
+			// Node icon
+			TextureRect *node_icon = memnew(TextureRect);
+			node_icon->set_texture(get_theme_icon(SNAME("Node"), SNAME("EditorIcons")));
+			node_icon->set_custom_minimum_size(Size2(16, 16));
+			node_row->add_child(node_icon);
+			
+			// Node info
+			Label *node_label = memnew(Label);
+			String name = node.get("name", "Unknown");
+			String type = node.get("type", "Unknown");
+			int child_count = node.get("child_count", -1);
+			
+			String node_text = name + " (" + type + ")";
+			if (child_count >= 0) {
+				node_text += " [" + String::num_int64(child_count) + " children]";
+			}
+			
+			node_label->set_text(node_text);
+			node_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			node_row->add_child(node_label);
+		}
+		
+		// Wrap in scroll container for large lists
+		ScrollContainer *nodes_scroll = memnew(ScrollContainer);
+		nodes_scroll->set_custom_minimum_size(Size2(0, 150));
+		nodes_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+		nodes_scroll->add_child(nodes_list);
+		nodes_vbox->add_child(nodes_scroll);
+
+	} else if (p_tool_name == "create_node" && p_success) {
+		VBoxContainer *create_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(create_vbox);
+
+		String node_path = p_result.get("node_path", "Unknown");
+		String node_type = p_args.get("type", "Unknown");
+		String node_name = p_args.get("name", "Unknown");
+		String parent_path = p_args.get("parent", "Scene Root");
+		
+		HBoxContainer *node_hbox = memnew(HBoxContainer);
+		create_vbox->add_child(node_hbox);
+		
+		Label *node_label = memnew(Label);
+		node_label->set_text("Created: " + node_name + " (" + node_type + ")");
+		node_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Node"), SNAME("EditorIcons")));
+		node_hbox->add_child(node_label);
+		
+		Label *parent_label = memnew(Label);
+		parent_label->set_text("Parent: " + parent_path);
+		parent_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+		create_vbox->add_child(parent_label);
+
+	} else if (p_tool_name == "search_nodes_by_type" && p_success) {
+		VBoxContainer *search_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(search_vbox);
+
+		Array nodes = p_result.get("nodes", Array());
+		String node_type = p_args.get("node_type", p_args.get("type", "Unknown"));
+		bool search_truncated = p_result.get("truncated", false);
+		
+		Label *count_label = memnew(Label);
+		String count_text = "Found " + String::num_int64(nodes.size()) + " nodes of type: " + node_type;
+		if (search_truncated) {
+			count_text += " (search truncated - scene may have more)";
+		}
+		count_label->set_text(count_text);
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		search_vbox->add_child(count_label);
+		
+		if (nodes.size() > 0) {
+			// AGGRESSIVE PERFORMANCE FIX: Much smaller limits for UI responsiveness
+			int max_display_nodes = 10; // Reduced from 30 to 10 for faster loading
+			int nodes_to_show = MIN(nodes.size(), max_display_nodes);
+			bool ui_truncated = nodes.size() > max_display_nodes;
+			
+			if (ui_truncated) {
+				Label *truncation_warning = memnew(Label);
+				truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " results only (performance optimized)");
+				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				search_vbox->add_child(truncation_warning);
+				
+				// Add expand button for full view
+				Button *expand_search_button = memnew(Button);
+				expand_search_button->set_text("Show all " + String::num_int64(nodes.size()) + " results");
+				expand_search_button->set_flat(true);
+				expand_search_button->add_theme_icon_override("icon", get_theme_icon(SNAME("GuiVisibilityVisible"), SNAME("EditorIcons")));
+				expand_search_button->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+				expand_search_button->set_meta("full_nodes", nodes);
+				expand_search_button->connect("pressed", callable_mp(this, &AIChatDock::_expand_full_search_results).bind(expand_search_button, search_vbox));
+				search_vbox->add_child(expand_search_button);
+			}
+			
+			// Create simplified list instead of tree for better performance
+			VBoxContainer *search_results_list = memnew(VBoxContainer);
+			search_results_list->set_name("search_results_container");
+			
+			// Only create UI for limited number to prevent UI freezing
+			for (int i = 0; i < nodes_to_show; i++) {
+				Dictionary node = nodes[i];
+				
+				HBoxContainer *node_row = memnew(HBoxContainer);
+				search_results_list->add_child(node_row);
+				
+				// Node icon
+				TextureRect *node_icon = memnew(TextureRect);
+				node_icon->set_texture(get_theme_icon(SNAME("Node"), SNAME("EditorIcons")));
+				node_icon->set_custom_minimum_size(Size2(16, 16));
+				node_row->add_child(node_icon);
+				
+				// Node info
+				Label *node_label = memnew(Label);
+				String name = node.get("name", "Unknown");
+				String path = node.get("path", "");
+				
+				node_label->set_text(name + " - " + path);
+				node_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+				node_row->add_child(node_label);
+			}
+			
+			// Wrap in scroll container
+			ScrollContainer *results_scroll = memnew(ScrollContainer);
+			results_scroll->set_custom_minimum_size(Size2(0, 120));
+			results_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+			results_scroll->add_child(search_results_list);
+			search_vbox->add_child(results_scroll);
+		}
+
+	} else if (p_tool_name == "search_across_godot_docs" && p_success) {
+		// Compact rows that expand on demand; keep DOM light by toggling two nodes
+		Array results = p_result.get("results", Array());
+		Label *count_label = memnew(Label);
+		count_label->set_text("Docs results: " + String::num_int64(results.size()));
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		p_content_vbox->add_child(count_label);
+
+		for (int i = 0; i < results.size(); i++) {
+			if (results[i].get_type() != Variant::DICTIONARY) continue;
+			Dictionary r = results[i];
+			String title = r.get("title", "(untitled)");
+			String snippet = r.get("snippet", "");
+			String full_text = r.get("full_content", snippet);
+			String file_path = r.get("file_path", "");
+			double sim = r.get("similarity", 0.0);
+
+			PanelContainer *row = memnew(PanelContainer);
+			Ref<StyleBoxFlat> sb = memnew(StyleBoxFlat);
+			sb->set_bg_color(get_theme_color(SNAME("base_color"), SNAME("Editor")) * Color(1.02, 1.02, 1.06, 1));
+			sb->set_border_width_all(1);
+			sb->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+			sb->set_corner_radius_all(6);
+			sb->set_content_margin_all(12);
+			// Subtle accent on the left for visual grouping
+			sb->set_border_width(SIDE_LEFT, 3);
+			sb->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+			row->add_theme_style_override("panel", sb);
+			p_content_vbox->add_child(row);
+
+			VBoxContainer *holder = memnew(VBoxContainer);
+			holder->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			row->add_child(holder);
+
+			// Header row: title + score
+			HBoxContainer *hdr = memnew(HBoxContainer);
+			holder->add_child(hdr);
+			Label *t = memnew(Label);
+			t->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			t->set_text(title);
+			t->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			hdr->add_child(t);
+			Label *score = memnew(Label);
+			score->set_text("  |  sim: " + String::num_real(sim).substr(0, 5));
+			score->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			hdr->add_child(score);
+
+			// Collapsed snippet node
+			RichTextLabel *snippet_rt = memnew(RichTextLabel);
+			snippet_rt->set_fit_content(true);
+			snippet_rt->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
+			snippet_rt->set_custom_minimum_size(Size2(0, 100));
+			snippet_rt->set_text(snippet);
+			holder->add_child(snippet_rt);
+
+			// Expanded full text node (initially hidden)
+			RichTextLabel *full_rt = memnew(RichTextLabel);
+			full_rt->set_fit_content(false); // allow internal scroll
+			full_rt->set_scroll_active(true);
+			full_rt->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
+			full_rt->set_v_size_flags(Control::SIZE_FILL);
+			full_rt->set_custom_minimum_size(Size2(0, 320));
+			full_rt->set_selection_enabled(true);
+			full_rt->set_text(full_text);
+			full_rt->set_visible(false);
+			holder->add_child(full_rt);
+
+			HBoxContainer *btns = memnew(HBoxContainer);
+			holder->add_child(btns);
+			Button *toggle_btn = memnew(Button);
+			toggle_btn->set_text("Show more");
+			toggle_btn->set_flat(true);
+			btns->add_child(toggle_btn);
+			toggle_btn->connect("pressed", callable_mp(this, &AIChatDock::_toggle_docs_card).bind(snippet_rt, full_rt, toggle_btn, holder));
+
+			if (!file_path.is_empty()) {
+				Label *fp = memnew(Label);
+				fp->set_text(file_path);
+				fp->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+				holder->add_child(fp);
+			}
+		}
+
+	} else if (p_tool_name == "get_editor_selection" && p_success) {
+		VBoxContainer *selection_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(selection_vbox);
+
+		Array selected_nodes = p_result.get("selected_nodes", Array());
+		
+		Label *count_label = memnew(Label);
+		count_label->set_text("Selected Nodes: " + String::num_int64(selected_nodes.size()));
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		selection_vbox->add_child(count_label);
+		
+		if (selected_nodes.size() > 0) {
+			for (int i = 0; i < selected_nodes.size(); i++) {
+				Dictionary node = selected_nodes[i];
+				HBoxContainer *node_hbox = memnew(HBoxContainer);
+				selection_vbox->add_child(node_hbox);
+				
+				Label *node_label = memnew(Label);
+				String name = node.get("name", "Unknown");
+				String type = node.get("type", "Unknown");
+				node_label->set_text(name + " (" + type + ")");
+				node_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Node"), SNAME("EditorIcons")));
+				node_hbox->add_child(node_label);
+			}
+		} else {
+			Label *empty_label = memnew(Label);
+			empty_label->set_text("No nodes selected");
+			empty_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			selection_vbox->add_child(empty_label);
+		}
+
+	} else if (p_tool_name == "get_node_properties" && p_success) {
+		VBoxContainer *props_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(props_vbox);
+
+		String node_path = p_args.get("node_path", "Unknown");
+		Dictionary properties = p_result.get("properties", Dictionary());
+		
+		Label *node_label = memnew(Label);
+		node_label->set_text("Properties for: " + node_path);
+		node_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		props_vbox->add_child(node_label);
+		
+		if (properties.size() > 0) {
+			Tree *props_tree = memnew(Tree);
+			props_tree->set_hide_root(true);
+			props_tree->set_custom_minimum_size(Size2(0, 200));
+			props_tree->set_columns(2); // FIX: Set to 2 columns before accessing column 1
+			TreeItem *root = props_tree->create_item();
+			props_tree->set_column_title(0, "Property");
+			props_tree->set_column_title(1, "Value");
+			props_tree->set_column_titles_visible(true);
+			
+			Array keys = properties.keys();
+			for (int i = 0; i < keys.size(); i++) {
+				TreeItem *item = props_tree->create_item(root);
+				String key = keys[i];
+				String value = String(properties[key]);
+				item->set_text(0, key);
+				item->set_text(1, value);
+			}
+			props_vbox->add_child(props_tree);
+		}
+
+	} else if (p_tool_name == "delete_node" && p_success) {
+		VBoxContainer *delete_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(delete_vbox);
+
+		String node_path = p_args.get("node_path", "Unknown");
+		
+		HBoxContainer *delete_hbox = memnew(HBoxContainer);
+		delete_vbox->add_child(delete_hbox);
+		
+		Label *delete_label = memnew(Label);
+		delete_label->set_text("Deleted node: " + node_path);
+		delete_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Remove"), SNAME("EditorIcons")));
+		delete_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+		delete_hbox->add_child(delete_label);
+
+	} else if (p_tool_name == "set_node_property" && p_success) {
+		VBoxContainer *set_prop_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(set_prop_vbox);
+
+		String node_path = p_args.get("node_path", "Unknown");
+		String property = p_args.get("property", "Unknown");
+		String value = String(p_args.get("value", ""));
+		
+		Label *node_label = memnew(Label);
+		node_label->set_text("Updated: " + node_path);
+		node_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		set_prop_vbox->add_child(node_label);
+		
+		HBoxContainer *prop_hbox = memnew(HBoxContainer);
+		set_prop_vbox->add_child(prop_hbox);
+		
+		Label *prop_label = memnew(Label);
+		prop_label->set_text(property + " = " + value);
+		prop_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
+		prop_hbox->add_child(prop_label);
+	} else if (p_tool_name == "batch_set_node_properties" && p_success) {
+		VBoxContainer *batch_prop_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(batch_prop_vbox);
+
+		int applied = p_result.get("applied", 0);
+		Array failures = p_result.get("failures", Array());
+		Array operations = p_args.get("operations", Array());
+		
+		Label *summary_label = memnew(Label);
+		summary_label->set_text("Batch Update: " + String::num_int64(applied) + " properties updated");
+		summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		batch_prop_vbox->add_child(summary_label);
+		
+		// Show successful operations in a tree
+		if (applied > 0 && operations.size() > 0) {
+			Tree *props_tree = memnew(Tree);
+			props_tree->set_hide_root(true);
+			props_tree->set_custom_minimum_size(Size2(0, MIN(200, applied * 25 + 50)));
+			props_tree->set_columns(3);
+			props_tree->set_column_title(0, "Node");
+			props_tree->set_column_title(1, "Property");
+			props_tree->set_column_title(2, "Value");
+			props_tree->set_column_titles_visible(true);
+			TreeItem *root = props_tree->create_item();
+			
+			// Show successful operations (skip failures for now)
+			int success_count = 0;
+			for (int i = 0; i < operations.size() && success_count < applied; i++) {
+				Dictionary op = operations[i];
+				String node_path = op.get("path", "");
+				String property = op.get("property", "");
+				String value = String(op.get("value", ""));
+				
+				// Check if this operation failed by looking in failures array
+				bool op_failed = false;
+				for (int f = 0; f < failures.size(); f++) {
+					Dictionary failure = failures[f];
+					// Simple heuristic: if failure message contains node path and property, it's this op
+					String fail_msg = failure.get("message", "");
+					if (fail_msg.find(node_path) != -1 && fail_msg.find(property) != -1) {
+						op_failed = true;
+						break;
+					}
+				}
+				
+				if (!op_failed) {
+					TreeItem *item = props_tree->create_item(root);
+					item->set_text(0, node_path);
+					item->set_text(1, property);
+					item->set_text(2, value);
+					item->set_icon(0, get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
+					success_count++;
+				}
+			}
+			batch_prop_vbox->add_child(props_tree);
+		}
+		
+		if (failures.size() > 0) {
+			Label *failures_label = memnew(Label);
+			failures_label->set_text(String::num_int64(failures.size()) + " operations failed");
+			failures_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			batch_prop_vbox->add_child(failures_label);
+			
+			// Show first few failures
+			for (int i = 0; i < MIN(3, failures.size()); i++) {
+				Dictionary failure = failures[i];
+				String error_msg = failure.get("message", "Unknown error");
+				Label *error_label = memnew(Label);
+				error_label->set_text("- " + error_msg);
+				error_label->add_theme_font_size_override("font_size", 10);
+				error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+				batch_prop_vbox->add_child(error_label);
+			}
+		}
+
+    } else if (p_tool_name == "get_available_classes" && p_success) {
+		VBoxContainer *classes_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(classes_vbox);
+
+		Array classes = p_result.get("classes", Array());
+		
+		Label *count_label = memnew(Label);
+		count_label->set_text("Available Classes: " + String::num_int64(classes.size()));
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		classes_vbox->add_child(count_label);
+		
+		if (classes.size() > 0) {
+			Tree *classes_tree = memnew(Tree);
+			classes_tree->set_hide_root(true);
+			classes_tree->set_custom_minimum_size(Size2(0, 200));
+			TreeItem *root = classes_tree->create_item();
+			
+			for (int i = 0; i < classes.size(); i++) {
+				TreeItem *item = classes_tree->create_item(root);
+				String class_name = classes[i];
+				item->set_text(0, class_name);
+				item->set_icon(0, get_theme_icon(SNAME("Object"), SNAME("EditorIcons")));
+			}
+			classes_vbox->add_child(classes_tree);
+		}
+
+	} else if (p_tool_name == "move_node" && p_success) {
+		VBoxContainer *move_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(move_vbox);
+
+		String node_path = p_args.get("node_path", "Unknown");
+		String new_parent = p_args.get("new_parent", "Unknown");
+		
+		Label *move_label = memnew(Label);
+		move_label->set_text("Moved: " + node_path);
+		move_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		move_vbox->add_child(move_label);
+		
+		Label *parent_label = memnew(Label);
+		parent_label->set_text("New Parent: " + new_parent);
+		parent_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+		move_vbox->add_child(parent_label);
+	} else if (p_tool_name == "search_project_files" && p_success) {
+		VBoxContainer *search_files_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(search_files_vbox);
+
+		Array files = p_result.get("files", Array());
+		String search_term = p_args.get("search_term", "");
+		
+		Label *count_label = memnew(Label);
+		count_label->set_text("Found " + String::num_int64(files.size()) + " files matching: " + search_term);
+		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		search_files_vbox->add_child(count_label);
+		
+		if (files.size() > 0) {
+			Tree *files_tree = memnew(Tree);
+			files_tree->set_hide_root(true);
+			files_tree->set_custom_minimum_size(Size2(0, 200));
+			TreeItem *root = files_tree->create_item();
+			
+			for (int i = 0; i < files.size(); i++) {
+				String file_path = files[i];
+				TreeItem *item = files_tree->create_item(root);
+				item->set_text(0, file_path);
+				item->set_icon(0, get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+			}
+			search_files_vbox->add_child(files_tree);
+		}
+
+    } else if ((p_tool_name == "apply_edit" || 
+               (p_tool_name == "project_manager" && (p_args.get("op", "") == "fs.write" || p_args.get("op", "") == "fs.write_lines" || p_args.get("op", "") == "fs.replace_string"))) 
+               && p_success) {
+        // Simplified and highlighted file edit display
+        String file_path = p_args.has("path") ? p_args.get("path", "Unknown") : p_args.get("file_path", "Unknown");
+        String original_content = p_result.get("original_content", "");
+        String edited_content = p_result.get("edited_content", "");
+        String inline_diff = p_result.get("inline_diff", "");
+        Dictionary structured_edits = p_result.get("structured_edits", Dictionary());
+        Array comp_errors = p_result.get("compilation_errors", Array());
+        bool has_errors = p_result.get("has_errors", false);
+        
+        // (Debug logging of backend keys and inline_diff removed to reduce console noise during conversation reload.)
+        
+        // Get the tool call ID for proper tracking
+        String tool_call_id;
+        for (const KeyValue<String, String> &entry : pending_apply_edits) {
+            if (entry.value == file_path) {
+                tool_call_id = entry.key;
+                break;
+            }
+        }
+
+        // Only show previews and diffs for truly pending edits
+        bool is_truly_pending = false;
+        if (!tool_call_id.is_empty() && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+            is_truly_pending = conversations[current_conversation_index].pending_apply_edits.has(tool_call_id);
+        }
+        
+        // Make edited content visible to subsequent read_file calls before user accepts
+        if (!file_path.is_empty() && is_truly_pending) {
+            EditorTools::set_preview_overlay(file_path, edited_content);
+            
+            // For script files, show diff in script editor ONLY if this is the last tool editing this file
+            String ext = file_path.get_extension().to_lower();
+            bool is_script_like = (ext == "gd" || ext == "cs" || ext == "shader" || ext == "glsl");
+            if (is_script_like) {
+                // Do not pre-process content here. If backend provided inline_diff,
+                // we will render it in the ScriptEditor and apply the clean final content there.
+                // Any attempt to strip leading prefixes here risks corrupting indentation.
+            }
+        }
+
+        // Create a prominent file name display
+        VBoxContainer *edit_vbox = memnew(VBoxContainer);
+        edit_vbox->add_theme_constant_override("separation", 8);
+        p_content_vbox->add_child(edit_vbox);
+        
+        // File name with icon - make it stand out
+        HBoxContainer *file_hbox = memnew(HBoxContainer);
+        file_hbox->add_theme_constant_override("separation", 8);
+        edit_vbox->add_child(file_hbox);
+        
+        // File icon
+        TextureRect *file_icon = memnew(TextureRect);
+        file_icon->set_texture(get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+        file_icon->set_custom_minimum_size(Size2(24, 24));
+        file_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+        file_hbox->add_child(file_icon);
+        
+        // File path label - bold and larger
+        Label *file_label = memnew(Label);
+        String display_path = _convert_to_godot_path(file_path);
+        file_label->set_text(display_path);
+        file_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+        file_label->add_theme_font_size_override("font_size", 14);
+        file_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+        file_hbox->add_child(file_label);
+        
+        // Status message
+        Label *status = memnew(Label);
+        String status_text = "Edit applied to file";
+        // Show line range if it was a partial edit
+        int start_line = p_args.get("start_line", 0);
+        int end_line = p_args.get("end_line", 0);
+        if (start_line > 0 && end_line > 0) {
+            status_text += " (lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + ")";
+        }
+        if (has_errors) {
+            status_text += " - Errors detected (" + String::num_int64(comp_errors.size()) + ")";
+        }
+        status->set_text(status_text);
+        status->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
+        edit_vbox->add_child(status);
+
+        // Only show Apply/Discard buttons for truly pending edits (consistent with tool call buttons)
+        if (!file_path.is_empty() && is_truly_pending) {
+            HBoxContainer *btns = memnew(HBoxContainer);
+            btns->set_name("apply_discard_buttons");
+            edit_vbox->add_child(btns);
+
+            Button *apply_btn = memnew(Button);
+            apply_btn->set_name("apply_button");
+            // Tailor button text by type
+            bool is_script_like_btn = (file_path.get_extension().to_lower() == "gd" || file_path.get_extension().to_lower() == "cs" || file_path.get_extension().to_lower() == "shader" || file_path.get_extension().to_lower() == "glsl");
+            apply_btn->set_text(is_script_like_btn ? "Apply to Editor" : "Write file & open in Inspector");
+            apply_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
+            btns->add_child(apply_btn);
+            // Pass stable NodePaths for this bubble's buttons and status label so we can update reliably
+            NodePath btns_path = get_path_to(btns);
+            Label *status_label = status; // created just above
+            NodePath status_path = status_label ? get_path_to(status_label) : NodePath();
+            // Connect to unified handlers if we have a tool call ID
+            if (!tool_call_id.is_empty()) {
+                apply_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_result_accept_pressed).bind(tool_call_id, file_path, edited_content, btns_path, status_path));
+            } else {
+                apply_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_apply_preview_to_editor).bind(file_path, edited_content, btns_path, status_path));
+            }
+
+            Button *discard_btn = memnew(Button);
+            discard_btn->set_name("discard_button");
+            discard_btn->set_text("Discard Preview");
+            discard_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Remove"), SNAME("EditorIcons")));
+            btns->add_child(discard_btn);
+            
+            if (!tool_call_id.is_empty()) {
+                discard_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_result_reject_pressed).bind(tool_call_id, file_path, btns_path, status_path));
+            } else {
+                discard_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_discard_preview).bind(file_path, btns_path, status_path));
+            }
+        } else if (!file_path.is_empty() && !is_truly_pending) {
+            // Show status for previously processed edits
+            Label *processed_label = memnew(Label);
+            processed_label->set_text("Previously Processed");
+            processed_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+            processed_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+            edit_vbox->add_child(processed_label);
+        }
+
+        // Note: Pending edit tracking now handled by the new banner system in _add_apply_edit_buttons_to_tool_container
+        
+        if (!file_path.is_empty() && is_truly_pending && !original_content.is_empty() && !edited_content.is_empty()) {
+            // Add unified diff display
+            HSeparator *sep = memnew(HSeparator);
+            edit_vbox->add_child(sep);
+            
+            // Generate unified diff
+            Vector<String> original_lines = original_content.split("\n");
+            Vector<String> modified_lines = edited_content.split("\n");
+            
+            // Simple diff algorithm for tool results
+            // For more complex diffs, the script editor view provides better visualization
+            
+            // Track which lines have been processed
+            HashSet<int> processed_original;
+            HashSet<int> processed_modified;
+            
+            String diff_text;
+            int max_lines = 50; // Increased limit for better visibility
+            int lines_shown = 0;
+            bool truncated = false;
+            
+            // Use LCS to find the differences
+            int n = original_lines.size();
+            int m = modified_lines.size();
+            
+            // Build LCS table
+            Vector<Vector<int>> lcs;
+            lcs.resize(n + 1);
+            for (int i = 0; i <= n; i++) {
+                lcs.write[i].resize(m + 1);
+                for (int j = 0; j <= m; j++) {
+                    if (i == 0 || j == 0) {
+                        lcs.write[i].write[j] = 0;
+                    } else if (original_lines[i-1] == modified_lines[j-1]) {
+                        lcs.write[i].write[j] = lcs[i-1][j-1] + 1;
+                    } else {
+                        lcs.write[i].write[j] = MAX(lcs[i-1][j], lcs[i][j-1]);
+                    }
+                }
+            }
+            
+            // Backtrack to build the diff
+            Vector<String> diff_lines;
+            int i = n, j = m;
+            while (i > 0 || j > 0) {
+                if (i > 0 && j > 0 && original_lines[i-1] == modified_lines[j-1]) {
+                    // Common line - add as context
+                    diff_lines.push_back("  " + original_lines[i-1]);
+                    i--;
+                    j--;
+                } else if (j > 0 && (i == 0 || lcs[i][j-1] >= lcs[i-1][j])) {
+                    // Line added in modified
+                    diff_lines.push_back("+ " + modified_lines[j-1]);
+                    j--;
+                } else {
+                    // Line deleted from original
+                    diff_lines.push_back("- " + original_lines[i-1]);
+                    i--;
+                }
+            }
+            
+            // Reverse since we built it backwards
+            diff_lines.reverse();
+            
+            // Show diff with context
+            bool in_change_region = false;
+            int lines_since_change = 0;
+            
+            for (int k = 0; k < diff_lines.size() && lines_shown < max_lines; k++) {
+                String line = diff_lines[k];
+                bool is_change = line.begins_with("+ ") || line.begins_with("- ");
+                
+                if (is_change) {
+                    // Always show changes
+                    diff_text += line + "\n";
+                    lines_shown++;
+                    in_change_region = true;
+                    lines_since_change = 0;
+                } else {
+                    // Context line
+                    if (in_change_region) {
+                        // Show context after changes
+                        if (lines_since_change < 2 && lines_shown < max_lines) {
+                            diff_text += line + "\n";
+                            lines_shown++;
+                            lines_since_change++;
+                        } else {
+                            // Check if more changes are coming soon
+                            bool more_changes_ahead = false;
+                            for (int ahead = k + 1; ahead < MIN(k + 3, diff_lines.size()); ahead++) {
+                                if (diff_lines[ahead].begins_with("+ ") || diff_lines[ahead].begins_with("- ")) {
+                                    more_changes_ahead = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (more_changes_ahead && lines_shown < max_lines) {
+                                diff_text += line + "\n";
+                                lines_shown++;
+                            } else {
+                                // End of change region
+                                in_change_region = false;
+                                if (lines_shown < max_lines - 1) {
+                                    diff_text += "...\n";
+                                    lines_shown++;
+                                }
+                            }
+                        }
+                    } else {
+                        // Check if a change is coming soon
+                        bool change_ahead = false;
+                        for (int ahead = k; ahead < MIN(k + 3, diff_lines.size()); ahead++) {
+                            if (diff_lines[ahead].begins_with("+ ") || diff_lines[ahead].begins_with("- ")) {
+                                change_ahead = true;
+                                break;
+                            }
+                        }
+                        
+                        if (change_ahead && lines_shown < max_lines) {
+                            // Show context before upcoming change
+                            diff_text += line + "\n";
+                            lines_shown++;
+                        }
+                    }
+                }
+            }
+            
+            if (lines_shown >= max_lines && diff_lines.size() > max_lines) {
+                truncated = true;
+            }
+            
+            if (!diff_text.is_empty()) {
+                // Create diff display
+                Label *diff_label = memnew(Label);
+                diff_label->set_text("Diff Preview:");
+                diff_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+                edit_vbox->add_child(diff_label);
+                
+                // Create a code editor for the diff
+                CodeEdit *diff_editor = memnew(CodeEdit);
+                diff_editor->set_editable(false);
+                diff_editor->set_text(diff_text);
+                diff_editor->set_custom_minimum_size(Size2(0, 200));
+                diff_editor->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+                
+                // Apply syntax highlighting for diff
+                for (int line = 0; line < diff_editor->get_line_count(); line++) {
+                    String line_text = diff_editor->get_line(line);
+                    if (line_text.begins_with("+ ")) {
+                        diff_editor->set_line_background_color(line, Color(0.1, 0.8, 0.1, 0.28));
+                    } else if (line_text.begins_with("- ")) {
+                        diff_editor->set_line_background_color(line, Color(0.9, 0.2, 0.2, 0.28));
+                    }
+                }
+                
+                edit_vbox->add_child(diff_editor);
+                
+                if (truncated) {
+                    Label *truncated_label = memnew(Label);
+                    truncated_label->set_text("... diff truncated for display. Full diff shown in script editor.");
+                    truncated_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+                    truncated_label->add_theme_font_size_override("font_size", 12);
+                    edit_vbox->add_child(truncated_label);
+                }
+            }
+        }
+
+        // After Accept/Discard, collapse to view-only mode by clearing the overlay and disabling buttons.
+        // This transition is handled inside the respective handlers.
+
+        // If there are errors, show a brief list
+        if (has_errors && comp_errors.size() > 0) {
+            RichTextLabel *errs = memnew(RichTextLabel);
+            errs->set_fit_content(true);
+            errs->set_selection_enabled(true);
+            errs->push_color(get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+            errs->add_text("Problems in edited file:\n");
+            errs->pop();
+            int shown = 0;
+            for (int i = 0; i < comp_errors.size() && shown < 5; i++) {
+                Dictionary e = comp_errors[i];
+                String line = String(e.get("type", "error")) + String(" @ ") + String::num_int64(int64_t(e.get("line", 0))) + ": " + String(e.get("message", ""));
+                errs->add_text("- " + line + "\n");
+                shown++;
+            }
+            if (comp_errors.size() > shown) {
+                errs->add_text("... and more");
+            }
+            edit_vbox->add_child(errs);
+        }
+	} else if (p_tool_name == "get_scene_tree_hierarchy" && p_success) {
+		VBoxContainer *hierarchy_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(hierarchy_vbox);
+
+		Dictionary hierarchy = p_result.get("hierarchy", Dictionary());
+		
+		Label *title_label = memnew(Label);
+		title_label->set_text("Scene Tree Hierarchy:");
+		title_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		hierarchy_vbox->add_child(title_label);
+		
+		// Create a simplified hierarchy display
+		Tree *hierarchy_tree = memnew(Tree);
+		hierarchy_tree->set_hide_root(true);
+		hierarchy_tree->set_custom_minimum_size(Size2(0, 300));
+		TreeItem *root = hierarchy_tree->create_item();
+		
+		// Build tree recursively (simplified version)
+		if (!hierarchy.is_empty()) {
+			_build_hierarchy_tree_item(hierarchy_tree, root, hierarchy);
+		}
+		
+		hierarchy_vbox->add_child(hierarchy_tree);
+
+	} else if (p_tool_name == "take_screenshot" && p_success) {
+		VBoxContainer *screenshot_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(screenshot_vbox);
+
+		Array screenshots = p_result.get("screenshots", Array());
+		int count = p_result.get("count", 0);
+		
+		Label *header_label = memnew(Label);
+		header_label->set_text("Screenshots captured: " + String::num_int64(count));
+		header_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		header_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		screenshot_vbox->add_child(header_label);
+		
+		// Display each screenshot
+		for (int i = 0; i < screenshots.size(); i++) {
+			Dictionary screenshot = screenshots[i];
+			String source = screenshot.get("source", "unknown");
+			String base64_data = screenshot.get("base64", "");
+			String message = screenshot.get("message", "");
+			bool shot_success = screenshot.get("success", true);
+			
+			HBoxContainer *shot_hbox = memnew(HBoxContainer);
+			screenshot_vbox->add_child(shot_hbox);
+			
+			Label *source_label = memnew(Label);
+			source_label->set_text(source.capitalize() + ": " + message);
+			source_label->add_theme_icon_override("icon", get_theme_icon(shot_success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
+			source_label->add_theme_color_override("font_color", shot_success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
+			shot_hbox->add_child(source_label);
+			
+			// If we have base64 data, display the image
+			if (!base64_data.is_empty()) {
+				Dictionary img_metadata;
+				img_metadata["name"] = "screenshot_" + source;
+				img_metadata["source"] = source;
+				_display_image_unified(screenshot_vbox, base64_data, img_metadata);
+			}
+		}
+
+	} else if (p_tool_name == "create_script_file" && p_success) {
+		VBoxContainer *script_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(script_vbox);
+
+		String script_path = p_result.get("script_path", "Unknown");
+		String script_language = p_args.get("language", "GDScript");
+		
+		Label *script_label = memnew(Label);
+		script_label->set_text("Created " + script_language + " script:");
+		script_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		script_vbox->add_child(script_label);
+		
+		Button *file_link = memnew(Button);
+		file_link->set_text(script_path);
+		file_link->set_flat(true);
+		file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		file_link->add_theme_icon_override("icon", get_theme_icon(SNAME("Script"), SNAME("EditorIcons")));
+		file_link->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(script_path));
+		script_vbox->add_child(file_link);
+
+	} else if (p_tool_name == "attach_script" && p_success) {
+		VBoxContainer *attach_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(attach_vbox);
+
+		String node_path = p_args.get("node_path", "Unknown");
+		String script_path = p_args.get("script_path", "Unknown");
+		
+		Label *attach_label = memnew(Label);
+		attach_label->set_text("Attached script to: " + node_path);
+		attach_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		attach_vbox->add_child(attach_label);
+		
+		Label *script_label = memnew(Label);
+		script_label->set_text("Script: " + script_path);
+		script_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+		attach_vbox->add_child(script_label);
+	} else if (p_tool_name == "run_scene" && p_success) {
+		VBoxContainer *run_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(run_vbox);
+
+		String scene_path = p_args.get("scene_path", "Current scene");
+		
+		HBoxContainer *run_hbox = memnew(HBoxContainer);
+		run_vbox->add_child(run_hbox);
+		
+		Label *run_label = memnew(Label);
+		run_label->set_text("Running scene: " + scene_path);
+		run_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Play"), SNAME("EditorIcons")));
+		run_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		run_hbox->add_child(run_label);
+	} else if (p_tool_name == "check_compilation_errors" && p_success) {
+		VBoxContainer *compile_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(compile_vbox);
+
+		Array errors = p_result.get("errors", Array());
+		String mode = p_result.get("mode", "scripts");
+		
+		Label *status_label = memnew(Label);
+		if (errors.size() == 0) {
+			if (mode == "output") {
+				status_label->set_text("No errors or warnings found in output panel");
+			} else {
+				status_label->set_text("No compilation errors found");
+			}
+			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		} else {
+			if (mode == "output") {
+				status_label->set_text("[ERROR] Found " + String::num_int64(errors.size()) + " errors/warnings in output");
+			} else {
+				status_label->set_text("[ERROR] Found " + String::num_int64(errors.size()) + " compilation errors");
+			}
+			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+		}
+		status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		compile_vbox->add_child(status_label);
+		
+		if (errors.size() > 0) {
+			for (int i = 0; i < errors.size(); i++) {
+				Dictionary error = errors[i];
+				VBoxContainer *error_vbox = memnew(VBoxContainer);
+				compile_vbox->add_child(error_vbox);
+				
+				Label *error_label = memnew(Label);
+				String file = error.get("file", "Unknown");
+				int line = error.get("line", 0);
+				String message = error.get("message", "Unknown error");
+				String type = error.get("type", "error");
+				String source = error.get("source", "");
+				
+				String error_text = file + ":" + String::num_int64(line) + " - " + message;
+				if (mode == "output" && !source.is_empty()) {
+					error_text = "[" + source + "] " + error_text;
+				}
+				
+				error_label->set_text(error_text);
+				if (type == "warning") {
+					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				} else {
+					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+				}
+				error_vbox->add_child(error_label);
+			}
+		}
+	} else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager") && p_success) {
+		// Special handling for image generation results (both direct image_operation and resource_manager with image ops)
+		String base64_data = p_result.get("image_data", "");
+		
+		if (!base64_data.is_empty()) {
+			// Display the generated image with unified method
+			Dictionary img_metadata;
+			img_metadata["prompt"] = p_result.get("prompt", "Generated Image");
+			img_metadata["model"] = p_result.get("model", "DALL-E");
+			img_metadata["path"] = "generated://tool_operation";
+			
+			// Include backend-provided image_id in metadata
+			String image_id = p_result.get("image_id", "");
+			if (!image_id.is_empty()) {
+				img_metadata["image_id"] = image_id;
+				img_metadata["name"] = image_id;
+			}
+			
+			_display_image_unified(p_content_vbox, base64_data, img_metadata);
+		} else {
+			// Fallback to text display if no image data - but strip any large data fields to prevent freeze
+			Dictionary safe_result = p_result;
+			safe_result.erase("image_data");
+			safe_result.erase("glb_data");
+			safe_result.erase("asset_data");
+			safe_result.erase("frames");
+			
+			RichTextLabel *content_label = memnew(RichTextLabel);
+			content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
+			content_label->set_text(json->stringify(safe_result, "  "));
+			content_label->set_fit_content(true);
+			content_label->set_selection_enabled(true);
+			p_content_vbox->add_child(content_label);
+		}
+	} else if (p_tool_name == "generate_3d_model" && p_success) {
+		// Special handling for 3D model generation results
+		String glb_data = p_result.get("glb_data", "");
+		String prompt = p_result.get("prompt", "Generated 3D Model");
+		String model_name = p_result.get("model", "fast");
+		int generation_time = p_result.get("generation_time", 0);
+		int file_size = p_result.get("file_size", 0);
+		String job_id = p_result.get("job_id", "");
+		String save_path = p_result.get("save_path", "");
+		
+		if (!glb_data.is_empty()) {
+			// Display 3D model information and save option
+			VBoxContainer *model_container = memnew(VBoxContainer);
+			p_content_vbox->add_child(model_container);
+			
+			// Header with 3D model icon and title
+			HBoxContainer *header_container = memnew(HBoxContainer);
+			model_container->add_child(header_container);
+			
+			Label *icon_label = memnew(Label);
+			icon_label->add_theme_icon_override("icon", get_theme_icon(SNAME("MeshInstance3D"), SNAME("EditorIcons")));
+			header_container->add_child(icon_label);
+			
+			Label *title_label = memnew(Label);
+			title_label->set_text("Generated 3D Model");
+			title_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			title_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			header_container->add_child(title_label);
+			
+			// Prompt display
+			Label *prompt_label = memnew(Label);
+			prompt_label->set_text("Prompt: " + prompt);
+			prompt_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			prompt_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
+			model_container->add_child(prompt_label);
+			
+			// Model details
+			HBoxContainer *details_container = memnew(HBoxContainer);
+			model_container->add_child(details_container);
+			
+			Label *model_label = memnew(Label);
+			model_label->set_text("Model: " + model_name);
+			model_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+			details_container->add_child(model_label);
+			
+			if (generation_time > 0) {
+				Label *time_label = memnew(Label);
+				time_label->set_text(" | Time: " + String::num(generation_time, 1) + "s");
+				time_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+				details_container->add_child(time_label);
+			}
+			
+			if (file_size > 0) {
+				Label *size_label = memnew(Label);
+				String size_text = " | Size: ";
+				if (file_size < 1024) {
+					size_text += String::num_int64(file_size) + " B";
+				} else if (file_size < 1024 * 1024) {
+					size_text += String::num(file_size / 1024.0, 1) + " KB";
+				} else {
+					size_text += String::num(file_size / (1024.0 * 1024.0), 1) + " MB";
+				}
+				size_label->set_text(size_text);
+				size_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+				details_container->add_child(size_label);
+			}
+			
+			// Action buttons
+			HBoxContainer *actions_container = memnew(HBoxContainer);
+			model_container->add_child(actions_container);
+			
+			// Save to project button
+			Button *save_button = memnew(Button);
+			save_button->set_text("Save to Project");
+			save_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Save"), SNAME("EditorIcons")));
+			save_button->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			save_button->set_tooltip_text("Save this 3D model to your project as a GLB file");
+			save_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_3d_model_pressed).bind(glb_data, prompt, save_path));
+			actions_container->add_child(save_button);
+			
+			// Import to scene button  
+			Button *import_button = memnew(Button);
+			import_button->set_text("Import to Scene");
+			import_button->add_theme_icon_override("icon", get_theme_icon(SNAME("MeshInstance3D"), SNAME("EditorIcons")));
+			import_button->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			import_button->set_tooltip_text("Save and immediately add to current scene as MeshInstance3D");
+			import_button->connect("pressed", callable_mp(this, &AIChatDock::_on_import_3d_model_to_scene_pressed).bind(glb_data, prompt, save_path));
+			actions_container->add_child(import_button);
+			
+			// Info display
+			if (!job_id.is_empty()) {
+				Label *job_label = memnew(Label);
+				job_label->set_text("Job ID: " + job_id);
+				job_label->add_theme_font_size_override("font_size", 10);
+				job_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.5));
+				model_container->add_child(job_label);
+			}
+		} else {
+			// Fallback to text display if no model data
+			RichTextLabel *content_label = memnew(RichTextLabel);
+			content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
+			content_label->set_text(json->stringify(p_result, "  "));
+			content_label->set_fit_content(true);
+			content_label->set_selection_enabled(true);
+			p_content_vbox->add_child(content_label);
+		}
+	} else if (p_tool_name == "search_across_project" && p_success) {
+		// Display search results with nice formatting
+		VBoxContainer *search_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(search_vbox);
+
+		Dictionary results = p_result.get("results", Dictionary());
+		Array similar_files = results.get("similar_files", Array());
+		Array central_files = results.get("central_files", Array());
+		Dictionary graph_summary = results.get("graph_summary", Dictionary());
+		String query;
+		if (p_args.has("query")) {
+			query = String(p_args.get("query", ""));
+		} else if (p_result.has("query")) {
+			query = String(p_result.get("query", ""));
+		} else {
+			query = "";
+		}
+		
+		// Header with query info
+		Label *query_label = memnew(Label);
+		query_label->set_text("Search across project for: \"" + query + "\"");
+		query_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		query_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+		search_vbox->add_child(query_label);
+		
+		search_vbox->add_child(memnew(HSeparator));
+		
+        // Similar files section
+		if (similar_files.size() > 0) {
+			Label *similar_header = memnew(Label);
+			similar_header->set_text("[FILES] Similar Files (" + String::num_int64(similar_files.size()) + ")");
+			similar_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			search_vbox->add_child(similar_header);
+			
+			for (int i = 0; i < similar_files.size(); i++) {
+				Dictionary file_result = similar_files[i];
+				String file_path = file_result.get("file_path", "");
+				float similarity = file_result.get("similarity", 0.0);
+				String modality = file_result.get("modality", "text");
+                int64_t chunk_index = (int64_t)file_result.get("chunk_index", -1);
+                int64_t chunk_start = (int64_t)file_result.get("chunk_start", -1);
+                int64_t chunk_end = (int64_t)file_result.get("chunk_end", -1);
+                // Suppress unused variable warnings - these may be used for debugging or future features
+                (void)similarity;
+                (void)chunk_index;
+				
+				HBoxContainer *file_hbox = memnew(HBoxContainer);
+				search_vbox->add_child(file_hbox);
+				
+				// File link button
+				Button *file_link = memnew(Button);
+				file_link->set_text(_convert_to_godot_path(file_path));
+				file_link->set_flat(true);
+				file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+				file_link->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+				file_link->add_theme_icon_override("icon", get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+				file_link->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(file_path));
+				file_hbox->add_child(file_link);
+				
+                // Hide similarity score for a cleaner UI
+
+                // Try to display scene node/component name for .tscn/.tres sections
+                // Extract a header line around chunk_start for readability
+                String node_hint;
+                if (file_path.ends_with(".tscn") || file_path.ends_with(".tres")) {
+                    String fixed_path = _convert_to_godot_path(file_path);
+                    String abs_path = ProjectSettings::get_singleton()->globalize_path(fixed_path);
+                    Ref<FileAccess> f = FileAccess::open(abs_path, FileAccess::READ);
+                    if (f.is_valid()) {
+                        // Read up to chunk_end, but only scan nearby lines for section header
+                        Vector<String> lines;
+                        int64_t max_lines_to_read = chunk_end > 0 ? chunk_end : (chunk_start + 20);
+                        for (int64_t ln = 1; ln <= max_lines_to_read && !f->eof_reached(); ln++) {
+                            lines.push_back(f->get_line());
+                        }
+                        // Look backwards from chunk_start for a line that starts a section
+                        int64_t idx = MAX((int64_t)0, chunk_start - 1);
+                        for (int64_t i = idx; i >= 0 && i >= idx - 20; i--) {
+                            if (i < lines.size()) {
+                                String l = lines[i].strip_edges();
+                                if (l.begins_with("[node")) {
+                                    // Extract clean node info: name and type
+                                    String clean_hint = "";
+                                    int name_idx = l.find("name=\"");
+                                    int type_idx = l.find("type=\"");
+                                    
+                                    if (name_idx != -1) {
+                                        int start = name_idx + 6;
+                                        int end = l.find("\"", start + 1);
+                                        String name = end > start ? l.substr(start + 1, end - start - 1) : String("Node");
+                                        clean_hint = "[NODE] " + name;
+                                    }
+                                    
+                                    if (type_idx != -1) {
+                                        int start = type_idx + 6;
+                                        int end = l.find("\"", start + 1);
+                                        String type = end > start ? l.substr(start + 1, end - start - 1) : String("Node");
+                                        if (!clean_hint.is_empty() && type != "Node") {
+                                            clean_hint += " (" + type + ")";
+                                        } else if (clean_hint.is_empty()) {
+                                            clean_hint = "[NODE] " + type;
+                                        }
+                                    }
+                                    
+                                    node_hint = clean_hint.is_empty() ? "[NODE] Scene Node" : clean_hint;
+                                    break;
+                                } else if (l.begins_with("[sub_resource")) {
+                                    // Clean display: extract just the resource type
+                                    int type_idx = l.find("type=\"");
+                                    if (type_idx != -1) {
+                                        int start = type_idx + 6; // after type="
+                                        int end = l.find("\"", start + 1);
+                                        String t = end > start ? l.substr(start + 1, end - start - 1) : String("Resource");
+                                        node_hint = "[RES] " + t + " Resource";
+                                    } else {
+                                        node_hint = "[RES] Sub Resource";
+                                    }
+                                    break;
+                                } else if (l.begins_with("[ext_resource")) {
+                                    // Clean display for external resources
+                                    int type_idx = l.find("type=\"");
+                                    if (type_idx != -1) {
+                                        int start = type_idx + 6;
+                                        int end = l.find("\"", start + 1);
+                                        String t = end > start ? l.substr(start + 1, end - start - 1) : String("Resource");
+                                        node_hint = "[EXT] " + t + " (External)";
+                                    } else {
+                                        node_hint = "[EXT] External Resource";
+                                    }
+                                    break;
+                                } else if (l.begins_with("[resource")) {
+                                    node_hint = "[RES] Main Resource";
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HBoxContainer *meta_box = memnew(HBoxContainer);
+                file_hbox->add_child(meta_box);
+                if (!node_hint.is_empty()) {
+                    Label *node_label = memnew(Label);
+                    node_label->set_text(node_hint);
+                    node_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+                    meta_box->add_child(node_label);
+                }
+                // Line range (if present): show as [1-2]
+                if (chunk_start >= 0 && chunk_end > chunk_start) {
+                    Label *range_label = memnew(Label);
+                    range_label->set_text(vformat(" [%d-%d]", (int)chunk_start, (int)chunk_end));
+                    range_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+                    meta_box->add_child(range_label);
+                }
+
+                // Simple structure view for scenes/resources
+                if (p_result.has("graph") && p_result["graph"].get_type() == Variant::DICTIONARY) {
+                    Dictionary graph_map = p_result["graph"];
+                    if (graph_map.has(file_path) && graph_map[file_path].get_type() == Variant::DICTIONARY) {
+                        Dictionary fg = graph_map[file_path];
+                        Array g_nodes = fg.get("nodes", Array());
+                        Array g_edges = fg.get("edges", Array());
+
+                        // Find scene nodes and connections
+                        Array scene_nodes;
+                        HashMap<String, String> node_scripts; // node_id -> script_path
+                        HashMap<String, Array> connections;  // node_id -> array of connected target names
+                        
+                        for (int ni = 0; ni < g_nodes.size(); ni++) {
+                            Dictionary nd = g_nodes[ni];
+                            String nkind = nd.get("kind", "");
+                            if (nkind == "SceneNode") {
+                                scene_nodes.push_back(nd);
+                            }
+                        }
+
+                        // Build connection and script maps
+                        for (int ei = 0; ei < g_edges.size(); ei++) {
+                            Dictionary ed = g_edges[ei];
+                            String ek = ed.get("kind", "");
+                            String src_id = ed.get("src_id", "");
+                            String dst_id = ed.get("dst_id", "");
+                            
+                            if (ek == "CONNECTS_SIGNAL" && !src_id.is_empty() && !dst_id.is_empty()) {
+                                if (!connections.has(src_id)) {
+                                    connections[src_id] = Array();
+                                }
+                                // Find target node name
+                                for (int ni = 0; ni < g_nodes.size(); ni++) {
+                                    Dictionary nd = g_nodes[ni];
+                                    if (nd.get("id", "") == dst_id) {
+                                        String target_name = nd.get("name", "unknown");
+                                        connections[src_id].push_back(target_name);
+                                        break;
+                                    }
+                                }
+                            } else if (ek == "ATTACHES_SCRIPT" && !src_id.is_empty() && !dst_id.is_empty()) {
+                                // Find script file path
+                                for (int ni = 0; ni < g_nodes.size(); ni++) {
+                                    Dictionary nd = g_nodes[ni];
+                                    if (nd.get("id", "") == dst_id && nd.get("kind", "") == "File") {
+                                        String script_path = nd.get("file_path", "");
+                                        if (!script_path.is_empty()) {
+                                            node_scripts[src_id] = script_path.get_file(); // Just filename
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (scene_nodes.size() > 0) {
+                            // Toggle button - more friendly name
+                            Button *structure_toggle = memnew(Button);
+                            structure_toggle->set_text("Structure");
+                            structure_toggle->set_tooltip_text("Show scene nodes and their connections");
+                            structure_toggle->add_theme_icon_override("icon", get_theme_icon(SNAME("SceneTree"), SNAME("EditorIcons")));
+                            file_hbox->add_child(structure_toggle);
+
+                            // Collapsible box
+                            VBoxContainer *structure_box = memnew(VBoxContainer);
+                            structure_box->set_visible(false);
+                            search_vbox->add_child(structure_box);
+
+                            // Show scene nodes in a clean tree-like format
+                            int max_show = 6;
+                            for (int ni = 0; ni < MIN(max_show, scene_nodes.size()); ni++) {
+                                Dictionary nd = scene_nodes[ni];
+                                String nname = nd.get("name", "");
+                                String ntype = nd.get("node_type", "");
+                                String npath = nd.get("node_path", "");
+                                String node_id = nd.get("id", "");
+
+                                VBoxContainer *node_vbox = memnew(VBoxContainer);
+                                structure_box->add_child(node_vbox);
+
+                                HBoxContainer *node_hbox = memnew(HBoxContainer);
+                                node_vbox->add_child(node_hbox);
+
+                                // Indent based on path depth
+                                int depth = npath.get_slice_count("/") - 1;
+                                String indent = "";
+                                for (int d = 0; d < depth; d++) {
+                                    indent += "  ";
+                                }
+
+                                Label *node_label = memnew(Label);
+                                String display_text = indent + "[FILE] " + nname;
+                                if (!ntype.is_empty() && ntype != "Node") {
+                                    display_text += " (" + ntype + ")";
+                                }
+                                node_label->set_text(display_text);
+                                node_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.9, 0.9, 1.0, 0.9));
+                                node_hbox->add_child(node_label);
+
+                                // Show script attachment
+                                if (node_scripts.has(node_id)) {
+                                    Label *script_label = memnew(Label);
+                                    script_label->set_text(" [SCRIPT] " + node_scripts[node_id]);
+                                    script_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+                                    node_hbox->add_child(script_label);
+                                }
+
+                                // Show signal connections
+                                if (connections.has(node_id)) {
+                                    Array targets = connections[node_id];
+                                    if (targets.size() > 0) {
+                                        HBoxContainer *conn_hbox = memnew(HBoxContainer);
+                                        node_vbox->add_child(conn_hbox);
+                                        
+                                        Label *conn_label = memnew(Label);
+                                        String conn_text = indent + "  -> signals to: ";
+                                        for (int ti = 0; ti < targets.size(); ti++) {
+                                            if (ti > 0) conn_text += ", ";
+                                            conn_text += String(targets[ti]);
+                                        }
+                                        conn_label->set_text(conn_text);
+                                        conn_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+                                        conn_hbox->add_child(conn_label);
+                                    }
+                                }
+                            }
+
+                            if (scene_nodes.size() > max_show) {
+                                Label *more_label = memnew(Label);
+                                more_label->set_text("... and " + String::num_int64(scene_nodes.size() - max_show) + " more nodes");
+                                more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.5));
+                                structure_box->add_child(more_label);
+                            }
+
+                            structure_toggle->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_output_toggled).bind(structure_box));
+                        }
+                    }
+                }
+			}
+		}
+		
+		// Central files section
+		if (central_files.size() > 0) {
+			search_vbox->add_child(memnew(HSeparator));
+			
+			Label *central_header = memnew(Label);
+			central_header->set_text("[CENTRAL] Central Files (" + String::num_int64(central_files.size()) + ")");
+			central_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			search_vbox->add_child(central_header);
+			
+			for (int i = 0; i < central_files.size(); i++) {
+				Dictionary central_file = central_files[i];
+				String file_path = central_file.get("file_path", "");
+				float centrality = central_file.get("centrality", 0.0);
+				
+				HBoxContainer *central_hbox = memnew(HBoxContainer);
+				search_vbox->add_child(central_hbox);
+				
+				// File link button
+				Button *file_link = memnew(Button);
+				file_link->set_text(_convert_to_godot_path(file_path));
+				file_link->set_flat(true);
+				file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+				file_link->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+				file_link->add_theme_icon_override("icon", get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+				file_link->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(file_path));
+				central_hbox->add_child(file_link);
+				
+				// Centrality score
+				Label *centrality_label = memnew(Label);
+				centrality_label->set_text("Centrality: " + String::num(centrality, 3));
+				centrality_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				centrality_label->set_custom_minimum_size(Size2(120, 0));
+				central_hbox->add_child(centrality_label);
+			}
+		}
+		
+		// Graph summary section
+		if (!graph_summary.is_empty()) {
+			search_vbox->add_child(memnew(HSeparator));
+			
+			Label *graph_header = memnew(Label);
+			graph_header->set_text("[GRAPH] Project Graph Summary");
+			graph_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			search_vbox->add_child(graph_header);
+			
+			int total_files = graph_summary.get("total_files", 0);
+			int total_connections = graph_summary.get("total_connections", 0);
+			
+			Label *summary_label = memnew(Label);
+			summary_label->set_text("Files: " + String::num_int64(total_files) + " | Connections: " + String::num_int64(total_connections));
+			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+			search_vbox->add_child(summary_label);
+		}
+	} else if (p_tool_name == "search_godot_assets" && p_success) {
+		// Display Godot Asset Library search results
+		VBoxContainer *assets_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(assets_vbox);
+
+		String query = p_result.get("query", "");
+		Array assets = p_result.get("assets", Array());
+		int total_found = p_result.get("total_found", 0);
+		String category = p_result.get("category", "");
+		
+		// Header with query info
+		Label *query_label = memnew(Label);
+		String header_text = "[SEARCH] Asset Library Search: \"" + query + "\"";
+		if (!category.is_empty()) {
+			header_text += " (Category: " + category + ")";
+		}
+		query_label->set_text(header_text);
+		query_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		query_label->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+		assets_vbox->add_child(query_label);
+		
+		if (total_found > 0) {
+			Label *count_label = memnew(Label);
+			count_label->set_text("Found " + String::num_int64(total_found) + " assets");
+			count_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.7));
+			assets_vbox->add_child(count_label);
+		}
+		
+		assets_vbox->add_child(memnew(HSeparator));
+		
+		// Assets list
+		if (assets.size() > 0) {
+			for (int i = 0; i < assets.size(); i++) {
+				Dictionary asset = assets[i];
+				String title = asset.get("title", "Unknown Asset");
+				String author = asset.get("author", "Unknown");
+				String version = asset.get("version", "1.0");
+				String description = asset.get("description", "");
+				String asset_id = asset.get("id", "");
+				String category_name = asset.get("category", "");
+				String godot_version = asset.get("godot_version", "");
+				int rating = asset.get("rating", 0);
+				String cost = asset.get("cost", "Free");
+				String browse_url = asset.get("browse_url", "");
+				String icon_url = asset.get("icon_url", "");
+				
+				// Asset container
+				PanelContainer *asset_panel = memnew(PanelContainer);
+				asset_panel->add_theme_style_override("panel", get_theme_stylebox(SNAME("panel"), SNAME("TooltipPanel")));
+				assets_vbox->add_child(asset_panel);
+				
+				VBoxContainer *asset_vbox = memnew(VBoxContainer);
+				asset_panel->add_child(asset_vbox);
+				
+				// Title and author row
+				HBoxContainer *title_hbox = memnew(HBoxContainer);
+				asset_vbox->add_child(title_hbox);
+				
+				Label *title_label = memnew(Label);
+				title_label->set_text("[ASSET] " + title);
+				title_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+				title_hbox->add_child(title_label);
+				
+				title_hbox->add_child(memnew(Control)); // Spacer
+				
+				Label *version_label = memnew(Label);
+				version_label->set_text("v" + version);
+				version_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+				title_hbox->add_child(version_label);
+				
+				// Author and metadata row
+				HBoxContainer *meta_hbox = memnew(HBoxContainer);
+				asset_vbox->add_child(meta_hbox);
+				
+				Label *author_label = memnew(Label);
+				author_label->set_text("[AUTHOR] " + author);
+				author_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+				meta_hbox->add_child(author_label);
+				
+				if (!category_name.is_empty()) {
+					Label *category_label = memnew(Label);
+					category_label->set_text("[CAT] " + category_name);
+					category_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+					meta_hbox->add_child(category_label);
+				}
+				
+				if (!godot_version.is_empty()) {
+					Label *godot_label = memnew(Label);
+					godot_label->set_text("[GODOT] Godot " + godot_version);
+					godot_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+					meta_hbox->add_child(godot_label);
+				}
+				
+				// Cost and rating
+				if (cost != "Free" || rating > 0) {
+					HBoxContainer *info_hbox = memnew(HBoxContainer);
+					asset_vbox->add_child(info_hbox);
+					
+					if (cost != "Free") {
+						Label *cost_label = memnew(Label);
+						cost_label->set_text("[COST] " + cost);
+						cost_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+						info_hbox->add_child(cost_label);
+					}
+					
+					if (rating > 0) {
+						Label *rating_label = memnew(Label);
+						rating_label->set_text("[RATING] " + String::num_int64(rating));
+						rating_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+						info_hbox->add_child(rating_label);
+					}
+				}
+				
+				// Description (truncated)
+				if (!description.is_empty()) {
+					String desc = description.length() > 150 ? description.substr(0, 150) + "..." : description;
+					Label *desc_label = memnew(Label);
+					desc_label->set_text(desc);
+					desc_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+					desc_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
+					asset_vbox->add_child(desc_label);
+				}
+				
+				// Action buttons
+				HBoxContainer *button_hbox = memnew(HBoxContainer);
+				asset_vbox->add_child(button_hbox);
+				
+				// Install button
+				Button *install_btn = memnew(Button);
+				install_btn->set_text("Install Asset");
+				install_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("AssetLib"), SNAME("EditorIcons")));
+				install_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_install_requested).bind(asset_id, title));
+				button_hbox->add_child(install_btn);
+				
+				// Browse button (if URL available)
+				if (!browse_url.is_empty()) {
+					Button *browse_btn = memnew(Button);
+					browse_btn->set_text("View on Asset Library");
+					browse_btn->set_flat(true);
+					browse_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("ExternalLink"), SNAME("EditorIcons")));
+					browse_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_browse_requested).bind(browse_url));
+					button_hbox->add_child(browse_btn);
+				}
+				
+				if (i < assets.size() - 1) {
+					assets_vbox->add_child(memnew(HSeparator));
+				}
+			}
+		} else {
+			Label *no_results = memnew(Label);
+			no_results->set_text("No assets found for this search.");
+			no_results->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			assets_vbox->add_child(no_results);
+		}
+	} else if (p_tool_name == "install_godot_asset" && p_success) {
+		// Display asset installation results
+		VBoxContainer *install_vbox = memnew(VBoxContainer);
+		p_content_vbox->add_child(install_vbox);
+
+		Dictionary installation_info = p_result.get("installation_info", Dictionary());
+		String message = p_result.get("message", "Asset installed successfully");
+		String asset_name = installation_info.get("asset_name", "Unknown Asset");
+		bool is_cloud_mode = p_result.get("cloud_mode", false);
+		String installed_to = installation_info.get("installed_to", "");
+		int files_extracted = installation_info.get("files_extracted", 0);
+		bool is_plugin = installation_info.get("is_plugin", false);
+		String version = installation_info.get("version", "");
+		String author = installation_info.get("author", "");
+		String description = installation_info.get("description", "");
+		String backup_created = installation_info.get("backup_created", "");
+		
+		// Success header (different messaging for cloud vs local mode)
+		Label *success_label = memnew(Label);
+		if (is_cloud_mode) {
+			success_label->set_text("[CLOUD] " + message);
+			success_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			success_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+		} else {
+			success_label->set_text("[OK] " + message);
+			success_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			success_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		}
+		install_vbox->add_child(success_label);
+		
+		// Asset info panel
+		PanelContainer *info_panel = memnew(PanelContainer);
+		info_panel->add_theme_style_override("panel", get_theme_stylebox(SNAME("panel"), SNAME("TooltipPanel")));
+		install_vbox->add_child(info_panel);
+		
+		VBoxContainer *info_vbox = memnew(VBoxContainer);
+		info_panel->add_child(info_vbox);
+		
+		// Asset name and version
+		HBoxContainer *name_hbox = memnew(HBoxContainer);
+		info_vbox->add_child(name_hbox);
+		
+		Label *name_label = memnew(Label);
+		name_label->set_text("[ASSET] " + asset_name);
+		name_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		name_hbox->add_child(name_label);
+		
+		if (!version.is_empty()) {
+			Label *ver_label = memnew(Label);
+			ver_label->set_text("v" + version);
+			ver_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			name_hbox->add_child(ver_label);
+		}
+		
+		// Author
+		if (!author.is_empty()) {
+			Label *author_label = memnew(Label);
+			author_label->set_text("[AUTHOR] " + author);
+			author_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+			info_vbox->add_child(author_label);
+		}
+		
+		// Installation details (different for cloud vs local mode)
+		info_vbox->add_child(memnew(HSeparator));
+		
+		if (is_cloud_mode) {
+			Label *cloud_label = memnew(Label);
+			cloud_label->set_text("[CLOUD] Asset downloaded from cloud backend");
+			cloud_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
+			info_vbox->add_child(cloud_label);
+			
+			Label *ready_label = memnew(Label);
+			String intended_path = installation_info.get("intended_path", installed_to);
+			ready_label->set_text("[DIR] Ready to install to: " + _convert_to_godot_path(intended_path));
+			info_vbox->add_child(ready_label);
+			
+			Label *action_needed_label = memnew(Label);
+			action_needed_label->set_text("[WARN] Click 'Install to Project' below to complete installation");
+			action_needed_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			info_vbox->add_child(action_needed_label);
+		} else {
+			Label *location_label = memnew(Label);
+			location_label->set_text("[DIR] Installed to: " + _convert_to_godot_path(installed_to));
+			info_vbox->add_child(location_label);
+			
+			Label *files_label = memnew(Label);
+			files_label->set_text("[FILES] Extracted: " + String::num_int64(files_extracted));
+			info_vbox->add_child(files_label);
+		}
+		
+		if (is_plugin) {
+			Label *plugin_label = memnew(Label);
+			plugin_label->set_text("[PLUGIN] This is a plugin - you may need to enable it in Project Settings");
+			plugin_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+			info_vbox->add_child(plugin_label);
+		}
+		
+		if (!backup_created.is_empty()) {
+			Label *backup_label = memnew(Label);
+			backup_label->set_text("[BACKUP] Backup created at: " + backup_created.get_file());
+			backup_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+			info_vbox->add_child(backup_label);
+		}
+		
+		// Description if available
+		if (!description.is_empty()) {
+			info_vbox->add_child(memnew(HSeparator));
+			Label *desc_label = memnew(Label);
+			desc_label->set_text(description);
+			desc_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			desc_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
+			info_vbox->add_child(desc_label);
+		}
+		
+		// Action buttons (different for cloud vs local mode)
+		HBoxContainer *action_hbox = memnew(HBoxContainer);
+		install_vbox->add_child(action_hbox);
+		
+		if (is_cloud_mode) {
+			// Cloud mode: Show "Install to Project" button
+			Button *install_locally_btn = memnew(Button);
+			install_locally_btn->set_text("Install to Project");
+			install_locally_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("AssetLib"), SNAME("EditorIcons")));
+			String asset_data = p_result.get("asset_data", "");
+			String intended_path = installation_info.get("intended_path", "");
+			install_locally_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_cloud_asset_install_requested).bind(asset_data, intended_path, asset_name));
+			action_hbox->add_child(install_locally_btn);
+			
+			// Also show a manual download option
+			Button *manual_btn = memnew(Button);
+			manual_btn->set_text("Manual Download");
+			manual_btn->set_flat(true);
+			manual_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("FileList"), SNAME("EditorIcons")));
+			manual_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_cloud_asset_manual_download).bind(asset_data, asset_name));
+			action_hbox->add_child(manual_btn);
+		} else {
+			// Local mode: Show normal folder and plugin buttons
+			// Open folder button
+			if (!installed_to.is_empty()) {
+				Button *open_folder_btn = memnew(Button);
+				open_folder_btn->set_text("Open in FileSystem");
+				open_folder_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Folder"), SNAME("EditorIcons")));
+				open_folder_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_folder_open_requested).bind(installed_to));
+				action_hbox->add_child(open_folder_btn);
+			}
+			
+			// Plugin settings button (if it's a plugin)
+			if (is_plugin) {
+				Button *plugin_btn = memnew(Button);
+				plugin_btn->set_text("Open Plugin Settings");
+				plugin_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
+				plugin_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_asset_plugin_settings_requested));
+				action_hbox->add_child(plugin_btn);
+			}
+		}
+
+	} else {
+		// Default case - show formatted JSON output with better styling
+		// CRITICAL: Strip large data fields to prevent UI freeze
+		Dictionary safe_result = p_result;
+		safe_result.erase("image_data");
+		safe_result.erase("glb_data");
+		safe_result.erase("asset_data");
+		safe_result.erase("frames");
+		// Remove any fields that look like base64 payloads
+		Array keys = safe_result.keys();
+		for (int k = 0; k < keys.size(); k++) {
+			String key = keys[k];
+			if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes")) {
+				safe_result.erase(key);
+			}
+		}
+		
+		VBoxContainer *json_container = memnew(VBoxContainer);
+		p_content_vbox->add_child(json_container);
+		
+		Label *json_header = memnew(Label);
+		json_header->set_text("Tool Result Data:");
+		json_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		json_header->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+		json_container->add_child(json_header);
+		
+		RichTextLabel *content_label = memnew(RichTextLabel);
+		content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
+		content_label->set_text(json->stringify(safe_result, "  "));
+		content_label->set_fit_content(true);
+		content_label->set_selection_enabled(true);
+		content_label->set_custom_minimum_size(Size2(0, 150));
+		json_container->add_child(content_label);
+	}
+	
+	// If the tool provided a path_to_save for images, save it now (non-intrusive for other tools)
+	if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager") && p_success) {
+		String path_to_save = p_args.get("path_to_save", "");
+		if (path_to_save.is_empty()) path_to_save = p_args.get("path", "");
+		String image_b64 = p_result.get("image_data", "");
+		if (!path_to_save.is_empty() && !image_b64.is_empty()) {
+			bool ok = _save_base64_image_to_path(image_b64, path_to_save);
+			if (ok) {
+				Label *saved = memnew(Label);
+				saved->set_text("Saved image: " + path_to_save.get_file());
+				saved->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+				p_content_vbox->add_child(saved);
+			} else {
+				Label *err = memnew(Label);
+				err->set_text("Failed to save image to: " + path_to_save);
+				err->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+				p_content_vbox->add_child(err);
+			}
+		}
+	}
+}
+
+void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
+    // Ensure counter is sane at the start of a batch
+    if (pending_tool_tasks < 0) pending_tool_tasks = 0;
+    
+    // SAFETY: Basic check before accessing Array
+    if (p_tool_calls.is_empty()) {
+        print_line("AI Chat: _execute_tool_calls called with empty tool calls array");
+        return;
+    }
+    
+    int tool_count = p_tool_calls.size();
+    print_line("AI Chat: _execute_tool_calls called with " + String::num_int64(tool_count) + " tool calls");
+    
+	for (int i = 0; i < tool_count; i++) {
+		Dictionary tool_call = p_tool_calls[i];
+		String tool_call_id = tool_call.get("id", "");
+		Dictionary function_dict = tool_call.get("function", Dictionary());
+		String function_name = function_dict.get("name", "");
+		String arguments_str = function_dict.get("arguments", "{}");
+
+        // CRITICAL FIX: Validate tool call ID is present and valid
+        if (tool_call_id.is_empty()) {
+            print_line("AI Chat: ERROR - Tool call missing ID, generating fallback ID");
+            tool_call_id = "frontend_generated_" + String::num_int64(OS::get_singleton()->get_ticks_msec()) + "_" + String::num_int64(i);
+        }
+        
+        print_line("AI Chat: Processing tool call: " + function_name + " (ID: " + tool_call_id + ")");
+        
+        // CRITICAL FIX: Show immediate status for ALL tools, with operation-specific descriptions
+        print_line("AI Chat: IMMEDIATE_STATUS - Getting status for " + function_name + " (ID: " + tool_call_id + ")");
+        String immediate_status = _get_immediate_tool_status(function_name, arguments_str);
+        print_line("AI Chat: IMMEDIATE_STATUS - Got status: '" + immediate_status + "'");
+        
+        if (!immediate_status.is_empty()) {
+            print_line("AI Chat: IMMEDIATE_STATUS - Calling _update_tool_placeholder_with_description");
+            _update_tool_placeholder_with_description(tool_call_id, function_name, "executing", immediate_status);
+            // Small delay to ensure UI updates are visible
+            OS::get_singleton()->delay_usec(50000); // 50ms delay
+        } else {
+            // Fallback: generic status for tools without specific descriptions
+            print_line("AI Chat: IMMEDIATE_STATUS - Using fallback generic status");
+            _update_tool_placeholder_status(tool_call_id, function_name, "starting");
+        }
+
+		// Route certain resource_manager ops to backend (image generation/slicing)
+		if (function_name == "resource_manager") {
+			Ref<JSON> op_json;
+			op_json.instantiate();
+			if (op_json->parse(arguments_str) == OK) {
+				Dictionary op_args = op_json->get_data();
+				String op = op_args.get("op", op_args.get("operation", ""));
+				if (op == "image.generate_or_edit" || op == "image.slice_spritesheet") {
+					print_line("AI Chat: resource_manager op '" + op + "' will be handled by backend; skipping frontend execution");
+					// Placeholder bubbles were created by the executing_tools message; wait for tool_completed from backend.
+					continue;
+				}
+			}
+		}
+
+		// CRITICAL FIX: Check if this tool should be handled by backend instead of frontend
+		static HashSet<String> backend_only_tools;
+		if (backend_only_tools.is_empty()) {
+			backend_only_tools.insert("image_operation");
+			backend_only_tools.insert("search_across_project");
+			backend_only_tools.insert("search_across_godot_docs");
+			backend_only_tools.insert("slice_spritesheet");
+			backend_only_tools.insert("search_godot_assets");
+			backend_only_tools.insert("install_godot_asset");
+			backend_only_tools.insert("generate_3d_model");
+		}
+		
+		if (backend_only_tools.has(function_name)) {
+			print_line("AI Chat: Tool " + function_name + " should be handled by backend, skipping frontend execution");
+			// Don't execute locally - this should have been caught earlier in the flow
+			Dictionary result;
+			result["success"] = false;
+			result["message"] = function_name + " should be handled by backend, not frontend";
+			result["backend_only"] = true;
+			// Parse args first since they're needed for _apply_tool_result
+			Ref<JSON> json;
+			json.instantiate();
+			Error err = json->parse(arguments_str);
+			Dictionary args;
+			if (err == OK) {
+				args = json->get_data();
+			}
+			_add_tool_response_to_chat(tool_call_id, function_name, args, result);
+			continue;
+		}
+
+		// SMART FIX: Only defer SLOW tools, execute fast tools immediately
+		static HashSet<String> slow_tools;
+		if (slow_tools.is_empty()) {
+			slow_tools.insert("get_all_nodes");
+			slow_tools.insert("universal_scene_manager"); // The "analyze" operation
+			slow_tools.insert("get_project_context"); // Heavy project scanning
+			slow_tools.insert("scene_manager"); // Can call expensive operations like scene.nodes.get_all
+			// Add file editing operations to slow tools for better status feedback
+			slow_tools.insert("apply_edit"); // Already handled as slow
+			// Add other slow tools as needed
+		}
+
+		if (slow_tools.has(function_name)) {
+			// Slow tools: use deferred execution with descriptive status
+			pending_tool_tasks++;
+			
+			// Use centralized status handler for consistent messaging
+			_update_tool_placeholder_status(tool_call_id, function_name, "running");
+			
+			call_deferred("_execute_frontend_tool_deferred", tool_call_id, function_name, arguments_str);
+			continue;
+		}
+
+		// Fast tools: execute immediately (FULL ORIGINAL LOGIC RESTORED)
+		// Show immediate visual feedback that tool is starting
+		print_line("AI Chat: Executing frontend tool: " + function_name);
+		
+		// ENHANCED LOGGING: Show tool arguments to debug freezing issues
+		Ref<JSON> debug_json;
+		debug_json.instantiate();
+		Error debug_err = debug_json->parse(arguments_str);
+		if (debug_err == OK) {
+			Dictionary debug_args = debug_json->get_data();
+			String op = debug_args.get("op", debug_args.get("operation", ""));
+			if (!op.is_empty()) {
+				print_line("AI Chat: Tool operation: " + op);
+			}
+			// Log first few argument keys for debugging
+			Array arg_keys = debug_args.keys();
+			String args_preview = "";
+			for (int k = 0; k < MIN(5, arg_keys.size()); k++) {
+				if (k > 0) args_preview += ", ";
+				args_preview += String(arg_keys[k]);
+			}
+			if (arg_keys.size() > 0) {
+				print_line("AI Chat: Tool args: {" + args_preview + (arg_keys.size() > 5 ? ", ..." : "") + "}");
+			}
+		}
+		
+		// Update placeholder to show execution status
+		_update_tool_placeholder_status(tool_call_id, function_name, "starting");
+
+		// Parse arguments
+		Ref<JSON> json;
+		json.instantiate();
+		Error err = json->parse(arguments_str);
+		Dictionary args;
+		if (err == OK) {
+			args = json->get_data();
+		}
+
+		Dictionary result;
+
+		// Capture runtime errors before and after tool execution
+		Dictionary pre_execution_errors = EditorTools::get_runtime_errors(Dictionary());
+		int pre_error_count = pre_execution_errors.get("count", 0);
+
+		// Execute the tool - FULL ORIGINAL LIST RESTORED
+		if (function_name == "get_scene_info") {
+			result = EditorTools::get_scene_info(args);
+		} else if (function_name == "search_nodes_by_type") {
+			result = EditorTools::search_nodes_by_type(args);
+		} else if (function_name == "get_editor_selection") {
+			result = EditorTools::get_editor_selection(args);
+		} else if (function_name == "get_node_properties") {
+			result = EditorTools::get_node_properties(args);
+		} else if (function_name == "change_node_type") {
+			result = EditorTools::change_node_type(args);
+		} else if (function_name == "get_available_classes") {
+			result = EditorTools::get_available_classes(args);
+		} else if (function_name == "create_node") {
+			result = EditorTools::create_node(args);
+		} else if (function_name == "delete_node") {
+			result = EditorTools::delete_node(args);
+		} else if (function_name == "set_node_property") {
+			result = EditorTools::set_node_property(args);
+		} else if (function_name == "batch_set_node_properties") {
+			result = EditorTools::batch_set_node_properties(args);
+		} else if (function_name == "move_node") {
+			result = EditorTools::move_node(args);
+		} else if (function_name == "call_node_method") {
+			result = EditorTools::call_node_method(args);
+		} else if (function_name == "create_directory") {
+			result = EditorTools::create_directory(args);
+		} else if (function_name == "copy_file") {
+			result = EditorTools::copy_file(args);
+		} else if (function_name == "move_file") {
+			result = EditorTools::move_file(args);
+		} else if (function_name == "delete_file") {
+			result = EditorTools::delete_file(args);
+		} else if (function_name == "create_symlink") {
+			result = EditorTools::create_symlink(args);
+		} else if (function_name == "refresh_filesystem") {
+			result = EditorTools::refresh_filesystem(args);
+		} else if (function_name == "create_resource") {
+			result = EditorTools::create_resource(args);
+		} else if (function_name == "assign_resource_to_node_property") {
+			result = EditorTools::assign_resource_to_node_property(args);
+		} else if (function_name == "create_new_scene_with_root") {
+			result = EditorTools::create_new_scene_with_root(args);
+		} else if (function_name == "get_node_script") {
+			result = EditorTools::get_node_script(args);
+		} else if (function_name == "detach_script") {
+			result = EditorTools::detach_script(args);
+		} else if (function_name == "reload_script") {
+			result = EditorTools::reload_script(args);
+		} else if (function_name == "refresh_global_classes") {
+			result = EditorTools::refresh_global_classes(args);
+		} else if (function_name == "get_custom_classes") {
+			result = EditorTools::get_custom_classes(args);
+		} else if (function_name == "set_node_type") {
+			result = EditorTools::set_node_type(args);
+		} else if (function_name == "manage_scene") {
+			result = EditorTools::manage_scene(args);
+		} else if (function_name == "save_scene") {
+			result["success"] = false;
+			result["message"] = "Tool 'save_scene' has been removed. Please save scenes manually.";
+		} else if (function_name == "add_collision_shape") {
+			result = EditorTools::add_collision_shape(args);
+		} else if (function_name == "list_project_files") {
+			result = EditorTools::list_project_files(args);
+		} else if (function_name == "read_file") {
+			result = EditorTools::read_file(args);
+		} else if (function_name == "search_project_files") {
+			result = EditorTools::list_project_files(args);
+		} else if (function_name == "read_file_content") {
+			result = EditorTools::read_file(args);
+		} else if (function_name == "read_file_advanced") {
+			result = EditorTools::read_file(args);
+		} else if (function_name == "apply_edit") {
+			// Run apply_edit asynchronously to avoid blocking the UI
+			if (!args.has("skip_compilation_check")) {
+				String __tmp_path = String(args.get("path", String()));
+				String __tmp_ext = __tmp_path.get_extension().to_lower();
+				bool __is_script_like = (__tmp_ext == "gd" || __tmp_ext == "cs" || __tmp_ext == "shader" || __tmp_ext == "glsl");
+				args["skip_compilation_check"] = !__is_script_like;
+			}
+			pending_tool_tasks++;
+			
+			// Track that this tool is editing a specific file for diff coordination
+			String edit_file_path = String(args.get("path", ""));
+			if (!edit_file_path.is_empty()) {
+				if (!active_edit_tools.has(edit_file_path)) {
+					active_edit_tools[edit_file_path] = Array();
+				}
+				Array active_tool_ids = active_edit_tools[edit_file_path];
+				active_tool_ids.push_back(tool_call_id);
+				active_edit_tools[edit_file_path] = active_tool_ids;
+			}
+			
+			// Prepare authentication data from main thread
+			if (EditorSettings::get_singleton()->has_setting("ai_chat/auth_token")) {
+				args["auth_token"] = EditorSettings::get_singleton()->get_setting("ai_chat/auth_token");
+			}
+			if (EditorSettings::get_singleton()->has_setting("ai_chat/user_id")) {
+				args["user_id"] = EditorSettings::get_singleton()->get_setting("ai_chat/user_id");
+			}
+			String machine_id = OS::get_singleton()->get_unique_id();
+			if (machine_id.is_empty()) {
+				machine_id = OS::get_singleton()->get_processor_name() + String("_") + OS::get_singleton()->get_name();
+				machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
+			}
+			args["machine_id"] = machine_id;
+			args["project_root"] = ProjectSettings::get_singleton()->globalize_path("res://");
+			
+			String base_url = "http://127.0.0.1:5050";
+			String is_dev = OS::get_singleton()->get_environment("IS_DEV");
+			if (is_dev.is_empty()) {
+				is_dev = OS::get_singleton()->get_environment("DEV_MODE");
+			}
+			if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
+				base_url = "http://127.0.0.1:5050";
+			} else {
+				base_url = "https://api.orcaengine.ai";
+			}
+			if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
+				String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
+				if (!override_url.is_empty()) {
+					base_url = override_url;
+				}
+			} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
+				base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+			}
+			args["base_url"] = base_url;
+			
+			_update_tool_placeholder_status(tool_call_id, function_name, "running");
+			_execute_apply_edit_async(tool_call_id, args);
+			continue;
+		} else if (function_name == "check_compilation_errors") {
+			result = EditorTools::check_compilation_errors(args);
+		} else if (function_name == "get_scene_tree_hierarchy") {
+			result = EditorTools::get_scene_tree_hierarchy(args);
+		} else if (function_name == "inspect_physics_body") {
+			result = EditorTools::inspect_physics_body(args);
+		} else if (function_name == "get_camera_info") {
+			result = EditorTools::get_camera_info(args);
+		} else if (function_name == "take_screenshot") {
+			result = EditorTools::take_screenshot(args);
+		} else if (function_name == "check_node_in_scene_tree") {
+			result = EditorTools::check_node_in_scene_tree(args);
+		} else if (function_name == "inspect_animation_state") {
+			result = EditorTools::inspect_animation_state(args);
+		} else if (function_name == "get_layers_and_zindex") {
+			result = EditorTools::get_layers_and_zindex(args);
+		} else if (function_name == "run_scene") {
+			result = EditorTools::run_scene(args);
+		} else if (function_name == "stop_game") {
+			result = EditorTools::stop_game(args);
+		} else if (function_name == "get_game_status") {
+			result = EditorTools::get_game_status(args);
+		} else if (function_name == "get_runtime_errors_summary") {
+			result = EditorTools::get_runtime_errors_summary(args);
+		} else if (function_name == "get_runtime_errors_detailed") {
+			result = EditorTools::get_runtime_errors_detailed(args);
+		} else if (function_name == "attach_script") {
+			result = EditorTools::attach_script(args);
+		} else if (function_name == "universal_resource_manager") {
+			result = EditorTools::universal_resource_manager(args);
+		} else if (function_name == "universal_scene_manager") {
+			result = EditorTools::universal_scene_manager(args);
+		} else if (function_name == "universal_project_manager") {
+			result = EditorTools::universal_project_manager(args);
+		} else if (function_name == "project_manager") {
+			// All project_manager operations run immediately and synchronously
+			result = EditorTools::project_manager(args);
+		} else if (function_name == "script_manager") {
+			result = EditorTools::script_manager(args);
+		} else if (function_name == "resource_manager") {
+			result = EditorTools::resource_manager(args);
+		} else if (function_name == "settings_manager") {
+			result = EditorTools::settings_manager(args);
+		} else if (function_name == "search_manager") {
+			result = EditorTools::search_manager(args);
+		} else if (function_name == "runtime_manager") {
+			result = EditorTools::runtime_manager(args);
+		} else {
+			result["success"] = false;
+			result["message"] = "Unknown tool: " + function_name;
+			print_line("AI Chat: ERROR - Unknown tool: " + function_name + " (ID: " + tool_call_id + ")");
+		}
+
+		// Capture any new runtime errors
+		Dictionary post_execution_errors = EditorTools::get_runtime_errors(Dictionary());
+		int post_error_count = post_execution_errors.get("count", 0);
+		int new_error_count = post_error_count - pre_error_count;
+		if (new_error_count > 0) {
+			result["new_runtime_errors"] = new_error_count;
+			print_line("AI Chat: Tool execution generated " + String::num_int64(new_error_count) + " new runtime errors");
+		}
+
+		// CRITICAL FIX: Validate tool call ID before adding response
+		if (tool_call_id.is_empty()) {
+			print_line("AI Chat: ERROR - Tool " + function_name + " completed but missing tool_call_id");
+			tool_call_id = "frontend_fallback_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+			print_line("AI Chat: Generated fallback tool_call_id: " + tool_call_id);
+		}
+		
+		print_line("AI Chat: Adding tool response for " + function_name + " (ID: " + tool_call_id + ") success: " + String(result.get("success", false) ? "true" : "false"));
+		_add_tool_response_to_chat(tool_call_id, function_name, args, result);
+	}
+	
+    // If there are async tool tasks running, defer finalization until they complete.
+    if (pending_tool_tasks > 0) {
+        print_line("AI Chat: Waiting for " + String::num_int64(pending_tool_tasks) + " async tool task(s) to finish...");
+        return;
+    }
+
+    print_line("AI Chat: All frontend tools completed, preparing to send conversation back to backend");
+    
+    // CRITICAL FIX: Validate conversation state before sending back to backend
+    Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+    int assistant_tool_calls = 0;
+    int tool_responses = 0;
+    
+    // Count tool calls and responses in recent messages to ensure they match
+    for (int i = MAX(0, chat_history.size() - 10); i < chat_history.size(); i++) {
+        const ChatMessage &msg = chat_history[i];
+        if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+            assistant_tool_calls += msg.tool_calls.size();
+        } else if (msg.role == "tool") {
+            tool_responses++;
+        }
+    }
+    
+    print_line("AI Chat: Recent conversation state - Assistant tool calls: " + String::num_int64(assistant_tool_calls) + 
+              ", Tool responses: " + String::num_int64(tool_responses));
+    
+    // We've finished with this turn's tool calls. Clear the current label
+    // so the next content_delta or assistant_message creates a new bubble
+    // or finds the correct existing one.
+    current_assistant_message_label = nullptr;
+    
+    // Reset thinking section state
+    current_thinking_section = nullptr;
+    current_thinking_label = nullptr;
+    current_thinking_content = "";
+    
+    // CRITICAL FIX: Ensure we're still in waiting state for continuation
+    if (!is_waiting_for_response) {
+        print_line("AI Chat: ERROR - Not in waiting state after tool completion, restoring waiting state");
+        is_waiting_for_response = true;
+        _update_ui_state();
+    }
+    
+    // Send the conversation with tool results back to backend to continue processing
+    // This is expected by the backend after frontend tool execution
+    print_line("AI Chat: Sending conversation with tool results back to backend for continuation");
+    _send_chat_request();
+}

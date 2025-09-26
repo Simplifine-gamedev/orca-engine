@@ -879,8 +879,7 @@ void AIChatDock::_notification(int p_notification) {
                         print_line("AI Chat: Main stream disconnected, but " + String::num_int64(pending_tool_tasks) + " tool(s) still running");
                     } else {
                         print_line("AI Chat: HTTP connection failed with status: " + String::num_int64(client_status));
-                        // Only show connection error if this is a genuine failure (not during tool handoff)
-                        if (!connection_error_shown && !stream_completed_successfully) {
+                        if (!connection_error_shown) {
                             _show_connection_status_notification("Connection lost or failed", "Status: " + String::num_int64(client_status) + " - AI is still working in background");
                             connection_error_shown = true;
                             call_deferred("_reset_connection_error_flag");
@@ -3336,6 +3335,9 @@ void AIChatDock::_handle_response_chunk(const PackedByteArray &p_chunk) {
 	}
 }
 void AIChatDock::_process_ndjson_line(const String &p_line) {
+	// Implementation kept in main file due to extensive member access requirements
+	// Simplified implementation for now
+	
 	Ref<JSON> json;
 	json.instantiate();
 	Error err = json->parse(p_line);
@@ -3346,128 +3348,179 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 	Dictionary response_data = json->get_data();
 	
-	// Handle request_id from backend (first message)
-	if (response_data.has("request_id")) {
-		String new_request_id = response_data["request_id"];
-		if (new_request_id != current_request_id) {
-			current_request_id = new_request_id;
-			print_line("AI Chat: Received request ID: " + current_request_id);
-			// Reset connection error flag for new request
-			connection_error_shown = false;
-			// Update UI state to enable the stop button now that we have a request ID
-			_update_ui_state();
-		}
-		
-		// Check if this is just a started message
-		if (response_data.has("status") && response_data["status"] == "started") {
-			return;
-		}
-	}
-	
+	// Handle basic status messages
 	if (response_data.has("status")) {
 		String status = response_data["status"];
+		print_line("AI Chat: Received status: " + status);
 		
 		if (status == "finished" || status == "completed") {
-			_request_completed();
-			return;
-		}
-		
-		if (status == "executing_tools" && response_data.has("assistant_message")) {
+        _request_completed();
+        return;
+    }
+
+		// Handle tool execution status
+		if (status == "executing_tools") {
+		if (response_data.has("assistant_message")) {
 			Dictionary assistant_message = response_data["assistant_message"];
 			Array tool_calls = assistant_message.get("tool_calls", Array());
-			String content = assistant_message.get("content", "");
-			if (content.is_empty() && tool_calls.size() > 0) {
-				content = "Running " + String::num_int64(tool_calls.size()) + " tool(s)...";
-			}
-			_add_message_to_chat("assistant", content, tool_calls);
-			return;
-		}
-		
-		if (status == "awaiting_frontend_action") {
-			// CRITICAL FIX: Mark stream as completed successfully to prevent connection error
-			stream_completed_successfully = true;
-			http_status = STATUS_DONE;
+			String assistant_content = assistant_message.get("content", "");
 			
-			// Clear current label so post-tool content creates new message
-			current_assistant_message_label = nullptr;
-			
-			// Execute any pending tool calls
+		// CRITICAL FIX: Check if we already have an assistant message streaming
+		bool attached_to_existing = false;
+		if (current_assistant_message_label != nullptr) {
 			Vector<ChatMessage> &history = _get_current_chat_history();
-			if (!history.is_empty() && history[history.size() - 1].role == "assistant") {
-				Array tool_calls = history[history.size() - 1].tool_calls;
-				if (tool_calls.size() > 0) {
-					print_line("AI Chat: Executing " + String::num_int64(tool_calls.size()) + " frontend tool calls");
-					// Maintain waiting state during tool execution
+			if (!history.is_empty()) {
+				ChatMessage &last = history.write[history.size() - 1];
+				if (last.role == "assistant") {
+					// Update existing message with tool calls instead of creating new one
+					if (!assistant_content.is_empty() && last.content.is_empty()) {
+						last.content = assistant_content;
+						String bbcode = _markdown_to_bbcode(assistant_content);
+						if (!bbcode.is_empty()) {
+							current_assistant_message_label->set_text(bbcode);
+						}
+					}
+					// SAFETY: Create safe copy of tool calls
+					Array safe_tool_calls;
+					for (int i = 0; i < tool_calls.size(); i++) {
+						safe_tool_calls.push_back(tool_calls[i]);
+					}
+					last.tool_calls = safe_tool_calls;
+					_create_tool_call_bubbles(safe_tool_calls);
+					attached_to_existing = true;
+					
+					// Mark as waiting for tool execution
 					is_waiting_for_response = true;
 					_update_ui_state();
-					_execute_tool_calls(tool_calls);
-				} else {
-					print_line("AI Chat: WARNING - awaiting_frontend_action but no tool calls found");
-					// Continue anyway to avoid hanging
-					is_waiting_for_response = true;
-					_update_ui_state();
-					call_deferred("_send_chat_request");
 				}
-			} else {
-				print_line("AI Chat: WARNING - awaiting_frontend_action but no assistant message found");
-				is_waiting_for_response = true;
-				_update_ui_state();
-				call_deferred("_send_chat_request");
 			}
-			return;
 		}
 		
-		if (status == "tool_completed") {
-			String tool_executed = response_data.get("tool_executed", "");
-			Dictionary tool_result = response_data.get("tool_result", Dictionary());
-			String tool_call_id = response_data.get("tool_call_id", "");
-			if (!tool_call_id.is_empty()) {
-				Dictionary args;
-				_add_tool_response_to_chat(tool_call_id, tool_executed, args, tool_result);
+		if (!attached_to_existing) {
+			if (assistant_content.is_empty() && tool_calls.size() > 0) {
+				assistant_content = "Running " + String::num_int64(tool_calls.size()) + " tool" + (tool_calls.size() > 1 ? "s" : "") + "...";
 			}
-			return;
+			_add_message_to_chat("assistant", assistant_content, tool_calls);
+			
+			// Mark as waiting for tool execution
+			is_waiting_for_response = true;
+			_update_ui_state();
 		}
+		return;
 	}
 	
-	if (response_data.has("content_delta")) {
-		RichTextLabel *label = _get_or_create_current_assistant_message_label();
-		if (label) {
-			String delta = response_data["content_delta"];
-			Vector<ChatMessage> &chat_history = _get_current_chat_history();
-			if (!chat_history.is_empty()) {
-				ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
-				if (last_msg.role == "assistant") {
-					last_msg.content += delta;
-					String bbcode_content = _markdown_to_bbcode(last_msg.content);
-					if (!bbcode_content.is_empty()) {
-						label->set_text(bbcode_content);
-					}
+	// Handle awaiting frontend action
+	if (status == "awaiting_frontend_action") {
+		// CRITICAL FIX: Clear current label so post-tool content creates new message
+		current_assistant_message_label = nullptr;
+		
+		// Execute any pending tool calls with safety checks
+		Vector<ChatMessage> &history = _get_current_chat_history();
+		if (!history.is_empty() && history[history.size() - 1].role == "assistant") {
+			Array tool_calls = history[history.size() - 1].tool_calls;
+			if (tool_calls.size() > 0) {
+				print_line("AI Chat: Executing frontend tool calls");
+				// CRASH FIX: Create a copy of the Array to prevent corruption
+				Array tool_calls_copy;
+				for (int i = 0; i < tool_calls.size(); i++) {
+					tool_calls_copy.push_back(tool_calls[i]);
 				}
+				_execute_tool_calls(tool_calls_copy);
 			}
 		}
 		return;
 	}
 	
+	// Handle content deltas
+	if (response_data.has("content_delta")) {
+		RichTextLabel *label = _get_or_create_current_assistant_message_label();
+		if (label) {
+		String delta = response_data["content_delta"];
+			Vector<ChatMessage> &chat_history = _get_current_chat_history();
+		if (!chat_history.is_empty()) {
+			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
+			if (last_msg.role == "assistant") {
+				last_msg.content += delta;
+				
+					// Update conversation timestamp for streaming content
+				if (current_conversation_index >= 0) {
+					conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+				}
+				
+					// Update UI with accumulated content
+					String bbcode_content = _markdown_to_bbcode(last_msg.content);
+					if (!bbcode_content.is_empty()) {
+						label->set_text(bbcode_content);
+					}
+					
+					// Auto-scroll if user is at bottom
+					if (auto_scroll_at_bottom) {
+						call_deferred("_scroll_to_bottom");
+					}
+				}
+			}
+		}
+		return; // Important: return here to prevent further processing
+	}
+	
+	// Handle tool completion results
+	if (response_data.has("status") && response_data["status"] == "tool_completed") {
+		String tool_executed = response_data.get("tool_executed", "");
+		Dictionary tool_result = response_data.get("tool_result", Dictionary());
+		String tool_call_id = response_data.get("tool_call_id", "");
+		
+		print_line("AI Chat: Tool completed: " + tool_executed + " (ID: " + tool_call_id + ")");
+		
+		// Add tool result to conversation
+		if (!tool_call_id.is_empty()) {
+			Dictionary args; // Empty args for backend tools
+			_add_tool_response_to_chat(tool_call_id, tool_executed, args, tool_result);
+		}
+		return;
+	}
+
+	// Handle final assistant message
 	if (response_data.has("assistant_message")) {
 		Dictionary assistant_message = response_data["assistant_message"];
 		String final_content = assistant_message.get("content", "");
 		
+		// Skip if this has tool calls (should have been handled by executing_tools)
+		Array tool_calls_check = assistant_message.get("tool_calls", Array());
+		if (assistant_message.has("tool_calls") && tool_calls_check.size() > 0) {
+			print_line("AI Chat: Skipping assistant_message with tool calls - should be handled by executing_tools");
+			return;
+		}
+
+		// CRITICAL FIX: Check if this is post-tool content by looking at conversation context
 		Vector<ChatMessage> &chat_history = _get_current_chat_history();
-		bool is_post_tool = (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role == "tool");
+		bool is_post_tool_content = false;
 		
-		if (is_post_tool) {
-			current_assistant_message_label = nullptr;
+		// If last message is a tool result, this final content should be in a NEW message
+		if (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role == "tool") {
+			is_post_tool_content = true;
+			print_line("AI Chat: Final assistant content is post-tool - creating new message");
+		}
+		
+		if (is_post_tool_content) {
+			// Create new assistant message for post-tool content
+			current_assistant_message_label = nullptr; // Force new message creation
 			if (final_content != "<null>" && !final_content.is_empty()) {
 				_add_message_to_chat("assistant", final_content);
 			}
-		} else if (!chat_history.is_empty()) {
-			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
-			if (last_msg.role == "assistant" && final_content != "<null>" && !final_content.is_empty()) {
-				last_msg.content = final_content;
-				if (current_assistant_message_label) {
-					String bbcode_content = _markdown_to_bbcode(final_content);
-					if (!bbcode_content.is_empty()) {
-						current_assistant_message_label->set_text(bbcode_content);
+		} else {
+			// Update existing assistant message if available
+			if (!chat_history.is_empty()) {
+				ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
+				if (last_msg.role == "assistant") {
+					if (final_content != "<null>" && !final_content.is_empty()) {
+						last_msg.content = final_content;
+						// Update UI if we have a label
+						if (current_assistant_message_label) {
+							String bbcode_content = _markdown_to_bbcode(final_content);
+							if (!bbcode_content.is_empty()) {
+								current_assistant_message_label->set_text(bbcode_content);
+							}
+						}
 					}
 				}
 			}
@@ -3476,7 +3529,10 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		_queue_delayed_save();
 		return;
 	}
+	
+	// TODO: Restore full NDJSON processing from ai_chat_dock_network.cpp
 }
+
 RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 	// CRITICAL FIX: Always check if we're in a post-tool scenario where we need a fresh message
 	Vector<ChatMessage> &history = _get_current_chat_history();
@@ -3568,8 +3624,21 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 }
 void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 	// CRASH FIX: Add safety checks for corrupted Array parameter
-	int tool_count = p_tool_calls.size();
-	if (tool_count <= 0) {
+	if (p_tool_calls.is_null()) {
+		print_line("AI Chat: ERROR - Tool calls array is null, aborting execution");
+		return;
+	}
+	
+	// Use try-catch around size() call to prevent crash
+	int tool_count = 0;
+	try {
+		tool_count = p_tool_calls.size();
+	} catch (...) {
+		print_line("AI Chat: ERROR - Tool calls array is corrupted, aborting execution");
+		return;
+	}
+	
+	if (tool_count == 0) {
 		print_line("AI Chat: No tool calls to execute");
 		return;
 	}
@@ -3650,21 +3719,11 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 	// Continue conversation after tool execution only if we're still waiting
 	if (is_waiting_for_response && !stop_requested) {
 		print_line("AI Chat: All tools completed, continuing conversation");
-		// Ensure we maintain waiting state for the continuation request
-		is_waiting_for_response = true;
-		_update_ui_state();
 		call_deferred("_send_chat_request");
 	} else {
 		print_line("AI Chat: Tools completed but conversation stopped or not waiting");
 		is_waiting_for_response = false;
-		stop_requested = false;
-		current_request_id = "";
 		_update_ui_state();
-		
-		// Clear input field when tools complete and conversation ends
-		if (input_field && input_field->is_inside_tree()) {
-			input_field->set_text("");
-		}
 	}
 }
 // Struct to pass data to apply_edit thread
@@ -3993,7 +4052,7 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 	msg.timestamp = _get_timestamp();
 	
 	// SAFETY: Create a safe copy of tool_calls to prevent corruption
-	if (p_tool_calls.size() > 0) {
+	if (!p_tool_calls.is_null() && p_tool_calls.size() > 0) {
 		Array safe_tool_calls;
 		for (int i = 0; i < p_tool_calls.size(); i++) {
 			Variant tool_call = p_tool_calls[i];
