@@ -420,6 +420,7 @@ private:
 	void _on_background_save_finished();
 	void _create_new_conversation();
 	void _create_new_conversation_instant();
+	void _create_new_conversation_background();
 	void _switch_to_conversation(int p_index);
 	void _update_conversation_dropdown();
 	String _generate_conversation_id();
@@ -429,7 +430,7 @@ private:
 	void _on_tool_file_link_pressed(const String &p_path);
 	String _convert_to_godot_path(const String &p_path);
 	String _generate_descriptive_tool_status(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result, bool p_success);
-	String _generate_executing_tool_message(const String &p_tool_name);
+	String _generate_executing_tool_message(const String &p_tool_name, const String &p_arguments_str = "");
 
 	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
 	void _load_layout_from_config(Ref<ConfigFile> p_layout, const String &p_section);
@@ -457,6 +458,8 @@ private:
 	void _connect_script_editor_signals();
 	void _show_diff_in_script_editor(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
 	void _show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
+	void _show_diff_in_shader_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
+	void _apply_shader_diff_to_current_editor(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff);
 	void _show_cumulative_diff_for_file(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff = "");
 	String _generate_inline_diff(const String &p_original, const String &p_modified);
 
@@ -657,6 +660,7 @@ private:
 	void _process_conversation_loading_chunk();
 	void _process_tool_results_chunk();
 	void _finish_chunked_conversation_loading();
+	void _rebuild_conversation_ui_deferred(int p_conversation_index);
 	
 	// Loading screen UI components
 	PanelContainer *loading_screen = nullptr;

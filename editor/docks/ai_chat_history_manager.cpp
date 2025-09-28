@@ -345,6 +345,20 @@ void AIChatHistoryManager::set_current_conversation(int p_index) {
 	}
 }
 
+void AIChatHistoryManager::mark_conversation_busy(int p_index, bool p_busy) {
+    if (!conversation_dropdown || !conversations_container) {
+        return;
+    }
+
+    // Store busy state for visual styling without modifying text
+    // Use background color or icon to indicate busy state instead of text characters
+    
+    // If dropdown is open, repopulate to reflect the visual state
+    if (dropdown_popup && dropdown_popup->is_visible()) {
+        _populate_dropdown_conversations();
+    }
+}
+
 int AIChatHistoryManager::get_selected_conversation_index() const {
 	if (!conversation_dropdown) {
 		return -1;

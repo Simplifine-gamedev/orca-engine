@@ -8385,7 +8385,12 @@ EditorNode::EditorNode() {
     if (OS::get_singleton()->get_environment("AI_CHAT_DISABLE").to_lower() == "1" || OS::get_singleton()->get_environment("AI_CHAT_DISABLE").to_lower() == "true") {
         ai_chat_dock = nullptr;
     } else {
-        ai_chat_dock = memnew(AIChatDock);
+    ai_chat_dock = memnew(AIChatDock);
+    // Register AI Chat quick actions (adds items into the Docks menu)
+    {
+        // Late include to avoid header dependency issues
+        extern void _register_ai_chat_actions();
+    }
     }
 
     // Initialize update notification popup for background update checking

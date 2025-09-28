@@ -34,7 +34,13 @@
 #include "editor/shader/shader_editor.h"
 #include "scene/gui/menu_button.h"
 #include "scene/gui/rich_text_label.h"
+#include "scene/gui/panel_container.h"
+#include "scene/gui/scroll_container.h"
+#include "scene/resources/style_box_flat.h"
 #include "servers/rendering/shader_warnings.h"
+
+// Include dtl for diff functionality
+#include "dtl.hpp"
 
 class GDShaderSyntaxHighlighter : public CodeHighlighter {
 	GDCLASS(GDShaderSyntaxHighlighter, CodeHighlighter)
@@ -134,6 +140,23 @@ class TextShaderEditor : public ShaderEditor {
 		BOOKMARK_REMOVE_ALL,
 		HELP_DOCS,
 		EDIT_EMOJI_AND_SYMBOL,
+		EDIT_ACCEPT_HUNK,
+		EDIT_REJECT_HUNK,
+	};
+
+	// Diff functionality structures (similar to ScriptTextEditor)
+	enum LineState {
+		LINE_STATE_NORMAL,
+		LINE_STATE_ADDED,
+		LINE_STATE_REMOVED,
+		LINE_STATE_ACCEPTED
+	};
+
+	struct DiffHunk {
+		int start_line;
+		int end_line;
+		bool accepted;
+		bool rejected;
 	};
 
 	HBoxContainer *hbc = nullptr;
@@ -179,6 +202,31 @@ class TextShaderEditor : public ShaderEditor {
 	bool trim_trailing_whitespace_on_save;
 	bool trim_final_newlines_on_save;
 
+	// Diff functionality members (similar to ScriptTextEditor)
+	String original_content;
+	String modified_content;
+	String inline_diff_text;
+	bool has_inline_diff = false;
+	bool has_pending_diffs = false;
+	Vector<DiffHunk> diff_hunks;
+	HashMap<int, int> line_to_hunk_map;
+	Vector<LineState> line_states;
+	Vector<String> stored_backend_diff_lines;
+	int current_hunk_index = -1;
+
+	// Diff UI elements
+	PanelContainer *diff_toolbar = nullptr;
+	Button *accept_all_button = nullptr;
+	Button *reject_all_button = nullptr;
+	HBoxContainer *hunk_buttons_container = nullptr;
+	Vector<Button *> hunk_accept_buttons;
+	Vector<Button *> hunk_reject_buttons;
+
+	// Diff colors
+	Color diff_added_color;
+	Color diff_removed_color;
+	Color diff_hunk_header_color;
+
 protected:
 	void _notification(int p_what);
 	static void _bind_methods();
@@ -187,6 +235,27 @@ protected:
 
 	void _update_bookmark_list();
 	void _bookmark_item_pressed(int p_idx);
+
+	// Diff functionality private methods
+	void _build_diff_hunks(const String &p_original, const String &p_modified);
+	String _generate_unified_diff_text();
+	String _generate_smart_diff_text();
+	void _update_diff_display();
+	void _show_unified_diff(const String &p_original, const String &p_modified);
+	void _apply_hunk(int p_hunk_index, bool p_accept);
+	void _apply_all_diff_hunks(bool p_accept);
+	void _clear_diff_data();
+	void _create_diff_toolbar();
+	void _show_diff_toolbar();
+	void _hide_diff_toolbar();
+	void _create_hunk_buttons();
+	void _update_hunk_button_states();
+	Ref<StyleBoxFlat> _create_hunk_button_style(const Color &p_color);
+	void _scroll_to_hunk(int p_hunk_idx);
+	void _on_hunk_accept_pressed(int p_hunk_idx);
+	void _on_hunk_reject_pressed(int p_hunk_idx);
+	void _on_accept_all_pressed();
+	void _on_reject_all_pressed();
 
 public:
 	virtual void edit_shader(const Ref<Shader> &p_shader) override;
@@ -207,6 +276,13 @@ public:
 	void trim_final_newlines();
 	void tag_saved_version();
 	ShaderTextEditor *get_code_editor() { return code_editor; }
+
+	// Diff functionality methods (similar to ScriptTextEditor)
+	void set_diff(const String &p_original_content, const String &p_modified_content, const String &p_inline_diff = "");
+	void clear_diff();
+	void accept_all_diffs();
+	void reject_all_diffs();
+	String get_unified_diff_text() const;
 
 	virtual Size2 get_minimum_size() const override { return Size2(0, 200); }
 

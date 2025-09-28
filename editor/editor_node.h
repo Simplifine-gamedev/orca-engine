@@ -93,6 +93,7 @@ class ExportTemplateManager;
 class EditorQuickOpenDialog;
 class FBXImporterManager;
 class AIChatDock;
+class AIChatActions;
 class FileSystemDock;
 class HistoryDock;
 class UpdateNotificationPopup;

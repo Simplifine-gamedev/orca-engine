@@ -372,55 +372,82 @@ def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> t
         return messages, False
 
 def _manage_conversation_length_fallback(messages: list, model: str) -> list:
-    """Manage conversation length to prevent token limit exceeded errors"""
-    # Model-specific token limits (leaving safety margin)
+    """IMPROVED: Manage conversation length with intelligent summarization strategy"""
+    # Model-specific token limits (updated to match frontend strategy)
     TOKEN_LIMITS = {
-        "anthropic/claude-sonnet-4-20250514": 80000,  # Moderate limit to prevent HTTP corruption
-        "openai/gpt-5": 80000,  # Moderate limit to prevent HTTP corruption  
-        "openai/gpt-4o": 80000,  # Moderate limit to prevent HTTP corruption
-        "openai/gpt-4-turbo": 80000,  # Moderate limit to prevent HTTP corruption
-        "anthropic/claude-3-5-sonnet-20241022": 80000,  # Moderate limit to prevent HTTP corruption
+        "anthropic/claude-sonnet-4-20250514": 180000,  # Higher limits to match memory_config
+        "openai/gpt-5": 120000,
+        "openai/gpt-4o": 120000,
+        "openai/gpt-4-turbo": 120000,
+        "anthropic/claude-3-5-sonnet-20241022": 180000,
     }
     
-    limit = TOKEN_LIMITS.get(model, 100000)  # Default conservative limit
+    limit = TOKEN_LIMITS.get(model, 100000)
+    trigger_threshold = int(limit * 0.5)  # 50% threshold to match frontend
     
-    # Calculate current token usage with smart image handling
+    # Calculate current token usage
     total_tokens = 0
     for msg in messages:
         total_tokens += _estimate_message_tokens(msg)
     
-    if total_tokens <= limit:
-        return messages  # No pruning needed
+    if total_tokens <= trigger_threshold:
+        return messages  # No management needed yet
     
-    print(f"CONVERSATION_PRUNE: Token count {total_tokens} exceeds limit {limit}, pruning conversation")
+    print(f"CONVERSATION_MANAGE: Token count {total_tokens} exceeds 50% threshold {trigger_threshold}, applying smart management")
     
-    # Keep system message (first) and recent messages, prune middle
-    if len(messages) <= 3:
-        return messages  # Too short to prune meaningfully
+    # Minimum messages to keep recent (align with frontend)
+    recent_messages_to_keep = 20
     
+    if len(messages) <= recent_messages_to_keep + 3:
+        return messages  # Too short to manage meaningfully
+    
+    # Check if we already have a summary (avoid re-summarizing)
+    has_existing_summary = False
+    summary_index = -1
+    for i, msg in enumerate(messages):
+        content = str(msg.get('content', ''))
+        if '[CONVERSATION CONTEXT SUMMARY]' in content or 'Previous conversation context' in content:
+            has_existing_summary = True
+            summary_index = i
+            break
+    
+    # Smart message selection strategy
     system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
-    recent_count = min(10, len(messages) // 2)  # Keep last 10 messages or half, whichever is smaller
-    recent_messages = messages[-recent_count:]
+    recent_messages = messages[-recent_messages_to_keep:]
     
-    # Create pruned conversation with summary
-    pruned_messages = []
+    if has_existing_summary:
+        # Already have summary - check if we need to extend it
+        messages_since_summary = len(messages) - summary_index - 1 - recent_messages_to_keep
+        if messages_since_summary < 10:  # Not enough new content to re-summarize
+            return messages  # Keep as-is
+        
+        # Create incremental summary of messages since last summary
+        messages_to_summarize = messages[summary_index + 1:-recent_messages_to_keep]
+        summary_content = f"[INCREMENTAL SUMMARY - {len(messages_to_summarize)} new messages added to previous summary]"
+    else:
+        # No existing summary - summarize earliest messages
+        messages_to_summarize = messages[1 if system_msg else 0:-recent_messages_to_keep]  # Skip system, keep recent
+        summary_content = f"[CONVERSATION CONTEXT SUMMARY - {len(messages_to_summarize)} messages summarized. Key context: project development session with tool usage, debugging, and technical problem-solving. Recent {recent_messages_to_keep} messages preserved for immediate context.]"
+    
+    # Build result
+    result_messages = []
     if system_msg:
-        pruned_messages.append(system_msg)
+        result_messages.append(system_msg)
     
-    # Add context summary
-    pruned_messages.append({
-        "role": "assistant",
-        "content": f"[Previous conversation context was automatically pruned due to length. Continuing from recent messages. Total messages pruned: {len(messages) - len(recent_messages) - (1 if system_msg else 0)}]"
+    # Add summary message
+    result_messages.append({
+        "role": "assistant", 
+        "content": summary_content
     })
     
     # Add recent messages
-    pruned_messages.extend(recent_messages)
+    result_messages.extend(recent_messages)
     
     # Verify we're under the limit
-    pruned_tokens = sum(_estimate_message_tokens(msg) for msg in pruned_messages)
-    print(f"CONVERSATION_PRUNE: Reduced from {total_tokens} to {pruned_tokens} tokens ({len(messages)} to {len(pruned_messages)} messages)")
+    result_tokens = sum(_estimate_message_tokens(msg) for msg in result_messages)
+    print(f"CONVERSATION_MANAGE: Reduced from {total_tokens} to {result_tokens} tokens ({len(messages)} to {len(result_messages)} messages)")
     
-    return pruned_messages
+    return result_messages
 
 app = Flask(__name__)
 
@@ -2117,7 +2144,7 @@ def project_manager_internal(arguments: dict) -> dict:
             }
             return check_for_app_updates_internal(update_args)
             
-        elif op in ["context.get", "fs.list", "fs.read", "fs.write", "fs.write_lines", "fs.replace_string", 
+        elif op in ["context.get", "fs.list", "fs.read", "fs.write_lines", "fs.replace_string", 
                    "fs.copy", "fs.move", "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", 
                    "project.analyze_dir", "project.copy_dir", "project.update_refs"]:
             # These are frontend-only operations
@@ -2128,6 +2155,47 @@ def project_manager_internal(arguments: dict) -> dict:
                 "operation": op,
                 "arguments_to_forward": arguments
             }
+        
+        elif op == "fs.write":
+            # CRITICAL FIX: Handle fs.write properly in backend to avoid false success reports
+            file_path = arguments.get('path', '')
+            content = arguments.get('content', '')
+            encoding = arguments.get('encoding', 'utf-8')
+            
+            if not file_path:
+                return {
+                    "success": False,
+                    "error": "Missing required parameter 'path' for fs.write operation"
+                }
+                
+            try:
+                # Convert to absolute path if relative
+                if not os.path.isabs(file_path):
+                    file_path = os.path.abspath(file_path)
+                
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                
+                # Write the file
+                with open(file_path, 'w', encoding=encoding) as f:
+                    f.write(content)
+                
+                print(f"BACKEND: Successfully wrote file {file_path} ({len(content)} characters)")
+                
+                return {
+                    "success": True,
+                    "message": f"File written successfully: {file_path}",
+                    "path": file_path,
+                    "bytes_written": len(content.encode(encoding))
+                }
+            except Exception as e:
+                error_msg = f"Failed to write file {file_path}: {str(e)}"
+                print(f"BACKEND ERROR: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "path": file_path
+                }
             
         else:
             return {"success": False, "error": f"Unknown project_manager operation: {op}"}
@@ -2299,7 +2367,7 @@ def runtime_manager_internal(arguments: dict) -> dict:
         if not op:
             return {"success": False, "error": "Operation 'op' parameter is required"}
             
-        if op in ["game.start", "game.stop", "game.status", "errors.summary", "errors.details"]:
+        if op in ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "screenshot.capture", "console.get_output", "input.test_action", "input.test_key"]:
             # These are frontend-only operations
             return {
                 "success": False,
@@ -2315,6 +2383,36 @@ def runtime_manager_internal(arguments: dict) -> dict:
     except Exception as e:
         print(f"RUNTIME_MANAGER_ERROR: {e}")
         return {"success": False, "error": f"Runtime manager operation failed: {str(e)}"}
+
+def runtime_inspector_internal(arguments: dict) -> dict:
+    """Handle runtime inspection operations for debugging during play"""
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        # All runtime inspector operations are frontend-only but we add metadata
+        # to help the frontend know what to do
+        return {
+            "success": False,
+            "frontend_only": True,
+            "message": f"Runtime inspection operation '{op}' is handled by the frontend",
+            "operation": op,
+            "arguments_to_forward": arguments,
+            "requires_game_running": True  # Signal that game must be running
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def capture_screenshot_internal(arguments: dict) -> dict:
+    """Capture screenshot from editor or running game"""
+    return {
+        "success": False,
+        "frontend_only": True,
+        "message": "Screenshot capture is handled by the frontend",
+        "operation": "screenshot.capture",
+        "arguments_to_forward": arguments
+    }
 
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
@@ -2348,6 +2446,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return search_manager_internal(arguments, None)
     elif function_name == "runtime_manager":
         return runtime_manager_internal(arguments)
+    elif function_name == "runtime_inspector":
+        return runtime_inspector_internal(arguments)
     # Legacy individual tools (maintain backward compatibility)
     elif function_name == "image_operation":
         return image_operation_internal(arguments)
@@ -2476,15 +2576,24 @@ def summarize_conversation():
             
         data = request.get_json() or {}
         messages = data.get('messages', [])
+        has_existing_summary = data.get('has_existing_summary', False)
+        summary_message_index = data.get('summary_message_index', -1)
+        recent_messages_to_keep = data.get('recent_messages_to_keep', 20)
         
         if not messages:
             return jsonify({"success": False, "error": "No messages provided"}), 400
             
         user_id = user.get('id', 'unknown') if user else 'unknown'
         
-        # Create summary using AI models
+        print(f"SUMMARIZATION: Processing {len(messages)} messages, existing_summary={has_existing_summary}, keep_recent={recent_messages_to_keep}")
+        
+        # Create summary using AI models with enhanced context
         import asyncio
-        summary = asyncio.run(conversation_memory.summarize_conversation_chunk(messages, user_id))
+        summary = asyncio.run(conversation_memory.summarize_conversation_chunk(
+            messages, user_id, 
+            has_existing_summary=has_existing_summary,
+            is_incremental=has_existing_summary
+        ))
         
         return jsonify({
             "success": True,
@@ -2877,8 +2986,19 @@ def chat():
                     yield json.dumps({"status": "stopped", "message": "Request stopped"}) + '\n'
                     return
                 
-                # Always use fallback for now - the intelligent memory is broken
-                conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
+                # Use intelligent memory if available, otherwise fallback
+                if conversation_memory and conversation_memory.enabled:
+                    try:
+                        import asyncio
+                        conversation_messages = asyncio.run(conversation_memory.manage_conversation_length(
+                            conversation_messages, model, user.get('id', 'unknown')
+                        ))
+                        print(f"CONVERSATION_MANAGE: Used intelligent memory management")
+                    except Exception as e:
+                        print(f"CONVERSATION_MANAGE: Intelligent memory failed ({e}), using fallback")
+                        conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
+                else:
+                    conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
                 
                 print(f"CONVERSATION_LOOP: Starting OpenAI call with {len(conversation_messages)} messages")
                 if conversation_messages:
@@ -3372,6 +3492,14 @@ def chat():
                         # resource_manager: only image operations need backend
                         elif func_name == "resource_manager":
                             return op in ["image.generate_or_edit", "image.slice_spritesheet"]
+                        
+                        # runtime_manager: all operations are frontend-only
+                        elif func_name == "runtime_manager":
+                            return False
+                        
+                        # runtime_inspector: all operations are frontend-only
+                        elif func_name == "runtime_inspector":
+                            return False
                         
                         # All other tools are frontend-only
                         return False

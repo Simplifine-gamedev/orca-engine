@@ -115,9 +115,20 @@ class ConversationMemoryManager:
         conversation_text = self._format_messages_for_summary(messages)
         
         # Create summarization prompt from configuration
-        summary_prompt = MemoryConfig.get_summary_prompt_template().format(
-            conversation_text=conversation_text
-        )
+        if is_incremental:
+            # For incremental summaries, add context about being an update
+            summary_prompt = f"""You are updating an existing conversation summary with new information.
+
+This is an INCREMENTAL SUMMARY of new messages that occurred after an existing summary.
+
+{MemoryConfig.get_summary_prompt_template().format(conversation_text=conversation_text)}
+
+IMPORTANT: This is an incremental update, so focus on NEW developments, decisions, and context that weren't in the previous summary."""
+        else:
+            # Standard full summarization
+            summary_prompt = MemoryConfig.get_summary_prompt_template().format(
+                conversation_text=conversation_text
+            )
 
         # Try summarization models in order of preference
         for model in self.summarization_models:
@@ -419,14 +430,56 @@ class ConversationMemoryManager:
         if len(messages) <= MemoryConfig.MIN_MESSAGES_TO_PRUNE:
             return messages
         
-        # Check if we already have a summary in the conversation (avoid re-summarizing)
-        has_existing_summary = any(
-            msg.get('role') == 'assistant' and 
-            '[CONVERSATION CONTEXT SUMMARY]' in str(msg.get('content', ''))
-            for msg in messages
-        )
+        # ENHANCED STRATEGY: Check for existing summaries and apply user's smart management
+        has_existing_summary = False
+        summary_index = -1
+        for i, msg in enumerate(messages):
+            content = str(msg.get('content', ''))
+            if ('[CONVERSATION CONTEXT SUMMARY]' in content or 
+                'Previous conversation context' in content):
+                has_existing_summary = True
+                summary_index = i
+                break
+        
+        # Keep recent messages visible to model (user's requirement)
+        recent_messages_to_keep = MemoryConfig.KEEP_RECENT_MESSAGES
         
         if has_existing_summary:
+            # Check if we need incremental summarization
+            messages_since_summary = len(messages) - summary_index - 1 - recent_messages_to_keep
+            if messages_since_summary < 8:  # Not enough new content
+                print(f"MEMORY_MANAGE: Only {messages_since_summary} messages since last summary, keeping as-is")
+                return messages
+            
+            # Apply incremental summarization strategy
+            print(f"MEMORY_MANAGE: Applying incremental summarization for {messages_since_summary} new messages")
+            
+            # Messages to summarize: from after existing summary to before recent messages
+            messages_to_summarize = messages[summary_index + 1:-recent_messages_to_keep]
+            
+            # Create incremental summary
+            incremental_summary = await self.create_summary(messages_to_summarize, user_id, has_existing_summary=True, is_incremental=True)
+            
+            # Build result: system + existing summary + new summary + recent messages
+            system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
+            existing_summary_msg = messages[summary_index]
+            recent_messages = messages[-recent_messages_to_keep:]
+            
+            result = []
+            if system_msg:
+                result.append(system_msg)
+            
+            # Combine existing and incremental summaries
+            combined_summary_content = existing_summary_msg.get('content', '') + "\n\n[INCREMENTAL UPDATE]\n" + incremental_summary
+            result.append({
+                "role": "assistant",
+                "content": combined_summary_content
+            })
+            
+            result.extend(recent_messages)
+            return result
+        
+        else:
             # Already has summary - just keep recent messages after the summary
             summary_idx = -1
             for i, msg in enumerate(messages):
@@ -630,7 +683,7 @@ Previous conversation context has been intelligently summarized to manage length
         # Return generic topic - no hardcoded categorization
         return "general"
     
-    async def summarize_conversation_chunk(self, messages: List[Dict], user_id: str = "unknown") -> str:
+    async def summarize_conversation_chunk(self, messages: List[Dict], user_id: str = "unknown", has_existing_summary: bool = False, is_incremental: bool = False) -> str:
         """Public API endpoint for frontend to request conversation summarization"""
         if not self.enabled:
             return "[Summarization disabled]"

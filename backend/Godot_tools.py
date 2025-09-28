@@ -121,13 +121,17 @@ godot_tools = [
                         "type": "string",
                         "enum": [
                             # Scene ops
-                            "scene.open", "scene.create", "scene.save_as", "scene.instantiate",
+                            "scene.open", "scene.create", "scene.save_as", "scene.instantiate", "scene.instantiate_batch",
                             "scene.analyze", "scene.info", "scene.nodes.get_all",
                             "scene.nodes.find_by_type", "editor.selection.get",
                             "scene.bulk_configure", "scene.copy_configuration",
                             # Node CRUD & type
                             "node.create", "node.create_batch", "node.delete", "node.delete_batch", "node.move",
                             "node.type.change", "node.type.set", "node.rename",
+                            # Advanced batch operations
+                            "node.create_and_configure_batch", "node.assign_resources_batch", "node.set_transforms_batch",
+                            # Pattern-based operations
+                            "node.props.set_pattern", "node.delete_pattern", "node.assign_resource_pattern",
                             # Groups
                             "groups.add", "groups.remove", "groups.list",
                             # Props & methods  
@@ -156,6 +160,26 @@ godot_tools = [
                     "skip_import_wait": {"type": "boolean", "default": False, "description": "Skip import waiting entirely - use for problematic files that cause import loops"},
                     "scope": {"type": "string"},
                     "targets": {"type": "array", "items": {"type": "string"}},
+                    
+                    # Batch scene instantiation
+                    "instantiate_batch": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "scene_path": {"type": "string", "description": "Path to scene/GLB file to instantiate"},
+                                "parent_node": {"type": "string", "description": "Parent node path"},
+                                "instance_name": {"type": "string", "description": "Optional name for the instance"}
+                            },
+                            "required": ["scene_path", "parent_node"]
+                        }
+                    },
+                    
+                    # Pattern-based operations
+                    "node_pattern": {"type": "string", "description": "Node path pattern with wildcards (e.g., 'Hallway//Column*_Left')"},
+                    "property_pattern": {"type": "string", "description": "Property to set on pattern-matched nodes"},
+                    "value_pattern": {"description": "Value to set on pattern-matched nodes"},
+                    "resource_path_pattern": {"type": "string", "description": "Resource path for pattern-based assignment"},
 
                     # Node create/find
                     "type": {"type": "string"},
@@ -206,7 +230,7 @@ godot_tools = [
                     "prefix": {"type": "string", "description": "Include properties beginning with this prefix"},
                     "offset": {"type": "integer", "default": 0, "description": "Skip first N matching properties"},
                     "editor_only": {"type": "boolean", "default": True, "description": "When false, include non-editor properties"},
-                    "max_properties": {"type": "integer", "default": 50, "description": "Set -1 for no limit"},
+                    "max_properties": {"type": "integer", "default": -1, "description": "Set -1 for no limit (default: unlimited for AI debugging)"},
 
                     # Scene listing controls (scene.nodes.get_all)
                     "owned_only": {"type": "boolean", "default": True, "description": "Only include nodes owned by the edited scene"},
@@ -228,6 +252,58 @@ godot_tools = [
                     "validation": {"type": "boolean", "default": True},
                     "source_config_scene": {"type": "string", "description": "Source node path for copy_configuration (will be mapped to 'source')"},
                     "source": {"type": "string", "description": "Source node path (alternative to source_config_scene)"},
+
+                    # Advanced batch operations
+                    "templates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "description": "Node type (e.g., 'MeshInstance3D')"},
+                                "name": {"type": "string", "description": "Name pattern with {i} placeholder (e.g., 'Column{i}_Left')"},
+                                "parent": {"type": "string", "description": "Parent node path"},
+                                "count": {"type": "integer", "description": "Number of nodes to create"},
+                                "mesh": {"type": "string", "description": "Mesh resource path"},
+                                "material": {"type": "string", "description": "Material resource path"},
+                                "properties": {"type": "object", "description": "Properties to set on each node"},
+                                "positions": {
+                                    "type": "object",
+                                    "properties": {
+                                        "pattern": {"type": "string", "enum": ["linear", "grid", "circle", "custom"]},
+                                        "start": {"type": "object", "description": "Starting position {x, y, z}"},
+                                        "spacing": {"type": "object", "description": "Spacing between nodes {x, y, z}"},
+                                        "grid_size": {"type": "object", "description": "Grid dimensions {x, y, z} for grid pattern"},
+                                        "radius": {"type": "number", "description": "Radius for circle pattern"},
+                                        "custom_positions": {"type": "array", "items": {"type": "object"}, "description": "Custom position list"}
+                                    }
+                                }
+                            },
+                            "required": ["type", "name", "parent", "count"]
+                        }
+                    },
+                    "batch_resources": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "node_paths": {"type": "array", "items": {"type": "string"}},
+                                "property": {"type": "string"},
+                                "resource_path": {"type": "string"}
+                            }
+                        }
+                    },
+                    "batch_transforms": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "node_paths": {"type": "array", "items": {"type": "string"}},
+                                "positions": {"type": "array", "items": {"type": "object"}},
+                                "rotations": {"type": "array", "items": {"type": "object"}},
+                                "scales": {"type": "array", "items": {"type": "object"}}
+                            }
+                        }
+                    },
 
                     # Signals
                     "signal_name": {"type": "string"},
@@ -292,6 +368,7 @@ godot_tools = [
                             "res.copy_from_template", "res.refresh",
                             "res.load_and_assign",
                             "import.set_options", "import.reimport",
+                            "shader.clear_cache", "shader.force_recompile", "shader.debug_cache",
                             "image.generate_or_edit", "image.save", "image.slice_spritesheet"
                         ]
                     },
@@ -316,6 +393,11 @@ godot_tools = [
                     # Import pipeline
                     "import_path": {"type": "string", "description": "Source asset to set options/reimport"},
                     "import_options": {"type": "object", "description": "Importer-specific options (e.g., texture flags)"},
+                    
+                    # Shader cache management
+                    "shader_path": {"type": "string", "description": "Specific shader file path for cache operations"},
+                    "cache_type": {"type": "string", "enum": ["user", "project", "all"], "default": "all", "description": "Which shader cache to clear"},
+                    "force_recompile_all": {"type": "boolean", "default": False, "description": "Force recompile all shaders in project"},
 
                     # Image generate/edit
                     "description": {"type": "string", "description": "Text description of the image to generate or edit"},
@@ -364,6 +446,7 @@ godot_tools = [
                         "enum": [
                             # ProjectSettings
                             "project_settings.get", "project_settings.set", "project_settings.list",
+                            "project_settings.get_many", "project_settings.search",
                             # Autoloads
                             "autoload.add", "autoload.remove",
                             # Layer names
@@ -376,6 +459,12 @@ godot_tools = [
                     "key": {"type": "string", "description": "e.g., 'application/config/name'"},
                     "value": {},
                     "prefix": {"type": "string", "description": "List settings whose key starts with this prefix"},
+                    "keys": {"type": "array", "items": {"type": "string"}, "description": "Array of keys for get_many operation"},
+                    "query": {"type": "string", "description": "Search term for project_settings.search"},
+                    "search_in_values": {"type": "boolean", "default": False, "description": "Search in setting values too"},
+                    "keys_only": {"type": "boolean", "default": False, "description": "Return only keys without values"},
+                    "offset": {"type": "integer", "default": 0, "description": "Pagination offset"},
+                    "limit": {"type": "integer", "default": 200, "description": "Max results per page"},
 
                     # Autoloads
                     "autoload_name": {"type": "string"},
@@ -475,11 +564,11 @@ godot_tools = [
         "type": "function",
         "function": {
             "name": "runtime_manager",
-            "description": "Run/stop/status, error summaries/details.",
+            "description": "Run/stop/status, error summaries/details, screenshots.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "op": {"type": "string", "enum": ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "errors.test", "errors.debug"]},
+                    "op": {"type": "string", "enum": ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "errors.test", "errors.debug", "screenshot.capture", "console.get_output", "input.test_action", "input.test_key"]},
                     "scene_path": {"type": "string"},
                     "clear_errors": {"type": "boolean", "default": True},
 
@@ -487,12 +576,89 @@ godot_tools = [
                     "file_filter": {"type": "string"},
                     "max_count": {"type": "integer", "default": 20},
                     "message_contains": {"type": "string"},
-                    "group_duplicates": {"type": "boolean", "default": True}
+                    "group_duplicates": {"type": "boolean", "default": True},
 
-                    # TEMPORARILY DISABLED - Screenshot parameters
-                    # "filename": {"type": "string", "default": "screenshot_debug.png"},
-                    # "target": {"type": "string", "enum": ["editor", "game", "both"], "default": "editor"},
-                    # "return_base64": {"type": "boolean", "default": False}
+                    # Screenshot parameters
+                    "filename": {"type": "string", "default": "screenshot_debug.png"},
+                    "target": {"type": "string", "enum": ["editor", "game", "both"], "default": "game"},
+                    "return_base64": {"type": "boolean", "default": True},
+                    
+                    # Console output parameters
+                    "output_type": {"type": "string", "enum": ["all", "print", "error", "warning"], "default": "all"},
+                    "max_lines": {"type": "integer", "default": 50, "description": "Maximum console lines to retrieve"},
+                    "since_timestamp": {"type": "integer", "description": "Only get output since this timestamp (milliseconds)"},
+                    
+                    # Input testing parameters
+                    "action_name": {"type": "string", "description": "Input action name to test"},
+                    "key_code": {"type": "integer", "description": "Key code to test (e.g., 32 for space)"},
+                    "test_duration": {"type": "number", "default": 1.0, "description": "How long to test input (seconds)"}
+                },
+                "required": ["op"]
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "runtime_inspector",
+            "description": "Inspect and modify runtime node properties, materials, shaders, environment settings, and mesh data during play.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": [
+                            # Runtime node properties
+                            "runtime.node.get_props", "runtime.node.set_prop", 
+                            "runtime.node.get_tree", "runtime.node.find_by_type",
+                            # Material/shader inspection
+                            "runtime.material.get", "runtime.material.set_param",
+                            "runtime.material.list_params", "runtime.material.get_shader_code",
+                            # Mesh inspection
+                            "runtime.mesh.get_arrays", "runtime.mesh.get_uv_info",
+                            "runtime.mesh.get_surface_count", "runtime.mesh.get_surface_material",
+                            # Environment/lighting
+                            "runtime.environment.get", "runtime.environment.set",
+                            "runtime.camera.get_exposure", 
+                            # Debug helpers
+                            "runtime.watch.add", "runtime.watch.remove", "runtime.watch.get_values",
+                            "runtime.breakpoint.set", "runtime.breakpoint.clear",
+                            # Help/info
+                            "runtime.debug.info", "help", "runtime.debug.tree_dump"
+                        ],
+                        "description": "Runtime inspection operation"
+                    },
+                    
+                    # Common parameters
+                    "node_path": {"type": "string", "description": "Path to node in remote/runtime scene tree"},
+                    "property": {"type": "string", "description": "Property name to get/set"},
+                    "value": {"description": "Value to set for property"},
+                    
+                    # Material/shader params
+                    "material_property": {"type": "string", "description": "Material property path (e.g., 'material_override', 'surface_material_override/0')"},
+                    "shader_param": {"type": "string", "description": "Shader parameter name"},
+                    "shader_value": {"description": "Shader parameter value"},
+                    "include_shader_code": {"type": "boolean", "default": False, "description": "Include shader source code"},
+                    
+                    # Mesh params
+                    "surface_index": {"type": "integer", "description": "Mesh surface index"},
+                    "array_type": {"type": "string", "enum": ["vertex", "normal", "tangent", "color", "tex_uv", "tex_uv2", "custom0", "custom1", "custom2", "custom3", "bones", "weights", "index"], "description": "Type of mesh array to retrieve"},
+                    
+                    # Environment params
+                    "env_property": {"type": "string", "description": "Environment property (e.g., 'tonemap_mode', 'tonemap_exposure', 'tonemap_white')"},
+                    "env_value": {"description": "Environment property value"},
+                    
+                    # Watch/breakpoint params
+                    "watch_id": {"type": "string", "description": "Unique ID for watch"},
+                    "watch_expression": {"type": "string", "description": "Expression to watch"},
+                    "breakpoint_line": {"type": "integer", "description": "Line number for breakpoint"},
+                    "breakpoint_file": {"type": "string", "description": "Script file for breakpoint"},
+                    
+                    # Search/filter params
+                    "type_filter": {"type": "string", "description": "Node type to filter by"},
+                    "max_depth": {"type": "integer", "default": 10, "description": "Maximum tree depth to traverse"},
+                    "include_internal": {"type": "boolean", "default": False, "description": "Include internal nodes"}
                 },
                 "required": ["op"]
             }

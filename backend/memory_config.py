@@ -33,15 +33,16 @@ class MemoryConfig:
         "cerebras/gpt-oss-120b": 7000,                  # 8k - 1k margin
     }
     
-    # Summarization settings
-    SUMMARY_MAX_TOKENS = 500
-    SUMMARY_TEMPERATURE = 0.3
-    SUMMARY_TIMEOUT = 30
+    # Summarization settings (enhanced for comprehensive summaries)
+    SUMMARY_MAX_TOKENS = 800      # Increased for comprehensive technical summaries
+    SUMMARY_TEMPERATURE = 0.2     # Lower for more focused, technical summaries
+    SUMMARY_TIMEOUT = 45          # Longer timeout for detailed analysis
     
-    # Memory management settings
-    KEEP_RECENT_MESSAGES = 15    # Number of recent messages to always keep
-    MIN_MESSAGES_TO_PRUNE = 3    # Don't prune conversations shorter than this
-    CLEANUP_DAYS_DEFAULT = 30    # Default days for cleanup
+    # Memory management settings (aligned with user requirements)
+    KEEP_RECENT_MESSAGES = 20     # Keep last 20 messages visible to model
+    MIN_MESSAGES_TO_PRUNE = 5     # Don't prune very short conversations
+    SUMMARIZATION_TRIGGER = 0.5   # Trigger at 50% token usage
+    CLEANUP_DAYS_DEFAULT = 30     # Default days for cleanup
     
     @classmethod
     def get_summarization_models(cls) -> List[str]:
@@ -69,21 +70,39 @@ class MemoryConfig:
     @classmethod
     def get_summary_prompt_template(cls) -> str:
         """Get the prompt template for summarization"""
-        return os.getenv('MEMORY_SUMMARY_PROMPT', """You are an expert at creating concise, contextually rich summaries of technical conversations about Godot game development.
+        return os.getenv('MEMORY_SUMMARY_PROMPT', """You are an expert at creating comprehensive, technically detailed summaries of Godot game development conversations.
 
-Analyze this conversation and create a comprehensive summary that preserves:
-1. Key technical decisions and solutions discussed
-2. Important code changes, file paths, and configurations  
-3. Problems identified and how they were resolved
-4. Tool usage patterns and outcomes
-5. User preferences and project context
+Create a summary that preserves ALL essential context for seamless conversation continuation:
+
+CRITICAL REQUIREMENTS:
+1. **Project Structure**: Scene files, key nodes, scripts, and their relationships
+2. **Technical Decisions**: Code changes, configurations, settings, resource paths
+3. **Problem-Solution Mapping**: Issues encountered and exact solutions implemented
+4. **Tool Usage History**: Which tools were used, with what parameters, and outcomes
+5. **Code Context**: Functions modified, classes created, variable names, property values
+6. **Asset Information**: Images, materials, meshes, shaders created or modified
+7. **User Patterns**: Preferences, naming conventions, architectural choices
+8. **Current State**: What's working, what's broken, what's in progress
+
+ANALYSIS DEPTH:
+- Extract specific file paths, node names, and property values
+- Note exact tool parameters that worked vs failed
+- Preserve debugging insights and error patterns
+- Include resource IDs, shader parameters, animation settings
+- Document input mappings, physics settings, scene hierarchy
 
 Conversation to summarize:
 {conversation_text}
 
-Create a detailed but concise summary (aim for 200-400 words) that would help an AI assistant understand the context if this conversation continued later. Focus on actionable information and technical details that would be relevant for future assistance.
+Create a comprehensive technical summary (400-800 words) that includes:
+- Executive summary of what was accomplished
+- Detailed technical context for immediate continuation
+- Specific names, paths, and values for reference
+- Problem-solving insights and patterns discovered
 
-Summary:""")
+IMPORTANT: This summary will replace the original messages in the AI's context, so it must contain ALL information needed for the AI to continue helping effectively.
+
+Technical Summary:""")
 
 # Environment variable examples for .env file:
 """

@@ -669,6 +669,57 @@ void EditorLog::deinit() {
 	remove_error_handler(&eh);
 }
 
+Array EditorLog::get_recent_console_output(int p_max_lines, int p_type_filter) const {
+	Array output;
+	
+	// Process recent messages (from newest to oldest)
+	int lines_added = 0;
+	for (int i = messages.size() - 1; i >= 0 && lines_added < p_max_lines; i--) {
+		const LogMessage &msg = messages[i];
+		
+		// Apply type filter (-1 means all types)
+		if (p_type_filter >= 0 && (int)msg.type != p_type_filter) {
+			continue;
+		}
+		
+		// Create output entry
+		Dictionary entry;
+		entry["text"] = msg.text;
+		entry["type"] = (int)msg.type;
+		entry["count"] = msg.count;
+		
+		// Add type name for easier filtering
+		switch (msg.type) {
+			case MSG_TYPE_STD:
+				entry["type_name"] = "print";
+				break;
+			case MSG_TYPE_ERROR:
+				entry["type_name"] = "error";
+				break;
+			case MSG_TYPE_WARNING:
+				entry["type_name"] = "warning";
+				break;
+			case MSG_TYPE_STD_RICH:
+				entry["type_name"] = "rich";
+				break;
+			case MSG_TYPE_EDITOR:
+				entry["type_name"] = "editor";
+				break;
+			default:
+				entry["type_name"] = "unknown";
+				break;
+		}
+		
+		output.push_back(entry);
+		lines_added++;
+	}
+	
+	// Reverse to get chronological order (oldest first)
+	output.reverse();
+	
+	return output;
+}
+
 EditorLog::~EditorLog() {
 	for (const KeyValue<MessageType, LogFilter *> &E : type_filter_map) {
 		// MSG_TYPE_STD_RICH is connected to the std_filter button, so we do this

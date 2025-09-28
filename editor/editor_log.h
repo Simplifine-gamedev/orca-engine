@@ -208,6 +208,9 @@ public:
 	void deinit();
 
 	void clear();
+	
+	// AI Debugging: Access recent console output for runtime debugging
+	Array get_recent_console_output(int p_max_lines = 50, int p_type_filter = -1) const;
 
 	EditorLog();
 	~EditorLog();

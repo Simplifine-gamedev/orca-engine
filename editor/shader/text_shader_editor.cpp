@@ -33,6 +33,7 @@
 #include "core/config/project_settings.h"
 #include "core/version_generated.gen.h"
 #include "editor/editor_node.h"
+#include "editor/ai/editor_tools.h"
 #include "editor/editor_string_names.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/settings/editor_settings.h"
@@ -840,8 +841,19 @@ void TextShaderEditor::_warning_clicked(const Variant &p_line) {
 void TextShaderEditor::_bind_methods() {
 	ClassDB::bind_method("_show_warnings_panel", &TextShaderEditor::_show_warnings_panel);
 	ClassDB::bind_method("_warning_clicked", &TextShaderEditor::_warning_clicked);
+	
+	// Bind diff functionality methods
+	ClassDB::bind_method(D_METHOD("clear_diff"), &TextShaderEditor::clear_diff);
+	ClassDB::bind_method(D_METHOD("accept_all_diffs"), &TextShaderEditor::accept_all_diffs);
+	ClassDB::bind_method(D_METHOD("reject_all_diffs"), &TextShaderEditor::reject_all_diffs);
+	ClassDB::bind_method(D_METHOD("_on_accept_all_pressed"), &TextShaderEditor::_on_accept_all_pressed);
+	ClassDB::bind_method(D_METHOD("_on_reject_all_pressed"), &TextShaderEditor::_on_reject_all_pressed);
+	ClassDB::bind_method(D_METHOD("_on_hunk_accept_pressed"), &TextShaderEditor::_on_hunk_accept_pressed);
+	ClassDB::bind_method(D_METHOD("_on_hunk_reject_pressed"), &TextShaderEditor::_on_hunk_reject_pressed);
 
 	ADD_SIGNAL(MethodInfo("validation_changed"));
+	ADD_SIGNAL(MethodInfo("diff_accepted", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "content")));
+	ADD_SIGNAL(MethodInfo("diff_rejected", PropertyInfo(Variant::STRING, "path")));
 }
 
 void TextShaderEditor::ensure_select_current() {
@@ -1322,4 +1334,884 @@ TextShaderEditor::TextShaderEditor() {
 
 	_editor_settings_changed();
 	code_editor->show_toggle_files_button(); // TODO: Disabled for now, because it doesn't work properly.
+
+	// Initialize diff colors
+	diff_added_color = Color(0.1, 0.8, 0.1, 0.28);     // Green
+	diff_removed_color = Color(0.9, 0.2, 0.2, 0.28);   // Red
+	diff_hunk_header_color = Color(0.2, 0.6, 1.0, 0.22); // Blue
+}
+
+// === SHADER DIFF FUNCTIONALITY ===
+// Based on ScriptTextEditor's diff implementation but adapted for shaders
+
+void TextShaderEditor::set_diff(const String &p_original_content, const String &p_modified_content, const String &p_inline_diff) {
+	print_line("=== SHADER SET_DIFF CALLED ===");
+	print_line("Original content length: " + itos(p_original_content.length()));
+	print_line("Modified content length: " + itos(p_modified_content.length()));
+	print_line("Has inline diff: " + String(p_inline_diff.is_empty() ? "NO" : "YES"));
+
+	_clear_diff_data();
+	
+	// Only normalize line endings, don't strip edges as that changes the content
+	original_content = p_original_content.replace("\r\n", "\n");
+	modified_content = p_modified_content.replace("\r\n", "\n");
+	inline_diff_text = p_inline_diff.replace("\r\n", "\n");
+	has_inline_diff = !p_inline_diff.is_empty();
+
+	if (original_content == modified_content) {
+		print_line("Shader content is identical after normalization!");
+		return;
+	}
+
+	// Build diff hunks and display unified diff
+	_build_diff_hunks(original_content, modified_content);
+	_update_diff_display();
+	_show_diff_toolbar();
+	has_pending_diffs = true;
+}
+
+void TextShaderEditor::_build_diff_hunks(const String &p_original, const String &p_modified) {
+	diff_hunks.clear();
+	line_to_hunk_map.clear();
+	
+	// If we have inline diff from backend, build hunks based on that
+	if (has_inline_diff && !inline_diff_text.is_empty()) {
+		Vector<String> diff_lines = inline_diff_text.split("\n");
+		
+		// Identify contiguous blocks of changes as separate hunks
+		int current_hunk_start = -1;
+		int current_hunk_end = -1;
+		int context_count = 0;
+		
+		for (int i = 0; i < diff_lines.size(); i++) {
+			String line = diff_lines[i];
+			bool is_change = line.begins_with("+ ") || line.begins_with("- ");
+			
+			if (is_change) {
+				if (current_hunk_start == -1) {
+					// Starting a new hunk
+					current_hunk_start = i;
+					current_hunk_end = i;
+					context_count = 0;
+				} else if (context_count > 0 && context_count < 3) {
+					// Continue current hunk after some context lines
+					current_hunk_end = i;
+					context_count = 0;
+				} else if (context_count >= 3) {
+					// Too many context lines, finish previous hunk and start new one
+					DiffHunk hunk;
+					hunk.start_line = current_hunk_start;
+					hunk.end_line = current_hunk_end;
+					hunk.accepted = false;
+					hunk.rejected = false;
+					diff_hunks.push_back(hunk);
+					
+					// Start new hunk
+					current_hunk_start = i;
+					current_hunk_end = i;
+					context_count = 0;
+				} else {
+					// Continue current hunk
+					current_hunk_end = i;
+				}
+			} else {
+				// Context line or unchanged line
+				if (current_hunk_start != -1) {
+					context_count++;
+				}
+			}
+		}
+		
+		// Handle any remaining hunk
+		if (current_hunk_start != -1) {
+			DiffHunk hunk;
+			hunk.start_line = current_hunk_start;
+			hunk.end_line = current_hunk_end;
+			hunk.accepted = false;
+			hunk.rejected = false;
+			diff_hunks.push_back(hunk);
+		}
+		
+		// Build line_to_hunk_map
+		for (int hunk_idx = 0; hunk_idx < diff_hunks.size(); hunk_idx++) {
+			const DiffHunk &hunk = diff_hunks[hunk_idx];
+			for (int line = hunk.start_line; line <= hunk.end_line; line++) {
+				if (line < diff_lines.size()) {
+					String line_text = diff_lines[line];
+					// Map all change lines (+ and -) to their hunk
+					if (line_text.begins_with("+ ") || line_text.begins_with("- ")) {
+						line_to_hunk_map[line] = hunk_idx;
+					}
+				}
+			}
+		}
+		
+		print_line("Built " + itos(diff_hunks.size()) + " shader diff hunks from inline diff");
+	} else {
+		// Build hunks using internal dtl diff (no external markers)
+		Vector<String> original_lines = p_original.split("\n");
+		Vector<String> modified_lines = p_modified.split("\n");
+
+		std::vector<std::string> orig_vec;
+		std::vector<std::string> mod_vec;
+		orig_vec.reserve(original_lines.size());
+		mod_vec.reserve(modified_lines.size());
+		for (const String &l : original_lines) orig_vec.push_back(l.utf8().get_data());
+		for (const String &l : modified_lines) mod_vec.push_back(l.utf8().get_data());
+
+		dtl::Diff<std::string> diff(orig_vec, mod_vec);
+		diff.compose();
+
+		// Create single hunk for simple case
+		if (!orig_vec.empty() || !mod_vec.empty()) {
+			DiffHunk hunk;
+			hunk.start_line = 0;
+			hunk.end_line = 0;
+			hunk.accepted = false;
+			hunk.rejected = false;
+			diff_hunks.push_back(hunk);
+		}
+	}
+}
+
+String TextShaderEditor::_generate_unified_diff_text() {
+	// Check if we have cached inline diff from backend
+	if (has_inline_diff && !inline_diff_text.is_empty()) {
+		print_line("Using shader inline diff from backend");
+		
+		// Convert backend diff to clean display format (remove +, -, and space prefixes)
+		Vector<String> diff_lines = inline_diff_text.split("\n");
+		String clean_diff_text = "";
+		
+		for (int i = 0; i < diff_lines.size(); i++) {
+			String line = diff_lines[i];
+			if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+				// Remove the diff prefix but keep track of the line type for coloring
+				String clean_line = line.substr(2);
+				clean_diff_text += clean_line + "\n";
+			} else {
+				// Line without prefix, keep as-is
+				clean_diff_text += line + "\n";
+			}
+		}
+		
+		// Remove trailing newline
+		if (clean_diff_text.ends_with("\n")) {
+			clean_diff_text = clean_diff_text.substr(0, clean_diff_text.length() - 1);
+		}
+		
+		// Store the original diff for color mapping
+		stored_backend_diff_lines = diff_lines;
+		
+		return clean_diff_text;
+	}
+
+	// Fallback to dtl-based diff if no backend diff available
+	Vector<String> original_lines = original_content.split("\n");
+	Vector<String> modified_lines = modified_content.split("\n");
+
+	// Convert to std::vector for dtl
+	std::vector<std::string> orig_vec;
+	std::vector<std::string> mod_vec;
+	orig_vec.reserve(original_lines.size());
+	mod_vec.reserve(modified_lines.size());
+	for (const String &l : original_lines) orig_vec.push_back(l.utf8().get_data());
+	for (const String &l : modified_lines) mod_vec.push_back(l.utf8().get_data());
+
+	dtl::Diff<std::string> diff(orig_vec, mod_vec);
+	diff.compose();
+
+	String diff_text;
+	line_states.clear();
+	line_to_hunk_map.clear();
+
+	auto ses = diff.getSes();
+	auto seq = ses.getSequence();
+	int display_line_num = 0;
+	for (const auto &elem : seq) {
+		String content = String::utf8(elem.first.c_str());
+		switch (elem.second.type) {
+			case dtl::SES_ADD:
+				diff_text += content + "\n";
+				line_states.push_back(LINE_STATE_ADDED);
+				line_to_hunk_map[display_line_num] = 0;
+				break;
+			case dtl::SES_DELETE:
+				diff_text += content + "\n";
+				line_states.push_back(LINE_STATE_REMOVED);
+				line_to_hunk_map[display_line_num] = 0;
+				break;
+			case dtl::SES_COMMON:
+			default:
+				diff_text += content + "\n";
+				line_states.push_back(LINE_STATE_NORMAL);
+				break;
+		}
+		display_line_num++;
+	}
+
+	return diff_text;
+}
+
+String TextShaderEditor::_generate_smart_diff_text() {
+	// Generate a diff where accepted hunks are shown as normal text
+	if (!has_inline_diff || inline_diff_text.is_empty()) {
+		return _generate_unified_diff_text(); // Fallback to regular diff
+	}
+	
+	Vector<String> diff_lines = inline_diff_text.split("\n");
+	String result_text;
+	line_states.clear();
+	
+	for (int i = 0; i < diff_lines.size(); i++) {
+		String line = diff_lines[i];
+		
+		// Check if this line belongs to an accepted hunk
+		bool is_accepted = false;
+		if (line_to_hunk_map.has(i)) {
+			int hunk_idx = line_to_hunk_map[i];
+			if (hunk_idx >= 0 && hunk_idx < diff_hunks.size()) {
+				is_accepted = diff_hunks[hunk_idx].accepted;
+			}
+		}
+		
+		if (is_accepted) {
+			// For accepted hunks, show only the new content without diff markers
+			if (line.begins_with("+ ")) {
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_ACCEPTED);
+			} else if (line.begins_with("- ")) {
+				// Skip removed lines in accepted hunks
+				continue;
+			} else {
+				// Context line
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_NORMAL);
+			}
+		} else {
+			// For non-accepted hunks, show as diff
+			if (line.begins_with("+ ")) {
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_ADDED);
+			} else if (line.begins_with("- ")) {
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_REMOVED);
+			} else {
+				// Context line
+				result_text += line.substr(2) + "\n";
+				line_states.push_back(LINE_STATE_NORMAL);
+			}
+		}
+	}
+	
+	return result_text;
+}
+
+void TextShaderEditor::_update_diff_display() {
+	CodeEdit *te = code_editor->get_text_editor();
+	
+	// Store current scroll position and caret
+	int current_scroll = te->get_v_scroll();
+	int current_line = te->get_caret_line();
+	int current_column = te->get_caret_column();
+	
+	// Generate and display the smart diff
+	String diff_text = _generate_smart_diff_text();
+	if (diff_text.is_empty()) {
+		te->set_text("No shader differences found.");
+		te->set_editable(false);
+		return;
+	}
+	
+	te->set_text(diff_text);
+	te->set_editable(false);
+	
+	// Clear all background colors first
+	for (int i = 0; i < te->get_line_count(); i++) {
+		te->set_line_background_color(i, Color(0, 0, 0, 0));
+	}
+	
+	// Color the lines based on their state
+	for (int i = 0; i < te->get_line_count(); i++) {
+		if (i < line_states.size()) {
+			LineState state = line_states[i];
+			switch (state) {
+				case LINE_STATE_ADDED:
+					te->set_line_background_color(i, diff_added_color);
+					break;
+				case LINE_STATE_REMOVED:
+					te->set_line_background_color(i, diff_removed_color);
+					break;
+				case LINE_STATE_ACCEPTED:
+				case LINE_STATE_NORMAL:
+					// No coloring for accepted or normal lines
+					break;
+			}
+		}
+	}
+	
+	// Restore scroll position and caret
+	te->set_v_scroll(current_scroll);
+	if (current_line < te->get_line_count()) {
+		te->set_caret_line(current_line);
+		te->set_caret_column(MIN(current_column, te->get_line(current_line).length()));
+	}
+}
+
+void TextShaderEditor::_show_unified_diff(const String &p_original, const String &p_modified) {
+	// This function is now replaced by _build_diff_hunks and _update_diff_display
+	_build_diff_hunks(p_original, p_modified);
+	_update_diff_display();
+}
+
+void TextShaderEditor::_apply_hunk(int p_hunk_index, bool p_accept) {
+	if (p_hunk_index < 0 || p_hunk_index >= diff_hunks.size()) {
+		return;
+	}
+	
+	// Mark the hunk as accepted or rejected
+	diff_hunks.write[p_hunk_index].accepted = p_accept;
+	diff_hunks.write[p_hunk_index].rejected = !p_accept;
+	
+	print_line("Shader hunk " + itos(p_hunk_index) + " marked as " + (p_accept ? "accepted" : "rejected"));
+	
+	// Check if all hunks have been decided
+	bool all_decided = true;
+	for (const DiffHunk &h : diff_hunks) {
+		if (!h.accepted && !h.rejected) {
+			all_decided = false;
+			break;
+		}
+	}
+	
+	if (all_decided) {
+		// Apply all decisions
+		print_line("All shader hunks decided, applying changes");
+		_apply_all_diff_hunks(true);
+	} else {
+		// Update display to show the decision
+		_update_diff_display();
+		// Update button states
+		_update_hunk_button_states();
+	}
+}
+
+void TextShaderEditor::_apply_all_diff_hunks(bool p_accept) {
+	CodeEdit *te = code_editor->get_text_editor();
+
+	// Preserve current viewport and caret
+	const int prev_v_scroll = te->get_v_scroll();
+	const int prev_caret_line = te->get_caret_line();
+	const int prev_caret_col = te->get_caret_column();
+
+	// Build the final content based on individual hunk decisions
+	String final_content;
+	
+	if (!p_accept) {
+		// Rejecting all changes - REVERT TO ORIGINAL and write to disk
+		final_content = original_content;
+		print_line("SHADER REJECT: Reverting to original content and writing to disk");
+		
+		// CRITICAL: Write original content back to disk to revert changes
+		if (shader.is_valid()) {
+			String path = shader->get_path();
+			if (!path.is_empty()) {
+				Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+				if (file.is_valid()) {
+					file->store_string(original_content);
+					file->close();
+					print_line("SHADER REJECT: Reverted shader file on disk: " + path);
+					
+					// Clear shader cache after reverting
+					Dictionary clear_args;
+					clear_args["cache_type"] = "all";
+					EditorTools::clear_shader_cache(clear_args);
+				}
+			}
+		}
+		if (shader_inc.is_valid()) {
+			String path = shader_inc->get_path();
+			if (!path.is_empty()) {
+				Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+				if (file.is_valid()) {
+					file->store_string(original_content);
+					file->close();
+					print_line("SHADER REJECT: Reverted shader include file on disk: " + path);
+					
+					// Clear shader cache after reverting
+					Dictionary clear_args;
+					clear_args["cache_type"] = "all";
+					EditorTools::clear_shader_cache(clear_args);
+				}
+			}
+		}
+	} else if (!has_inline_diff) {
+		// No inline diff - accept all changes
+		final_content = modified_content;
+		print_line("Using modified shader content (accepting all, no individual decisions)");
+	} else {
+		// Apply individual hunk decisions
+		Vector<String> diff_lines = inline_diff_text.split("\n");
+		String result;
+		
+		// Track which lines belong to which hunks
+		HashMap<int, int> line_to_hunk;
+		for (int h = 0; h < diff_hunks.size(); h++) {
+			for (int l = diff_hunks[h].start_line; l <= diff_hunks[h].end_line; l++) {
+				line_to_hunk[l] = h;
+			}
+		}
+		
+		// Process each line based on hunk decisions
+		for (int i = 0; i < diff_lines.size(); i++) {
+			String line = diff_lines[i];
+			
+			if (line.begins_with("+ ")) {
+				// Addition line
+				if (line_to_hunk.has(i)) {
+					int hunk_idx = line_to_hunk[i];
+					if (hunk_idx >= 0 && hunk_idx < diff_hunks.size()) {
+						if (diff_hunks[hunk_idx].accepted) {
+							// Include the addition (remove the "+ " prefix)
+							result += line.substr(2) + "\n";
+						}
+						// If rejected, don't include it
+					}
+				}
+			} else if (line.begins_with("- ")) {
+				// Deletion line
+				if (line_to_hunk.has(i)) {
+					int hunk_idx = line_to_hunk[i];
+					if (hunk_idx >= 0 && hunk_idx < diff_hunks.size()) {
+						if (diff_hunks[hunk_idx].rejected) {
+							// Keep the original line (remove the "- " prefix)
+							result += line.substr(2) + "\n";
+						}
+						// If accepted, don't include it (it's deleted)
+					}
+				}
+			} else if (line.begins_with("  ")) {
+				// Context line (unchanged)
+				result += line.substr(2) + "\n";
+			} else {
+				// Handle lines without proper diff markers
+				if (!line.begins_with("@@") && !line.begins_with("---") && !line.begins_with("+++")) {
+					// Include as-is if it's actual content
+					result += line + "\n";
+				}
+			}
+		}
+		
+		// Remove trailing newline
+		if (result.ends_with("\n")) {
+			result = result.substr(0, result.length() - 1);
+		}
+		
+		final_content = result;
+	}
+	
+	// Clean any remaining diff markers from final content
+	if (final_content.contains("\n+ ") || final_content.contains("\n- ") || 
+		final_content.begins_with("+ ") || final_content.begins_with("- ")) {
+		print_line("WARNING: shader final_content still has diff markers! Cleaning...");
+		Vector<String> lines = final_content.split("\n");
+		String cleaned;
+		for (const String &line : lines) {
+			if (line.begins_with("+ ") || line.begins_with("- ") || line.begins_with("  ")) {
+				cleaned += line.substr(2) + "\n";
+			} else {
+				cleaned += line + "\n";
+			}
+		}
+		if (cleaned.ends_with("\n")) {
+			cleaned = cleaned.substr(0, cleaned.length() - 1);
+		}
+		final_content = cleaned;
+	}
+
+	// Always clear the diff state first
+	_clear_diff_data();
+
+	// Apply the final content (clean, without diff markers)
+	te->set_text(final_content);
+	
+	// CRITICAL: Ensure the shader content is actually saved to disk
+	if (shader.is_valid()) {
+		shader->set_code(final_content);
+		shader->set_edited(true);
+		
+		// Force save the shader to disk
+		String path = shader->get_path();
+		if (!path.is_empty()) {
+			ResourceSaver::save(shader, path);
+			print_line("SHADER DIFF: Saved shader to disk: " + path);
+		}
+	}
+	if (shader_inc.is_valid()) {
+		shader_inc->set_code(final_content);
+		shader_inc->set_edited(true);
+		
+		// Force save the shader include to disk
+		String path = shader_inc->get_path();
+		if (!path.is_empty()) {
+			ResourceSaver::save(shader_inc, path);
+			print_line("SHADER DIFF: Saved shader include to disk: " + path);
+		}
+	}
+
+	// Restore viewport and caret
+	const int safe_line = CLAMP(prev_caret_line, 0, MAX(0, te->get_line_count() - 1));
+	te->set_caret_line(safe_line);
+	te->set_caret_column(MIN(prev_caret_col, te->get_line(safe_line).length()));
+	te->set_v_scroll(prev_v_scroll);
+}
+
+void TextShaderEditor::_clear_diff_data() {
+	print_line("_clear_diff_data called for shader!");
+	original_content = "";
+	modified_content = "";
+	has_pending_diffs = false;
+	diff_hunks.clear();
+	line_to_hunk_map.clear();
+	inline_diff_text = "";
+	has_inline_diff = false;
+	stored_backend_diff_lines.clear();
+	
+	CodeEdit *te = code_editor->get_text_editor();
+	if (te) {
+		// Re-enable editing and clear background colors
+		te->set_editable(true);
+		for (int i = 0; i < te->get_line_count(); i++) {
+			te->set_line_background_color(i, Color(0, 0, 0, 0));
+		}
+	}
+	_hide_diff_toolbar();
+}
+
+void TextShaderEditor::clear_diff() {
+	_clear_diff_data();
+}
+
+String TextShaderEditor::get_unified_diff_text() const {
+	if (!has_pending_diffs || original_content.is_empty() || modified_content.is_empty()) {
+		return "";
+	}
+	
+	// Create a const version of the diff generation for external use
+	Vector<String> original_lines = original_content.split("\n");
+	Vector<String> modified_lines = modified_content.split("\n");
+	
+	// Use dtl approach
+	std::vector<std::string> orig_vec;
+	std::vector<std::string> mod_vec;
+	
+	for (const String &line : original_lines) {
+		orig_vec.push_back(line.utf8().get_data());
+	}
+	for (const String &line : modified_lines) {
+		mod_vec.push_back(line.utf8().get_data());
+	}
+	
+	dtl::Diff<std::string> diff(orig_vec, mod_vec);
+	diff.compose();
+	
+	String diff_text;
+	auto ses = diff.getSes();
+	auto seq = ses.getSequence();
+	
+	for (const auto &elem : seq) {
+		String content = String::utf8(elem.first.c_str());
+		
+		switch (elem.second.type) {
+			case dtl::SES_ADD:
+				diff_text += "+ " + content + "\n";
+				break;
+			case dtl::SES_DELETE:
+				diff_text += "- " + content + "\n";
+				break;
+			case dtl::SES_COMMON:
+				diff_text += "  " + content + "\n";
+				break;
+		}
+	}
+	
+	return diff_text;
+}
+
+void TextShaderEditor::_create_diff_toolbar() {
+	if (diff_toolbar) {
+		return;
+	}
+
+	PanelContainer *toolbar_panel = memnew(PanelContainer);
+	toolbar_panel->add_theme_style_override("panel", EditorNode::get_singleton()->get_gui_base()->get_theme_stylebox("panel", "EditorProperty"));
+
+	HBoxContainer *toolbar_hbox = memnew(HBoxContainer);
+	toolbar_hbox->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	toolbar_hbox->set_custom_minimum_size(Size2(0, 40));
+	toolbar_hbox->add_theme_constant_override("separation", 8);
+
+	// Add spacer
+	toolbar_hbox->add_spacer();
+
+	// Color legend for shaders
+	HBoxContainer *legend = memnew(HBoxContainer);
+	legend->add_theme_constant_override("separation", 8);
+	
+	Label *added_label = memnew(Label);
+	added_label->set_text("+ Added");
+	added_label->add_theme_color_override("font_color", diff_added_color * 2.0);
+	legend->add_child(added_label);
+	
+	Label *removed_label = memnew(Label);
+	removed_label->set_text("- Removed");
+	removed_label->add_theme_color_override("font_color", diff_removed_color * 2.0);
+	legend->add_child(removed_label);
+	
+	toolbar_hbox->add_child(legend);
+	toolbar_hbox->add_spacer();
+
+	// Create hunk buttons container
+	ScrollContainer *hunk_scroll = memnew(ScrollContainer);
+	hunk_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	hunk_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	hunk_scroll->set_custom_minimum_size(Size2(300, 0));
+	
+	hunk_buttons_container = memnew(HBoxContainer);
+	hunk_buttons_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	hunk_buttons_container->add_theme_constant_override("separation", 8);
+	
+	hunk_scroll->add_child(hunk_buttons_container);
+	toolbar_hbox->add_child(hunk_scroll);
+
+	// Spacer to push Accept/Reject to the right edge
+	toolbar_hbox->add_spacer();
+
+	// Action buttons
+	accept_all_button = memnew(Button);
+	accept_all_button->set_text("Accept All");
+	accept_all_button->add_theme_color_override("font_color", Color(0.2, 0.8, 0.2));
+	accept_all_button->set_tooltip_text("Accept all shader changes and save the file");
+	accept_all_button->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	accept_all_button->set_disabled(false);
+	accept_all_button->connect("pressed", callable_mp(this, &TextShaderEditor::_on_accept_all_pressed));
+	toolbar_hbox->add_child(accept_all_button);
+
+	reject_all_button = memnew(Button);
+	reject_all_button->set_text("Reject All");
+	reject_all_button->add_theme_color_override("font_color", Color(0.8, 0.2, 0.2));
+	reject_all_button->set_tooltip_text("Reject all shader changes and keep original");
+	reject_all_button->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+	reject_all_button->set_disabled(false);
+	reject_all_button->connect("pressed", callable_mp(this, &TextShaderEditor::_on_reject_all_pressed));
+	toolbar_hbox->add_child(reject_all_button);
+
+	toolbar_panel->add_child(toolbar_hbox);
+
+	// Add toolbar to the main container
+	add_child(toolbar_panel);
+	toolbar_panel->set_visible(false);
+	diff_toolbar = toolbar_panel;
+}
+
+void TextShaderEditor::_show_diff_toolbar() {
+	_create_diff_toolbar();
+	_create_hunk_buttons();
+	if (diff_toolbar) {
+		diff_toolbar->set_visible(true);
+	}
+}
+
+void TextShaderEditor::_hide_diff_toolbar() {
+	if (diff_toolbar) {
+		diff_toolbar->set_visible(false);
+	}
+}
+
+void TextShaderEditor::_create_hunk_buttons() {
+	if (!hunk_buttons_container) {
+		return;
+	}
+	
+	// Clear existing buttons
+	for (Button *btn : hunk_accept_buttons) {
+		if (btn) {
+			btn->queue_free();
+		}
+	}
+	for (Button *btn : hunk_reject_buttons) {
+		if (btn) {
+			btn->queue_free();
+		}
+	}
+	hunk_accept_buttons.clear();
+	hunk_reject_buttons.clear();
+	
+	// Clear container
+	for (int i = hunk_buttons_container->get_child_count() - 1; i >= 0; i--) {
+		Node *child = hunk_buttons_container->get_child(i);
+		hunk_buttons_container->remove_child(child);
+		child->queue_free();
+	}
+	
+	if (diff_hunks.size() == 0) {
+		return;
+	}
+	
+	// Create buttons for each hunk
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		VBoxContainer *hunk_group = memnew(VBoxContainer);
+		hunk_group->add_theme_constant_override("separation", 2);
+		
+		Label *hunk_number = memnew(Label);
+		hunk_number->set_text("Hunk " + itos(i + 1));
+		hunk_number->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+		hunk_number->add_theme_font_size_override("font_size", 10);
+		hunk_number->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		hunk_group->add_child(hunk_number);
+		
+		HBoxContainer *button_pair = memnew(HBoxContainer);
+		button_pair->add_theme_constant_override("separation", 4);
+		
+		Button *accept_btn = memnew(Button);
+		accept_btn->set_text("A");
+		accept_btn->set_tooltip_text("Accept shader hunk " + itos(i + 1));
+		accept_btn->add_theme_color_override("font_color", Color(1.0, 1.0, 1.0));
+		accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.2, 0.8, 0.2, 0.8)));
+		accept_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.3, 0.9, 0.3, 0.9)));
+		accept_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.1, 0.7, 0.1, 1.0)));
+		accept_btn->set_custom_minimum_size(Size2(28, 28));
+		accept_btn->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+		accept_btn->connect("pressed", callable_mp(this, &TextShaderEditor::_on_hunk_accept_pressed).bind(i));
+		button_pair->add_child(accept_btn);
+		hunk_accept_buttons.push_back(accept_btn);
+		
+		Button *reject_btn = memnew(Button);
+		reject_btn->set_text("D");
+		reject_btn->set_tooltip_text("Reject shader hunk " + itos(i + 1));
+		reject_btn->add_theme_color_override("font_color", Color(1.0, 1.0, 1.0));
+		reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.8, 0.2, 0.2, 0.8)));
+		reject_btn->add_theme_style_override("hover", _create_hunk_button_style(Color(0.9, 0.3, 0.3, 0.9)));
+		reject_btn->add_theme_style_override("pressed", _create_hunk_button_style(Color(0.7, 0.1, 0.1, 1.0)));
+		reject_btn->set_custom_minimum_size(Size2(28, 28));
+		reject_btn->set_mouse_filter(Control::MOUSE_FILTER_STOP);
+		reject_btn->connect("pressed", callable_mp(this, &TextShaderEditor::_on_hunk_reject_pressed).bind(i));
+		button_pair->add_child(reject_btn);
+		hunk_reject_buttons.push_back(reject_btn);
+		
+		hunk_group->add_child(button_pair);
+		hunk_buttons_container->add_child(hunk_group);
+	}
+	
+	// Update button states based on hunk status
+	_update_hunk_button_states();
+}
+
+void TextShaderEditor::_update_hunk_button_states() {
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		if (i < hunk_accept_buttons.size() && i < hunk_reject_buttons.size()) {
+			Button *accept_btn = hunk_accept_buttons[i];
+			Button *reject_btn = hunk_reject_buttons[i];
+			
+			if (diff_hunks[i].accepted) {
+				accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.3, 1.0, 0.3, 1.0)));
+				reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+			} else if (diff_hunks[i].rejected) {
+				accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.4, 0.4, 0.4, 0.6)));
+				reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(1.0, 0.3, 0.3, 1.0)));
+			} else {
+				accept_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.2, 0.8, 0.2, 0.8)));
+				reject_btn->add_theme_style_override("normal", _create_hunk_button_style(Color(0.8, 0.2, 0.2, 0.8)));
+			}
+		}
+	}
+}
+
+Ref<StyleBoxFlat> TextShaderEditor::_create_hunk_button_style(const Color &p_color) {
+	Ref<StyleBoxFlat> style = memnew(StyleBoxFlat);
+	style->set_bg_color(p_color);
+	style->set_corner_radius_all(4);
+	style->set_border_width_all(1);
+	style->set_border_color(p_color * 1.2);
+	return style;
+}
+
+void TextShaderEditor::_scroll_to_hunk(int p_hunk_idx) {
+	if (p_hunk_idx < 0 || p_hunk_idx >= diff_hunks.size()) {
+		return;
+	}
+	
+	CodeEdit *te = code_editor->get_text_editor();
+	if (!te) {
+		return;
+	}
+	
+	// Simple scroll to start of hunk
+	int display_line = diff_hunks[p_hunk_idx].start_line;
+	if (display_line >= 0 && display_line < te->get_line_count()) {
+		te->set_caret_line(display_line);
+		te->center_viewport_to_caret();
+	}
+}
+
+void TextShaderEditor::_on_hunk_accept_pressed(int p_hunk_idx) {
+	print_line("Accept shader hunk " + itos(p_hunk_idx) + " pressed");
+	_scroll_to_hunk(p_hunk_idx);
+	
+	// Only apply the decision if the hunk is undecided
+	if (!diff_hunks[p_hunk_idx].accepted && !diff_hunks[p_hunk_idx].rejected) {
+		_apply_hunk(p_hunk_idx, true);
+	}
+}
+
+void TextShaderEditor::_on_hunk_reject_pressed(int p_hunk_idx) {
+	print_line("Reject shader hunk " + itos(p_hunk_idx) + " pressed");
+	_scroll_to_hunk(p_hunk_idx);
+	
+	// Only apply the decision if the hunk is undecided
+	if (!diff_hunks[p_hunk_idx].accepted && !diff_hunks[p_hunk_idx].rejected) {
+		_apply_hunk(p_hunk_idx, false);
+	}
+}
+
+void TextShaderEditor::_on_accept_all_pressed() {
+	print_line("TextShaderEditor::_on_accept_all_pressed called!");
+	// Accept all undecided hunks
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		if (!diff_hunks[i].accepted && !diff_hunks[i].rejected) {
+			diff_hunks.write[i].accepted = true;
+			diff_hunks.write[i].rejected = false;
+		}
+	}
+	
+	_apply_all_diff_hunks(true);
+}
+
+void TextShaderEditor::_on_reject_all_pressed() {
+	print_line("TextShaderEditor::_on_reject_all_pressed called!");
+	// Reject all undecided hunks
+	for (int i = 0; i < diff_hunks.size(); i++) {
+		if (!diff_hunks[i].accepted && !diff_hunks[i].rejected) {
+			diff_hunks.write[i].accepted = false;
+			diff_hunks.write[i].rejected = true;
+		}
+	}
+	
+	_apply_all_diff_hunks(false);
+}
+
+void TextShaderEditor::accept_all_diffs() {
+	print_line("TextShaderEditor: accept_all_diffs called from external");
+	if (has_pending_diffs) {
+		_apply_all_diff_hunks(true);
+	}
+}
+
+void TextShaderEditor::reject_all_diffs() {
+	print_line("TextShaderEditor: reject_all_diffs called from external");
+	if (has_pending_diffs) {
+		_apply_all_diff_hunks(false);
+	}
 }

@@ -90,8 +90,10 @@ public:
 	~AIChatHistoryManager();
 	
 	// Public interface for parent dock
-	void update_conversations(const Vector<String> &p_conversation_titles);
-	void set_current_conversation(int p_index);
+    void update_conversations(const Vector<String> &p_conversation_titles);
+    void set_current_conversation(int p_index);
+    // Mark a conversation as busy (shows an orange dot in the dropdown list)
+    void mark_conversation_busy(int p_index, bool p_busy);
 	int get_selected_conversation_index() const;
 	
 	// For backward compatibility

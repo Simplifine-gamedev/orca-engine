@@ -4,6 +4,8 @@
  * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from the Project Owner.
  */
 #include "editor_tools.h"
+#include "node_pattern_utils.h"
+#include "runtime_inspector.h"
 
 // Add core includes early so they're available to helper functions below
 #include "core/crypto/crypto.h"
@@ -18,6 +20,7 @@
 #include "core/io/resource_saver.h"
 #include "core/io/dir_access.h"
 #include "editor/file_system/editor_file_system.h"
+#include "editor/editor_log.h"
 #include "editor/docks/import_dock.h"
 #include "core/io/config_file.h"
 #include "core/object/script_language.h"
@@ -1159,11 +1162,13 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
     int offset = p_args.get("offset", 0); // skip first N matching properties
 
     // PERFORMANCE LIMIT: Prevent UI freezing on nodes with hundreds of properties
-    // Default 50 unless explicitly overridden by caller. Use -1 for unlimited.
-    int max_properties = 50;
+    // Default: unlimited for model (-1), limited for UI display only
+    int max_properties = -1; // Unlimited by default for AI model debugging
     if (p_args.has("max_properties")) {
-        max_properties = (int)p_args.get("max_properties", 50);
+        max_properties = (int)p_args.get("max_properties", -1);
     }
+    
+    // Note: UI display limits are handled separately in the frontend chat display logic
 
     bool has_filters = (include_list.size() > 0) || !prefix_filter.is_empty();
 
@@ -2374,36 +2379,42 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
     // SKIP DIFF GENERATION FOR NOW - might be causing Vector issues
     String inline_diff = ""; // _generate_unified_diff(original_content, content, path);
     
-    print_line("FS_WRITE_WHOLE: About to set preview overlay...");
+    print_line("FS_WRITE_WHOLE: About to write content immediately to disk...");
     
-    // Set preview overlay for immediate feedback
-    set_preview_overlay(path, content);
-    
-    // CRITICAL FIX: For resource files (.tres, .res), write immediately to disk and trigger reload
+    // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
+    // Only revert if user explicitly rejects
     String ext = path.get_extension().to_lower();
-    if (ext == "tres" || ext == "res") {
-        print_line("FS_WRITE_WHOLE: Resource file detected, writing immediately to disk: " + path);
+    
+    print_line("FS_WRITE_WHOLE: Writing immediately to disk: " + path + " (ext: " + ext + ")");
+    
+    // Write directly to disk FIRST
+    Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+    if (file.is_valid()) {
+        file->store_string(content);
+        file->close();
+        print_line("FS_WRITE_WHOLE: Successfully wrote " + String::num_int64(content.length()) + " characters to disk");
         
-        // Write directly to disk
-        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-        if (file.is_valid()) {
-            file->store_string(content);
-            file->close();
-            
-            // Trigger Godot to reload the resource from disk
-            if (EditorFileSystem::get_singleton()) {
-                EditorFileSystem::get_singleton()->update_file(path);
-                EditorFileSystem::get_singleton()->scan_changes();
-                print_line("FS_WRITE_WHOLE: Triggered resource reload for " + path);
-            }
-            
-            // Clear preview overlay since we've committed to disk
-            clear_preview_overlay(path);
-        } else {
-            result["success"] = false;
-            result["message"] = "Failed to write resource file to disk: " + path;
-            return result;
+        // Trigger Godot to reload the resource from disk
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->update_file(path);
+            EditorFileSystem::get_singleton()->scan_changes();
+            print_line("FS_WRITE_WHOLE: Triggered resource reload for " + path);
         }
+        
+        // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
+        if (ext == "gdshader" || ext == "glsl" || ext == "shader") {
+            Dictionary clear_args;
+            clear_args["cache_type"] = "all";
+            Dictionary clear_result = clear_shader_cache(clear_args);
+            print_line("FS_WRITE_WHOLE: Cleared shader cache for " + path);
+        }
+        
+        // Set preview overlay for diff UI (but file is already saved)
+        set_preview_overlay(path, content);
+    } else {
+        result["success"] = false;
+        result["message"] = "Failed to write file to disk: " + path + " (FileAccess error)";
+        return result;
     }
     
     print_line("FS_WRITE_WHOLE: About to check compilation errors...");
@@ -2541,36 +2552,42 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
     // SKIP DIFF GENERATION FOR NOW - might be causing Vector issues
     String inline_diff = ""; // _generate_unified_diff(original_content, final_content, path);
     
-    print_line("FS_WRITE_LINES: About to set preview overlay...");
+    print_line("FS_WRITE_LINES: About to write content immediately to disk...");
     
-    // Set preview overlay for immediate feedback
-    set_preview_overlay(path, final_content);
-    
-    // CRITICAL FIX: For resource files (.tres, .res), write immediately to disk and trigger reload
+    // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
+    // Only revert if user explicitly rejects
     String ext = path.get_extension().to_lower();
-    if (ext == "tres" || ext == "res") {
-        print_line("FS_WRITE_LINES: Resource file detected, writing immediately to disk: " + path);
+    
+    print_line("FS_WRITE_LINES: Writing immediately to disk: " + path + " (ext: " + ext + ")");
+    
+    // Write directly to disk FIRST
+    Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+    if (file.is_valid()) {
+        file->store_string(final_content);
+        file->close();
+        print_line("FS_WRITE_LINES: Successfully wrote " + String::num_int64(final_content.length()) + " characters to disk");
         
-        // Write directly to disk
-        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-        if (file.is_valid()) {
-            file->store_string(final_content);
-            file->close();
-            
-            // Trigger Godot to reload the resource from disk
-            if (EditorFileSystem::get_singleton()) {
-                EditorFileSystem::get_singleton()->update_file(path);
-                EditorFileSystem::get_singleton()->scan_changes();
-                print_line("FS_WRITE_LINES: Triggered resource reload for " + path);
-            }
-            
-            // Clear preview overlay since we've committed to disk
-            clear_preview_overlay(path);
-        } else {
-            result["success"] = false;
-            result["message"] = "Failed to write resource file to disk: " + path;
-            return result;
+        // Trigger Godot to reload the resource from disk
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->update_file(path);
+            EditorFileSystem::get_singleton()->scan_changes();
+            print_line("FS_WRITE_LINES: Triggered resource reload for " + path);
         }
+        
+        // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
+        if (ext == "gdshader" || ext == "glsl" || ext == "shader") {
+            Dictionary clear_args;
+            clear_args["cache_type"] = "all";
+            Dictionary clear_result = clear_shader_cache(clear_args);
+            print_line("FS_WRITE_LINES: Cleared shader cache for " + path);
+        }
+        
+        // Set preview overlay for diff UI (but file is already saved)
+        set_preview_overlay(path, final_content);
+    } else {
+        result["success"] = false;
+        result["message"] = "Failed to write file to disk: " + path + " (FileAccess error)";
+        return result;
     }
     
     print_line("FS_WRITE_LINES: About to check compilation errors...");
@@ -2716,36 +2733,42 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
     // SKIP DIFF GENERATION FOR NOW - this might be causing the Vector issues
     String inline_diff = ""; // _generate_unified_diff(original_content, final_content, path);
     
-    print_line("FS_REPLACE_STRING: About to set preview overlay...");
+    print_line("FS_REPLACE_STRING: About to write content immediately to disk...");
     
-    // Set preview overlay for immediate feedback
-    set_preview_overlay(path, final_content);
-    
-    // CRITICAL FIX: For resource files (.tres, .res), write immediately to disk and trigger reload
+    // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
+    // Only revert if user explicitly rejects
     String ext = path.get_extension().to_lower();
-    if (ext == "tres" || ext == "res") {
-        print_line("FS_REPLACE_STRING: Resource file detected, writing immediately to disk: " + path);
+    
+    print_line("FS_REPLACE_STRING: Writing immediately to disk: " + path + " (ext: " + ext + ")");
+    
+    // Write directly to disk FIRST
+    Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+    if (file.is_valid()) {
+        file->store_string(final_content);
+        file->close();
+        print_line("FS_REPLACE_STRING: Successfully wrote " + String::num_int64(final_content.length()) + " characters to disk");
         
-        // Write directly to disk
-        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-        if (file.is_valid()) {
-            file->store_string(final_content);
-            file->close();
-            
-            // Trigger Godot to reload the resource from disk
-            if (EditorFileSystem::get_singleton()) {
-                EditorFileSystem::get_singleton()->update_file(path);
-                EditorFileSystem::get_singleton()->scan_changes();
-                print_line("FS_REPLACE_STRING: Triggered resource reload for " + path);
-            }
-            
-            // Clear preview overlay since we've committed to disk
-            clear_preview_overlay(path);
-        } else {
-            result["success"] = false;
-            result["message"] = "Failed to write resource file to disk: " + path;
-            return result;
+        // Trigger Godot to reload the resource from disk
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->update_file(path);
+            EditorFileSystem::get_singleton()->scan_changes();
+            print_line("FS_REPLACE_STRING: Triggered resource reload for " + path);
         }
+        
+        // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
+        if (ext == "gdshader" || ext == "glsl" || ext == "shader") {
+            Dictionary clear_args;
+            clear_args["cache_type"] = "all";
+            Dictionary clear_result = clear_shader_cache(clear_args);
+            print_line("FS_REPLACE_STRING: Cleared shader cache for " + path);
+        }
+        
+        // Set preview overlay for diff UI (but file is already saved)
+        set_preview_overlay(path, final_content);
+    } else {
+        result["success"] = false;
+        result["message"] = "Failed to write file to disk: " + path + " (FileAccess error)";
+        return result;
     }
     
     print_line("FS_REPLACE_STRING: About to check compilation errors...");
@@ -3660,8 +3683,21 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
     }
 
     // Special handling for color properties
-	if (prop == "color" || prop == "modulate" || prop == "self_modulate") {
-		if (value.get_type() == Variant::STRING) {
+	// DYNAMIC Color property detection - check if property expects Color type
+	if (value.get_type() == Variant::STRING) {
+		// Get property info to check expected type
+		List<PropertyInfo> property_list;
+		node->get_property_list(&property_list);
+		bool is_color_property = false;
+		
+		for (const PropertyInfo &pi : property_list) {
+			if (pi.name == prop && pi.type == Variant::COLOR) {
+				is_color_property = true;
+				break;
+			}
+		}
+		
+		if (is_color_property) {
 			String color_str = value;
 			Color color;
 			
@@ -3701,7 +3737,7 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
 				print_line("SET_NODE_PROPERTY WARNING: Unknown color '" + color_str + "', using white as fallback");
 			}
 			value = color;
-			print_line("SET_NODE_PROPERTY: Converted color string '" + color_str + "' to Color(" + String::num(color.r) + ", " + String::num(color.g) + ", " + String::num(color.b) + ", " + String::num(color.a) + ")");
+			print_line("SET_NODE_PROPERTY: Dynamically detected Color property '" + String(prop) + "', converted '" + color_str + "' to Color(" + String::num(color.r) + ", " + String::num(color.g) + ", " + String::num(color.b) + ", " + String::num(color.a) + ")");
 		}
 	}
 	
@@ -4359,21 +4395,27 @@ Dictionary EditorTools::batch_scene_ops(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
-	Dictionary result;
-	if (!p_args.has("resource_path") || !p_args.has("node_path") || !p_args.has("property")) {
-		result["success"] = false;
-		result["message"] = "Missing required arguments: 'resource_path', 'node_path', and 'property'";
-		return result;
-	}
-	
-	String resource_path = p_args["resource_path"];
-	String node_path = p_args["node_path"];
-	String property = p_args["property"];
-	bool validate = p_args.get("validate", true);
-	bool await_import = p_args.get("await_import", true);
-	bool skip_import_wait = p_args.get("skip_import_wait", false);
-	// Increase default timeout to 30 seconds for GLB files
-	int timeout_ms = (int)p_args.get("timeout_ms", 30000);
+    Dictionary result;
+    if (!p_args.has("resource_path") || (!(p_args.has("node_path") || p_args.has("path"))) || !p_args.has("property")) {
+        result["success"] = false;
+        result["message"] = "Missing required arguments: 'resource_path', 'node_path' (or 'path'), and 'property'";
+        return result;
+    }
+    
+    String resource_path = p_args["resource_path"];
+    String node_path = p_args.has("node_path") ? String(p_args["node_path"]) : String(p_args.get("path", String()));
+    String property = p_args["property"];
+    // Normalize common alias from reports/configs
+    if (property == "materialoverride") {
+        property = "material_override";
+    }
+    bool validate = p_args.get("validate", true);
+    bool await_import = p_args.get("await_import", true);
+    bool skip_import_wait = p_args.get("skip_import_wait", false);
+    // Increase default timeout to 30 seconds for GLB files
+    int timeout_ms = (int)p_args.get("timeout_ms", 30000);
+    // Persist by default so scene changes survive reloads
+    bool request_save = p_args.get("save", true);
 	
 	// Override await_import if skip_import_wait is true
 	if (skip_import_wait) {
@@ -4495,12 +4537,31 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 	bool valid = false;
 	node->set(property, resource, &valid);
 	
-	if (valid) {
+    if (valid) {
 		result["success"] = true;
 		result["ok"] = true;
 		result["message"] = "Resource loaded and assigned: " + resource_path + " -> " + node_path + "." + property;
 		result["actual_resource_type"] = actual_type;
 		if (!expected_type.is_empty()) result["expected_property_type"] = expected_type;
+        // Include resolved resource path for diagnostics
+        if (resource.is_valid()) {
+            result["resolved_resource_path"] = resource->get_path();
+        }
+        // Optional auto-save so assignment is persisted in .tscn
+        String autosave_env = OS::get_singleton()->get_environment("AI_DISABLE_AUTOSAVE_ON_PROPERTY_CHANGE");
+        bool disable_autosave = !autosave_env.is_empty() && (autosave_env.to_lower() == "1" || autosave_env.to_lower() == "true");
+        if (!disable_autosave && request_save) {
+            String current_scene = EditorNode::get_singleton()->get_edited_scene()->get_scene_file_path();
+            if (!current_scene.is_empty()) {
+                EditorNode::get_singleton()->save_scene_if_open(current_scene);
+                print_line("LOAD_AND_ASSIGN_RESOURCE: Auto-saved scene after assigning '" + property + "' on " + node_path + " with " + resource_path);
+                result["scene_saved"] = true;
+                result["scene_path"] = current_scene;
+            } else {
+                print_line("LOAD_AND_ASSIGN_RESOURCE: Scene has no save path, cannot auto-save");
+                result["scene_saved"] = false;
+            }
+        }
 	} else {
 		result["success"] = false;
 		result["ok"] = false;
@@ -4741,8 +4802,21 @@ Dictionary EditorTools::generalnodeeditor(const Dictionary &p_args) {
 				// Standard property setting with color handling
 				Variant processed_value = property_value;
 				
-				// Special handling for color properties
-				if ((property_name == "color" || property_name == "modulate" || property_name == "self_modulate") && property_value.get_type() == Variant::STRING) {
+				// DYNAMIC Color property detection for batch operations
+				if (property_value.get_type() == Variant::STRING) {
+					// Get property info to check expected type
+					List<PropertyInfo> property_list;
+					node->get_property_list(&property_list);
+					bool is_color_property = false;
+					
+					for (const PropertyInfo &pi : property_list) {
+						if (pi.name == property_name && pi.type == Variant::COLOR) {
+							is_color_property = true;
+							break;
+						}
+					}
+					
+					if (is_color_property) {
 					String color_str = property_value;
 					Color color;
 					
@@ -4761,11 +4835,26 @@ Dictionary EditorTools::generalnodeeditor(const Dictionary &p_args) {
 						color = Color(0.0, 0.0, 0.0, 1.0);
 					} else if (color_str.begins_with("#")) {
 						color = Color::from_string(color_str, Color(1.0, 1.0, 1.0, 1.0));
+					} else if (color_str.begins_with("(") && color_str.ends_with(")")) {
+						// Handle Color constructor format: "(r, g, b, a)"
+						String values = color_str.substr(1, color_str.length() - 2);
+						PackedStringArray components = values.split(",");
+						if (components.size() >= 3) {
+							float r = components[0].strip_edges().to_float();
+							float g = components[1].strip_edges().to_float();
+							float b = components[2].strip_edges().to_float();
+							float a = components.size() >= 4 ? components[3].strip_edges().to_float() : 1.0;
+							color = Color(r, g, b, a);
+						} else {
+							color = Color(1.0, 1.0, 1.0, 1.0);
+							print_line("GENERALNODEEDITOR WARNING: Invalid Color constructor format '" + color_str + "', using white");
+						}
 					} else {
 						color = Color::from_string(color_str, Color(1.0, 1.0, 1.0, 1.0));
 					}
-					processed_value = color;
-					print_line("GENERALNODEEDITOR: Converted color string '" + color_str + "' to Color(" + String::num(color.r) + ", " + String::num(color.g) + ", " + String::num(color.b) + ", " + String::num(color.a) + ")");
+						processed_value = color;
+						print_line("GENERALNODEEDITOR: Dynamically detected Color property '" + property_name + "', converted '" + color_str + "' to Color(" + String::num(color.r) + ", " + String::num(color.g) + ", " + String::num(color.b) + ", " + String::num(color.a) + ")");
+					}
 				}
 				
 				bool valid = false;
@@ -6675,6 +6764,20 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 			collision_args["node_path"] = p_args["path"];
 		}
 		return add_collision_shape(collision_args);
+	} else if (operation == "node.create_and_configure_batch") {
+		return create_and_configure_nodes_batch(p_args);
+	} else if (operation == "node.assign_resources_batch") {
+		return assign_resources_batch(p_args);
+	} else if (operation == "node.set_transforms_batch") {
+		return set_transforms_batch(p_args);
+	} else if (operation == "scene.instantiate_batch") {
+		return instantiate_scenes_batch(p_args);
+	} else if (operation == "node.props.set_pattern") {
+		return set_node_properties_pattern(p_args);
+	} else if (operation == "node.delete_pattern") {
+		return delete_nodes_pattern(p_args);
+	} else if (operation == "node.assign_resource_pattern") {
+		return assign_resource_pattern(p_args);
 	} else if (operation.begins_with("groups.") || operation.begins_with("signals.")) {
 		// Fix parameter translation: editor_introspect expects "operation" not "op"
 		Dictionary introspect_args = p_args;
@@ -6686,6 +6789,734 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 		result["message"] = String("Unknown scene_manager operation: ") + operation;
 		return result;
 	}
+}
+
+// --- Runtime Inspector Tool ---
+
+Dictionary EditorTools::runtime_inspector(const Dictionary &p_args) {
+	String operation = p_args.get("op", "");
+	
+	// Screenshot is part of runtime_manager but can also be accessed here
+	if (operation == "screenshot.capture") {
+		String target = p_args.get("target", "game");
+		bool return_base64 = p_args.get("return_base64", true);
+		return RuntimeInspector::capture_viewport_screenshot(target, return_base64);
+	}
+	
+	// Runtime node properties (with aliases for convenience)
+	else if (operation == "runtime.node.get_props" || operation == "runtime.node.get") {
+		String node_path = p_args.get("node_path", "");
+		return RuntimeInspector::get_runtime_node_properties(node_path);
+	}
+	else if (operation == "runtime.node.set_prop") {
+		String node_path = p_args.get("node_path", "");
+		String property = p_args.get("property", "");
+		Variant value = p_args.get("value", Variant());
+		return RuntimeInspector::set_runtime_node_property(node_path, property, value);
+	}
+	else if (operation == "runtime.node.get_tree" || operation == "runtime.scene.getnodes") {
+		int max_depth = p_args.get("max_depth", 10);
+		bool include_internal = p_args.get("include_internal", false);
+		return RuntimeInspector::get_runtime_scene_tree(max_depth, include_internal);
+	}
+	else if (operation == "runtime.node.find_by_type") {
+		String type_filter = p_args.get("type_filter", "");
+		return RuntimeInspector::find_runtime_nodes_by_type(type_filter);
+	}
+	
+	// Material/shader inspection
+	else if (operation == "runtime.material.get") {
+		String node_path = p_args.get("node_path", "");
+		String material_property = p_args.get("material_property", "material_override");
+		return RuntimeInspector::get_runtime_material(node_path, material_property);
+	}
+	else if (operation == "runtime.material.set_param") {
+		String node_path = p_args.get("node_path", "");
+		String material_property = p_args.get("material_property", "material_override");
+		String shader_param = p_args.get("shader_param", "");
+		Variant shader_value = p_args.get("shader_value", Variant());
+		return RuntimeInspector::set_runtime_shader_param(node_path, material_property, shader_param, shader_value);
+	}
+	else if (operation == "runtime.material.list_params") {
+		String node_path = p_args.get("node_path", "");
+		String material_property = p_args.get("material_property", "material_override");
+		return RuntimeInspector::list_runtime_shader_params(node_path, material_property);
+	}
+	else if (operation == "runtime.material.get_shader_code") {
+		String node_path = p_args.get("node_path", "");
+		String material_property = p_args.get("material_property", "material_override");
+		return RuntimeInspector::get_runtime_shader_code(node_path, material_property);
+	}
+	
+	// Mesh inspection
+	else if (operation == "runtime.mesh.get_arrays") {
+		String node_path = p_args.get("node_path", "");
+		int surface_index = p_args.get("surface_index", 0);
+		String array_type = p_args.get("array_type", "vertex");
+		return RuntimeInspector::get_runtime_mesh_arrays(node_path, surface_index, array_type);
+	}
+	else if (operation == "runtime.mesh.get_uv_info") {
+		String node_path = p_args.get("node_path", "");
+		int surface_index = p_args.get("surface_index", 0);
+		return RuntimeInspector::get_runtime_mesh_uv_info(node_path, surface_index);
+	}
+	else if (operation == "runtime.mesh.get_surface_count") {
+		String node_path = p_args.get("node_path", "");
+		return RuntimeInspector::get_runtime_mesh_surface_count(node_path);
+	}
+	else if (operation == "runtime.mesh.get_surface_material") {
+		String node_path = p_args.get("node_path", "");
+		int surface_index = p_args.get("surface_index", 0);
+		return RuntimeInspector::get_runtime_mesh_surface_material(node_path, surface_index);
+	}
+	
+	// Environment/lighting
+	else if (operation == "runtime.environment.get") {
+		String env_property = p_args.get("env_property", "");
+		return RuntimeInspector::get_runtime_environment(env_property);
+	}
+	else if (operation == "runtime.environment.set") {
+		String env_property = p_args.get("env_property", "");
+		Variant env_value = p_args.get("env_value", Variant());
+		return RuntimeInspector::set_runtime_environment(env_property, env_value);
+	}
+	else if (operation == "runtime.camera.get_exposure") {
+		return RuntimeInspector::get_camera_exposure();
+	}
+	
+	// Debug and info operations  
+	else if (operation == "runtime.debug.tree_dump") {
+		Dictionary result;
+		result["success"] = true;
+		
+		SceneTree *st = SceneTree::get_singleton();
+		if (!st) {
+			result["error"] = "No SceneTree";
+			return result;
+		}
+		
+		Window *root = st->get_root();
+		if (!root) {
+			result["error"] = "No root window";
+			return result;
+		}
+		
+		// LIGHTWEIGHT NODE SEARCH - just find your 3D nodes without full tree
+		Array found_3d_nodes;
+		int nodes_checked = 0;
+		const int MAX_NODES = 50; // Strict limit to prevent freeze
+		
+		// Direct search for Rocket nodes
+		TypedArray<Node> rocket_nodes = root->find_children("*Rocket*", "", true, false);
+		for (int i = 0; i < rocket_nodes.size() && nodes_checked < MAX_NODES; i++) {
+			Node *rocket = Object::cast_to<Node>(rocket_nodes[i]);
+			if (rocket) {
+				Dictionary rocket_info;
+				rocket_info["name"] = rocket->get_name();
+				rocket_info["type"] = rocket->get_class();
+				rocket_info["path"] = String(rocket->get_path());
+				rocket_info["search_type"] = "rocket_node";
+				found_3d_nodes.push_back(rocket_info);
+				nodes_checked++;
+			}
+		}
+		
+		// Direct search for MeshInstance3D nodes
+		TypedArray<Node> mesh_nodes = root->find_children("*", "MeshInstance3D", true, false);
+		for (int i = 0; i < mesh_nodes.size() && nodes_checked < MAX_NODES; i++) {
+			Node *mesh = Object::cast_to<Node>(mesh_nodes[i]);
+			if (mesh) {
+				Dictionary mesh_info;
+				mesh_info["name"] = mesh->get_name();
+				mesh_info["type"] = mesh->get_class();
+				mesh_info["path"] = String(mesh->get_path());
+				mesh_info["search_type"] = "mesh_node";
+				found_3d_nodes.push_back(mesh_info);
+				nodes_checked++;
+			}
+		}
+		
+		// Direct search for Node3D nodes  
+		TypedArray<Node> node3d_nodes = root->find_children("*", "Node3D", true, false);
+		for (int i = 0; i < node3d_nodes.size() && nodes_checked < MAX_NODES; i++) {
+			Node *node3d = Object::cast_to<Node>(node3d_nodes[i]);
+			if (node3d) {
+				Dictionary node3d_info;
+				node3d_info["name"] = node3d->get_name();
+				node3d_info["type"] = node3d->get_class();
+				node3d_info["path"] = String(node3d->get_path());
+				node3d_info["search_type"] = "node3d";
+				found_3d_nodes.push_back(node3d_info);
+				nodes_checked++;
+			}
+		}
+		
+		result["found_3d_nodes"] = found_3d_nodes;
+		result["nodes_found"] = found_3d_nodes.size();
+		result["message"] = "Complete tree dump - look for your Rocket/3D nodes";
+		
+		return result;
+	}
+	else if (operation == "runtime.debug.info" || operation == "help") {
+		Dictionary result;
+		result["success"] = true;
+		Array operations;
+		operations.push_back("runtime.node.get_props");
+		operations.push_back("runtime.node.set_prop");
+		operations.push_back("runtime.node.get_tree");
+		operations.push_back("runtime.node.find_by_type");
+		operations.push_back("runtime.material.get");
+		operations.push_back("runtime.material.set_param");
+		operations.push_back("runtime.material.list_params");
+		operations.push_back("runtime.material.get_shader_code");
+		operations.push_back("runtime.mesh.get_arrays");
+		operations.push_back("runtime.mesh.get_uv_info");
+		operations.push_back("runtime.mesh.get_surface_count");
+		operations.push_back("runtime.mesh.get_surface_material");
+		operations.push_back("runtime.environment.get");
+		operations.push_back("runtime.environment.set");
+		operations.push_back("runtime.camera.get_exposure");
+		operations.push_back("runtime.watch.add");
+		operations.push_back("runtime.watch.remove");
+		operations.push_back("runtime.watch.get_values");
+		result["available_operations"] = operations;
+		result["game_running"] = RuntimeInspector::_is_game_running();
+		
+		// Get scene info for debugging
+		if (RuntimeInspector::_is_game_running()) {
+			Node *scene_root = RuntimeInspector::_get_running_scene_root();
+			if (scene_root) {
+				result["scene_root_path"] = String(scene_root->get_path());
+				result["scene_root_type"] = scene_root->get_class();
+				result["scene_root_name"] = scene_root->get_name();
+				
+				// Debug: Show immediate children to help with node path discovery
+				Array immediate_children;
+				for (int i = 0; i < scene_root->get_child_count() && i < 10; i++) {
+					Node *child = scene_root->get_child(i);
+					if (child) {
+						Dictionary child_info;
+						child_info["name"] = child->get_name();
+						child_info["type"] = child->get_class();
+						child_info["path"] = String(child->get_path());
+						immediate_children.push_back(child_info);
+					}
+				}
+				result["immediate_children"] = immediate_children;
+				
+				// COMPREHENSIVE DEBUG: Search for your specific nodes
+				SceneTree *st = SceneTree::get_singleton();
+				Window *root = st ? st->get_root() : nullptr;
+				if (root) {
+					Array debug_search_results;
+					
+					// Search for Rocket nodes specifically
+					TypedArray<Node> rocket_nodes = root->find_children("*Rocket*", "", true, false);
+					for (int i = 0; i < rocket_nodes.size(); i++) {
+						Node *rocket = Object::cast_to<Node>(rocket_nodes[i]);
+						if (rocket) {
+							Dictionary rocket_info;
+							rocket_info["name"] = rocket->get_name();
+							rocket_info["type"] = rocket->get_class();
+							rocket_info["path"] = String(rocket->get_path());
+							rocket_info["parent"] = rocket->get_parent() ? rocket->get_parent()->get_name() : "NULL";
+							debug_search_results.push_back(rocket_info);
+						}
+					}
+					
+					// Search for MeshInstance3D nodes  
+					TypedArray<Node> mesh_nodes = root->find_children("*", "MeshInstance3D", true, false);
+					for (int i = 0; i < mesh_nodes.size() && i < 5; i++) {
+						Node *mesh = Object::cast_to<Node>(mesh_nodes[i]);
+						if (mesh) {
+							Dictionary mesh_info;
+							mesh_info["name"] = mesh->get_name();
+							mesh_info["type"] = mesh->get_class();
+							mesh_info["path"] = String(mesh->get_path());
+							mesh_info["parent"] = mesh->get_parent() ? mesh->get_parent()->get_name() : "NULL";
+							debug_search_results.push_back(mesh_info);
+						}
+					}
+					
+					result["debug_node_search"] = debug_search_results;
+					result["debug_search_found"] = debug_search_results.size();
+				}
+			} else {
+				result["debug_error"] = "Could not find running scene root";
+				
+				// DEBUG: Show what SceneTree actually contains
+				SceneTree *st = SceneTree::get_singleton();
+				if (st) {
+					Node *current = st->get_current_scene();
+					result["debug_current_scene"] = current ? current->get_class() + ":" + current->get_name() : "NULL";
+					
+					Window *root = st->get_root();
+					if (root) {
+						Array root_children;
+						for (int i = 0; i < root->get_child_count() && i < 5; i++) {
+							Node *child = root->get_child(i);
+							if (child) {
+								root_children.push_back(child->get_class() + ":" + child->get_name());
+							}
+						}
+						result["debug_root_children"] = root_children;
+					}
+				}
+			}
+		} else {
+			result["debug_error"] = "Game is not running";
+		}
+		
+		result["usage_example"] = "Use runtime.node.get_tree to see all available nodes, then use specific node paths";
+		return result;
+	}
+	
+	// Debug helpers (simplified for now)
+	else if (operation == "runtime.watch.add") {
+		String watch_id = p_args.get("watch_id", "");
+		String watch_expression = p_args.get("watch_expression", "");
+		return RuntimeInspector::add_watch(watch_id, watch_expression);
+	}
+	else if (operation == "runtime.watch.remove") {
+		String watch_id = p_args.get("watch_id", "");
+		return RuntimeInspector::remove_watch(watch_id);
+	}
+	else if (operation == "runtime.watch.get_values") {
+		return RuntimeInspector::get_watch_values();
+	}
+	
+	// Unknown operation
+	else {
+		Dictionary result;
+		result["success"] = false;
+		result["error"] = "Unknown runtime_inspector operation: " + operation;
+		return result;
+	}
+}
+
+// --- Console Output & Input Testing Tools ---
+
+Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
+	Dictionary result;
+	
+	// Get EditorLog to access console output
+	EditorLog *log = EditorNode::get_log();
+	if (!log) {
+		result["success"] = false;
+		result["error"] = "EditorLog not available";
+		return result;
+	}
+	
+	// Get parameters
+	String output_type = p_args.get("output_type", "all");
+	int max_lines = p_args.get("max_lines", 50);
+	// uint64_t since_timestamp = p_args.get("since_timestamp", 0); // TODO: Implement timestamp filtering
+	
+	// Map output type to message type filter
+	int type_filter = -1; // -1 means all types
+	if (output_type == "print") {
+		type_filter = EditorLog::MSG_TYPE_STD;
+	} else if (output_type == "error") {
+		type_filter = EditorLog::MSG_TYPE_ERROR;
+	} else if (output_type == "warning") {
+		type_filter = EditorLog::MSG_TYPE_WARNING;
+	}
+	
+	// Get recent console output using our new EditorLog method
+	Array console_output = log->get_recent_console_output(max_lines, type_filter);
+	
+	result["success"] = true;
+	result["output_type"] = output_type;
+	result["max_lines"] = max_lines;
+	result["console_output"] = console_output;
+	result["total_messages"] = console_output.size();
+	result["message"] = "Retrieved " + String::num_int64(console_output.size()) + " console messages";
+	
+	// Add helpful debug info
+	result["debug_tip"] = "This includes ALL print() statements from your game scripts during runtime!";
+	
+	return result;
+}
+
+Dictionary EditorTools::test_input_action(const Dictionary &p_args) {
+	Dictionary result;
+	
+	String action_name = p_args.get("action_name", "");
+	if (action_name.is_empty()) {
+		result["success"] = false;
+		result["error"] = "action_name parameter required";
+		return result;
+	}
+	
+	// float test_duration = p_args.get("test_duration", 1.0); // TODO: Implement real-time input testing
+	
+	// Check if action exists in InputMap
+	if (!InputMap::get_singleton()->has_action(action_name)) {
+		result["success"] = false;
+		result["error"] = "Input action not found: " + action_name;
+		result["available_actions"] = Array(); // Could populate with InputMap::get_singleton()->get_actions()
+		return result;
+	}
+	
+	// Test input action during gameplay
+	bool game_running = false;
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	if (editor_interface) {
+		game_running = editor_interface->is_playing_scene();
+	}
+	
+	result["success"] = true;
+	result["action_name"] = action_name;
+	result["action_exists"] = true;
+	result["game_running"] = game_running;
+	
+	if (!game_running) {
+		result["message"] = "Input action exists but game is not running. Start the game to test input.";
+		result["action_configured"] = true;
+	} else {
+		// During gameplay, we could test input state
+		// For now, just confirm the action is configured
+		result["message"] = "Input action configured and game is running. Use runtime_inspector to check actual input state.";
+		result["suggestion"] = "Use runtime.node.get_props on your input-handling node to verify input is being received";
+	}
+	
+	// Get action configuration details
+	const List<Ref<InputEvent>> *events_list = InputMap::get_singleton()->action_get_events(action_name);
+	Array event_info;
+	
+	if (events_list) {
+		for (const Ref<InputEvent> &event : *events_list) {
+		if (event.is_valid()) {
+			Dictionary event_dict;
+			event_dict["class"] = event->get_class();
+			
+			if (InputEventKey *key_event = Object::cast_to<InputEventKey>(event.ptr())) {
+				event_dict["type"] = "key";
+				event_dict["keycode"] = key_event->get_keycode();
+				event_dict["physical_keycode"] = key_event->get_physical_keycode();
+				event_dict["key_label"] = key_event->get_key_label();
+			} else if (InputEventMouseButton *mouse_event = Object::cast_to<InputEventMouseButton>(event.ptr())) {
+				event_dict["type"] = "mouse_button";
+				event_dict["button_index"] = mouse_event->get_button_index();
+			} else {
+				event_dict["type"] = "other";
+			}
+			
+			event_info.push_back(event_dict);
+		}
+		}
+	}
+	
+	result["action_events"] = event_info;
+	result["event_count"] = event_info.size();
+	
+	return result;
+}
+
+Dictionary EditorTools::test_input_key(const Dictionary &p_args) {
+	Dictionary result;
+	
+	int key_code = p_args.get("key_code", 0);
+	if (key_code == 0) {
+		result["success"] = false;
+		result["error"] = "key_code parameter required (e.g., 32 for space, 82 for R)";
+		return result;
+	}
+	
+	// float test_duration = p_args.get("test_duration", 1.0); // TODO: Implement real-time key testing
+	
+	// Check if game is running
+	bool game_running = false;
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	if (editor_interface) {
+		game_running = editor_interface->is_playing_scene();
+	}
+	
+	result["success"] = true;
+	result["key_code"] = key_code;
+	result["game_running"] = game_running;
+	
+	if (!game_running) {
+		result["message"] = "Key testing requires game to be running. Start the game first.";
+	} else {
+		// During gameplay, we could check input state
+		// For now, provide guidance on how to test
+		result["message"] = "Game is running. Use runtime_inspector to check input state on your nodes.";
+		result["suggestion"] = "Add runtime debug prints and use console.get_output to see them, or use runtime.node.get_props to check input handling";
+	}
+	
+	// Provide key code reference
+	Dictionary key_reference;
+	key_reference["32"] = "KEY_SPACE";
+	key_reference["82"] = "KEY_R";
+	key_reference["87"] = "KEY_W";
+	key_reference["65"] = "KEY_A";
+	key_reference["83"] = "KEY_S";
+	key_reference["68"] = "KEY_D";
+	
+	result["key_reference"] = key_reference;
+	result["note"] = "Use Input.is_key_pressed(KEY_SPACE) instead of Input.is_action_pressed() if actions fail";
+	
+	return result;
+}
+
+// --- Shader Cache Management Tools ---
+
+Dictionary EditorTools::clear_shader_cache(const Dictionary &p_args) {
+	Dictionary result;
+	
+	String cache_type = p_args.get("cache_type", "all");
+	String shader_path = p_args.get("shader_path", "");
+	
+	print_line("SHADER_CACHE_CLEAR: Starting cache clear operation, type: " + cache_type);
+	
+	int cleared_count = 0;
+	Array cleared_paths;
+	
+	// Clear project shader cache (res://.godot/shader_cache)
+	if (cache_type == "project" || cache_type == "all") {
+		String project_cache_dir = "res://.godot/shader_cache";
+		Ref<DirAccess> dir = DirAccess::open(project_cache_dir);
+		if (dir.is_valid()) {
+			print_line("SHADER_CACHE_CLEAR: Clearing project cache at " + project_cache_dir);
+			_clear_directory_recursive(dir, project_cache_dir, cleared_count, cleared_paths);
+		} else {
+			print_line("SHADER_CACHE_CLEAR: Project cache directory not found: " + project_cache_dir);
+		}
+	}
+	
+	// Clear user shader cache (user://shader_cache)
+	if (cache_type == "user" || cache_type == "all") {
+		String user_cache_dir = "user://shader_cache";
+		Ref<DirAccess> dir = DirAccess::open(user_cache_dir);
+		if (dir.is_valid()) {
+			print_line("SHADER_CACHE_CLEAR: Clearing user cache at " + user_cache_dir);
+			_clear_directory_recursive(dir, user_cache_dir, cleared_count, cleared_paths);
+		} else {
+			print_line("SHADER_CACHE_CLEAR: User cache directory not found: " + user_cache_dir);
+		}
+	}
+	
+		// Force refresh file system to ensure cache clearing is recognized
+		EditorFileSystem::get_singleton()->scan();
+	
+	result["success"] = true;
+	result["cache_type"] = cache_type;
+	result["cleared_count"] = cleared_count;
+	result["cleared_paths"] = cleared_paths;
+	result["message"] = "Cleared " + String::num_int64(cleared_count) + " shader cache files";
+	result["note"] = "Shader cache cleared. All shaders will be recompiled on next use.";
+	
+	print_line("SHADER_CACHE_CLEAR: Completed, cleared " + String::num_int64(cleared_count) + " files");
+	
+	return result;
+}
+
+Dictionary EditorTools::force_shader_recompile(const Dictionary &p_args) {
+	Dictionary result;
+	
+	bool force_all = p_args.get("force_recompile_all", false);
+	String shader_path = p_args.get("shader_path", "");
+	
+	print_line("SHADER_RECOMPILE: Starting shader recompilation");
+	
+	// First clear shader cache to force recompilation
+	Dictionary clear_args;
+	clear_args["cache_type"] = "all";
+	Dictionary clear_result = clear_shader_cache(clear_args);
+	
+	// Force reimport all shader files in project to trigger recompilation
+	Array shader_files;
+	if (force_all || shader_path.is_empty()) {
+		// Find all shader files in project
+		_find_files_by_extension("res://", shader_files, PackedStringArray{"gdshader", "glsl", "shader"});
+	} else {
+		// Only specific shader
+		shader_files.push_back(shader_path);
+	}
+	
+	int recompiled_count = 0;
+	Array recompiled_files;
+	
+	for (int i = 0; i < shader_files.size(); i++) {
+		String file_path = shader_files[i];
+		
+		// Force reimport the shader
+		Dictionary reimport_args;
+		reimport_args["resource_path"] = file_path;
+		reimport_args["force_reimport"] = true;
+		Dictionary reimport_result = reimport_resource(reimport_args);
+		
+		if (reimport_result.get("success", false)) {
+			recompiled_count++;
+			recompiled_files.push_back(file_path);
+		}
+	}
+	
+	result["success"] = true;
+	result["recompiled_count"] = recompiled_count;
+	result["recompiled_files"] = recompiled_files;
+	result["cache_cleared"] = clear_result.get("success", false);
+	result["message"] = "Recompiled " + String::num_int64(recompiled_count) + " shader files";
+	result["note"] = "All shaders have been forced to recompile from source";
+	
+	print_line("SHADER_RECOMPILE: Completed, recompiled " + String::num_int64(recompiled_count) + " shaders");
+	
+	return result;
+}
+
+Dictionary EditorTools::debug_shader_cache(const Dictionary &p_args) {
+	Dictionary result;
+	
+	print_line("SHADER_CACHE_DEBUG: Analyzing shader cache state");
+	
+	Array cache_info;
+	
+	// Check project cache
+	String project_cache_dir = "res://.godot/shader_cache";
+	Ref<DirAccess> project_dir = DirAccess::open(project_cache_dir);
+	if (project_dir.is_valid()) {
+		Dictionary project_info;
+		project_info["path"] = project_cache_dir;
+		project_info["exists"] = true;
+		
+		Array cache_files;
+		_list_directory_files(project_dir, cache_files, true);
+		project_info["file_count"] = cache_files.size();
+		project_info["files"] = cache_files;
+		cache_info.push_back(project_info);
+	} else {
+		Dictionary project_info;
+		project_info["path"] = project_cache_dir;
+		project_info["exists"] = false;
+		cache_info.push_back(project_info);
+	}
+	
+	// Check user cache
+	String user_cache_dir = "user://shader_cache";
+	Ref<DirAccess> user_dir = DirAccess::open(user_cache_dir);
+	if (user_dir.is_valid()) {
+		Dictionary user_info;
+		user_info["path"] = user_cache_dir;
+		user_info["exists"] = true;
+		
+		Array cache_files;
+		_list_directory_files(user_dir, cache_files, true);
+		user_info["file_count"] = cache_files.size();
+		user_info["files"] = cache_files;
+		cache_info.push_back(user_info);
+	} else {
+		Dictionary user_info;
+		user_info["path"] = user_cache_dir;
+		user_info["exists"] = false;
+		cache_info.push_back(user_info);
+	}
+	
+	result["success"] = true;
+	result["cache_info"] = cache_info;
+	result["message"] = "Shader cache analysis complete";
+	result["recommendation"] = "Use shader.clear_cache to remove stale cache files causing compilation errors";
+	
+	return result;
+}
+
+void EditorTools::_clear_directory_recursive(Ref<DirAccess> p_dir, const String &p_path, int &r_cleared_count, Array &r_cleared_paths) {
+	if (!p_dir.is_valid()) return;
+	
+	p_dir->list_dir_begin();
+	String file = p_dir->get_next();
+	
+	while (!file.is_empty()) {
+		if (file == "." || file == "..") {
+			file = p_dir->get_next();
+			continue;
+		}
+		
+		String full_path = p_path.path_join(file);
+		
+		if (p_dir->current_is_dir()) {
+			// Recursively clear subdirectory
+			Ref<DirAccess> subdir = DirAccess::open(full_path);
+			if (subdir.is_valid()) {
+				_clear_directory_recursive(subdir, full_path, r_cleared_count, r_cleared_paths);
+				// Remove empty directory
+				p_dir->remove(file);
+			}
+		} else {
+			// Remove file
+			Error err = p_dir->remove(file);
+			if (err == OK) {
+				r_cleared_count++;
+				r_cleared_paths.push_back(full_path);
+			}
+		}
+		
+		file = p_dir->get_next();
+	}
+	
+	p_dir->list_dir_end();
+}
+
+void EditorTools::_list_directory_files(Ref<DirAccess> p_dir, Array &r_files, bool p_recursive) {
+	if (!p_dir.is_valid()) return;
+	
+	p_dir->list_dir_begin();
+	String file = p_dir->get_next();
+	
+	while (!file.is_empty()) {
+		if (file == "." || file == "..") {
+			file = p_dir->get_next();
+			continue;
+		}
+		
+		if (p_dir->current_is_dir() && p_recursive) {
+			String dir_path = p_dir->get_current_dir().path_join(file);
+			Ref<DirAccess> subdir = DirAccess::open(dir_path);
+			_list_directory_files(subdir, r_files, true);
+		} else if (!p_dir->current_is_dir()) {
+			String file_path = p_dir->get_current_dir().path_join(file);
+			r_files.push_back(file_path);
+		}
+		
+		file = p_dir->get_next();
+	}
+	
+	p_dir->list_dir_end();
+}
+
+void EditorTools::_find_files_by_extension(const String &p_path, Array &r_files, const PackedStringArray &p_extensions) {
+	Ref<DirAccess> dir = DirAccess::open(p_path);
+	if (!dir.is_valid()) return;
+	
+	dir->list_dir_begin();
+	String file = dir->get_next();
+	
+	while (!file.is_empty()) {
+		if (file == "." || file == "..") {
+			file = dir->get_next();
+			continue;
+		}
+		
+		String full_path = p_path.path_join(file);
+		
+		if (dir->current_is_dir()) {
+			// Recurse into subdirectory
+			_find_files_by_extension(full_path, r_files, p_extensions);
+		} else {
+			// Check file extension
+			String ext = file.get_extension().to_lower();
+			for (int i = 0; i < p_extensions.size(); i++) {
+				if (ext == String(p_extensions[i]).to_lower()) {
+					r_files.push_back(full_path);
+					break;
+				}
+			}
+		}
+		
+		file = dir->get_next();
+	}
+	
+	dir->list_dir_end();
 }
 
 // --- New Debugging Tools Implementation ---
@@ -8847,6 +9678,40 @@ Dictionary EditorTools::save_image_to_path(const Dictionary &p_args) {
         EditorFileSystem::get_singleton()->scan_changes();
         print_line("SAVE_IMAGE: Triggered filesystem update for " + path);
     }
+
+    // Ensure import sidecar is created: reimport and optionally wait
+    bool reimport = p_args.get("reimport", true);
+    bool await_import = p_args.get("await_import", true);
+    int import_timeout_ms = (int)p_args.get("import_timeout_ms", 20000);
+    bool import_ok = false;
+    String import_status = String("unknown");
+    int import_attempts = 0;
+
+    if (EditorFileSystem::get_singleton() && reimport) {
+        Vector<String> to_reimport;
+        to_reimport.push_back(path);
+        EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+        print_line("SAVE_IMAGE: Requested reimport for " + path);
+    }
+
+    if (await_import) {
+        Dictionary wi_args;
+        wi_args["resource_path"] = path;
+        wi_args["timeout_ms"] = import_timeout_ms;
+        wi_args["poll_ms"] = 100;
+        wi_args["force_reimport"] = false; // already requested above
+        Dictionary wi = wait_for_import(wi_args);
+        import_ok = wi.get("ok", false);
+        import_status = String(wi.get("status", String("unknown")));
+        import_attempts = (int)wi.get("attempts", 0);
+        print_line("SAVE_IMAGE: Import wait status=" + import_status + ", ok=" + String(import_ok ? "true" : "false"));
+    } else {
+        // Best-effort status check without waiting
+        Dictionary ri_args; ri_args["resource_path"] = path;
+        Dictionary ri = resource_info(ri_args);
+        import_ok = ri.get("exists", false) && ri.get("loadable", false);
+        import_status = String(ri.get("import_status", String("unknown")));
+    }
     
     result["success"] = true;
     result["message"] = "Image saved successfully";
@@ -8854,6 +9719,10 @@ Dictionary EditorTools::save_image_to_path(const Dictionary &p_args) {
     result["saved_path"] = path;
     result["format"] = format;
     result["file_size"] = image_bytes.size();
+    result["import_ok"] = import_ok;
+    result["import_status"] = import_status;
+    result["import_attempts"] = import_attempts;
+    result["import_sidecar_exists"] = FileAccess::exists(path + String(".import"));
     
     print_line("SAVE_IMAGE: Successfully saved " + image_id + " to " + path);
     
@@ -8920,6 +9789,12 @@ Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
     } else if (op == "image.save") {
         // Save a generated image from conversation context to a specific path
         return save_image_to_path(p_args);
+    } else if (op == "shader.clear_cache") {
+        return clear_shader_cache(p_args);
+    } else if (op == "shader.force_recompile") {
+        return force_shader_recompile(p_args);
+    } else if (op == "shader.debug_cache") {
+        return debug_shader_cache(p_args);
     } else {
         result["success"] = false;
         result["error"] = String("Unknown resource_manager operation: ") + op;
@@ -8965,36 +9840,158 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
             result["error"] = "Failed to save project settings";
         }
         return result;
-    } else if (op == "project_settings.list") {
-        String prefix = p_args.get("prefix", "");
-        Array settings_list;
-        List<PropertyInfo> properties;
-        
-        // Get property list - this should be fast
-        ProjectSettings::get_singleton()->get_property_list(&properties);
-        
-        // Process in smaller chunks to avoid UI freeze
-        int processed = 0;
-        const int CHUNK_SIZE = 50; // Process 50 at a time
-        
-        for (const PropertyInfo &prop : properties) {
-            if (prefix.is_empty() || prop.name.begins_with(prefix)) {
-                Dictionary setting;
-                setting["key"] = prop.name;
-                setting["value"] = ProjectSettings::get_singleton()->get_setting(prop.name);
-                setting["type"] = prop.type;
-                settings_list.push_back(setting);
-                
-                processed++;
-                // Yield to main thread periodically to prevent UI freeze
-                if (processed % CHUNK_SIZE == 0) {
-                    OS::get_singleton()->delay_usec(1); // Minimal delay to yield
-                }
+    } else if (op == "project_settings.get_many") {
+        // Fetch multiple keys in one call for efficiency
+        Array keys = p_args.get("keys", Array());
+        Dictionary values;
+        for (int i = 0; i < keys.size(); i++) {
+            String key = keys[i];
+            values[key] = ProjectSettings::get_singleton()->get_setting(key);
+            if ((i % 64) == 0) {
+                OS::get_singleton()->delay_usec(1);
             }
         }
         result["success"] = true;
+        result["values"] = values;
+        result["count"] = values.size();
+        return result;
+    } else if (op == "project_settings.list") {
+        // Paginated list with optional prefix filtering and keys_only optimization
+        String prefix = p_args.get("prefix", "");
+        bool keys_only = p_args.get("keys_only", false);
+        int offset = p_args.get("offset", 0);
+        int limit = p_args.get("limit", 200);
+        if (limit <= 0) {
+            limit = 200;
+        }
+
+        Array settings_list;
+        List<PropertyInfo> properties;
+        ProjectSettings::get_singleton()->get_property_list(&properties);
+
+        int matched_total = 0;
+        int emitted = 0;
+        int processed = 0;
+        const int CHUNK_SIZE = 64;
+
+        for (const PropertyInfo &prop : properties) {
+            String name = prop.name;
+            bool matches = prefix.is_empty() || name.begins_with(prefix);
+            if (!matches) {
+                continue;
+            }
+
+            // Count match first for pagination math
+            int current_index = matched_total;
+            matched_total++;
+
+            // Only emit settings that fall within the requested page
+            if (current_index >= offset && emitted < limit) {
+                Dictionary setting;
+                setting["key"] = name;
+                if (!keys_only) {
+                    setting["value"] = ProjectSettings::get_singleton()->get_setting(name);
+                }
+                setting["type"] = prop.type;
+                settings_list.push_back(setting);
+                emitted++;
+            }
+
+            processed++;
+            if ((processed % CHUNK_SIZE) == 0) {
+                // Briefly yield to keep the editor responsive
+                OS::get_singleton()->delay_usec(1);
+            }
+        }
+
+        result["success"] = true;
         result["settings"] = settings_list;
         result["count"] = settings_list.size();
+        result["total"] = matched_total;
+        result["offset"] = offset;
+        result["limit"] = limit;
+        result["more"] = (offset + settings_list.size()) < matched_total;
+        result["keys_only"] = keys_only;
+        result["prefix"] = prefix;
+        return result;
+    } else if (op == "project_settings.search") {
+        // Full-text search on keys, optional values, with pagination
+        String query = p_args.get("query", "");
+        String prefix = p_args.get("prefix", "");
+        bool search_in_values = p_args.get("search_in_values", false);
+        bool keys_only = p_args.get("keys_only", false);
+        int offset = p_args.get("offset", 0);
+        int limit = p_args.get("limit", 100);
+        if (limit <= 0) {
+            limit = 100;
+        }
+
+        Array settings_list;
+        List<PropertyInfo> properties;
+        ProjectSettings::get_singleton()->get_property_list(&properties);
+
+        String query_lower = query.to_lower();
+        int matched_total = 0;
+        int emitted = 0;
+        int processed = 0;
+        const int CHUNK_SIZE = 64;
+
+        for (const PropertyInfo &prop : properties) {
+            String name = prop.name;
+            if (!prefix.is_empty() && !name.begins_with(prefix)) {
+                continue;
+            }
+
+            bool matches = false;
+            if (query_lower.is_empty()) {
+                matches = true; // no query means match all under prefix
+            } else {
+                if (name.to_lower().find(query_lower) != -1) {
+                    matches = true;
+                } else if (search_in_values) {
+                    Variant v = ProjectSettings::get_singleton()->get_setting(name);
+                    String v_str = String(v).to_lower();
+                    if (v_str.find(query_lower) != -1) {
+                        matches = true;
+                    }
+                }
+            }
+
+            if (!matches) {
+                continue;
+            }
+
+            int current_index = matched_total;
+            matched_total++;
+
+            if (current_index >= offset && emitted < limit) {
+                Dictionary setting;
+                setting["key"] = name;
+                if (!keys_only) {
+                    setting["value"] = ProjectSettings::get_singleton()->get_setting(name);
+                }
+                setting["type"] = prop.type;
+                settings_list.push_back(setting);
+                emitted++;
+            }
+
+            processed++;
+            if ((processed % CHUNK_SIZE) == 0) {
+                OS::get_singleton()->delay_usec(1);
+            }
+        }
+
+        result["success"] = true;
+        result["settings"] = settings_list;
+        result["count"] = settings_list.size();
+        result["total"] = matched_total;
+        result["offset"] = offset;
+        result["limit"] = limit;
+        result["more"] = (offset + settings_list.size()) < matched_total;
+        result["keys_only"] = keys_only;
+        result["query"] = query;
+        result["prefix"] = prefix;
+        result["search_in_values"] = search_in_values;
         return result;
     } else if (op == "inputmap.add_action") {
         String action = p_args.get("action", "");
@@ -9348,11 +10345,444 @@ Dictionary EditorTools::runtime_manager(const Dictionary &p_args) {
         }
         result["recent_errors"] = recent_errors;
         return result;
-    } else if (op == "screenshot.take") {
+    } else if (op == "screenshot.take" || op == "screenshot.capture") {
         return take_screenshot(p_args);
+    } else if (op == "console.get_output") {
+        return get_console_output(p_args);
+    } else if (op == "input.test_action") {
+        return test_input_action(p_args);
+    } else if (op == "input.test_key") {
+        return test_input_key(p_args);
     } else {
         result["success"] = false;
         result["error"] = String("Unknown runtime_manager operation: ") + op;
         return result;
     }
+}
+
+// Advanced batch operations implementation
+Dictionary EditorTools::create_and_configure_nodes_batch(const Dictionary &p_args) {
+	Dictionary result;
+	Array templates = p_args.get("templates", Array());
+	
+	if (templates.is_empty()) {
+		result["success"] = false;
+		result["error"] = "templates array is required";
+		return result;
+	}
+	
+	int total_created = 0;
+	Array created_nodes;
+	Array failures;
+	
+	for (int t = 0; t < templates.size(); t++) {
+		Dictionary template_def = templates[t];
+		String node_type = template_def.get("type", "Node");
+		String name_pattern = template_def.get("name", "Node{i}");
+		String parent_path = template_def.get("parent", "");
+		int count = template_def.get("count", 1);
+		String mesh_path = template_def.get("mesh", "");
+		String material_path = template_def.get("material", "");
+		Dictionary properties = template_def.get("properties", Dictionary());
+		Dictionary positions_config = template_def.get("positions", Dictionary());
+		
+		// Calculate positions based on pattern
+		Array positions;
+		String pattern = positions_config.get("pattern", "linear");
+		Dictionary start_pos = positions_config.get("start", Dictionary());
+		Dictionary spacing = positions_config.get("spacing", Dictionary());
+		
+		if (pattern == "linear") {
+			Vector3 start(start_pos.get("x", 0.0), start_pos.get("y", 0.0), start_pos.get("z", 0.0));
+			Vector3 space(spacing.get("x", 0.0), spacing.get("y", 0.0), spacing.get("z", 1.0));
+			for (int i = 0; i < count; i++) {
+				Vector3 pos = start + space * i;
+				Dictionary pos_dict;
+				pos_dict["x"] = pos.x;
+				pos_dict["y"] = pos.y;
+				pos_dict["z"] = pos.z;
+				positions.push_back(pos_dict);
+			}
+		} else if (pattern == "grid") {
+			Dictionary grid_size = positions_config.get("grid_size", Dictionary());
+			int grid_x = grid_size.get("x", 1);
+			int grid_y = grid_size.get("y", 1);
+			int grid_z = grid_size.get("z", 1);
+			(void)grid_z; // Suppress unused warning - may be used in future
+			Vector3 start(start_pos.get("x", 0.0), start_pos.get("y", 0.0), start_pos.get("z", 0.0));
+			Vector3 space(spacing.get("x", 1.0), spacing.get("y", 1.0), spacing.get("z", 1.0));
+			
+			for (int i = 0; i < count; i++) {
+				int x = i % grid_x;
+				int y = (i / grid_x) % grid_y;
+				int z = i / (grid_x * grid_y);
+				Vector3 pos = start + Vector3(x * space.x, y * space.y, z * space.z);
+				Dictionary pos_dict;
+				pos_dict["x"] = pos.x;
+				pos_dict["y"] = pos.y;
+				pos_dict["z"] = pos.z;
+				positions.push_back(pos_dict);
+			}
+		} else if (pattern == "custom") {
+			positions = positions_config.get("custom_positions", Array());
+		}
+		
+		// Create nodes
+		for (int i = 0; i < count; i++) {
+			String node_name = name_pattern.replace("{i}", String::num_int64(i));
+			
+			// Create node
+			Dictionary create_args;
+			create_args["type"] = node_type;
+			create_args["name"] = node_name;
+			create_args["parent"] = parent_path;
+			
+			Dictionary create_result = create_node(create_args);
+			if (!create_result.get("success", false)) {
+				failures.push_back(create_result);
+				continue;
+			}
+			
+			String node_path = parent_path + "/" + node_name;
+			created_nodes.push_back(node_path);
+			total_created++;
+			
+			// Set position if available
+			if (i < positions.size()) {
+				Dictionary pos_dict = positions[i];
+				Dictionary pos_args;
+				pos_args["path"] = node_path;
+				pos_args["property"] = "position";
+				pos_args["value"] = pos_dict;
+				set_node_property(pos_args);
+			}
+			
+			// Assign mesh if specified
+            if (!mesh_path.is_empty()) {
+                Dictionary mesh_args;
+                mesh_args["node_path"] = node_path; // use correct parameter name
+                mesh_args["property"] = "mesh";
+                mesh_args["resource_path"] = mesh_path;
+                load_and_assign_resource(mesh_args);
+            }
+			
+			// Assign material if specified
+            if (!material_path.is_empty()) {
+                Dictionary material_args;
+                material_args["node_path"] = node_path; // use correct parameter name
+                material_args["property"] = "material_override";
+                material_args["resource_path"] = material_path;
+                load_and_assign_resource(material_args);
+            }
+			
+			// Set additional properties
+			Array prop_keys = properties.keys();
+			for (int p = 0; p < prop_keys.size(); p++) {
+				String prop_name = prop_keys[p];
+				Variant prop_value = properties[prop_name];
+				Dictionary prop_args;
+				prop_args["path"] = node_path;
+				prop_args["property"] = prop_name;
+				prop_args["value"] = prop_value;
+				set_node_property(prop_args);
+			}
+		}
+	}
+	
+	result["success"] = failures.is_empty();
+	result["total_created"] = total_created;
+	result["created_nodes"] = created_nodes;
+	result["failed_count"] = failures.size();
+	if (!failures.is_empty()) {
+		result["failures"] = failures;
+	}
+	result["message"] = "Created " + String::num_int64(total_created) + " nodes in batch";
+	return result;
+}
+
+Dictionary EditorTools::assign_resources_batch(const Dictionary &p_args) {
+	Dictionary result;
+	Array batch_resources = p_args.get("batch_resources", Array());
+	
+	if (batch_resources.is_empty()) {
+		result["success"] = false;
+		result["error"] = "batch_resources array is required";
+		return result;
+	}
+	
+	int total_assigned = 0;
+	Array failures;
+	
+	for (int b = 0; b < batch_resources.size(); b++) {
+		Dictionary batch = batch_resources[b];
+		Array node_paths = batch.get("node_paths", Array());
+		String property = batch.get("property", "");
+		String resource_path = batch.get("resource_path", "");
+		
+		for (int n = 0; n < node_paths.size(); n++) {
+			String node_path = node_paths[n];
+			Dictionary assign_args;
+			assign_args["node_path"] = node_path;  // Use correct parameter name
+			assign_args["property"] = property;
+			assign_args["resource_path"] = resource_path;
+			
+			Dictionary assign_result = load_and_assign_resource(assign_args);
+			if (assign_result.get("success", false)) {
+				total_assigned++;
+			} else {
+				assign_result["node_path"] = node_path; // Add context for debugging
+				failures.push_back(assign_result);
+			}
+		}
+	}
+	
+	result["success"] = failures.is_empty();
+	result["total_assigned"] = total_assigned;
+	result["failed_count"] = failures.size();
+	if (!failures.is_empty()) {
+		result["failures"] = failures;
+	}
+	result["message"] = "Assigned resources to " + String::num_int64(total_assigned) + " nodes";
+	return result;
+}
+
+Dictionary EditorTools::set_transforms_batch(const Dictionary &p_args) {
+	Dictionary result;
+	Array batch_transforms = p_args.get("batch_transforms", Array());
+	
+	if (batch_transforms.is_empty()) {
+		result["success"] = false;
+		result["error"] = "batch_transforms array is required";
+		return result;
+	}
+	
+	int total_updated = 0;
+	Array failures;
+	
+	for (int b = 0; b < batch_transforms.size(); b++) {
+		Dictionary batch = batch_transforms[b];
+		Array node_paths = batch.get("node_paths", Array());
+		Array positions = batch.get("positions", Array());
+		Array rotations = batch.get("rotations", Array());
+		Array scales = batch.get("scales", Array());
+		
+		for (int n = 0; n < node_paths.size(); n++) {
+			String node_path = node_paths[n];
+			bool updated = false;
+			
+			// Set position
+			if (n < positions.size()) {
+				Dictionary pos_args;
+				pos_args["path"] = node_path;
+				pos_args["property"] = "position";
+				pos_args["value"] = positions[n];
+				Dictionary pos_result = set_node_property(pos_args);
+				if (pos_result.get("success", false)) updated = true;
+			}
+			
+			// Set rotation
+			if (n < rotations.size()) {
+				Dictionary rot_args;
+				rot_args["path"] = node_path;
+				rot_args["property"] = "rotation_degrees";
+				rot_args["value"] = rotations[n];
+				Dictionary rot_result = set_node_property(rot_args);
+				if (rot_result.get("success", false)) updated = true;
+			}
+			
+			// Set scale
+			if (n < scales.size()) {
+				Dictionary scale_args;
+				scale_args["path"] = node_path;
+				scale_args["property"] = "scale";
+				scale_args["value"] = scales[n];
+				Dictionary scale_result = set_node_property(scale_args);
+				if (scale_result.get("success", false)) updated = true;
+			}
+			
+			if (updated) {
+				total_updated++;
+			}
+		}
+	}
+	
+	result["success"] = true;
+	result["total_updated"] = total_updated;
+	result["message"] = "Updated transforms for " + String::num_int64(total_updated) + " nodes";
+	return result;
+}
+
+Dictionary EditorTools::instantiate_scenes_batch(const Dictionary &p_args) {
+	Dictionary result;
+	Array instantiate_batch = p_args.get("instantiate_batch", Array());
+	
+	if (instantiate_batch.is_empty()) {
+		result["success"] = false;
+		result["error"] = "instantiate_batch array is required";
+		return result;
+	}
+	
+	int total_instantiated = 0;
+	Array instantiated_nodes;
+	Array failures;
+	
+	for (int i = 0; i < instantiate_batch.size(); i++) {
+		Dictionary batch_item = instantiate_batch[i];
+		String scene_path = batch_item.get("scene_path", "");
+		String parent_node = batch_item.get("parent_node", "");
+		String instance_name = batch_item.get("instance_name", "");
+		
+		if (scene_path.is_empty() || parent_node.is_empty()) {
+			Dictionary failure;
+			failure["success"] = false;
+			failure["error"] = "scene_path and parent_node are required";
+			failure["index"] = i;
+			failures.push_back(failure);
+			continue;
+		}
+		
+		// Use existing manage_scene instantiate operation
+		Dictionary instantiate_args;
+		instantiate_args["operation"] = "instantiate";
+		instantiate_args["path"] = scene_path;
+		instantiate_args["parent_node"] = parent_node;
+		if (!instance_name.is_empty()) {
+			instantiate_args["instance_name"] = instance_name;
+		}
+		
+		Dictionary instantiate_result = manage_scene(instantiate_args);
+		if (instantiate_result.get("success", false)) {
+			total_instantiated++;
+			String instance_path = instantiate_result.get("instance_path", parent_node + "/" + instance_name);
+			instantiated_nodes.push_back(instance_path);
+		} else {
+			instantiate_result["index"] = i;
+			failures.push_back(instantiate_result);
+		}
+	}
+	
+	result["success"] = failures.is_empty();
+	result["total_instantiated"] = total_instantiated;
+	result["instantiated_nodes"] = instantiated_nodes;
+	result["failed_count"] = failures.size();
+	if (!failures.is_empty()) {
+		result["failures"] = failures;
+	}
+	result["message"] = "Instantiated " + String::num_int64(total_instantiated) + " scenes in batch";
+	return result;
+}
+
+// Use the utility class for pattern matching
+Array _find_nodes_by_pattern(const String &p_pattern) {
+	return NodePatternUtils::find_nodes_by_pattern(p_pattern);
+}
+
+Dictionary EditorTools::set_node_properties_pattern(const Dictionary &p_args) {
+	Dictionary result;
+	String node_pattern = p_args.get("node_pattern", "");
+	String property_pattern = p_args.get("property_pattern", "");
+	Variant value_pattern = p_args.get("value_pattern", Variant());
+	
+	if (node_pattern.is_empty() || property_pattern.is_empty()) {
+		result["success"] = false;
+		result["error"] = "node_pattern and property_pattern are required";
+		return result;
+	}
+	
+	Array matching_nodes = _find_nodes_by_pattern(node_pattern);
+	int total_updated = 0;
+	Array failures;
+	
+	for (int i = 0; i < matching_nodes.size(); i++) {
+		String node_path = matching_nodes[i];
+		Dictionary prop_args;
+		prop_args["path"] = node_path;
+		prop_args["property"] = property_pattern;
+		prop_args["value"] = value_pattern;
+		
+		Dictionary prop_result = set_node_property(prop_args);
+		if (prop_result.get("success", false)) {
+			total_updated++;
+		} else {
+			failures.push_back(prop_result);
+		}
+	}
+	
+	result["success"] = failures.is_empty();
+	result["total_updated"] = total_updated;
+	result["matched_nodes"] = matching_nodes.size();
+	result["failed_count"] = failures.size();
+	if (!failures.is_empty()) {
+		result["failures"] = failures;
+	}
+	result["message"] = "Updated " + String::num_int64(total_updated) + "/" + String::num_int64(matching_nodes.size()) + " nodes matching pattern '" + node_pattern + "'";
+	return result;
+}
+
+Dictionary EditorTools::delete_nodes_pattern(const Dictionary &p_args) {
+	Dictionary result;
+	String node_pattern = p_args.get("node_pattern", "");
+	
+	if (node_pattern.is_empty()) {
+		result["success"] = false;
+		result["error"] = "node_pattern is required";
+		return result;
+	}
+	
+	Array matching_nodes = _find_nodes_by_pattern(node_pattern);
+	
+	// Use existing batch delete
+	Dictionary delete_args;
+	delete_args["node_paths"] = matching_nodes;
+	delete_args["ignore_missing"] = true;
+	delete_args["skip_scene_root"] = true;
+	
+	Dictionary delete_result = delete_nodes_batch(delete_args);
+	delete_result["matched_nodes"] = matching_nodes.size();
+	delete_result["message"] = "Deleted " + String::num_int64(delete_result.get("deleted", 0)) + "/" + String::num_int64(matching_nodes.size()) + " nodes matching pattern '" + node_pattern + "'";
+	
+	return delete_result;
+}
+
+Dictionary EditorTools::assign_resource_pattern(const Dictionary &p_args) {
+	Dictionary result;
+	String node_pattern = p_args.get("node_pattern", "");
+	String property_pattern = p_args.get("property_pattern", "");
+	String resource_path_pattern = p_args.get("resource_path_pattern", "");
+	
+	if (node_pattern.is_empty() || property_pattern.is_empty() || resource_path_pattern.is_empty()) {
+		result["success"] = false;
+		result["error"] = "node_pattern, property_pattern, and resource_path_pattern are required";
+		return result;
+	}
+	
+	Array matching_nodes = _find_nodes_by_pattern(node_pattern);
+	int total_assigned = 0;
+	Array failures;
+	
+	for (int i = 0; i < matching_nodes.size(); i++) {
+		String node_path = matching_nodes[i];
+		Dictionary assign_args;
+		assign_args["node_path"] = node_path;  // Use correct parameter name
+		assign_args["property"] = property_pattern;
+		assign_args["resource_path"] = resource_path_pattern;
+		
+		Dictionary assign_result = load_and_assign_resource(assign_args);
+		if (assign_result.get("success", false)) {
+			total_assigned++;
+		} else {
+			assign_result["node_path"] = node_path; // Add context for debugging
+			failures.push_back(assign_result);
+		}
+	}
+	
+	result["success"] = failures.is_empty();
+	result["total_assigned"] = total_assigned;
+	result["matched_nodes"] = matching_nodes.size();
+	result["failed_count"] = failures.size();
+	if (!failures.is_empty()) {
+		result["failures"] = failures;
+	}
+	result["message"] = "Assigned resources to " + String::num_int64(total_assigned) + "/" + String::num_int64(matching_nodes.size()) + " nodes matching pattern '" + node_pattern + "'";
+	return result;
 }

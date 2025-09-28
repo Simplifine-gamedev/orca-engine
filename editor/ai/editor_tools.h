@@ -9,6 +9,7 @@
 #include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
+#include "core/io/dir_access.h"
 #include "core/templates/list.h"
 #include "core/templates/hash_set.h"
 
@@ -21,6 +22,9 @@ private:
 	static Dictionary _get_node_info(Node *p_node);
 	static Node *_get_node_from_path(const String &p_path, Dictionary &r_error_result);
 	static void _set_owner_recursive(Node *p_node, Node *p_owner);
+	static void _clear_directory_recursive(Ref<DirAccess> p_dir, const String &p_path, int &r_cleared_count, Array &r_cleared_paths);
+	static void _list_directory_files(Ref<DirAccess> p_dir, Array &r_files, bool p_recursive);
+	static void _find_files_by_extension(const String &p_path, Array &r_files, const PackedStringArray &p_extensions);
     // Trace support
     static EditorTools *tracer_instance;
     static Dictionary trace_registry; // trace_id -> { events:Array, connections:Array, include_args:bool, max_events:int, next_index:int }
@@ -102,6 +106,12 @@ public:
 	static Dictionary inspect_physics_body(const Dictionary &p_args);
 	static Dictionary get_camera_info(const Dictionary &p_args);
 	static Dictionary take_screenshot(const Dictionary &p_args);
+	static Dictionary get_console_output(const Dictionary &p_args);
+	static Dictionary test_input_action(const Dictionary &p_args);
+	static Dictionary test_input_key(const Dictionary &p_args);
+	static Dictionary clear_shader_cache(const Dictionary &p_args);
+	static Dictionary force_shader_recompile(const Dictionary &p_args);
+	static Dictionary debug_shader_cache(const Dictionary &p_args);
 	static Dictionary check_node_in_scene_tree(const Dictionary &p_args);
 	static Dictionary inspect_animation_state(const Dictionary &p_args);
 	static Dictionary get_layers_and_zindex(const Dictionary &p_args);
@@ -120,6 +130,7 @@ public:
 	static Dictionary settings_manager(const Dictionary &p_args);
 	static Dictionary search_manager(const Dictionary &p_args);
 	static Dictionary runtime_manager(const Dictionary &p_args);
+	static Dictionary runtime_inspector(const Dictionary &p_args);
 
 	// Multiplexed introspection/debug tool
 	static Dictionary editor_introspect(const Dictionary &p_args);
@@ -180,4 +191,15 @@ public:
 	static Dictionary delete_nodes_batch(const Dictionary &p_args);        // { node_paths:Array, ignore_missing?:bool, skip_scene_root?:bool }
 	static Dictionary create_nodes_batch(const Dictionary &p_args);        // { nodes_to_create:Array, stop_on_error?:bool }
 	static Dictionary set_node_mesh_properties(const Dictionary &p_args);  // { path:String, mesh_property:String, mesh_value:Variant }
+	
+	// Advanced batch operations
+	static Dictionary create_and_configure_nodes_batch(const Dictionary &p_args);  // { templates:Array }
+	static Dictionary assign_resources_batch(const Dictionary &p_args);           // { batch_resources:Array }
+	static Dictionary set_transforms_batch(const Dictionary &p_args);             // { batch_transforms:Array }
+	static Dictionary instantiate_scenes_batch(const Dictionary &p_args);         // { instantiate_batch:Array }
+	
+	// Pattern-based operations
+	static Dictionary set_node_properties_pattern(const Dictionary &p_args);      // { node_pattern:String, property_pattern:String, value_pattern:Variant }
+	static Dictionary delete_nodes_pattern(const Dictionary &p_args);             // { node_pattern:String }
+	static Dictionary assign_resource_pattern(const Dictionary &p_args);          // { node_pattern:String, property_pattern:String, resource_path_pattern:String }
 }; 
