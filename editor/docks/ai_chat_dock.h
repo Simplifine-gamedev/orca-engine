@@ -365,6 +365,10 @@ private:
   void _on_apply_edit_thread_done();
   // Deferred frontend tool execution (for slow tools only)
   void _execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str);
+  // Force tool visibility for immediate display
+  void _force_tool_visibility(const String &p_tool_call_id, const String &p_function_name);
+  // Reverted async finalize helper
+private:
 	RichTextLabel *_get_or_create_current_assistant_message_label();
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);
@@ -460,6 +464,7 @@ private:
 	void _show_diff_in_script_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
 	void _show_diff_in_shader_editor_deferred(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff = "");
 	void _apply_shader_diff_to_current_editor(const String &p_path, const String &p_original, const String &p_modified, const String &p_inline_diff);
+	void _show_diff_in_resource_inspector(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff = "");
 	void _show_cumulative_diff_for_file(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff = "");
 	String _generate_inline_diff(const String &p_original, const String &p_modified);
 
@@ -510,6 +515,8 @@ private:
 	void _update_tool_placeholder_status(const String &p_tool_id, const String &p_tool_name, const String &p_status);
 	void _create_backend_tool_placeholder(const String &p_tool_id, const String &p_tool_name);
 	void _create_assistant_message_for_backend_tool(const String &p_tool_name);
+	void _ensure_tool_placeholder(const String &p_tool_id, const String &p_tool_name);
+	void _execute_tool_call_frontend_from_executing_tools(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str);
 
 	// Track tool call handling to avoid duplicate UI updates when both
 	// the editor and backend report the same tool execution.

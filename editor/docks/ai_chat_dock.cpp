@@ -1120,7 +1120,14 @@ void AIChatDock::_notification(int p_notification) {
     if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
         api_endpoint = "http://127.0.0.1:5050/chat";
     } else {
-        api_endpoint = "https://api.orcaengine.ai/chat";
+        // Check for v3 backend URL override first, then fall back to production
+        String v3_backend = OS::get_singleton()->get_environment("GODOT_AI_BACKEND_V3_URL");
+        if (!v3_backend.is_empty()) {
+            api_endpoint = v3_backend + "/chat";
+            print_line("AI Chat: Using v3 backend URL: " + api_endpoint);
+        } else {
+            api_endpoint = "https://api.orcaengine.ai/chat";
+        }
     }
 		} break;
 			case NOTIFICATION_READY: {
@@ -2872,14 +2879,20 @@ void AIChatDock::_perform_project_reindex() {
 		base_url = "https://api.orcaengine.ai";
 	}
 	
-	// Allow override via editor settings or environment variable
+	// Allow override via editor settings or environment variables
+	// Priority: editor settings > GODOT_AI_BACKEND_V3_URL > AI_CHAT_CLOUD_URL > default
 	if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
 		String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
 		if (!override_url.is_empty()) {
 			base_url = override_url;
+			print_line("AI Chat: Using base_url from editor settings: " + base_url);
 		}
+	} else if (!OS::get_singleton()->get_environment("GODOT_AI_BACKEND_V3_URL").is_empty()) {
+		base_url = OS::get_singleton()->get_environment("GODOT_AI_BACKEND_V3_URL");
+		print_line("AI Chat: Using v3 backend URL for reindex: " + base_url);
 	} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
 		base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+		print_line("AI Chat: Using cloud URL for reindex: " + base_url);
 	}
 	
 	HTTPRequest *reindex_request = memnew(HTTPRequest);
@@ -3911,12 +3924,23 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			Dictionary assistant_message = response_data["assistant_message"];
 			Array tool_calls = assistant_message.get("tool_calls", Array());
 
+			// ENHANCED DEBUG: Log what tools are being processed
+			print_line("🔧 EXECUTING_TOOLS_DEBUG: Received " + String::num_int64(tool_calls.size()) + " tool calls from backend");
+			for (int i = 0; i < tool_calls.size(); i++) {
+				Dictionary tc = tool_calls[i];
+				Dictionary func = tc.get("function", Dictionary());
+				String func_name = func.get("name", "unknown");
+				String args_str = func.get("arguments", "{}");
+				print_line("🔧 EXECUTING_TOOLS_DEBUG: Tool " + String::num_int64(i) + ": " + func_name + " with args: " + args_str.substr(0, 100) + "...");
+			}
+
 			// Mark tool call ids as executing to debounce UI creation across streams
 			for (int i = 0; i < tool_calls.size(); i++) {
 				Dictionary tc = tool_calls[i];
 				String tcid = tc.get("id", "");
 				if (!tcid.is_empty()) {
 					tool_calls_executed_locally.insert(tcid);
+					print_line("🔧 EXECUTING_TOOLS_DEBUG: Marked tool call ID as executing: " + tcid);
 				}
 			}
 			
@@ -3934,17 +3958,34 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 				if (!history.is_empty()) {
 					ChatMessage &last = history.write[history.size() - 1];
 					if (last.role == "assistant") {
-						// If the backend provided content here and the current message has none, adopt it
+						// If the backend provided content and we don't have any yet, use it
+						// (Don't duplicate content that was already streamed via content_delta)
 						if (!assistant_content.is_empty() && last.content.is_empty()) {
 							last.content = assistant_content;
 							String bbcode = _markdown_to_bbcode(assistant_content);
 							if (!bbcode.is_empty()) {
 								current_assistant_message_label->set_text(bbcode);
 							}
+							print_line("🔧 CONTENT_FIX: Set assistant content for empty message");
+						} else if (!last.content.is_empty()) {
+							print_line("🔧 CONTENT_DEBUG: Message already has content from streaming: '" + last.content.substr(0, 50) + "...'");
 						}
 						// Attach tool calls to the existing assistant message
 						last.tool_calls = tool_calls;
 						_create_tool_call_bubbles(tool_calls);
+						
+						// CRITICAL FIX: Ensure message panel is visible when attaching tool calls
+						if (current_assistant_message_label) {
+							Node *parent = current_assistant_message_label->get_parent();
+							if (parent) {
+								Node *grandparent = parent->get_parent(); // This should be the message panel
+								if (PanelContainer *message_panel = Object::cast_to<PanelContainer>(grandparent)) {
+									message_panel->set_visible(true);
+									print_line("🔧 VISIBILITY_FIX: Made message panel visible after attaching tool calls");
+								}
+							}
+						}
+						
 						attached_to_existing = true;
 					}
 				}
@@ -3952,11 +3993,102 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 			if (!attached_to_existing) {
 				_add_message_to_chat("assistant", assistant_content, tool_calls);
+				print_line("🔧 MESSAGE_CREATION: Created new assistant message with " + String::num_int64(tool_calls.size()) + " tool calls");
 			}
 
-			// CRITICAL FIX: Don't execute tool_calls from executing_tools - backend will handle them
-			// executing_tools means backend is about to execute these tools, so frontend should NOT execute them
-			print_line("AI Chat: executing_tools received - backend will handle " + String::num_int64(tool_calls.size()) + " tool(s), not executing locally");
+			// NEW: If these tool_calls are frontend-only, kick off local execution and show placeholders immediately.
+			for (int i = 0; i < tool_calls.size(); i++) {
+				Dictionary tc = tool_calls[i];
+				String tcid = tc.get("id", "");
+				Dictionary func = tc.get("function", Dictionary());
+				String fname = func.get("name", "");
+				String fargs = func.get("arguments", "{}");
+				// Ensure placeholder exists and show starting state now
+				_update_tool_placeholder_status(tcid, fname, "starting");
+				// Also show an immediate descriptive line for visibility
+				String desc = _get_immediate_tool_status(fname, fargs);
+				if (!desc.is_empty()) {
+					_update_tool_placeholder_with_description(tcid, fname, "executing", desc);
+				}
+				// For known frontend-only tools, execute locally
+				HashSet<String> frontend_only_names;
+				if (frontend_only_names.is_empty()) {
+					frontend_only_names.insert("project_manager");  // All file operations are frontend-only
+					frontend_only_names.insert("scene_manager");
+					frontend_only_names.insert("script_manager");
+					frontend_only_names.insert("settings_manager");
+					frontend_only_names.insert("runtime_manager");
+					frontend_only_names.insert("runtime_inspector");
+				}
+				
+				// FIXED: Only resource_manager needs operation-specific routing (for image operations)
+				bool should_execute_locally = false;
+				if (frontend_only_names.has(fname)) {
+					should_execute_locally = true;
+				} else if (fname == "resource_manager") {
+					// Parse operation to decide routing for resource_manager only
+					Ref<JSON> op_json;
+					op_json.instantiate();
+					if (op_json->parse(fargs) == OK) {
+						Dictionary op_args = op_json->get_data();
+						String op = op_args.get("op", "");
+						// Backend operations: image.*
+						// Frontend operations: res.*
+						if (op.begins_with("image.")) {
+							print_line("AI Chat: executing_tools - " + fname + " op '" + op + "' will be handled by BACKEND, waiting...");
+							should_execute_locally = false;
+						} else {
+							print_line("AI Chat: executing_tools - " + fname + " op '" + op + "' executing locally on FRONTEND");
+							should_execute_locally = true;
+						}
+					} else {
+						should_execute_locally = true;
+					}
+				}
+				
+				if (should_execute_locally) {
+					print_line("AI Chat: executing_tools - executing frontend tool locally: " + fname + " (ID: " + tcid + ")");
+					// CRITICAL FIX: Increment pending_tool_tasks to match the deferred execution
+					pending_tool_tasks++;
+					print_line("🔧 EXECUTING_TOOLS_DEBUG: Incremented pending_tool_tasks to " + String::num_int64(pending_tool_tasks) + " for deferred execution");
+					
+					// CRITICAL FIX: Show tool progress IMMEDIATELY and prominently
+					String immediate_status = _get_immediate_tool_status(fname, fargs);
+					if (!immediate_status.is_empty()) {
+						// Update status to "WORKING" immediately
+						_update_tool_placeholder_status(tcid, fname, "executing");
+						_update_tool_placeholder_with_description(tcid, fname, "executing", immediate_status);
+						print_line("IMMEDIATE_TOOL_VISIBILITY: Set tool status IMMEDIATELY for " + fname + ": " + immediate_status);
+						
+						// FORCE the tool placeholder to be SUPER visible
+						PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tcid, true, false));
+						if (placeholder) {
+							placeholder->set_visible(true);
+							print_line("FORCE_VISIBILITY: Made placeholder visible");
+							
+							// Find and update the tool label
+							VBoxContainer *tool_vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+							if (tool_vbox) {
+								HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(tool_vbox->get_child(0));
+								if (tool_hbox) {
+									Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+									if (tool_label) {
+										tool_label->set_text("*** WORKING: " + immediate_status + " ***");
+										tool_label->add_theme_color_override("font_color", Color(1.0, 0.0, 0.0, 1.0)); // Bright red
+										tool_label->add_theme_font_size_override("font_size", 18); // Very large
+										tool_label->set_visible(true);
+										print_line("FORCE_VISIBILITY: Set tool text to: " + tool_label->get_text());
+									}
+								}
+							}
+						}
+					}
+					
+					// CRITICAL FIX: Execute tool immediately but with progress updates during execution
+					call_deferred("_execute_frontend_tool_deferred", tcid, fname, fargs);
+					print_line("IMMEDIATE_EXECUTION: Tool will execute immediately with visible progress");
+				}
+			}
 		}
 		return; // Stop further processing for this line
 	}
@@ -4105,7 +4237,13 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 	// This handles streaming content deltas
 	if (response_data.has("content_delta")) {
+		String delta = response_data["content_delta"];
+		print_line("🔧 FRONTEND_STREAMING_DEBUG: Received content_delta: '" + delta.substr(0, 50) + "...' (len=" + String::num_int64(delta.length()) + ")");
 		RichTextLabel *label = _get_or_create_current_assistant_message_label();
+		print_line("🔧 LABEL_DEBUG: Got label: " + String(label != nullptr ? "EXISTS" : "NULL"));
+		if (label) {
+			print_line("🔧 LABEL_DEBUG: Current text length: " + String::num_int64(label->get_text().length()));
+		}
 		
 		// Safety check: ensure label is valid
 		if (!label) {
@@ -4113,30 +4251,131 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			return;
 		}
 		
-		String delta = response_data["content_delta"];
 		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 		if (!chat_history.is_empty()) {
-			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
-			if (last_msg.role == "assistant") {
-				last_msg.content += delta;
-				
-				// Update conversation timestamp for streaming content (but don't save yet)
-				if (current_conversation_index >= 0) {
-					conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+			// CRITICAL FIX: Detect if this is post-tool continuation (text2) vs new conversation
+			bool has_tool_results = false;
+			bool is_new_conversation = false;
+			
+			// Check if we have any user messages after the last tool result
+			int last_tool_index = -1;
+			int last_user_index = -1;
+			
+			for (int i = chat_history.size() - 1; i >= 0; i--) {
+				if (chat_history[i].role == "tool" && last_tool_index == -1) {
+					last_tool_index = i;
+					has_tool_results = true;
 				}
+				if (chat_history[i].role == "user" && last_user_index == -1) {
+					last_user_index = i;
+				}
+			}
+			
+			// If there's a user message after the last tool, this is a new conversation
+			if (last_user_index > last_tool_index) {
+				is_new_conversation = true;
+				has_tool_results = false; // Treat as fresh conversation
+				print_line("🔧 CONVERSATION_DEBUG: New conversation detected - user message after tool result");
+			}
+			
+			if (has_tool_results) {
+				// POST-TOOL CONTINUATION: Always attach to the MOST RECENT tool only
+				print_line("🔧 CONTINUATION_DEBUG: POST-TOOL continuation detected");
 				
-				// Safety check: ensure content is valid before processing
-				if (!last_msg.content.is_empty()) {
-					String bbcode_content = _markdown_to_bbcode(last_msg.content);
-					// Additional safety check for the converted content
-					if (!bbcode_content.is_empty()) {
-						label->set_text(bbcode_content);
+				int continuation_index = -1;
+				// Use last_tool_index computed above; if it has a following assistant, append to it
+				if (last_tool_index >= 0 && last_tool_index + 1 < chat_history.size()) {
+					const ChatMessage &maybe_assistant_after_tool = chat_history[last_tool_index + 1];
+					if (maybe_assistant_after_tool.role == "assistant" && maybe_assistant_after_tool.tool_calls.is_empty()) {
+						continuation_index = last_tool_index + 1;
+						print_line("🔧 CONTINUATION_DEBUG: Found existing continuation after most recent tool at index " + String::num_int64(continuation_index));
 					}
 				}
 				
-				// Note: We don't save during streaming to avoid performance issues
-				// Saving happens when the message is complete or stopped
+				if (continuation_index >= 0) {
+					// APPEND to existing continuation message
+					ChatMessage &continuation_msg = chat_history.write[continuation_index];
+					continuation_msg.content += delta;
+					print_line("🔧 CONTINUATION_DEBUG: Appended to existing continuation message, new length: " + String::num_int64(continuation_msg.content.length()));
+					
+					// Update existing UI label (current_assistant_message_label should point to continuation)
+					if (current_assistant_message_label) {
+						String bbcode_content = _markdown_to_bbcode(continuation_msg.content);
+						if (!bbcode_content.is_empty()) {
+							current_assistant_message_label->set_text(bbcode_content);
+							print_line("🔧 CONTINUATION_DEBUG: Updated continuation UI label");
+						}
+					}
+				} else {
+					// CREATE new continuation message (first chunk after most recent tool)
+					print_line("🔧 CONTINUATION_DEBUG: Creating NEW continuation message after most recent tool");
+					
+					// Clear label reference to force new creation
+					current_assistant_message_label = nullptr;
+					
+					ChatMessage continuation_msg;
+					continuation_msg.role = "assistant";
+					continuation_msg.content = delta;
+					continuation_msg.timestamp = _get_timestamp();
+					continuation_msg.tool_calls = Array();
+					
+					// Insert directly after the most recent tool if it exists and is within bounds
+					if (last_tool_index >= 0 && last_tool_index < chat_history.size()) {
+						chat_history.insert(last_tool_index + 1, continuation_msg);
+						print_line("🔧 CONTINUATION_DEBUG: Inserted new continuation at index " + String::num_int64(last_tool_index + 1));
+					} else {
+						chat_history.push_back(continuation_msg);
+						print_line("🔧 CONTINUATION_DEBUG: Pushed new continuation at end index " + String::num_int64(chat_history.size() - 1));
+					}
+					
+					// Create new UI message bubble for text2
+					_add_message_to_chat("assistant", delta, Array());
+					print_line("🔧 CONTINUATION_DEBUG: Created new UI bubble for text2");
+				}
+				
+			} else {
+				// PRE-TOOL CONTINUATION: Append to existing assistant message (text1)
+				int assistant_index = chat_history.size() - 1;
+				while (assistant_index >= 0 && chat_history[assistant_index].role != "assistant") {
+					assistant_index--;
+				}
+				if (assistant_index >= 0) {
+					ChatMessage &msg = chat_history.write[assistant_index];
+					msg.content += delta;
+					print_line("🔧 CONTINUATION_DEBUG: PRE-TOOL continuation - appended to assistant index " + String::num_int64(assistant_index) + ", new len: " + String::num_int64(msg.content.length()));
+					
+					// Update existing UI label
+					if (!msg.content.is_empty()) {
+						String bbcode_content = _markdown_to_bbcode(msg.content);
+						if (!bbcode_content.is_empty()) {
+							label->set_text(bbcode_content);
+							print_line("🔧 LABEL_DEBUG: Updated pre-tool text - new length: " + String::num_int64(bbcode_content.length()));
+							
+							// Ensure message panel visible during streaming
+							Node *vbox_parent = label->get_parent();
+							if (vbox_parent) {
+								Node *message_panel = vbox_parent->get_parent();
+								if (message_panel) {
+									Control *panel_control = Object::cast_to<Control>(message_panel);
+									if (panel_control && !panel_control->is_visible()) {
+										panel_control->set_visible(true);
+										print_line("🔧 CONTENT_DELTA_FIX: Made message panel VISIBLE during content streaming!");
+									}
+								}
+							}
+						}
+					}
+				} else {
+					print_line("🔧 CONTINUATION_DEBUG: No assistant message found for pre-tool continuation");
+				}
 			}
+			
+			// Update conversation timestamp
+			if (current_conversation_index >= 0) {
+				conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+			}
+		} else {
+			print_line("🔧 CONTINUATION_DEBUG: Chat history is empty - cannot update message");
 		}
 	}
 
@@ -4173,17 +4412,29 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		if (!chat_history.is_empty()) {
 			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
 			if (last_msg.role == "assistant" && !last_msg.content.is_empty()) {
-				// We already have assistant content, likely from tool execution
-				// Update it with the final content instead of creating a new message
+				// We already have assistant content, likely from streaming before tools
+				// CRITICAL FIX: Don't replace content, the final message might just be a completion signal
 				String final_content = assistant_message.get("content", "");
 				if (final_content != "<null>" && !final_content.is_empty()) {
-					last_msg.content = final_content;
-					
-					// Update the existing label if available
-					if (current_assistant_message_label) {
-						String bbcode_content = _markdown_to_bbcode(final_content);
-						if (!bbcode_content.is_empty()) {
-							current_assistant_message_label->set_text(bbcode_content);
+					// Only update if the final content is different from what we already have
+					// (Backend might be sending the full accumulated content)
+					if (final_content != last_msg.content) {
+						// Check if this is the full accumulated content or additional content
+						if (final_content.begins_with(last_msg.content)) {
+							// Backend sent the full accumulated content, use it
+							last_msg.content = final_content;
+						} else {
+							// This might be additional content to append
+							print_line("AI Chat: WARNING - Final content doesn't match accumulated content, using final");
+							last_msg.content = final_content;
+						}
+						
+						// Update the existing label if available
+						if (current_assistant_message_label) {
+							String bbcode_content = _markdown_to_bbcode(last_msg.content);
+							if (!bbcode_content.is_empty()) {
+								current_assistant_message_label->set_text(bbcode_content);
+							}
 						}
 					}
 				}
@@ -4214,8 +4465,12 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		if (!chat_history.is_empty()) {
 			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
 			if (last_msg.role == "assistant") {
-				// Update the content in history and then render from history.
-				last_msg.content = final_content;
+				// CRITICAL FIX: Don't replace content that was already streamed!
+				// The backend sends the full accumulated content in the final message
+				if (last_msg.content != final_content && !final_content.is_empty()) {
+					// Only update if different (backend sends full accumulated text)
+					last_msg.content = final_content;
+				}
 				
 				// Update conversation timestamp for final content
 				if (current_conversation_index >= 0) {
@@ -4245,8 +4500,10 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 }
 
 RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
+	print_line("🔧 LABEL_CREATE_DEBUG: Called _get_or_create_current_assistant_message_label");
 	// If a label is already assigned, validate it and use it.
 	if (current_assistant_message_label != nullptr) {
+		print_line("🔧 LABEL_CREATE_DEBUG: current_assistant_message_label exists, validating...");
 		// First check if the label itself is still valid
 		bool label_is_valid = false;
 		if (chat_container != nullptr) {
@@ -4261,6 +4518,7 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 		}
 		
 		if (label_is_valid) {
+			print_line("🔧 LABEL_CREATE_DEBUG: Existing label is valid, returning it");
 			// Make sure its parent hierarchy is visible with safe checks
 			Node *parent = current_assistant_message_label->get_parent();
 			if (parent != nullptr) {
@@ -4269,9 +4527,11 @@ RichTextLabel *AIChatDock::_get_or_create_current_assistant_message_label() {
 					Control *bubble_panel = Object::cast_to<Control>(grandparent);
 					if (bubble_panel && !bubble_panel->is_visible()) {
 						bubble_panel->set_visible(true);
+						print_line("🔧 LABEL_CREATE_DEBUG: Made bubble panel visible");
 					}
 				}
 			}
+			print_line("🔧 LABEL_CREATE_DEBUG: Returning existing label - visible: " + String(current_assistant_message_label->is_visible() ? "YES" : "NO"));
 			return current_assistant_message_label;
 		} else {
 			// Label is invalid, clear it
@@ -4342,6 +4602,12 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         
         print_line("AI Chat: Processing tool call: " + function_name + " (ID: " + tool_call_id + ")");
         
+        // CRITICAL FIX: Check for duplicate execution - skip if already executed by executing_tools handler
+        if (tool_calls_executed_locally.has(tool_call_id)) {
+            print_line("🔧 DUPLICATE_PREVENTION: Tool " + function_name + " (ID: " + tool_call_id + ") already executed by executing_tools handler - SKIPPING");
+            continue; // Skip this tool call as it's already been processed
+        }
+        
         // CRITICAL FIX: Show immediate status for ALL tools, with operation-specific descriptions
         print_line("AI Chat: IMMEDIATE_STATUS - Getting status for " + function_name + " (ID: " + tool_call_id + ")");
         String immediate_status = _get_immediate_tool_status(function_name, arguments_str);
@@ -4407,7 +4673,8 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			continue;
 		}
 
-		// SMART FIX: Only defer SLOW tools, execute fast tools immediately
+		// CRITICAL FIX: Add project_manager to slow tools to prevent immediate continuation
+		// This ensures pending_tool_tasks is incremented and text streaming doesn't break
 		static HashSet<String> slow_tools;
 		if (slow_tools.is_empty()) {
 			slow_tools.insert("get_all_nodes");
@@ -4417,6 +4684,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			// Add file editing operations to slow tools for better status feedback
 			slow_tools.insert("apply_edit"); // Already handled as slow
 			slow_tools.insert("settings_manager"); // Listing/searching settings can be heavy
+			slow_tools.insert("project_manager"); // CRITICAL: Prevent immediate continuation that breaks streaming
 			// Add other slow tools as needed
 		}
 
@@ -4569,11 +4837,21 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else if (function_name == "read_file_advanced") {
 			result = EditorTools::read_file(args);
 		} else if (function_name == "apply_edit") {
+			// CRITICAL FIX: Show visual feedback for apply_edit operations
+			String file_path = String(args.get("path", ""));
+			_update_tool_placeholder_status(tool_call_id, "apply_edit", "starting");
+			
+			// Add descriptive feedback for file editing
+			if (!file_path.is_empty()) {
+				String operation_desc = "Applying edit to: " + _convert_to_godot_path(file_path);
+				_update_tool_placeholder_with_description(tool_call_id, "apply_edit", "running", operation_desc);
+			}
+			
 			// Run apply_edit asynchronously to avoid blocking the UI
 			if (!args.has("skip_compilation_check")) {
 				String __tmp_path = String(args.get("path", String()));
 				String __tmp_ext = __tmp_path.get_extension().to_lower();
-				bool __is_script_like = (__tmp_ext == "gd" || __tmp_ext == "cs" || __tmp_ext == "gdshader" || __tmp_ext == "glsl" || __tmp_ext == "shader");
+				bool __is_script_like = (__tmp_ext == "gd" || __tmp_ext == "cs" || __tmp_ext == "gdshader" || __tmp_ext == "glsl" || __tmp_ext == "shader" || __tmp_ext == "tres" || __tmp_ext == "res" || __tmp_ext == "tscn");
 				args["skip_compilation_check"] = !__is_script_like;
 			}
 			pending_tool_tasks++;
@@ -4656,26 +4934,141 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else if (function_name == "attach_script") {
 			result = EditorTools::attach_script(args);
 		} else if (function_name == "universal_resource_manager") {
+			// Show visual feedback for universal resource operations
+			_update_tool_placeholder_status(tool_call_id, "universal_resource_manager", "starting");
 			result = EditorTools::universal_resource_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "universal_resource_manager", "completed");
 		} else if (function_name == "universal_scene_manager") {
+			// Show visual feedback for universal scene operations
+			_update_tool_placeholder_status(tool_call_id, "universal_scene_manager", "starting");
 			result = EditorTools::universal_scene_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "universal_scene_manager", "completed");
 		} else if (function_name == "universal_project_manager") {
+			// Show visual feedback for universal project operations
+			_update_tool_placeholder_status(tool_call_id, "universal_project_manager", "starting");
 			result = EditorTools::universal_project_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "universal_project_manager", "completed");
 		} else if (function_name == "project_manager") {
-			// All project_manager operations run immediately and synchronously
+			// CRITICAL FIX: Show visual feedback for project_manager operations
+			String op = args.get("op", "");
+			
+			// Show "starting" status for visual feedback
+			_update_tool_placeholder_status(tool_call_id, "project_manager", "starting");
+			
+			// Add small delay so user can see the "starting" status
+			if (op == "fs.write" || op == "fs.read" || op == "fs.write_lines" || op == "fs.replace_string") {
+				print_line("AI Chat: SHOWING VISUAL FEEDBACK for " + function_name + " operation: " + op);
+				
+				// Update placeholder with descriptive text
+				String file_path = args.get("path", "unknown file");
+				String operation_desc = "";
+				if (op == "fs.read") {
+					operation_desc = "Reading file: " + _convert_to_godot_path(file_path);
+				} else if (op == "fs.write") {
+					operation_desc = "Writing file: " + _convert_to_godot_path(file_path);
+				} else if (op == "fs.write_lines") {
+					int start_line = args.get("start_line", 0);
+					int end_line = args.get("end_line", 0);
+					operation_desc = "Editing lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + _convert_to_godot_path(file_path);
+				} else if (op == "fs.replace_string") {
+					String find_str = args.get("find_string", "text");
+					operation_desc = "Replacing '" + find_str.substr(0, 20) + (find_str.length() > 20 ? "..." : "") + "' in: " + _convert_to_godot_path(file_path);
+				}
+				
+				if (!operation_desc.is_empty()) {
+					_update_tool_placeholder_with_description(tool_call_id, "project_manager", "running", operation_desc);
+				}
+				
+				// Small delay for visual feedback
+				OS::get_singleton()->delay_usec(100000); // 100ms in microseconds
+			}
+			
+			// Execute the actual operation
 			result = EditorTools::project_manager(args);
+			
+			// Show completion status
+			_update_tool_placeholder_status(tool_call_id, "project_manager", "completed");
 		} else if (function_name == "script_manager") {
+			// Show visual feedback for script operations
+			_update_tool_placeholder_status(tool_call_id, "script_manager", "starting");
 			result = EditorTools::script_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "script_manager", "completed");
 		} else if (function_name == "resource_manager") {
+			// Show visual feedback for resource operations
+			String op = args.get("op", "");
+			_update_tool_placeholder_status(tool_call_id, "resource_manager", "starting");
+			
+			// Add descriptive feedback for key operations
+			if (op == "shader.clear_cache" || op == "shader.force_recompile" || op == "shader.debug_cache") {
+				String operation_desc = "";
+				if (op == "shader.clear_cache") {
+					operation_desc = "Clearing shader cache...";
+				} else if (op == "shader.force_recompile") {
+					operation_desc = "Force recompiling all shaders...";
+				} else if (op == "shader.debug_cache") {
+					operation_desc = "Analyzing shader cache state...";
+				}
+				_update_tool_placeholder_with_description(tool_call_id, "resource_manager", "running", operation_desc);
+				OS::get_singleton()->delay_usec(100000); // 100ms in microseconds
+			}
+			
 			result = EditorTools::resource_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "resource_manager", "completed");
 		} else if (function_name == "settings_manager") {
+			// Show visual feedback for settings operations
+			_update_tool_placeholder_status(tool_call_id, "settings_manager", "starting");
 			result = EditorTools::settings_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "settings_manager", "completed");
 		} else if (function_name == "search_manager") {
+			// Show visual feedback for search operations
+			_update_tool_placeholder_status(tool_call_id, "search_manager", "starting");
 			result = EditorTools::search_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "search_manager", "completed");
 		} else if (function_name == "runtime_manager") {
+			// Show visual feedback for runtime operations
+			String op = args.get("op", "");
+			_update_tool_placeholder_status(tool_call_id, "runtime_manager", "starting");
+			
+			// Add descriptive feedback for key operations
+			if (op == "screenshot.capture" || op == "screenshot.take" || op == "console.get_output" || op == "input.test_action") {
+				String operation_desc = "";
+				if (op == "screenshot.capture" || op == "screenshot.take") {
+					operation_desc = "Capturing screenshot...";
+				} else if (op == "console.get_output") {
+					operation_desc = "Getting console output...";
+				} else if (op == "input.test_action") {
+					String action_name = args.get("action_name", "action");
+					operation_desc = "Testing input action: " + action_name;
+				}
+				_update_tool_placeholder_with_description(tool_call_id, "runtime_manager", "running", operation_desc);
+				OS::get_singleton()->delay_usec(50000); // 50ms in microseconds
+			}
+			
 			result = EditorTools::runtime_manager(args);
+			_update_tool_placeholder_status(tool_call_id, "runtime_manager", "completed");
 		} else if (function_name == "runtime_inspector") {
+			// Show visual feedback for runtime inspector operations
+			String op = args.get("op", "");
+			_update_tool_placeholder_status(tool_call_id, "runtime_inspector", "starting");
+			
+			// Add descriptive feedback for key operations
+			if (op == "runtime.node.get_props" || op == "runtime.material.get" || op == "runtime.debug.tree_dump") {
+				String operation_desc = "";
+				if (op == "runtime.node.get_props") {
+					String node_path = args.get("node_path", "node");
+					operation_desc = "Inspecting runtime properties: " + node_path;
+				} else if (op == "runtime.material.get") {
+					String node_path = args.get("node_path", "node");
+					operation_desc = "Getting runtime material: " + node_path;
+				} else if (op == "runtime.debug.tree_dump") {
+					operation_desc = "Dumping runtime scene tree...";
+				}
+				_update_tool_placeholder_with_description(tool_call_id, "runtime_inspector", "running", operation_desc);
+				OS::get_singleton()->delay_usec(50000); // 50ms in microseconds
+			}
+			
 			result = EditorTools::runtime_inspector(args);
+			_update_tool_placeholder_status(tool_call_id, "runtime_inspector", "completed");
 		} else {
 			result["success"] = false;
 			result["message"] = "Unknown tool: " + function_name;
@@ -4733,12 +5126,12 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     print_line("AI Chat: Recent conversation state - Assistant tool calls: " + String::num_int64(assistant_tool_calls) + 
               ", Tool responses: " + String::num_int64(tool_responses));
     
-    // We've finished with this turn's tool calls. Clear the current label
-    // so the next content_delta or assistant_message creates a new bubble
-    // or finds the correct existing one.
-    current_assistant_message_label = nullptr;
+    // CRITICAL FIX: DO NOT clear current_assistant_message_label here!
+    // The assistant may continue sending content after tools complete.
+    // We want that content to appear in the SAME message bubble, not a new one.
+    // current_assistant_message_label = nullptr; // REMOVED - this was the bug!
     
-    // Reset thinking section state
+    // Reset thinking section state (but keep message label)
     current_thinking_section = nullptr;
     current_thinking_label = nullptr;
     current_thinking_content = "";
@@ -4835,7 +5228,8 @@ void AIChatDock::_execute_file_edit_deferred(const String &p_tool_call_id, const
         String ext = file_path.get_extension().to_lower();
 		bool is_script_like = (ext == "gd" || ext == "cs");
 		bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
-		if ((is_script_like || is_shader_like) && result.get("success", false)) {
+		bool is_resource_like = (ext == "tres" || ext == "res" || ext == "tscn");
+		if ((is_script_like || is_shader_like || is_resource_like) && result.get("success", false)) {
             print_line("AI Chat: Showing cumulative diff for " + file_path + " after file edit completed");
             
             // Get the final content from preview overlay (result of the edit)
@@ -4920,6 +5314,9 @@ void AIChatDock::_on_apply_edit_thread_done() {
 
         pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
         
+        // CRITICAL FIX: Update tool completion status for visual feedback
+        _update_tool_placeholder_status(task->tool_call_id, "apply_edit", "completed");
+        
         // Check if this tool completion triggers a cumulative diff display
         String file_path = String(task->args.get("path", ""));
         bool should_show_cumulative_diff = false;
@@ -4975,6 +5372,13 @@ void AIChatDock::_on_apply_edit_thread_done() {
             
             print_line("AI Chat: Last async tool completed after stream ended - clearing waiting state");
             
+            // CRITICAL FIX: Now that all async tools are done and stream completed, clean up message state
+            current_assistant_message_label = nullptr;
+            current_thinking_section = nullptr;
+            current_thinking_label = nullptr;
+            current_thinking_content = "";
+            print_line("AI Chat: Cleaned up assistant message label after all async tools completed");
+            
             // Clear input field now that everything is truly complete
             if (input_field && input_field->is_inside_tree()) {
                 input_field->set_text("");
@@ -5011,7 +5415,8 @@ void AIChatDock::_on_apply_edit_thread_done() {
             String ext = file_path.get_extension().to_lower();
             bool is_script_like = (ext == "gd" || ext == "cs");
             bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
-            if ((is_script_like || is_shader_like) && task->result.get("success", false)) {
+            bool is_resource_like = (ext == "tres" || ext == "res" || ext == "tscn");
+            if ((is_script_like || is_shader_like || is_resource_like) && task->result.get("success", false)) {
                 print_line("AI Chat: Showing cumulative diff for " + file_path + " after all tools completed");
                 
                 // Get the final content from preview overlay (result of all cumulative edits)
@@ -5848,6 +6253,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 
 	// Default to invisible. We'll show it only if it has content.
 	message_panel->set_visible(false);
+	print_line("🔧 MESSAGE_BUBBLE_DEBUG: Created message panel for " + p_message.role + " - set to INVISIBLE by default");
 
 	// --- Modern Message Bubble Styling ---
 	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
@@ -5937,10 +6343,12 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 			content_label->set_text(bbcode_content);
 		}
 		message_panel->set_visible(true);
+		print_line("🔧 MESSAGE_BUBBLE_DEBUG: Made message panel VISIBLE because content exists");
 	}
 
 	if (!p_message.tool_calls.is_empty()) {
 		message_panel->set_visible(true);
+		print_line("🔧 MESSAGE_BUBBLE_DEBUG: Made message panel VISIBLE because tool_calls exist");
 		// Recreate tool call placeholders when loading saved conversations
 		_create_tool_call_bubbles(p_message.tool_calls);
 	}
@@ -6253,9 +6661,34 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	current_displayed_images.clear();
 }
 void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
-	if (!current_assistant_message_label || p_tool_calls.is_empty()) {
+	if (p_tool_calls.is_empty()) {
+		print_line("🔧 CREATE_BUBBLES_DEBUG: Called with empty tool_calls array");
 		return;
 	}
+
+	print_line("🔧 CREATE_BUBBLES_DEBUG: Creating " + String::num_int64(p_tool_calls.size()) + " tool call bubbles");
+	
+	// Debug each tool call being processed
+	for (int i = 0; i < p_tool_calls.size(); i++) {
+		Dictionary tool_call = p_tool_calls[i];
+		Dictionary func = tool_call.get("function", Dictionary());
+		String func_name = func.get("name", "unknown");
+		String tool_id = tool_call.get("id", "no_id");
+		print_line("🔧 CREATE_BUBBLES_DEBUG: Processing tool " + String::num_int64(i) + ": " + func_name + " (ID: " + tool_id + ")");
+	}
+
+	// CRITICAL FIX: Ensure we have an assistant message label before creating tool bubbles
+	if (!current_assistant_message_label) {
+		print_line("AI Chat: CREATE_BUBBLES - No assistant message label, creating one");
+		_get_or_create_current_assistant_message_label();
+	}
+
+	if (!current_assistant_message_label) {
+		print_line("AI Chat: CREATE_BUBBLES - Failed to create assistant message label");
+		return;
+	}
+
+	print_line("AI Chat: CREATE_BUBBLES - Assistant message label exists");
 
 	Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
 	VBoxContainer *message_vbox = Object::cast_to<VBoxContainer>(bubble_panel->get_child(0));
@@ -6264,10 +6697,11 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		return;
 	}
 
-	// Create a single container for all tool calls to group them together
-	VBoxContainer *tools_container = memnew(VBoxContainer);
-	tools_container->set_name("tools_container");
-	message_vbox->add_child(tools_container);
+		// Create a single container for all tool calls to group them together
+		VBoxContainer *tools_container = memnew(VBoxContainer);
+		tools_container->set_name("tools_container");
+		tools_container->set_visible(true); // CRITICAL FIX: Ensure tools container is visible
+		message_vbox->add_child(tools_container);
 
 	// Add a label for the tool calls section
 	if (p_tool_calls.size() > 1) {
@@ -6285,10 +6719,16 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		Dictionary function_dict = tool_call.get("function", Dictionary());
 		String func_name = function_dict.get("name", "unknown_tool");
 
+		print_line("AI Chat: CREATE_BUBBLES - Creating placeholder for tool " + String::num_int64(i) + ": " + tool_call_id + " (" + func_name + ")");
+
 		// Create a container that will hold either the "loading" label or the final tool output.
 		PanelContainer *placeholder = memnew(PanelContainer);
 		placeholder->set_name("tool_placeholder_" + tool_call_id);
+		placeholder->set_visible(true); // CRITICAL FIX: Ensure placeholder is visible by default
 		tools_container->add_child(placeholder);
+
+		print_line("🔧 CREATE_BUBBLES_DEBUG: Created placeholder: " + placeholder->get_name() + " for " + func_name);
+		print_line("🔧 CREATE_BUBBLES_DEBUG: Placeholder parent tools_container has " + String::num_int64(tools_container->get_child_count()) + " children");
 
 		Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
 		placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
@@ -6309,6 +6749,14 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		tool_hbox->add_child(tool_label);
+		
+		print_line("🔧 CREATE_BUBBLES_DEBUG: Created tool label with text: '[TOOL] " + func_name + "...' for ID: " + tool_call_id);
+		
+		// CRITICAL DEBUG: Check if the placeholder and its parents are visible
+		print_line("🔧 VISIBILITY_DEBUG: Placeholder visible: " + String(placeholder->is_visible() ? "YES" : "NO"));
+		print_line("🔧 VISIBILITY_DEBUG: Tools container visible: " + String(tools_container->is_visible() ? "YES" : "NO"));
+		print_line("🔧 VISIBILITY_DEBUG: Message vbox visible: " + String(message_vbox->is_visible() ? "YES" : "NO"));
+		print_line("🔧 VISIBILITY_DEBUG: Bubble panel visible: " + String(bubble_panel->is_visible() ? "YES" : "NO"));
 
 		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
 		// They will be added in the final UI rebuild instead
@@ -7193,7 +7641,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
             String ext = file_path.get_extension().to_lower();
 			bool is_script_like = (ext == "gd" || ext == "cs");
 			bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
-			if (is_script_like || is_shader_like) {
+			bool is_resource_like = (ext == "tres" || ext == "res" || ext == "tscn");
+			if (is_script_like || is_shader_like || is_resource_like) {
 				// Do not pre-process content here. If backend provided inline_diff,
 				// we will render it in the appropriate editor and apply the clean final content there.
 				// Any attempt to strip leading prefixes here risks corrupting indentation.
@@ -7254,11 +7703,14 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			String file_ext = file_path.get_extension().to_lower();
 			bool is_script_like_btn = (file_ext == "gd" || file_ext == "cs");
 			bool is_shader_like_btn = (file_ext == "gdshader" || file_ext == "glsl" || file_ext == "shader");
+			bool is_resource_like_btn = (file_ext == "tres" || file_ext == "res" || file_ext == "tscn");
 			String btn_text = "Write file & open in Inspector";
 			if (is_script_like_btn) {
 				btn_text = "Apply to Script Editor";
 			} else if (is_shader_like_btn) {
 				btn_text = "Apply to Shader Editor";
+			} else if (is_resource_like_btn) {
+				btn_text = "Apply to Inspector";
 			}
 			apply_btn->set_text(btn_text);
             apply_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
@@ -8622,9 +9074,40 @@ void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String 
     String ext = p_path.get_extension().to_lower();
     bool is_script_like = (ext == "gd" || ext == "cs");
     bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
+    bool is_resource_like = (ext == "tres" || ext == "res" || ext == "tscn");
 
-    if (!is_script_like && !is_shader_like) {
-        // Non-script resource: write immediately and open in inspector for review
+    if (is_resource_like) {
+        print_line("AI Chat: Applying resource edit to inspector for " + p_path);
+        
+        // .tres/.res/.tscn files have already been written to disk by fs.write operations
+        // We just need to open them in the inspector and show that changes are applied
+        
+        // Load the resource and open in inspector
+        Ref<Resource> resource = ResourceLoader::load(p_path);
+        if (resource.is_valid()) {
+            EditorNode::get_singleton()->edit_resource(resource);
+            print_line("AI Chat: Opened resource in inspector: " + p_path);
+        }
+        
+        // Hide buttons and mark status as Applied (since file is already written)
+        if (!p_btns_path.is_empty() && has_node(p_btns_path)) {
+            if (HBoxContainer *btns = Object::cast_to<HBoxContainer>(get_node(p_btns_path))) {
+                btns->set_visible(false);
+            }
+        }
+        if (!p_status_label_path.is_empty() && has_node(p_status_label_path)) {
+            if (Label *lbl = Object::cast_to<Label>(get_node(p_status_label_path))) {
+                String t = lbl->get_text();
+                if (!t.ends_with(" - Applied")) {
+                    lbl->set_text(t + " - Applied");
+                }
+            }
+        }
+        return;
+    }
+    
+    if (!is_script_like && !is_shader_like && !is_resource_like) {
+        // Other file types: write immediately and open in inspector for review
         _apply_file_edit_immediate(p_path, p_content);
         Ref<Resource> res = ResourceLoader::load(p_path);
         if (res.is_valid()) {
@@ -9377,8 +9860,70 @@ void AIChatDock::_send_chat_request() {
 	call_deferred("_finalize_chat_request");
 }
 
+// Removed global tool status plumbing; reverting UI to default behavior
+
+void AIChatDock::_force_tool_visibility(const String &p_tool_call_id, const String &p_function_name) {
+	print_line("FORCE_TOOL_VISIBILITY: Ensuring tool " + p_function_name + " (ID: " + p_tool_call_id + ") is visible");
+	
+	// Find the tool placeholder and make it VERY visible
+	PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false));
+	if (placeholder) {
+		placeholder->set_visible(true);
+		placeholder->move_to_front(); // Bring to front
+		
+		// Find the tool label and make it prominent
+		VBoxContainer *tool_vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+		if (tool_vbox) {
+			HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(tool_vbox->get_child(0));
+			if (tool_hbox) {
+				Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+				if (tool_label) {
+					// Make it SUPER visible without emojis
+					tool_label->add_theme_color_override("font_color", Color(1.0, 0.2, 0.0, 1.0)); // Bright red-orange
+					tool_label->add_theme_font_size_override("font_size", 18); // Even bigger
+					tool_label->set_text("*** EXECUTING: " + p_function_name + " ***"); // Very prominent
+					print_line("FORCE_TOOL_VISIBILITY: Made tool SUPER prominent: " + tool_label->get_text());
+					
+					// Force immediate UI update
+					tool_label->queue_redraw();
+					
+					// Make sure all parent containers are visible and updated
+					Node *parent = tool_label;
+					while (parent) {
+						if (Control *control = Object::cast_to<Control>(parent)) {
+							control->set_visible(true);
+							control->queue_redraw();
+						}
+						parent = parent->get_parent();
+					}
+				}
+			}
+		}
+		
+		// Force immediate redraw of entire hierarchy
+		placeholder->queue_redraw();
+		queue_redraw();
+		
+		// Force scroll to show the tool
+		if (chat_scroll) {
+			chat_scroll->ensure_control_visible(placeholder);
+		}
+	} else {
+		print_line("FORCE_TOOL_VISIBILITY: Could not find placeholder for " + p_tool_call_id);
+	}
+}
+
 void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str) {
     print_line("AI Chat: DEFERRED EXECUTION - Tool: " + p_function_name + " (ID: " + p_tool_call_id + ")");
+    
+    // CRITICAL FIX: Show visual feedback for deferred tools
+    _update_tool_placeholder_status(p_tool_call_id, p_function_name, "running");
+    
+    // Show descriptive status based on arguments
+    String operation_desc = _get_immediate_tool_status(p_function_name, p_arguments_str);
+    if (!operation_desc.is_empty()) {
+        _update_tool_placeholder_with_description(p_tool_call_id, p_function_name, "running", operation_desc);
+    }
     
     // Parse arguments with better error handling
     Ref<JSON> json;
@@ -9438,6 +9983,17 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
     } else if (p_function_name == "settings_manager") {
         // Allow deferred execution for potentially large listings/searches
         result = EditorTools::settings_manager(args);
+    } else if (p_function_name == "project_manager") {
+        // Revert: execute on main thread via deferred call; Godot FS reload must run on main thread
+        result = EditorTools::project_manager(args);
+    } else if (p_function_name == "resource_manager") {
+        result = EditorTools::resource_manager(args);
+    } else if (p_function_name == "script_manager") {
+        result = EditorTools::script_manager(args);
+    } else if (p_function_name == "runtime_manager") {
+        result = EditorTools::runtime_manager(args);
+    } else if (p_function_name == "runtime_inspector") {
+        result = EditorTools::runtime_inspector(args);
     } else {
         result["success"] = false;
         result["message"] = "Tool " + p_function_name + " should not be deferred. This is a bug.";
@@ -9466,6 +10022,8 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
         print_line("AI Chat: Still waiting for " + String::num_int64(pending_tool_tasks) + " deferred tools to complete");
     }
 }
+
+// Removed async finalize path; reverted to main-thread execution
 
 void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
@@ -10281,11 +10839,19 @@ void AIChatDock::_request_completed() {
 	if (http_client.is_valid()) {
 		http_client->close();
 	}
-	current_assistant_message_label = nullptr;
-	// Reset thinking section state
-	current_thinking_section = nullptr;
-	current_thinking_label = nullptr;
-	current_thinking_content = "";
+	
+	// CRITICAL FIX: Only clear current_assistant_message_label if no async tools are running
+	// If async tools are still running, we may need to continue streaming to the same message
+	if (pending_tool_tasks == 0) {
+		current_assistant_message_label = nullptr;
+		// Reset thinking section state only when truly done
+		current_thinking_section = nullptr;
+		current_thinking_label = nullptr;
+		current_thinking_content = "";
+	} else {
+		print_line("AI Chat: Preserving assistant message label - " + String::num_int64(pending_tool_tasks) + " tools still running");
+	}
+	
 	set_process(false);
 
 	// Subtle audio cue to indicate completion
@@ -12613,20 +13179,33 @@ void AIChatDock::_on_manual_asset_save_location_selected(const String &p_file_pa
 }
 
 void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const String &p_tool_name, const String &p_status) {
+	print_line("🔧 UPDATE_STATUS_DEBUG: Called for tool " + p_tool_name + " (ID: " + p_tool_id + ") with status: " + p_status);
+	
 	if (chat_container == nullptr) {
+		print_line("🔧 UPDATE_STATUS_DEBUG: No chat container - CANNOT UPDATE UI");
 		return;
 	}
-	
-	// Find the placeholder for this tool
-	PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
-	
-	// If no placeholder exists, do NOT create another bubble here, as the
-	// assistant message should be responsible for placeholder creation.
-	// We avoid duplicates by simply returning and letting the deferred
-	// tool result handler populate once placeholders are available.
-	if (!placeholder) {
-		return;
-	}
+
+    // Find the placeholder for this tool (search recursively through all children)
+    PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
+    print_line("🔧 UPDATE_STATUS_DEBUG: Looking for placeholder: tool_placeholder_" + p_tool_id + ", found: " + String(placeholder != nullptr ? "YES" : "NO"));
+
+    if (!placeholder) {
+        // Ensure a placeholder exists to show status immediately
+        print_line("AI Chat: UPDATE_STATUS - Creating placeholder for " + p_tool_id);
+        _ensure_tool_placeholder(p_tool_id, p_tool_name);
+        // Force UI update to ensure the placeholder is created
+        if (chat_container && chat_container->is_inside_tree()) {
+            // Call queue_redraw on the container to trigger a UI update
+            chat_container->queue_redraw();
+        }
+        placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
+        if (!placeholder) {
+            print_line("AI Chat: ERROR - Failed to find or create placeholder for tool: " + p_tool_id);
+            return;
+        }
+        print_line("AI Chat: UPDATE_STATUS - Successfully created placeholder for " + p_tool_id);
+    }
 	
 	if (!placeholder) {
 		return;
@@ -12660,12 +13239,16 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 	}
 	
 	// Find the placeholder for this tool
-	PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
-	
-	if (!placeholder) {
-		print_line("AI Chat: UPDATE_STATUS - No placeholder found for tool ID: " + p_tool_id);
-		return;
-	}
+    PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
+    if (!placeholder) {
+        // Create it on demand so the user always sees the tool call
+        _ensure_tool_placeholder(p_tool_id, p_tool_name);
+        placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
+        if (!placeholder) {
+            print_line("AI Chat: UPDATE_STATUS - Failed to create placeholder for tool ID: " + p_tool_id);
+            return;
+        }
+    }
 	
 	print_line("AI Chat: UPDATE_STATUS - Found placeholder for tool ID: " + p_tool_id + ", updating to: " + p_description);
 	
@@ -12679,18 +13262,46 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 			Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
 			if (tool_label) {
 				print_line("AI Chat: UPDATE_STATUS - Found Label, updating text");
+				print_line("🔧 TOOL_VISIBILITY_DEBUG: About to set label text for status: " + p_status + ", description: " + p_description);
+				print_line("🔧 TOOL_VISIBILITY_DEBUG: Label currently visible: " + String(tool_label->is_visible() ? "YES" : "NO"));
+				print_line("🔧 TOOL_VISIBILITY_DEBUG: Placeholder visible: " + String(placeholder->is_visible() ? "YES" : "NO"));
+				
 			if (p_status == "executing") {
-				tool_label->set_text("⚡ " + p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
+				tool_label->set_text(">>> EXECUTING: " + p_description + " <<<");
+				tool_label->add_theme_color_override("font_color", Color(1.0, 0.2, 0.0, 1.0)); // Bright red-orange
+				tool_label->add_theme_font_size_override("font_size", 16); // Bigger text
+				print_line("TOOL_VISIBILITY_DEBUG: Set EXECUTING text: '>>> EXECUTING: " + p_description + " <<<'");
 			} else if (p_status == "starting") {
-				tool_label->set_text("🔄 Starting: " + p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for starting
+				tool_label->set_text(">>> STARTING: " + p_description + " <<<");
+				tool_label->add_theme_color_override("font_color", Color(0.0, 0.8, 1.0, 1.0)); // Bright blue
+				tool_label->add_theme_font_size_override("font_size", 16); // Bigger text
+				print_line("TOOL_VISIBILITY_DEBUG: Set STARTING text: '>>> STARTING: " + p_description + " <<<'");
 			} else if (p_status == "running") {
-				tool_label->set_text("⏳ " + p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				tool_label->set_text(">>> RUNNING: " + p_description + " <<<");
+				tool_label->add_theme_color_override("font_color", Color(1.0, 0.6, 0.0, 1.0)); // Orange
+				tool_label->add_theme_font_size_override("font_size", 16); // Bigger text
+				print_line("TOOL_VISIBILITY_DEBUG: Set RUNNING text: '>>> RUNNING: " + p_description + " <<<'");
 			} else if (p_status == "completed") {
-				tool_label->set_text("✅ Completed: " + p_tool_name);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+				tool_label->set_text("COMPLETED: " + p_tool_name);
+				tool_label->add_theme_color_override("font_color", Color(0.0, 0.8, 0.0, 1.0)); // Green
+				print_line("TOOL_VISIBILITY_DEBUG: Set COMPLETED text: 'COMPLETED: " + p_tool_name + "'");
+			}
+			
+			// CRITICAL FIX: Force visibility, refresh, and immediate UI update
+			tool_label->set_visible(true);
+			placeholder->set_visible(true);
+			print_line("🔧 TOOL_VISIBILITY_DEBUG: Forced tool elements to visible after status update");
+			
+				// IMMEDIATE VISIBILITY FIX: Make tool progress VERY prominent during execution
+			if (p_status == "executing" || p_status == "starting" || p_status == "running") {
+				// Make it VERY visible without emojis (Godot doesn't display them well)
+				String current_text = tool_label->get_text();
+				if (!current_text.begins_with(">>> ")) {
+					tool_label->set_text(">>> " + current_text + " <<<");
+				}
+				tool_label->add_theme_font_size_override("font_size", 16); // Bigger text
+				tool_label->add_theme_color_override("font_color", Color(1.0, 0.3, 0.0, 1.0)); // Bright orange
+				print_line("IMMEDIATE_VISIBILITY: Made tool status PROMINENT: " + tool_label->get_text());
 			}
 			
 			// Force immediate UI update
@@ -12698,9 +13309,94 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 			if (placeholder) {
 				placeholder->queue_redraw();
 			}
+			
+			// Force immediate UI refresh
+			queue_redraw();
+			
+			// Force parent containers to update
+			if (Control *parent_control = Object::cast_to<Control>(get_parent())) {
+				parent_control->queue_redraw();
+			}
 			}
 		}
 	}
+}
+
+void AIChatDock::_ensure_tool_placeholder(const String &p_tool_id, const String &p_tool_name) {
+    if (chat_container == nullptr || p_tool_id.is_empty()) {
+        return;
+    }
+    PanelContainer *existing = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_id, true, false));
+    if (existing) {
+        return;
+    }
+
+    // CRITICAL FIX: Ensure we have an assistant message label before creating tool bubbles
+    if (!current_assistant_message_label) {
+        print_line("AI Chat: ENSURE_PLACEHOLDER - No assistant message label, creating one");
+        _get_or_create_current_assistant_message_label();
+    }
+
+    if (!current_assistant_message_label) {
+        print_line("AI Chat: ENSURE_PLACEHOLDER - Failed to create assistant message label");
+        return;
+    }
+
+    // Get the assistant message bubble structure
+    Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
+    print_line("AI Chat: ENSURE_PLACEHOLDER - Bubble panel: " + String(bubble_panel != nullptr ? "YES" : "NO"));
+    if (!bubble_panel) {
+        print_line("AI Chat: ENSURE_PLACEHOLDER - No bubble panel found");
+        return;
+    }
+
+    VBoxContainer *message_vbox = Object::cast_to<VBoxContainer>(bubble_panel->get_child(0));
+    print_line("AI Chat: ENSURE_PLACEHOLDER - Message vbox: " + String(message_vbox != nullptr ? "YES" : "NO"));
+    if (!message_vbox) {
+        print_line("AI Chat: ENSURE_PLACEHOLDER - No message vbox found");
+        return;
+    }
+
+    // Create a single container for all tool calls to group them together
+    VBoxContainer *tools_container = Object::cast_to<VBoxContainer>(message_vbox->get_child(message_vbox->get_child_count() - 1));
+    if (!tools_container || tools_container->get_name() != "tools_container") {
+        tools_container = memnew(VBoxContainer);
+        tools_container->set_name("tools_container");
+        tools_container->set_visible(true); // CRITICAL FIX: Ensure tools container is visible
+        message_vbox->add_child(tools_container);
+    }
+
+    // Create the tool placeholder
+    PanelContainer *placeholder = memnew(PanelContainer);
+    placeholder->set_name("tool_placeholder_" + p_tool_id);
+    placeholder->set_visible(true); // CRITICAL FIX: Ensure placeholder is visible by default
+    tools_container->add_child(placeholder);
+
+    Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
+    placeholder_style->set_bg_color(Color(0, 0, 0, 0));
+    placeholder_style->set_content_margin_all(10);
+    placeholder_style->set_border_width_all(0);
+    placeholder_style->set_corner_radius_all(5);
+    placeholder->add_theme_style_override("panel", placeholder_style);
+
+    VBoxContainer *tool_vbox = memnew(VBoxContainer);
+    placeholder->add_child(tool_vbox);
+
+    HBoxContainer *tool_hbox = memnew(HBoxContainer);
+    tool_vbox->add_child(tool_hbox);
+
+    Label *tool_label = memnew(Label);
+    tool_label->set_text("[TOOL] " + p_tool_name + "...");
+    tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+    tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    tool_hbox->add_child(tool_label);
+
+    // Force UI update to ensure placeholder is properly added to the tree
+    if (chat_container && chat_container->is_inside_tree()) {
+        chat_container->queue_redraw();
+    }
+
+    print_line("AI Chat: ENSURE_PLACEHOLDER - Created placeholder for " + p_tool_id);
 }
 
 String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const String &p_arguments_str) {
@@ -14039,6 +14735,64 @@ void AIChatDock::_apply_shader_diff_to_current_editor(const String &p_path, cons
 	// text_shader_editor->set_diff(p_original, p_modified, p_inline_diff);
 }
 
+void AIChatDock::_show_diff_in_resource_inspector(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff) {
+	print_line("AI Chat: Showing resource diff in inspector for " + p_path);
+	
+	// For resource files (.tres/.res/.tscn), we can show a simple text diff in a dialog
+	// since they've already been written to disk
+	
+	if (!p_original.is_empty() && !p_final.is_empty() && p_original != p_final) {
+		// Create a simple diff display dialog
+		AcceptDialog *diff_dialog = memnew(AcceptDialog);
+		diff_dialog->set_title("Resource Changes Applied: " + p_path.get_file());
+		diff_dialog->set_min_size(Size2(800, 600));
+		
+		VBoxContainer *vbox = memnew(VBoxContainer);
+		
+		Label *info_label = memnew(Label);
+		info_label->set_text("Changes have been applied to disk. Use version control to revert if needed.");
+		info_label->add_theme_color_override("font_color", Color(0.8, 0.8, 0.2));
+		vbox->add_child(info_label);
+		
+		// Add a separator
+		HSeparator *sep = memnew(HSeparator);
+		vbox->add_child(sep);
+		
+		// Show file statistics
+		Label *stats_label = memnew(Label);
+		stats_label->set_text("Original: " + String::num_int64(p_original.length()) + " chars → Modified: " + String::num_int64(p_final.length()) + " chars");
+		stats_label->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+		vbox->add_child(stats_label);
+		
+		// If we have inline diff, show it
+		if (!p_inline_diff.is_empty()) {
+			Label *diff_label = memnew(Label);
+			diff_label->set_text("Changes Summary:");
+			vbox->add_child(diff_label);
+			
+			CodeEdit *diff_display = memnew(CodeEdit);
+			diff_display->set_text(p_inline_diff);
+			diff_display->set_editable(false);
+			diff_display->set_custom_minimum_size(Size2(0, 400));
+			vbox->add_child(diff_display);
+		}
+		
+		diff_dialog->add_child(vbox);
+		add_child(diff_dialog);
+		diff_dialog->popup_centered_ratio(0.8);
+		
+		// Auto-remove dialog after it's closed
+		diff_dialog->connect("popup_hide", callable_mp((Node *)diff_dialog, &Node::queue_free));
+	}
+	
+	// Load the resource and open in inspector
+	Ref<Resource> resource = ResourceLoader::load(p_path);
+	if (resource.is_valid()) {
+		EditorNode::get_singleton()->edit_resource(resource);
+		print_line("AI Chat: Resource opened in inspector: " + p_path);
+	}
+}
+
 void AIChatDock::_show_cumulative_diff_for_file(const String &p_path, const String &p_original, const String &p_final, const String &p_inline_diff) {
 	print_line("AI Chat: _show_cumulative_diff_for_file called for " + p_path);
 	print_line("AI Chat: Original length: " + itos(p_original.length()) + ", Final length: " + itos(p_final.length()));
@@ -14048,6 +14802,10 @@ void AIChatDock::_show_cumulative_diff_for_file(const String &p_path, const Stri
 	if (ext == "gdshader" || ext == "glsl" || ext == "shader") {
 		// Route shader files to shader editor
 		_show_diff_in_shader_editor_deferred(p_path, p_original, p_final, p_inline_diff);
+		return;
+	} else if (ext == "tres" || ext == "res" || ext == "tscn") {
+		// Route resource files to inspector (already written to disk)
+		_show_diff_in_resource_inspector(p_path, p_original, p_final, p_inline_diff);
 		return;
 	}
 	
@@ -15003,6 +15761,7 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 		String ext = file_path.get_extension().to_lower();
 			bool is_script_like = (ext == "gd" || ext == "cs");
 			bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
+			bool is_resource_like = (ext == "tres" || ext == "res" || ext == "tscn");
 			if (is_script_like) {
 				String original_content = p_result.get("original_content", "");
 				String inline_diff = p_result.get("inline_diff", "");
@@ -15011,6 +15770,14 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 				String original_content = p_result.get("original_content", "");
 				String inline_diff = p_result.get("inline_diff", "");
 				_show_diff_in_shader_editor_deferred(file_path, original_content, edited_content, inline_diff);
+			} else if (is_resource_like) {
+				// For .tres/.res/.tscn files, content is already written to disk
+				// Just open in inspector and mark as applied
+				print_line("AI Chat: Resource file already applied to disk: " + file_path);
+				Ref<Resource> resource = ResourceLoader::load(file_path);
+				if (resource.is_valid()) {
+					EditorNode::get_singleton()->edit_resource(resource);
+				}
 			}
 	}
 	

@@ -24,13 +24,13 @@ elif [ -n "$SERVICE_NAME" ]; then
     # Use environment variable if set
     echo "📋 Using SERVICE_NAME from environment: $SERVICE_NAME"
 else
-    SERVICE_NAME="godot-ai-backend-v2"  # Default to v2 for updated backend with version checking
+    SERVICE_NAME="godot-ai-backend-v3"  # Default to v3 for latest backend with enhanced features
 fi
 
 echo "📋 DEPLOYMENT STRATEGY:"
-echo "   🆕 New service: $SERVICE_NAME (with version checking)"
-echo "   🔄 Old service: godot-ai-backend (legacy, no version headers)"
-echo "   🌐 DNS: Custom domain api.orcaengine.ai points to this service"
+echo "   🆕 New service: $SERVICE_NAME (latest backend with enhanced features)"
+echo "   🔄 Previous services: godot-ai-backend-v2 (with version checking), godot-ai-backend (legacy)"
+echo "   🌐 DNS: Custom domain api.orcaengine.ai can be pointed to this new service"
 REGION="us-central1"
 IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
 

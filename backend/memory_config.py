@@ -65,7 +65,8 @@ class MemoryConfig:
     @classmethod  
     def is_enabled(cls) -> bool:
         """Check if intelligent memory management is enabled"""
-        return os.getenv('ENABLE_INTELLIGENT_MEMORY', 'true').lower() == 'true'
+        # DISABLED: Conversation pruning disabled per user request
+        return False  # Always disabled
     
     @classmethod
     def get_summary_prompt_template(cls) -> str:

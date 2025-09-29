@@ -372,82 +372,10 @@ def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> t
         return messages, False
 
 def _manage_conversation_length_fallback(messages: list, model: str) -> list:
-    """IMPROVED: Manage conversation length with intelligent summarization strategy"""
-    # Model-specific token limits (updated to match frontend strategy)
-    TOKEN_LIMITS = {
-        "anthropic/claude-sonnet-4-20250514": 180000,  # Higher limits to match memory_config
-        "openai/gpt-5": 120000,
-        "openai/gpt-4o": 120000,
-        "openai/gpt-4-turbo": 120000,
-        "anthropic/claude-3-5-sonnet-20241022": 180000,
-    }
-    
-    limit = TOKEN_LIMITS.get(model, 100000)
-    trigger_threshold = int(limit * 0.5)  # 50% threshold to match frontend
-    
-    # Calculate current token usage
-    total_tokens = 0
-    for msg in messages:
-        total_tokens += _estimate_message_tokens(msg)
-    
-    if total_tokens <= trigger_threshold:
-        return messages  # No management needed yet
-    
-    print(f"CONVERSATION_MANAGE: Token count {total_tokens} exceeds 50% threshold {trigger_threshold}, applying smart management")
-    
-    # Minimum messages to keep recent (align with frontend)
-    recent_messages_to_keep = 20
-    
-    if len(messages) <= recent_messages_to_keep + 3:
-        return messages  # Too short to manage meaningfully
-    
-    # Check if we already have a summary (avoid re-summarizing)
-    has_existing_summary = False
-    summary_index = -1
-    for i, msg in enumerate(messages):
-        content = str(msg.get('content', ''))
-        if '[CONVERSATION CONTEXT SUMMARY]' in content or 'Previous conversation context' in content:
-            has_existing_summary = True
-            summary_index = i
-            break
-    
-    # Smart message selection strategy
-    system_msg = messages[0] if messages and messages[0].get('role') == 'system' else None
-    recent_messages = messages[-recent_messages_to_keep:]
-    
-    if has_existing_summary:
-        # Already have summary - check if we need to extend it
-        messages_since_summary = len(messages) - summary_index - 1 - recent_messages_to_keep
-        if messages_since_summary < 10:  # Not enough new content to re-summarize
-            return messages  # Keep as-is
-        
-        # Create incremental summary of messages since last summary
-        messages_to_summarize = messages[summary_index + 1:-recent_messages_to_keep]
-        summary_content = f"[INCREMENTAL SUMMARY - {len(messages_to_summarize)} new messages added to previous summary]"
-    else:
-        # No existing summary - summarize earliest messages
-        messages_to_summarize = messages[1 if system_msg else 0:-recent_messages_to_keep]  # Skip system, keep recent
-        summary_content = f"[CONVERSATION CONTEXT SUMMARY - {len(messages_to_summarize)} messages summarized. Key context: project development session with tool usage, debugging, and technical problem-solving. Recent {recent_messages_to_keep} messages preserved for immediate context.]"
-    
-    # Build result
-    result_messages = []
-    if system_msg:
-        result_messages.append(system_msg)
-    
-    # Add summary message
-    result_messages.append({
-        "role": "assistant", 
-        "content": summary_content
-    })
-    
-    # Add recent messages
-    result_messages.extend(recent_messages)
-    
-    # Verify we're under the limit
-    result_tokens = sum(_estimate_message_tokens(msg) for msg in result_messages)
-    print(f"CONVERSATION_MANAGE: Reduced from {total_tokens} to {result_tokens} tokens ({len(messages)} to {len(result_messages)} messages)")
-    
-    return result_messages
+    """DISABLED: Conversation length management disabled per user request."""
+    # DISABLED: Always return messages as-is, no automatic pruning
+    print("CONVERSATION_MANAGE: Conversation pruning DISABLED ")
+    return messages
 
 app = Flask(__name__)
 
@@ -2144,7 +2072,7 @@ def project_manager_internal(arguments: dict) -> dict:
             }
             return check_for_app_updates_internal(update_args)
             
-        elif op in ["context.get", "fs.list", "fs.read", "fs.write_lines", "fs.replace_string", 
+        elif op in ["context.get", "fs.list", "fs.read", "fs.write", "fs.write_lines", "fs.replace_string", 
                    "fs.copy", "fs.move", "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", 
                    "project.analyze_dir", "project.copy_dir", "project.update_refs"]:
             # These are frontend-only operations
@@ -2155,48 +2083,6 @@ def project_manager_internal(arguments: dict) -> dict:
                 "operation": op,
                 "arguments_to_forward": arguments
             }
-        
-        elif op == "fs.write":
-            # CRITICAL FIX: Handle fs.write properly in backend to avoid false success reports
-            file_path = arguments.get('path', '')
-            content = arguments.get('content', '')
-            encoding = arguments.get('encoding', 'utf-8')
-            
-            if not file_path:
-                return {
-                    "success": False,
-                    "error": "Missing required parameter 'path' for fs.write operation"
-                }
-                
-            try:
-                # Convert to absolute path if relative
-                if not os.path.isabs(file_path):
-                    file_path = os.path.abspath(file_path)
-                
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                
-                # Write the file
-                with open(file_path, 'w', encoding=encoding) as f:
-                    f.write(content)
-                
-                print(f"BACKEND: Successfully wrote file {file_path} ({len(content)} characters)")
-                
-                return {
-                    "success": True,
-                    "message": f"File written successfully: {file_path}",
-                    "path": file_path,
-                    "bytes_written": len(content.encode(encoding))
-                }
-            except Exception as e:
-                error_msg = f"Failed to write file {file_path}: {str(e)}"
-                print(f"BACKEND ERROR: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "path": file_path
-                }
-            
         else:
             return {"success": False, "error": f"Unknown project_manager operation: {op}"}
             
@@ -3254,6 +3140,7 @@ def chat():
                                 content = getattr(delta, 'content', None) if hasattr(delta, 'content') else delta.get('content')
                                 if content:
                                     full_text_response += content
+                                    print(f"🔧 STREAMING_DEBUG: Yielding content_delta: '{content[:50]}...' (len={len(content)})")
                                     yield json.dumps({
                                         "content_delta": content,
                                         "status": "streaming"
@@ -3481,8 +3368,10 @@ def chat():
                         args = json.loads(func_args) if func_args else {}
                         op = args.get('op', '')
                         
-                        # project_manager: only specific operations need backend
+                        # project_manager: Only asset and update operations need backend (file ops are frontend-only)
                         if func_name == "project_manager":
+                            # CORRECTED: File operations should be frontend-only (local file access required)
+                            # Only asset library and update operations use backend services
                             return op in ["assets.search", "assets.install", "updates.check"]
                         
                         # search_manager: both operations need backend  
@@ -3542,29 +3431,46 @@ def chat():
                         "max_results": a.get("max_results"),
                     }
                     return json.dumps(canonical, sort_keys=True)
-                if backend_calls:
-                    # This is a backend-only tool call, so we will execute it,
-                    # add the results to the conversation, and loop again for the AI's final response.
+                # Announce tool execution so the frontend can create placeholders.
+                # IMPORTANT: Only emit here when there are backend-handled tools.
+                # For frontend-only tools, we will emit "executing_tools" later in the
+                # FRONTEND_PROCESSING block to avoid sending duplicate events.
+                # Precompute reusable flags used in both branches.
+                tool_names = []
+                file_operation_tools = []
+                all_tool_calls_for_history = []
+                for i, func in tool_call_aggregator.items():
+                    tool_id = tool_ids[i]
+                    all_tool_calls_for_history.append({
+                        "id": tool_id,
+                        "type": "function",
+                        "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
+                    })
+                
+                # Create the tool calls list for conversation history (used by both backend and frontend processing)
+                original_tool_calls_for_history = all_tool_calls_for_history.copy()
+
+                if all_tool_calls_for_history and backend_calls:
+                    # Enhanced debugging for frontend tool progress issues
+                    tool_names = [tc["function"]["name"] for tc in all_tool_calls_for_history]
+                    file_operation_tools = [name for name in tool_names if "fs." in name and any(op in name for op in ["write", "read", "replace", "delete", "copy", "move"])]
                     
-                    # CRITICAL: Send executing_tools status first so frontend creates assistant message with tool calls
-                    original_tool_calls_for_history = []
-                    for i, func in backend_calls.items():
-                        tool_id = tool_ids[i]
-                        original_tool_calls_for_history.append({
-                            "id": tool_id,
-                            "type": "function",
-                            "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
-                        })
+                    if file_operation_tools:
+                        print(f"🔧 TOOL_PROGRESS_DEBUG: Sending executing_tools for {len(file_operation_tools)} file operations: {file_operation_tools}")
+                        print(f"🔧 TOOL_PROGRESS_DEBUG: Frontend should show progress immediately for these tools!")
                     
-                    # Send executing_tools to frontend BEFORE executing backend tools
                     yield json.dumps({
                         "status": "executing_tools",
                         "assistant_message": {
                             "role": "assistant", 
                             "content": full_text_response or None,
-                            "tool_calls": [{"id": tc["id"], "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}} for tc in original_tool_calls_for_history]
+                            "tool_calls": [{"id": tc["id"], "function": {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}} for tc in all_tool_calls_for_history]
                         }
                     }) + '\n'
+
+                if backend_calls:
+                    # This is a backend-only tool call, so we will execute it,
+                    # add the results to the conversation, and loop again for the AI's final response.
                     
                     # Execute tools
                     tool_results_for_history = []
@@ -4390,20 +4296,8 @@ def chat():
                 # If we get here, it means no backend tools were called.
                 # It's either a final text response or tool calls for the frontend.
                 
-                # CRITICAL FIX: Create original_tool_calls_for_history for frontend tools
-                original_tool_calls_for_history = []
-                print(f"FRONTEND_PROCESSING: Creating tool calls for history from {len(tool_call_aggregator)} aggregated tools")
-                for i, func in tool_call_aggregator.items():
-                    tool_id = tool_ids[i]
-                    tool_call_entry = {
-                        "id": tool_id,
-                        "type": "function",
-                        "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
-                    }
-                    original_tool_calls_for_history.append(tool_call_entry)
-                    print(f"FRONTEND_TOOL_CALL: Created tool call for {func['name']} (ID: {tool_id})")
-                    
-                print(f"FRONTEND_PROCESSING: Created {len(original_tool_calls_for_history)} tool calls for history")
+                # Use the already created original_tool_calls_for_history from earlier
+                print(f"FRONTEND_PROCESSING: Using {len(original_tool_calls_for_history)} tool calls for history from earlier creation")
                 
                 # Append assistant message (will include tool calls if any)
                 assistant_message = {
@@ -4458,13 +4352,20 @@ def chat():
                             "tool_calls": tool_calls_for_frontend
                         }
                     }
+                    
+                    # Add special flag for file operations to help frontend show immediate progress
+                    if file_operation_tools:
+                        frontend_response["has_file_operations"] = True
+                        frontend_response["file_operations"] = file_operation_tools
                     yield json.dumps(frontend_response) + '\n'
                     
                     # The assistant message was already added above, so don't add it again
                     
                     # Signal that the stream is ending but the overall task is waiting on the frontend.
                     yield json.dumps({"status": "awaiting_frontend_action"}) + '\n'
-                    print(f"FRONTEND_PROCESSING: Tool calls sent, stream closing. Awaiting frontend tool execution in next request.")
+                    print(f"🔧 FRONTEND_PROCESSING: Tool calls sent, stream closing. Awaiting frontend tool execution in next request.")
+                    print(f"🔧 FRONTEND_PROCESSING: This is where text streaming stops for frontend tools!")
+                    print(f"🔧 FRONTEND_PROCESSING: Frontend must execute tools and send results in new request to continue.")
                     break  # Exit loop after sending tools to frontend
 
                 # If no tools, it's a final text response. Append and break.

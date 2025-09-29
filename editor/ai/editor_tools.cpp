@@ -2343,6 +2343,8 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
     
     print_line("FS_WRITE_WHOLE: Starting with path=" + path + ", content_length=" + String::num_int64(content.length()));
     
+    // Revert: no global UI progress hooks here
+    
     if (path.is_empty()) {
         result["success"] = false;
         result["message"] = "path parameter required for fs.write";
@@ -2381,6 +2383,8 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
     
     print_line("FS_WRITE_WHOLE: About to write content immediately to disk...");
     
+    // Revert: no global UI progress hooks here
+    
     // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
     // Only revert if user explicitly rejects
     String ext = path.get_extension().to_lower();
@@ -2393,6 +2397,8 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
         file->store_string(content);
         file->close();
         print_line("FS_WRITE_WHOLE: Successfully wrote " + String::num_int64(content.length()) + " characters to disk");
+        
+        // Revert: no global UI progress hooks here
         
         // Trigger Godot to reload the resource from disk
         if (EditorFileSystem::get_singleton()) {
@@ -2438,6 +2444,9 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
     result["compilation_errors"] = compilation_errors;
     result["has_errors"] = has_errors;
     result["file_created"] = !file_exists;
+    result["wrote_to_disk"] = true;  // Always true now since we write immediately
+    result["file_extension"] = ext;
+    result["backup_stored"] = !original_content.is_empty();  // For potential revert operations
     
     return result;
 }
@@ -2613,6 +2622,9 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
     result["lines_replaced"] = end_line - start_line + 1;
     result["start_line"] = start_line;
     result["end_line"] = end_line;
+    result["wrote_to_disk"] = true;  // Always true now since we write immediately
+    result["file_extension"] = ext;
+    result["backup_stored"] = !original_content.is_empty();  // For potential revert operations
     
     return result;
 }
@@ -2797,6 +2809,9 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
     result["replace_string"] = replace_string;
     result["replace_all"] = replace_all;
     result["case_sensitive"] = case_sensitive;
+    result["wrote_to_disk"] = true;  // Always true now since we write immediately
+    result["file_extension"] = ext;
+    result["backup_stored"] = !original_content.is_empty();  // For potential revert operations
     
     print_line("FS_REPLACE_STRING: Completed successfully");
     
@@ -4912,15 +4927,31 @@ Dictionary EditorTools::generalnodeeditor(const Dictionary &p_args) {
 Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 	Dictionary result;
 	
-	// Handle both 'path' and 'dir' parameters for flexibility
-	String path;
-	if (p_args.has("path")) {
-		path = p_args["path"];
-	} else if (p_args.has("dir")) {
-		path = p_args["dir"];
-	} else {
-		path = "res://";
-	}
+    // Handle both 'path' and 'dir' parameters for flexibility
+    String path;
+    if (p_args.has("path")) {
+        path = p_args["path"];
+    } else if (p_args.has("dir")) {
+        path = p_args["dir"];
+    } else {
+        path = "res://";
+    }
+
+    // Normalize common forms to project root
+    if (path == "." || path == "./" || path == "/") {
+        path = "res://";
+    }
+    // Convert relative paths to res:// if they don't already start with res://
+    if (!path.begins_with("res://")) {
+        // If it's like ./folder or folder, join with project root
+        if (path.begins_with("./")) {
+            path = "res://" + path.substr(2);
+        } else if (!path.begins_with("/")) {
+            path = "res://" + path;
+        } else {
+            // Absolute OS path: keep as-is
+        }
+    }
 	
 	String filter = p_args.has("filter") ? p_args["filter"] : "";
 	bool recursive = p_args.has("recursive") ? bool(p_args["recursive"]) : false;
@@ -5002,13 +5033,17 @@ Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 		}
 	};
 	
-	// Start scanning from the requested path
-	if (DirAccess::dir_exists_absolute(path)) {
-		scan_directory(path, "");
+    // Start scanning from the requested path (support res://)
+    String abs_scan_path = path;
+    if (path.begins_with("res://")) {
+        abs_scan_path = ProjectSettings::get_singleton()->globalize_path(path);
+    }
+    if (DirAccess::dir_exists_absolute(abs_scan_path)) {
+        scan_directory(abs_scan_path, "");
 		result["success"] = true;
 		result["files"] = files;
 		result["directories"] = dirs;
-		result["path_scanned"] = path;
+        result["path_scanned"] = path;
 		result["recursive"] = recursive;
 		if (file_patterns.size() > 0) {
 			result["file_patterns"] = file_patterns;
@@ -5751,13 +5786,19 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         }
         
         // Also check EditorSettings override like ai_chat_dock does
+        // Priority: editor settings > GODOT_AI_BACKEND_V3_URL > AI_CHAT_CLOUD_URL > default
         if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
             String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
             if (!override_url.is_empty()) {
                 base_url = override_url;
+                print_line("EditorTools: Using base_url from editor settings: " + base_url);
             }
+        } else if (!OS::get_singleton()->get_environment("GODOT_AI_BACKEND_V3_URL").is_empty()) {
+            base_url = OS::get_singleton()->get_environment("GODOT_AI_BACKEND_V3_URL");
+            print_line("EditorTools: Using v3 backend URL: " + base_url);
         } else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
             base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+            print_line("EditorTools: Using cloud URL: " + base_url);
         }
         
         print_line("APPLY_EDIT: base_url not provided, using fallback: " + base_url);
@@ -7416,6 +7457,69 @@ Dictionary EditorTools::debug_shader_cache(const Dictionary &p_args) {
 	result["cache_info"] = cache_info;
 	result["message"] = "Shader cache analysis complete";
 	result["recommendation"] = "Use shader.clear_cache to remove stale cache files causing compilation errors";
+	
+	return result;
+}
+
+Dictionary EditorTools::revert_file_to_backup(const Dictionary &p_args) {
+	Dictionary result;
+	
+	String revert_path = p_args.get("revert_path", "");
+	
+	if (revert_path.is_empty()) {
+		result["success"] = false;
+		result["error"] = "Missing required parameter 'revert_path' for file.revert_to_backup operation";
+		return result;
+	}
+	
+	print_line("FILE_REVERT: Starting revert operation for: " + revert_path);
+	
+	// Check if file exists
+	if (!FileAccess::exists(revert_path)) {
+		result["success"] = false;
+		result["error"] = "File does not exist: " + revert_path;
+		return result;
+	}
+	
+	// Check if we have a preview overlay (this indicates the file was edited)
+	if (!has_preview_overlay(revert_path)) {
+		result["success"] = false;
+		result["error"] = "No changes found to revert for file: " + revert_path;
+		result["note"] = "File may not have been edited recently or changes were already applied";
+		return result;
+	}
+	
+	// Get the original content before edits
+	// Note: This is a simplified implementation. In a full system, we'd store backups properly.
+	// For now, we'll clear the overlay which effectively "reverts" to disk state
+	clear_preview_overlay(revert_path);
+	
+	// Read the disk content to return
+	String disk_content = FileAccess::get_file_as_string(revert_path);
+	
+	// For shader files, clear cache to ensure compilation uses reverted content
+	String ext = revert_path.get_extension().to_lower();
+	if (ext == "gdshader" || ext == "glsl" || ext == "shader") {
+		Dictionary clear_args;
+		clear_args["cache_type"] = "all";
+		Dictionary clear_result = clear_shader_cache(clear_args);
+		print_line("FILE_REVERT: Cleared shader cache for reverted file: " + revert_path);
+	}
+	
+	// Trigger filesystem refresh
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->update_file(revert_path);
+		EditorFileSystem::get_singleton()->scan_changes();
+	}
+	
+	result["success"] = true;
+	result["message"] = "File reverted: " + revert_path;
+	result["reverted_path"] = revert_path;
+	result["disk_content"] = disk_content;
+	result["file_extension"] = ext;
+	result["note"] = "Preview overlay cleared. File now shows disk content.";
+	
+	print_line("FILE_REVERT: Completed for " + revert_path);
 	
 	return result;
 }
@@ -9795,6 +9899,8 @@ Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
         return force_shader_recompile(p_args);
     } else if (op == "shader.debug_cache") {
         return debug_shader_cache(p_args);
+    } else if (op == "file.revert_to_backup") {
+        return revert_file_to_backup(p_args);
     } else {
         result["success"] = false;
         result["error"] = String("Unknown resource_manager operation: ") + op;

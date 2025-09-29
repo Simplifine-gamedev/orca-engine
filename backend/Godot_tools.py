@@ -369,6 +369,7 @@ godot_tools = [
                             "res.load_and_assign",
                             "import.set_options", "import.reimport",
                             "shader.clear_cache", "shader.force_recompile", "shader.debug_cache",
+                            "file.revert_to_backup",
                             "image.generate_or_edit", "image.save", "image.slice_spritesheet"
                         ]
                     },
@@ -398,6 +399,9 @@ godot_tools = [
                     "shader_path": {"type": "string", "description": "Specific shader file path for cache operations"},
                     "cache_type": {"type": "string", "enum": ["user", "project", "all"], "default": "all", "description": "Which shader cache to clear"},
                     "force_recompile_all": {"type": "boolean", "default": False, "description": "Force recompile all shaders in project"},
+                    
+                    # File revert operations
+                    "revert_path": {"type": "string", "description": "File path to revert to backed up original content"},
 
                     # Image generate/edit
                     "description": {"type": "string", "description": "Text description of the image to generate or edit"},

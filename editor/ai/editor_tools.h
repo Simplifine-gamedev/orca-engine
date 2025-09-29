@@ -112,6 +112,7 @@ public:
 	static Dictionary clear_shader_cache(const Dictionary &p_args);
 	static Dictionary force_shader_recompile(const Dictionary &p_args);
 	static Dictionary debug_shader_cache(const Dictionary &p_args);
+	static Dictionary revert_file_to_backup(const Dictionary &p_args);
 	static Dictionary check_node_in_scene_tree(const Dictionary &p_args);
 	static Dictionary inspect_animation_state(const Dictionary &p_args);
 	static Dictionary get_layers_and_zindex(const Dictionary &p_args);
