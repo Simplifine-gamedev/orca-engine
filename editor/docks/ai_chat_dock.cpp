@@ -1234,16 +1234,10 @@ void AIChatDock::_on_send_button_pressed() {
 	
 	if (false) { // DISABLED: Auto project context was causing massive conversations
 		print_line("AI Chat: Auto project context disabled to prevent conversation bloat");
-		print_line("AI Chat: Chat history size before adding message: " + String::num_int64(chat_history.size()));
-		
 		// Gather project structure using existing EditorTools function
 		Dictionary context_args;
 		context_args["operation"] = "structure";
 		Dictionary project_structure = EditorTools::get_project_context(context_args);
-		
-		Array keys = project_structure.keys();
-		print_line("AI Chat: get_project_context returned " + String::num_int64(keys.size()) + " keys");
-		print_line("AI Chat: get_project_context success: " + String(project_structure.get("success", false) ? "true" : "false"));
 		
 		if (project_structure.has("success") && project_structure["success"]) {
 			// Create a formatted project overview for the AI (not shown in UI)
@@ -1317,14 +1311,9 @@ void AIChatDock::_on_send_button_pressed() {
 			// Keep the original user message as-is for UI display
 			msg.content = message;
 			
-			print_line("AI Chat: Added project context to first message (" + String::num_int64(project_context.length()) + " chars)");
-			print_line("AI Chat: Project context preview: " + project_context.substr(0, 200) + "...");
 		} else {
-			print_line("AI Chat: Failed to gather project context: " + String(project_structure.get("error", "Unknown error")));
 			if (project_structure.has("context")) {
 				Dictionary structure = project_structure["context"];
-				Array structure_keys = structure.keys();
-				print_line("AI Chat: Structure data has " + String::num_int64(structure_keys.size()) + " keys");
 			}
 		}
 	}
@@ -1338,9 +1327,6 @@ void AIChatDock::_on_send_button_pressed() {
 	
 	// Safe conversation access with bounds checking
 	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-		print_line("AI Chat: Added user message to conversation " + itos(current_conversation_index) + " (" + conversations[current_conversation_index].title + "), total messages: " + itos(chat_history.size()));
-	} else {
-		print_line("AI Chat: Added user message (invalid conversation index: " + itos(current_conversation_index) + "), total messages: " + itos(chat_history.size()));
 	}
 	
 	// DON'T clear input field here - keep user message visible until assistant responds
@@ -2901,7 +2887,6 @@ void AIChatDock::_perform_project_reindex() {
 	Error err = reindex_request->request(base_url + "/reindex_project", headers, HTTPClient::METHOD_POST, json_string);
 	
 	if (err != OK) {
-		print_line("AI Chat: Failed to start reindex request: " + String::num_int64(err));
 		_set_embedding_status("Reindex failed", false);
 		reindex_request->queue_free();
 		return;
@@ -2912,10 +2897,7 @@ void AIChatDock::_perform_project_reindex() {
 }
 
 void AIChatDock::_on_reindex_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	print_line("AI Chat: Re-index response received - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
-	
 	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
-		print_line("AI Chat: Reindex request failed. Code: " + String::num_int64(p_response_code));
 		_set_embedding_status("Reindex failed", false);
 		return;
 	}
@@ -2991,7 +2973,6 @@ void AIChatDock::_check_index_status_and_start_if_needed() {
 }
 
 void AIChatDock::_on_index_status_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	print_line("AI Chat: Index status response - Result: " + String::num_int64(p_result) + ", Code: " + String::num_int64(p_response_code));
 	
 	// Safe access to last child to avoid negative indexing crash
 	if (get_child_count() > 0) {
@@ -3016,7 +2997,6 @@ void AIChatDock::_on_index_status_response(int p_result, int p_response_code, co
 			if (indexed) {
 				Dictionary stats = response.get("stats", Dictionary());
 				int total_files = stats.get("total_files", 0);
-				print_line("AI Chat: Project already indexed with " + String::num_int64(total_files) + " files. Skipping re-index.");
 				
 				_set_embedding_status(String::num_int64(total_files) + " files already indexed", false);
 				initial_indexing_done = true;
@@ -3213,17 +3193,9 @@ bool AIChatDock::can_drop_data(const Point2 &p_point, const Variant &p_data) con
 	}
 	if (drag_data.has("files")) {
 		Array files = drag_data["files"];
-		print_line("  Files count: " + String::num_int64(files.size()));
-		for (int i = 0; i < files.size() && i < 3; i++) {
-			print_line("    File " + String::num_int64(i) + ": " + String(files[i]));
-		}
 	}
 	if (drag_data.has("nodes")) {
 		Array nodes = drag_data["nodes"];
-		print_line("  Nodes count: " + String::num_int64(nodes.size()));
-		for (int i = 0; i < nodes.size() && i < 3; i++) {
-			print_line("    Node " + String::num_int64(i) + ": " + String(nodes[i]));
-		}
 	}
 	// Print all keys in drag_data
 	Array keys = drag_data.keys();
@@ -3855,7 +3827,6 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			percent = (float)current_step * 100.0f / (float)total_steps;
 		}
 
-		print_line("AI Chat: Tool progress - " + tool_name + " (ID: " + tool_id + ") " + String::num_int64(current_step) + "/" + String::num_int64(total_steps));
 
 		if (chat_container && !tool_id.is_empty()) {
 			PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tool_id, true, false));
@@ -3956,7 +3927,6 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 			// CRITICAL FIX: Don't execute tool_calls from executing_tools - backend will handle them
 			// executing_tools means backend is about to execute these tools, so frontend should NOT execute them
-			print_line("AI Chat: executing_tools received - backend will handle " + String::num_int64(tool_calls.size()) + " tool(s), not executing locally");
 		}
 		return; // Stop further processing for this line
 	}
@@ -4325,7 +4295,6 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
     }
     
     int tool_count = p_tool_calls.size();
-    print_line("AI Chat: _execute_tool_calls called with " + String::num_int64(tool_count) + " tool calls");
     
 	for (int i = 0; i < tool_count; i++) {
 		Dictionary tool_call = p_tool_calls[i];
@@ -4688,7 +4657,6 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 	int new_error_count = post_error_count - pre_error_count;
 	if (new_error_count > 0) {
 		result["new_runtime_errors"] = new_error_count;
-		print_line("AI Chat: Tool execution generated " + String::num_int64(new_error_count) + " new runtime errors");
 	}
 
 	// CRITICAL FIX: Validate tool call ID before adding response
@@ -4709,7 +4677,6 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 	
     // If there are async tool tasks running, defer finalization until they complete.
     if (pending_tool_tasks > 0) {
-        print_line("AI Chat: Waiting for " + String::num_int64(pending_tool_tasks) + " async tool task(s) to finish...");
         return;
     }
 
@@ -4729,9 +4696,6 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
             tool_responses++;
         }
     }
-    
-    print_line("AI Chat: Recent conversation state - Assistant tool calls: " + String::num_int64(assistant_tool_calls) + 
-              ", Tool responses: " + String::num_int64(tool_responses));
     
     // We've finished with this turn's tool calls. Clear the current label
     // so the next content_delta or assistant_message creates a new bubble
@@ -5068,7 +5032,6 @@ void AIChatDock::_on_apply_edit_thread_done() {
         current_thinking_label = nullptr;
         current_thinking_content = "";
         
-        print_line("AI Chat: Sending continuation request with " + String::num_int64(chat_history.size()) + " messages");
         _send_chat_request();
     }
 }
@@ -5203,7 +5166,6 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
             // Remove the large nodes array but keep essential info accessible
             content_to_serialize.erase("nodes");
             content_to_serialize["nodes_available_in_full_results"] = true;
-            print_line("AI Chat: Created smart summary for " + String::num_int64(nodes.size()) + " nodes to prevent JSON freeze while preserving model access");
         }
     }
     
@@ -5224,7 +5186,6 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
                 context["scenes_truncated_in_json"] = true;
                 context["original_scenes_count"] = scenes.size();
                 context_modified = true;
-                print_line("AI Chat: Truncated scenes array from " + String::num_int64(scenes.size()) + " to 20 for performance");
             }
         }
         
@@ -5240,7 +5201,6 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
                 context["scripts_truncated_in_json"] = true;
                 context["original_scripts_count"] = scripts.size();
                 context_modified = true;
-                print_line("AI Chat: Truncated scripts array from " + String::num_int64(scripts.size()) + " to 20 for performance");
             }
         }
         
@@ -5276,7 +5236,6 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
             content_to_serialize["property_info"] = truncated_prop_info;
             content_to_serialize["property_info_truncated_in_json"] = true;
             content_to_serialize["original_property_info_count"] = prop_info.size();
-            print_line("AI Chat: Truncated property_info array from " + String::num_int64(prop_info.size()) + " to 30 for JSON serialization");
         }
     }
     
@@ -5289,7 +5248,6 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
             // Only warn about very large property sets (200+) but don't truncate
             content_to_serialize["large_property_set"] = true;
             content_to_serialize["property_count"] = prop_values.size();
-            print_line("AI Chat: Large property set detected (" + String::num_int64(prop_values.size()) + " properties) - keeping full set for AI model debugging");
         }
     }
     
@@ -5326,7 +5284,6 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
 	
-	print_line("AI Chat: Added tool response - ID: " + p_tool_call_id + ", Name: " + p_name + ", History size: " + String::num_int64(chat_history.size()));
 
 	// Find the placeholder for this tool and replace its content.
 	if (chat_container == nullptr) {
@@ -8988,12 +8945,10 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	// Special handling for take_screenshot with base64 data
 	if (p_tool_name == "take_screenshot" && success) {
 		Array screenshots = result.get("screenshots", Array());
-		print_line("AI Chat: Processing " + String::num_int64(screenshots.size()) + " screenshots from take_screenshot result");
 		for (int i = 0; i < screenshots.size(); i++) {
 			Dictionary screenshot = screenshots[i];
 			String base64_data = screenshot.get("base64", "");
 			String source = screenshot.get("source", "unknown");
-			print_line("AI Chat: Screenshot " + String::num_int64(i) + " - source: " + source + ", base64 length: " + String::num_int64(base64_data.length()));
 			
 			if (!base64_data.is_empty()) {
 				// Add the screenshot as an attached file to the current assistant message
@@ -10295,7 +10250,6 @@ void AIChatDock::_request_completed() {
 
 	// Now that streaming is complete, check if we need to summarize the conversation
 	// This prevents interrupting ongoing streaming responses
-	print_line("AI Chat: Checking conversation length after stream completion");
 	_check_and_trigger_summarization();
 }
 
