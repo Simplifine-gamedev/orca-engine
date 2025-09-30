@@ -4147,8 +4147,6 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
                                 return
                             
-                            yield json.dumps({"tool_starting": "project_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
-                            
                             # ============ CLEAR TOOL CALL LOGGING ============
                             print("=" * 80)
                             print(f"📁 BACKEND TOOL CALLED: project_manager")
@@ -4168,13 +4166,33 @@ def chat():
                             print("=" * 80)
                             # ===============================================
                             
+                            # CRITICAL FIX: Emit tool_starting for immediate frontend feedback
+                            yield json.dumps({"tool_starting": "project_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
                             # Inject project_root/project_path from Flask context if not provided
                             if not arguments.get('project_root') and not arguments.get('project_path') and hasattr(g, 'project_root') and g.project_root:
                                 arguments['project_root'] = g.project_root
                                 arguments['project_path'] = g.project_root  # Some operations expect project_path
                                 print(f"PROJECT_MANAGER: Injected project_root from Flask context: {g.project_root}")
                             
-                            pm_result = project_manager_internal(arguments)
+                            # CRITICAL FIX: Use threading + polling to allow tool_starting to be sent immediately
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_project_manager():
+                                try:
+                                    _tool_result_holder["result"] = project_manager_internal(arguments)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_project_manager, daemon=True)
+                            t.start()
+                            # Poll for stop while tool runs - this loop allows tool_starting to be sent
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during project_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                time.sleep(0.05)  # Yield control to allow streaming
+                            pm_result = _tool_result_holder["result"] or {"success": False, "error": "project_manager returned no result"}
                             
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
@@ -4201,8 +4219,6 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
                                 return
                             
-                            yield json.dumps({"tool_starting": "search_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
-                            
                             # ============ CLEAR TOOL CALL LOGGING ============
                             print("=" * 80)
                             print(f"🔎 BACKEND TOOL CALLED: search_manager")
@@ -4221,6 +4237,9 @@ def chat():
                                 print("   (Failed to parse arguments)")
                             print("=" * 80)
                             # ===============================================
+                            
+                            # CRITICAL FIX: Emit tool_starting for immediate frontend feedback
+                            yield json.dumps({"tool_starting": "search_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
                             
                             # Inject project_root from Flask context if not provided
                             if not arguments.get('project_root') and hasattr(g, 'project_root') and g.project_root:
@@ -4269,8 +4288,6 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
                                 return
                             
-                            yield json.dumps({"tool_starting": "resource_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
-                            
                             # ============ CLEAR TOOL CALL LOGGING ============
                             print("=" * 80)
                             print(f"BACKEND TOOL CALLED: resource_manager")
@@ -4289,6 +4306,9 @@ def chat():
                                 print("   (Failed to parse arguments)")
                             print("=" * 80)
                             # ===============================================
+                            
+                            # CRITICAL FIX: Emit tool_starting for immediate frontend feedback
+                            yield json.dumps({"tool_starting": "resource_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
                             
                             # Execute resource_manager with threading support for image operations
                             from threading import Thread

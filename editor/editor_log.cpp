@@ -372,6 +372,8 @@ void EditorLog::_add_log_line(LogMessage &p_message, bool p_replace_previous) {
 		rec["type"] = (p_message.type == MSG_TYPE_WARNING) ? String("warning") : String("error");
 		rec["message"] = p_message.text;
 		rec["is_warning"] = (p_message.type == MSG_TYPE_WARNING);
+		rec["source"] = String("output");
+		rec["time_ms"] = OS::get_singleton()->get_ticks_msec();
 
 		// Best-effort parse of "path:line[:col] - message" patterns commonly used in Godot logs
 		String file;
@@ -403,7 +405,37 @@ void EditorLog::_add_log_line(LogMessage &p_message, bool p_replace_previous) {
 		rec["file"] = file;
 		rec["line"] = line;
 		rec["column"] = column;
-		rec["source"] = String("output");
+
+		// Attempt to capture inline stack hints if present (heuristic)
+		// Many Godot errors echo stack-like lines after the main message
+		Array stack_frames;
+		{
+			// Split on newline and parse patterns like "res://path.gd:123 @ func()"
+			PackedStringArray lines = p_message.text.split("\n");
+			for (int i = 1; i < lines.size(); i++) {
+				String line_txt = lines[i].strip_edges();
+				int colon = line_txt.find(":");
+				int at = line_txt.find("@", colon + 1);
+				if (colon > 0 && at > colon) {
+					String fpath = line_txt.substr(0, colon).strip_edges();
+					String rest = line_txt.substr(colon + 1, at - colon - 1).strip_edges();
+					int lnum = rest.is_valid_int() ? rest.to_int() : 0;
+					String func = line_txt.substr(at + 1).strip_edges();
+					Dictionary f; f["file"] = fpath; f["line"] = lnum; f["function"] = func; f["formatted"] = line_txt;
+					stack_frames.push_back(f);
+				}
+			}
+			if (!stack_frames.is_empty()) {
+				rec["stack"] = stack_frames;
+				String stack_str;
+				for (int si = 0; si < stack_frames.size(); si++) {
+					Dictionary frame = stack_frames[si];
+					String formatted = frame.has("formatted") ? String(frame["formatted"]) : String();
+					stack_str += formatted + "\n";
+				}
+				rec["stack_str"] = stack_str;
+			}
+		}
 
 		EditorTools::record_runtime_error(rec);
 	}

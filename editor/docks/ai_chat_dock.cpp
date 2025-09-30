@@ -3607,8 +3607,13 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
                 Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
                 if (!history.is_empty() && history[history.size() - 1].role == "assistant" && 
                     !history[history.size() - 1].tool_calls.is_empty()) {
-                    print_line("AI Chat: Found assistant message with tool calls, executing now");
-                    _execute_tool_calls(history[history.size() - 1].tool_calls);
+                    print_line("AI Chat: Found assistant message with tool calls, scheduling execution");
+                    // CRITICAL FIX: Defer execution with LONG delay so placeholders are clearly visible
+                    // Using 1 second delay to give user time to see the placeholder state
+                    Ref<SceneTreeTimer> exec_timer = get_tree()->create_timer(1.0, true);
+                    Array tool_calls_to_execute = history[history.size() - 1].tool_calls;
+                    exec_timer->connect("timeout", callable_mp(this, &AIChatDock::_execute_tool_calls).bind(tool_calls_to_execute), CONNECT_ONE_SHOT);
+                    print_line("AI Chat: Scheduled tool execution for next frame (1000ms delay for visibility)");
                 } else {
                     print_line("AI Chat: ERROR - No tool calls found to execute");
                     // Continue anyway to avoid hanging
@@ -3913,21 +3918,48 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 								current_assistant_message_label->set_text(bbcode);
 							}
 						}
-						// Attach tool calls to the existing assistant message
-						last.tool_calls = tool_calls;
-						_create_tool_call_bubbles(tool_calls);
-						attached_to_existing = true;
+					// Attach tool calls to the existing assistant message
+					last.tool_calls = tool_calls;
+					print_line("AI Chat: executing_tools - Attaching " + String::num_int64(tool_calls.size()) + " tool calls to existing assistant message");
+					_create_tool_call_bubbles(tool_calls);
+					
+					// CRITICAL FIX: Make the parent message bubble visible after attaching tools
+					// Find the message panel by searching chat_container children
+					if (chat_container) {
+						for (int search_i = chat_container->get_child_count() - 1; search_i >= 0; search_i--) {
+							Node *child = chat_container->get_child(search_i);
+							PanelContainer *msg_panel = Object::cast_to<PanelContainer>(child);
+							if (msg_panel && String(msg_panel->get_name()).begins_with("message_panel_")) {
+								msg_panel->set_visible(true);
+								msg_panel->queue_redraw();
+								print_line("AI Chat: executing_tools - Forced message panel visible after attaching tools");
+								break;
+							}
+						}
+					}
+					
+					attached_to_existing = true;
+					print_line("AI Chat: executing_tools - Attached to existing, bubbles created");
 					}
 				}
 			}
 
 			if (!attached_to_existing) {
+				print_line("AI Chat: executing_tools - Creating new assistant message with " + String::num_int64(tool_calls.size()) + " tool calls");
 				_add_message_to_chat("assistant", assistant_content, tool_calls);
+				print_line("AI Chat: executing_tools - New assistant message created");
 			}
 
 			// CRITICAL FIX: Don't execute tool_calls from executing_tools - backend will handle them
 			// executing_tools means backend is about to execute these tools, so frontend should NOT execute them
 		}
+		print_line("AI Chat: executing_tools - Finished processing, returning");
+		
+		// NUCLEAR FIX: Clear the response buffer to force NOTIFICATION_PROCESS to return
+		// This allows Godot to render the placeholders BEFORE processing awaiting_frontend_action
+		response_buffer.clear();
+		print_line("AI Chat: executing_tools - Cleared response buffer to force render before tool execution");
+		
 		return; // Stop further processing for this line
 	}
 	
@@ -4320,10 +4352,18 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
         print_line("AI Chat: IMMEDIATE_STATUS - Got status: '" + immediate_status + "'");
         
         if (!immediate_status.is_empty()) {
-            print_line("AI Chat: IMMEDIATE_STATUS - Calling _update_tool_placeholder_with_description");
+            uint64_t before_update = OS::get_singleton()->get_ticks_msec();
+            print_line("AI Chat: IMMEDIATE_STATUS [T+" + String::num_uint64(before_update) + "ms] - Calling _update_tool_placeholder_with_description");
             _update_tool_placeholder_with_description(tool_call_id, function_name, "executing", immediate_status);
-            // Small delay to ensure UI updates are visible
-            OS::get_singleton()->delay_usec(50000); // 50ms delay
+            uint64_t after_update = OS::get_singleton()->get_ticks_msec();
+            print_line("AI Chat: IMMEDIATE_STATUS [T+" + String::num_uint64(after_update) + "ms] - Status updated (took " + String::num_uint64(after_update - before_update) + "ms)");
+            
+            // CRITICAL FIX: Force Godot to process events and render NOW before tool executes
+            // This is the nuclear option but necessary for immediate visual feedback
+            if (DisplayServer::get_singleton()) {
+                DisplayServer::get_singleton()->process_events();
+                print_line("AI Chat: IMMEDIATE_STATUS [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec()) + "ms] - Forced process_events()");
+            }
         } else {
             // Fallback: generic status for tools without specific descriptions
             print_line("AI Chat: IMMEDIATE_STATUS - Using fallback generic status");
@@ -4386,6 +4426,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			// Add file editing operations to slow tools for better status feedback
 			slow_tools.insert("apply_edit"); // Already handled as slow
 			slow_tools.insert("settings_manager"); // Listing/searching settings can be heavy
+			slow_tools.insert("project_manager"); // CRITICAL: Defer for UI feedback on fs.write/write_lines/replace_string
 			// Add other slow tools as needed
 		}
 
@@ -4396,7 +4437,12 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			// Use centralized status handler for consistent messaging
 			_update_tool_placeholder_status(tool_call_id, function_name, "running");
 			
-			call_deferred("_execute_frontend_tool_deferred", tool_call_id, function_name, arguments_str);
+			// CRITICAL FIX: Use SceneTreeTimer with LONG delay to ensure user sees status
+			// This guarantees the UI has time to paint the status BEFORE tool executes
+			// 1 second delay = obvious visual feedback for user
+			Ref<SceneTreeTimer> timer = get_tree()->create_timer(1.0, true);
+			timer->connect("timeout", callable_mp(this, &AIChatDock::_execute_frontend_tool_deferred).bind(tool_call_id, function_name, arguments_str), CONNECT_ONE_SHOT);
+			print_line("AI Chat: Scheduled " + function_name + " for deferred execution in 1000ms");
 			continue;
 		}
 
@@ -4630,15 +4676,10 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::universal_scene_manager(args);
 		} else if (function_name == "universal_project_manager") {
 			result = EditorTools::universal_project_manager(args);
-		} else if (function_name == "project_manager") {
-			// All project_manager operations run immediately and synchronously
-			result = EditorTools::project_manager(args);
 		} else if (function_name == "script_manager") {
 			result = EditorTools::script_manager(args);
 		} else if (function_name == "resource_manager") {
 			result = EditorTools::resource_manager(args);
-		} else if (function_name == "settings_manager") {
-			result = EditorTools::settings_manager(args);
 		} else if (function_name == "search_manager") {
 			result = EditorTools::search_manager(args);
 		} else if (function_name == "runtime_manager") {
@@ -5052,12 +5093,33 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 	// Show tool call placeholders immediately for better UX
 	if (p_role == "assistant" && !p_tool_calls.is_empty()) {
 		_create_tool_call_bubbles(p_tool_calls);
-		// Make sure the message bubble is visible when we have tool calls
+		// CRITICAL FIX: Make sure the message bubble is visible when we have tool calls
+		// Search backwards through children to find the actual message panel (skip spacers)
 		if (chat_container != nullptr && chat_container->get_child_count() > 0) {
-			Node *last_child = chat_container->get_child(chat_container->get_child_count() - 1);
-			PanelContainer *message_panel = Object::cast_to<PanelContainer>(last_child);
-			if (message_panel) {
-				message_panel->set_visible(true);
+			PanelContainer *message_panel = nullptr;
+			// Search backwards from the end to find the message panel (might be after spacer)
+			for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+				Node *child = chat_container->get_child(i);
+				message_panel = Object::cast_to<PanelContainer>(child);
+				if (message_panel && String(message_panel->get_name()).begins_with("message_panel_")) {
+					// Found the actual message panel
+					message_panel->set_visible(true);
+					print_line("AI Chat: Made assistant message panel visible for tool calls (index: " + String::num_int64(i) + ")");
+					break;
+				}
+			}
+			
+			if (!message_panel) {
+				print_line("AI Chat: WARNING - Could not find message panel to make visible for tool calls");
+			} else {
+				// CRITICAL: Force immediate redraw of the visible panel and container
+				message_panel->queue_redraw();
+				if (chat_container) {
+					chat_container->queue_redraw();
+				}
+				// Force scroll to show the new tool placeholders
+				call_deferred("_scroll_to_bottom");
+				print_line("AI Chat: Forced redraw and scroll for tool placeholders visibility");
 			}
 		}
 	}
@@ -5900,6 +5962,11 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		message_panel->set_visible(true);
 		// Recreate tool call placeholders when loading saved conversations
 		_create_tool_call_bubbles(p_message.tool_calls);
+		// CRITICAL: Force immediate redraw when showing tool placeholders
+		message_panel->queue_redraw();
+		if (chat_container) {
+			chat_container->queue_redraw();
+		}
 	}
 	
 	// Handle tool result messages specially
@@ -6210,16 +6277,32 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	current_displayed_images.clear();
 }
 void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
-	if (!current_assistant_message_label || p_tool_calls.is_empty()) {
+	print_line("AI Chat: _create_tool_call_bubbles called with " + String::num_int64(p_tool_calls.size()) + " tool calls");
+	
+	if (!current_assistant_message_label) {
+		print_line("AI Chat: ERROR - _create_tool_call_bubbles called but current_assistant_message_label is NULL!");
+		return;
+	}
+	
+	if (p_tool_calls.is_empty()) {
+		print_line("AI Chat: _create_tool_call_bubbles called with empty tool_calls array");
 		return;
 	}
 
 	Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
+	if (!bubble_panel) {
+		print_line("AI Chat: ERROR - Could not get bubble_panel from current_assistant_message_label hierarchy");
+		return;
+	}
+	
 	VBoxContainer *message_vbox = Object::cast_to<VBoxContainer>(bubble_panel->get_child(0));
 
 	if (!message_vbox) {
+		print_line("AI Chat: ERROR - Could not get message_vbox from bubble_panel");
 		return;
 	}
+	
+	print_line("AI Chat: Successfully found bubble panel and message vbox, creating tool placeholders");
 
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
@@ -6241,11 +6324,14 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		String tool_call_id = tool_call.get("id", "");
 		Dictionary function_dict = tool_call.get("function", Dictionary());
 		String func_name = function_dict.get("name", "unknown_tool");
+		
+		print_line("AI Chat: Creating placeholder for tool: " + func_name + " (ID: " + tool_call_id + ")");
 
 		// Create a container that will hold either the "loading" label or the final tool output.
 		PanelContainer *placeholder = memnew(PanelContainer);
 		placeholder->set_name("tool_placeholder_" + tool_call_id);
 		tools_container->add_child(placeholder);
+		print_line("AI Chat: Added placeholder to tools_container");
 
 		Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
 		placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
@@ -6269,7 +6355,29 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 
 		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
 		// They will be added in the final UI rebuild instead
+		
+		print_line("AI Chat: Created placeholder " + String::num_int64(i + 1) + "/" + String::num_int64(p_tool_calls.size()) + ": " + func_name);
 	}
+	
+	// CRITICAL FIX: Force the parent bubble panel to be visible after adding placeholders
+	if (bubble_panel) {
+		bubble_panel->set_visible(true);
+		bubble_panel->queue_redraw();
+		print_line("AI Chat: Forced bubble_panel visible after creating " + String::num_int64(p_tool_calls.size()) + " placeholders");
+		
+		// Also scroll to make sure it's in view
+		call_deferred("_scroll_to_bottom");
+		
+		// Force entire chat UI to update
+		if (chat_container) {
+			chat_container->queue_redraw();
+		}
+		if (chat_scroll) {
+			chat_scroll->queue_redraw();
+		}
+	}
+	
+	print_line("AI Chat: _create_tool_call_bubbles completed successfully");
 }
 
 void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_message) {
@@ -9333,7 +9441,8 @@ void AIChatDock::_send_chat_request() {
 }
 
 void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str) {
-    print_line("AI Chat: DEFERRED EXECUTION - Tool: " + p_function_name + " (ID: " + p_tool_call_id + ")");
+    uint64_t exec_time = OS::get_singleton()->get_ticks_msec();
+    print_line("AI Chat: DEFERRED EXECUTION [T+" + String::num_uint64(exec_time) + "ms] - Tool: " + p_function_name + " (ID: " + p_tool_call_id + ")");
     
     // Parse arguments with better error handling
     Ref<JSON> json;
@@ -9393,6 +9502,9 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
     } else if (p_function_name == "settings_manager") {
         // Allow deferred execution for potentially large listings/searches
         result = EditorTools::settings_manager(args);
+    } else if (p_function_name == "project_manager") {
+        // CRITICAL FIX: Execute project_manager deferred for UI feedback on file operations
+        result = EditorTools::project_manager(args);
     } else {
         result["success"] = false;
         result["message"] = "Tool " + p_function_name + " should not be deferred. This is a bug.";

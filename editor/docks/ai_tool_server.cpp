@@ -104,8 +104,14 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 		result = EditorTools::add_collision_shape(args);
 	} else if (function_name == "check_compilation_errors") {
 		result = EditorTools::check_compilation_errors(args);
-	} else if (function_name == "get_runtime_errors") {
-		result = EditorTools::get_runtime_errors(args);
+    } else if (function_name == "get_runtime_errors") {
+        result = EditorTools::get_runtime_errors(args);
+    } else if (function_name == "get_runtime_errors_summary") {
+        // Direct access to summary API to align with backend tool definitions
+        result = EditorTools::get_runtime_errors_summary(args);
+    } else if (function_name == "get_runtime_errors_detailed") {
+        // Direct access to detailed API to align with backend tool definitions
+        result = EditorTools::get_runtime_errors_detailed(args);
 	} else if (function_name == "test_diff_and_errors") {
 		// Test endpoint that simulates an edit to test diff and compilation error functionality
 		String path = args.get("path", "");

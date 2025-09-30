@@ -56,7 +56,7 @@
 // In-memory overlay of edited content awaiting user Accept/Reject in the editor.
 // Key: absolute or res:// path; Value: edited content string
 static Dictionary s_preview_overlays;
-static Array s_runtime_errors; // Array of Dictionary: { type, time_ms, message, file, line, is_warning }
+static Array s_runtime_errors; // Array of Dictionary: { type, time_ms, message, file, line, is_warning, stack, stack_str, source_func, error_code, error_descr }
 
 void EditorTools::set_preview_overlay(const String &p_path, const String &p_content) {
 	if (p_path.is_empty()) {

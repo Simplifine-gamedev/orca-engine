@@ -780,6 +780,32 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 		rec["file"] = oe.source_file;
 		rec["line"] = oe.source_line;
 		rec["is_warning"] = oe.warning;
+		// Include additional context useful for AI debugging
+		rec["source_func"] = oe.source_func;
+		rec["source_language"] = source_language_name;
+		rec["error_code"] = oe.error; // original error condition text
+		rec["error_descr"] = oe.error_descr; // custom message when present
+
+		// Capture stack frames (file, line, function) and a preformatted string
+		Array stack_frames;
+		const ScriptLanguage::StackInfo *infos = oe.callstack.ptr();
+		for (unsigned int i = 0; i < (unsigned int)oe.callstack.size(); i++) {
+			Dictionary f;
+			f["file"] = infos[i].file;
+			f["line"] = infos[i].line;
+			f["function"] = infos[i].func;
+			f["formatted"] = _format_frame_text(&infos[i]);
+			stack_frames.push_back(f);
+		}
+		if (!stack_frames.is_empty()) {
+			rec["stack"] = stack_frames;
+			String stack_str;
+			for (int si = 0; si < stack_frames.size(); si++) {
+				Dictionary f = stack_frames[si];
+				stack_str += String(f.get("formatted", "")) + "\n";
+			}
+			rec["stack_str"] = stack_str;
+		}
 		#ifdef TOOLS_ENABLED
 		#ifdef TOOLS_ENABLED
 		EditorTools::record_runtime_error(rec);
