@@ -89,6 +89,7 @@ void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, con
 
 #include "../ai/editor_tools.h"
 #include "diff_viewer.h"
+#include "ai_image_lazy_loader.h"
 #include "core/version_generated.h"
 
 void AIChatDock::_bind_methods() {
@@ -7793,7 +7794,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		String base64_data = p_result.get("image_data", "");
 		
 		if (!base64_data.is_empty()) {
-			// Display the generated image with unified method
+			// LAZY LOADING: Only decode and display when user clicks "Show Image"
 			Dictionary img_metadata;
 			String image_type = p_result.get("image_type", "");
 			
@@ -7803,6 +7804,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				img_metadata["prompt"] = "Runtime Screenshot (" + target + ")";
 				img_metadata["model"] = "Viewport Capture";
 				img_metadata["path"] = "screenshot://runtime";
+				img_metadata["image_type"] = "screenshot";
 			} else {
 				// Regular image generation
 				img_metadata["prompt"] = p_result.get("prompt", "Generated Image");
@@ -7817,7 +7819,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				img_metadata["name"] = image_id;
 			}
 			
-			_display_image_unified(p_content_vbox, base64_data, img_metadata);
+			// Use lazy loader to avoid memory waste - image only loaded when clicked
+			AIImageLazyLoader::create_lazy_image_placeholder(base64_data, img_metadata, p_content_vbox);
 		} else {
 			// Fallback to text display if no image data - but strip any large data fields to prevent freeze
 			Dictionary safe_result = p_result;
@@ -13618,7 +13621,7 @@ void AIChatDock::_update_file_embedding(const String &p_file_path) {
 	// Cloud-ready: read file content and send via index_files
 	Dictionary file_data = _read_file_for_indexing(p_file_path, _get_project_root_path());
 	if (file_data.is_empty()) {
-		print_line("AI Chat: Failed to read file for embedding update: " + p_file_path);
+		// print_line("AI Chat: Failed to read file for embedding update: " + p_file_path);
 		return;
 	}
 	
@@ -13648,14 +13651,14 @@ void AIChatDock::_remove_file_embedding(const String &p_file_path) {
 }
 
 void AIChatDock::_on_filesystem_changed() {
-    print_line("AI Chat: filesystem_changed signal received");
+    // print_line("AI Chat: filesystem_changed signal received");
     // Only rely on per-file saved signals for accuracy; skip project-wide reindex on generic FS changes.
     pending_fs_changes = true;
 }
 
 void AIChatDock::_on_sources_changed(bool p_exist) {
     // Called when source files change
-    print_line("AI Chat: sources_changed signal received (exist=" + String(p_exist ? "true" : "false") + ")");
+    // print_line("AI Chat: sources_changed signal received (exist=" + String(p_exist ? "true" : "false") + ")");
     // Do nothing here; precise per-file handlers will trigger indexing.
 }
 
