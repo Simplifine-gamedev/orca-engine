@@ -257,26 +257,11 @@ jobs:
             Orca.app
             Orca (Mac).dmg
 
-      - name: Add to Draft Release
+      - name: Upload to Draft Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: v${{ steps.version.outputs.release_version }}
-          name: Orca Engine v${{ steps.version.outputs.release_version }}
-          body: |
-            🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**
-
-            ## Download for Your Platform:
-            
-            🍎 **Mac**: Download `Orca.Mac.dmg` → Open DMG → Drag to Applications  
-            🏁 **Windows**: Download `Orca.Windows.exe` → Run directly  
-            🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`
-
-            ## What's New:
-            ${{ github.event.head_commit.message }}
-
-            ---
-            **Build completed**: Mac ✅ Signed & Notarized | Linux ⏳ | Windows ⏳
           files: |
             Orca (Mac).dmg
           draft: true

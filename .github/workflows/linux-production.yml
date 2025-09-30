@@ -257,15 +257,15 @@ jobs:
 
             ## Download for Your Platform:
             
-            🍎 **Mac**: Download `Orca.Mac.dmg` → Open DMG → Drag to Applications  
-            🏁 **Windows**: Download `Orca.Windows.exe` → Run directly  
+            🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  
+            🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  
             🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`
 
             ## What's New:
             ${{ github.event.head_commit.message }}
 
             ---
-            **Build completed**: Linux ✅ | Mac ⏳ | Windows ⏳
+            **Builds in progress...** Platform builds will complete shortly.
           files: |
             Orca-Linux-x86_64.tar.gz
             Orca-Linux-x86_64.AppImage
