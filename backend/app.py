@@ -2922,25 +2922,30 @@ def chat():
                     # ENHANCED: Handle large content that corrupts JSON
                     # If the string is very large, it likely contains content that's breaking JSON
                     if len(s) > 10000:  # 10KB threshold
-                        print(f"TOOL_ARGS_WARNING: Very large tool arguments ({len(s)} chars) - potential JSON corruption risk")
+                        print(f"TOOL_ARGS_WARNING: Very large tool arguments ({len(s)} chars) - attempting robust parsing")
                         
-                        # Try to extract just the key-value pairs and handle large content specially
+                        # ROBUST APPROACH: Try parsing as-is first, without regex extraction
                         try:
-                            # Look for the 'content' field and truncate it for parsing, then restore it
-                            content_match = _re.search(r'"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', s)
-                            if content_match:
-                                large_content = content_match.group(1)
-                                # Replace the large content with a placeholder for JSON parsing
-                                s_safe = s.replace(content_match.group(0), '"content": "__LARGE_CONTENT_PLACEHOLDER__"')
-                                try:
-                                    obj = _json.loads(s_safe)
-                                    # Restore the actual content (unescaped)
-                                    obj['content'] = large_content.encode().decode('unicode_escape')
-                                    return _json.dumps(obj, separators=(",", ":"))
-                                except Exception as e:
-                                    print(f"TOOL_ARGS_ERROR: Large content parsing failed: {e}")
+                            # Claude usually generates valid JSON even for large content
+                            obj = _json.loads(s)
+                            print(f"TOOL_ARGS_SUCCESS: Parsed large arguments successfully")
+                            return _json.dumps(obj, separators=(",", ":"))
                         except Exception as e:
-                            print(f"TOOL_ARGS_ERROR: Large content extraction failed: {e}")
+                            print(f"TOOL_ARGS_ERROR: Direct parsing failed: {e}")
+                            # Try to fix common JSON issues in large content
+                            try:
+                                # Remove any trailing commas that break JSON
+                                s_fixed = _re.sub(r',\s*}', '}', s)
+                                s_fixed = _re.sub(r',\s*]', ']', s_fixed)
+                                obj = _json.loads(s_fixed)
+                                print(f"TOOL_ARGS_SUCCESS: Parsed after fixing trailing commas")
+                                return _json.dumps(obj, separators=(",", ":"))
+                            except Exception as e2:
+                                print(f"TOOL_ARGS_ERROR: Failed even after comma fix: {e2}")
+                                # Last resort: Log the problematic section for debugging
+                                error_context = s[max(0, 110):min(len(s), 150)]
+                                print(f"TOOL_ARGS_DEBUG: Context around error position 116: ...{error_context}...")
+                                # Fall through to other parsing attempts below
                     
                     # Original parsing logic for normal-sized content
                     try:
@@ -3312,33 +3317,35 @@ def chat():
                                         
                                         # Accumulate function name and arguments
                                         if fn_name:
+                                            tool_call_aggregator[key]["name"] = fn_name
                                             # CRITICAL FIX: Send executing_tools IMMEDIATELY when tool name arrives
                                             # Don't wait for arguments to finish - show placeholder now!
-                                            if tool_call_aggregator[key]["name"] == "":  # First time seeing this tool name
-                                                tool_call_aggregator[key]["name"] = fn_name
+                                            if len(tool_call_aggregator[key]["name"]) > 0 and key not in locals().get('instant_notified', set()):  
+                                                if 'instant_notified' not in locals():
+                                                    instant_notified = set()
+                                                instant_notified.add(key)
                                                 
                                                 # Send immediate notification to frontend for instant UI feedback
+                                                # Use "tool_starting" status to create placeholder without triggering execution
                                                 early_tool_response = {
-                                                    "status": "executing_tools",
-                                                    "assistant_message": {
-                                                        "role": "assistant",
-                                                        "content": full_text_response or None,
-                                                        "tool_calls": [{
-                                                            "id": tool_ids[key],
-                                                            "function": {
-                                                                "name": fn_name,
-                                                                "arguments": "{}"  # Placeholder, will be updated
-                                                            }
-                                                        }]
-                                                    }
+                                                    "status": "tool_starting",
+                                                    "tool_starting": fn_name,
+                                                    "tool_id": tool_ids[key]
                                                 }
                                                 early_response_str = json.dumps(early_tool_response) + '\n'
-                                                print(f"⚡ INSTANT_TOOL_NOTIFICATION: Sending executing_tools for {fn_name} immediately ({len(early_response_str)} bytes)")
+                                                print(f"⚡ INSTANT_TOOL_NOTIFICATION: Sending tool_starting for {fn_name} immediately ({len(early_response_str)} bytes)")
                                                 yield early_response_str
                                             else:
                                                 tool_call_aggregator[key]["name"] = fn_name
                                         if fn_args:
+                                            # DEBUG: Log accumulated argument length
+                                            current_len = len(tool_call_aggregator[key]["arguments"])
                                             tool_call_aggregator[key]["arguments"] += fn_args
+                                            new_len = len(tool_call_aggregator[key]["arguments"])
+                                            if new_len > 5000 and current_len < 5000:
+                                                print(f"TOOL_ARGS_ACCUMULATING: {fn_name} arguments now {new_len} chars (crossed 5KB threshold)")
+                                            elif new_len > 15000 and current_len < 15000:
+                                                print(f"TOOL_ARGS_ACCUMULATING: {fn_name} arguments now {new_len} chars (getting very large!)")
                         
                         print(f"RESPONSE_DEBUG: Processed {chunk_count} chunks, text_length: {len(full_text_response)}, tools: {len(tool_call_aggregator)}")
                         try:
@@ -3540,6 +3547,21 @@ def chat():
                 for k, func in tool_call_aggregator.items():
                     func_name = func.get("name", "")
                     func_args = func.get("arguments", "")
+                    
+                    # DEBUG: Log raw arguments before detection
+                    if len(func_args) > 1000:
+                        print(f"BACKEND_DETECTION_DEBUG: {func_name} has {len(func_args)} char arguments")
+                        print(f"BACKEND_DETECTION_DEBUG: First 200 chars: {func_args[:200]}")
+                        print(f"BACKEND_DETECTION_DEBUG: Last 200 chars: {func_args[-200:]}")
+                        # Try to parse to see what the issue is
+                        try:
+                            test_parse = json.loads(func_args)
+                            print(f"BACKEND_DETECTION_DEBUG: Arguments parse OK, keys: {list(test_parse.keys())}")
+                        except Exception as e:
+                            print(f"BACKEND_DETECTION_DEBUG: Arguments parse FAILED: {e}")
+                            # Log character at position 60-61 where error occurs
+                            if len(func_args) > 61:
+                                print(f"BACKEND_DETECTION_DEBUG: Chars around position 60: '{func_args[55:65]}'")
                     
                     if _needs_backend_processing(func_name, func_args):
                         backend_tools_detected.append(func_name)

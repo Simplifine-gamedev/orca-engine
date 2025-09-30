@@ -3619,12 +3619,12 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
                     // Force scroll to show the tool placeholders
                     call_deferred("_scroll_to_bottom");
                     
-                    // CRITICAL FIX: Defer execution with LONG delay so placeholders are clearly visible
-                    // Using 1 second delay to give user time to see the placeholder state
-                    Ref<SceneTreeTimer> exec_timer = get_tree()->create_timer(1.0, true);
+                    // CRITICAL FIX: Defer execution to allow UI to paint placeholder first
+                    // Using 100ms delay - enough for visual feedback without feeling sluggish
+                    Ref<SceneTreeTimer> exec_timer = get_tree()->create_timer(0.1, true);
                     Array tool_calls_to_execute = history[history.size() - 1].tool_calls;
                     exec_timer->connect("timeout", callable_mp(this, &AIChatDock::_execute_tool_calls).bind(tool_calls_to_execute), CONNECT_ONE_SHOT);
-                    print_line("AI Chat: Scheduled tool execution for next frame (1000ms delay for visibility)");
+                    print_line("AI Chat: Scheduled tool execution for next frame (100ms delay for visibility)");
                 } else {
                     print_line("AI Chat: ERROR - No tool calls found to execute");
                     // Continue anyway to avoid hanging
@@ -4477,12 +4477,12 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			// Use centralized status handler for consistent messaging
 			_update_tool_placeholder_status(tool_call_id, function_name, "running");
 			
-			// CRITICAL FIX: Use SceneTreeTimer with LONG delay to ensure user sees status
+			// CRITICAL FIX: Use SceneTreeTimer to ensure user sees status
 			// This guarantees the UI has time to paint the status BEFORE tool executes
-			// 1 second delay = obvious visual feedback for user
-			Ref<SceneTreeTimer> timer = get_tree()->create_timer(1.0, true);
+			// 200ms delay = smooth visual feedback without feeling slow
+			Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.2, true);
 			timer->connect("timeout", callable_mp(this, &AIChatDock::_execute_frontend_tool_deferred).bind(tool_call_id, function_name, arguments_str), CONNECT_ONE_SHOT);
-			print_line("AI Chat: Scheduled " + function_name + " for deferred execution in 1000ms");
+			print_line("AI Chat: Scheduled " + function_name + " for deferred execution in 200ms");
 			continue;
 		}
 
@@ -6368,6 +6368,24 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		
 		print_line("AI Chat: Creating placeholder for tool: " + func_name + " (ID: " + tool_call_id + ")");
 
+		// CRITICAL FIX: Check if placeholder already exists (from tool_starting message)
+		PanelContainer *placeholder = nullptr;
+		if (chat_container) {
+			placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tool_call_id, true, false));
+		}
+		
+		if (placeholder) {
+			print_line("AI Chat: Placeholder already exists for " + tool_call_id + ", updating it instead of creating new one");
+			// Update the existing placeholder with detailed arguments
+			String descriptive_status = _get_immediate_tool_status(func_name, arguments_str);
+			if (descriptive_status.is_empty()) {
+				descriptive_status = _generate_executing_tool_message(func_name, arguments_str);
+			}
+			// Update the label in the existing placeholder
+			_update_tool_placeholder_with_description(tool_call_id, func_name, "executing", descriptive_status);
+			continue; // Skip creating a new placeholder
+		}
+
 		// CRITICAL FIX: Generate descriptive status IMMEDIATELY when creating placeholder
 		String descriptive_status = _get_immediate_tool_status(func_name, arguments_str);
 		if (descriptive_status.is_empty()) {
@@ -6380,10 +6398,10 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		print_line("AI Chat: Placeholder will show: '" + descriptive_status + "'");
 
 		// Create a container that will hold either the "loading" label or the final tool output.
-		PanelContainer *placeholder = memnew(PanelContainer);
+		placeholder = memnew(PanelContainer);
 		placeholder->set_name("tool_placeholder_" + tool_call_id);
 		tools_container->add_child(placeholder);
-		print_line("AI Chat: Added placeholder to tools_container");
+		print_line("AI Chat: Added new placeholder to tools_container");
 
 		Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
 		placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
