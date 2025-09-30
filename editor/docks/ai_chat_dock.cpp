@@ -3608,6 +3608,17 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
                 if (!history.is_empty() && history[history.size() - 1].role == "assistant" && 
                     !history[history.size() - 1].tool_calls.is_empty()) {
                     print_line("AI Chat: Found assistant message with tool calls, scheduling execution");
+                    
+                    // CRITICAL: Make sure the chat dock is visible before showing tool status
+                    // User might have switched to Script Editor tab
+                    if (!is_visible_in_tree()) {
+                        set_visible(true);
+                        print_line("AI Chat: FORCED CHAT DOCK VISIBLE - was hidden!");
+                    }
+                    
+                    // Force scroll to show the tool placeholders
+                    call_deferred("_scroll_to_bottom");
+                    
                     // CRITICAL FIX: Defer execution with LONG delay so placeholders are clearly visible
                     // Using 1 second delay to give user time to see the placeholder state
                     Ref<SceneTreeTimer> exec_timer = get_tree()->create_timer(1.0, true);
@@ -3883,9 +3894,14 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 	}
 
 	if (response_data.has("status") && response_data["status"] == "executing_tools") {
+		uint64_t receive_time = OS::get_singleton()->get_ticks_msec();
+		print_line("AI Chat: ⚡ RECEIVED executing_tools at T+" + String::num_uint64(receive_time) + "ms");
+		
 		if (response_data.has("assistant_message")) {
 			Dictionary assistant_message = response_data["assistant_message"];
 			Array tool_calls = assistant_message.get("tool_calls", Array());
+			
+			print_line("AI Chat: executing_tools contains " + String::num_int64(tool_calls.size()) + " tool calls");
 
 			// Mark tool call ids as executing to debounce UI creation across streams
 			for (int i = 0; i < tool_calls.size(); i++) {
@@ -3926,13 +3942,39 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					// CRITICAL FIX: Make the parent message bubble visible after attaching tools
 					// Find the message panel by searching chat_container children
 					if (chat_container) {
+						print_line("AI Chat: executing_tools - Searching for message panel in " + String::num_int64(chat_container->get_child_count()) + " children");
 						for (int search_i = chat_container->get_child_count() - 1; search_i >= 0; search_i--) {
 							Node *child = chat_container->get_child(search_i);
 							PanelContainer *msg_panel = Object::cast_to<PanelContainer>(child);
 							if (msg_panel && String(msg_panel->get_name()).begins_with("message_panel_")) {
+								print_line("AI Chat: executing_tools - Found message panel: " + msg_panel->get_name() + ", is_visible=" + String(msg_panel->is_visible() ? "true" : "false"));
 								msg_panel->set_visible(true);
 								msg_panel->queue_redraw();
-								print_line("AI Chat: executing_tools - Forced message panel visible after attaching tools");
+								
+								// NUCLEAR: Walk up the tree and make EVERYTHING visible
+								Node *parent = msg_panel->get_parent();
+								while (parent) {
+									Control *parent_ctrl = Object::cast_to<Control>(parent);
+									if (parent_ctrl) {
+										bool was_visible = parent_ctrl->is_visible();
+										parent_ctrl->set_visible(true);
+										print_line("AI Chat: executing_tools - Made parent visible: " + parent_ctrl->get_class() + " (was: " + String(was_visible ? "visible" : "invisible") + ")");
+									}
+									parent = parent->get_parent();
+									// Stop at the dock level
+									if (parent == this) break;
+								}
+								
+								print_line("AI Chat: executing_tools - Forced entire visibility chain");
+								
+								// DIAGNOSTIC: Check if the dock itself is visible
+								print_line("AI Chat: DIAGNOSTIC - AIChatDock is_visible=" + String(is_visible() ? "true" : "false"));
+								print_line("AI Chat: DIAGNOSTIC - AIChatDock is_visible_in_tree=" + String(is_visible_in_tree() ? "true" : "false"));
+								
+								// NUCLEAR: Force the entire dock to update NOW
+								queue_redraw();
+								update_minimum_size();
+								
 								break;
 							}
 						}
@@ -3955,10 +3997,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		}
 		print_line("AI Chat: executing_tools - Finished processing, returning");
 		
-		// NUCLEAR FIX: Clear the response buffer to force NOTIFICATION_PROCESS to return
-		// This allows Godot to render the placeholders BEFORE processing awaiting_frontend_action
-		response_buffer.clear();
-		print_line("AI Chat: executing_tools - Cleared response buffer to force render before tool execution");
+		// Don't clear response buffer - let remaining messages process normally
+		// The SceneTreeTimer delays will handle rendering between states
 		
 		return; // Stop further processing for this line
 	}
@@ -6324,8 +6364,20 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		String tool_call_id = tool_call.get("id", "");
 		Dictionary function_dict = tool_call.get("function", Dictionary());
 		String func_name = function_dict.get("name", "unknown_tool");
+		String arguments_str = function_dict.get("arguments", "{}");
 		
 		print_line("AI Chat: Creating placeholder for tool: " + func_name + " (ID: " + tool_call_id + ")");
+
+		// CRITICAL FIX: Generate descriptive status IMMEDIATELY when creating placeholder
+		String descriptive_status = _get_immediate_tool_status(func_name, arguments_str);
+		if (descriptive_status.is_empty()) {
+			descriptive_status = _generate_executing_tool_message(func_name, arguments_str);
+		}
+		if (descriptive_status.is_empty()) {
+			descriptive_status = func_name + "..."; // Final fallback
+		}
+		
+		print_line("AI Chat: Placeholder will show: '" + descriptive_status + "'");
 
 		// Create a container that will hold either the "loading" label or the final tool output.
 		PanelContainer *placeholder = memnew(PanelContainer);
@@ -6348,15 +6400,16 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		tool_vbox->add_child(tool_hbox);
 
         Label *tool_label = memnew(Label);
-        tool_label->set_text("[TOOL] " + func_name + "...");
-		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
+        // CRITICAL FIX: Use descriptive status from the start, not generic "[TOOL]"
+        tool_label->set_text("⚡ " + descriptive_status);
+		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color
 		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		tool_hbox->add_child(tool_label);
 
 		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
 		// They will be added in the final UI rebuild instead
 		
-		print_line("AI Chat: Created placeholder " + String::num_int64(i + 1) + "/" + String::num_int64(p_tool_calls.size()) + ": " + func_name);
+		print_line("AI Chat: Created placeholder " + String::num_int64(i + 1) + "/" + String::num_int64(p_tool_calls.size()) + " with status: " + descriptive_status);
 	}
 	
 	// CRITICAL FIX: Force the parent bubble panel to be visible after adding placeholders
@@ -12722,6 +12775,7 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 
 void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_id, const String &p_tool_name, const String &p_status, const String &p_description) {
 	if (chat_container == nullptr) {
+		print_line("AI Chat: UPDATE_STATUS - chat_container is NULL!");
 		return;
 	}
 	
@@ -12730,10 +12784,19 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 	
 	if (!placeholder) {
 		print_line("AI Chat: UPDATE_STATUS - No placeholder found for tool ID: " + p_tool_id);
+		print_line("AI Chat: UPDATE_STATUS - Searching in " + String::num_int64(chat_container->get_child_count()) + " chat_container children");
+		// List all placeholders to debug
+		for (int i = 0; i < chat_container->get_child_count(); i++) {
+			Node *child = chat_container->get_child(i);
+			if (String(child->get_name()).begins_with("tool_placeholder_")) {
+				print_line("AI Chat: UPDATE_STATUS - Found placeholder: " + child->get_name());
+			}
+		}
 		return;
 	}
 	
 	print_line("AI Chat: UPDATE_STATUS - Found placeholder for tool ID: " + p_tool_id + ", updating to: " + p_description);
+	print_line("AI Chat: UPDATE_STATUS - Placeholder is_visible=" + String(placeholder->is_visible() ? "true" : "false") + ", is_visible_in_tree=" + String(placeholder->is_visible_in_tree() ? "true" : "false"));
 	
 	// Find the label in the placeholder and update its text with description (correct hierarchy: placeholder->VBox->HBox->Label)
 	VBoxContainer *tool_vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));

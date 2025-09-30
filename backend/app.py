@@ -3312,7 +3312,31 @@ def chat():
                                         
                                         # Accumulate function name and arguments
                                         if fn_name:
-                                            tool_call_aggregator[key]["name"] = fn_name
+                                            # CRITICAL FIX: Send executing_tools IMMEDIATELY when tool name arrives
+                                            # Don't wait for arguments to finish - show placeholder now!
+                                            if tool_call_aggregator[key]["name"] == "":  # First time seeing this tool name
+                                                tool_call_aggregator[key]["name"] = fn_name
+                                                
+                                                # Send immediate notification to frontend for instant UI feedback
+                                                early_tool_response = {
+                                                    "status": "executing_tools",
+                                                    "assistant_message": {
+                                                        "role": "assistant",
+                                                        "content": full_text_response or None,
+                                                        "tool_calls": [{
+                                                            "id": tool_ids[key],
+                                                            "function": {
+                                                                "name": fn_name,
+                                                                "arguments": "{}"  # Placeholder, will be updated
+                                                            }
+                                                        }]
+                                                    }
+                                                }
+                                                early_response_str = json.dumps(early_tool_response) + '\n'
+                                                print(f"⚡ INSTANT_TOOL_NOTIFICATION: Sending executing_tools for {fn_name} immediately ({len(early_response_str)} bytes)")
+                                                yield early_response_str
+                                            else:
+                                                tool_call_aggregator[key]["name"] = fn_name
                                         if fn_args:
                                             tool_call_aggregator[key]["arguments"] += fn_args
                         
@@ -4478,7 +4502,24 @@ def chat():
                             "tool_calls": tool_calls_for_frontend
                         }
                     }
-                    yield json.dumps(frontend_response) + '\n'
+                    print(f"FRONTEND_PROCESSING: ⚡ SENDING executing_tools to frontend NOW with {len(tool_calls_for_frontend)} tools")
+                    
+                    # CRITICAL FIX: Add padding field to exceed buffer threshold (4KB) to force immediate transmission
+                    # Flask dev server buffers small messages, causing 30+ second delays
+                    base_response = json.dumps(frontend_response)
+                    padding_needed = max(0, 4096 - len(base_response) - 50)  # 50 bytes for JSON overhead
+                    if padding_needed > 0:
+                        # Add padding as a valid JSON field that frontend will ignore
+                        import json as _json
+                        response_dict = _json.loads(base_response)
+                        response_dict["_flush_padding"] = " " * padding_needed
+                        response_line = _json.dumps(response_dict) + '\n'
+                        print(f"FRONTEND_PROCESSING: Added {padding_needed} bytes of padding to force immediate transmission (total: {len(response_line)} bytes)")
+                    else:
+                        response_line = base_response + '\n'
+                    
+                    yield response_line
+                    print(f"FRONTEND_PROCESSING: ✅ Yielded executing_tools ({len(response_line)} bytes) - should transmit immediately")
                     
                     # The assistant message was already added above, so don't add it again
                     
