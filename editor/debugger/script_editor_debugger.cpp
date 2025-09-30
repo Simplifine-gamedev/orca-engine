@@ -360,6 +360,69 @@ void ScriptEditorDebugger::_thread_debug_enter(uint64_t p_thread_id) {
 	ERR_FAIL_COND(!threads_debugged.has(p_thread_id));
 	ThreadDebugged &td = threads_debugged[p_thread_id];
 	_set_reason_text(td.error, MESSAGE_ERROR);
+	
+	// CRITICAL FIX: Record stack trace tab errors for AI debugging
+	// These parser/runtime errors shown at top of Stack Trace need to be accessible to AI
+	if (!td.error.is_empty()) {
+		Dictionary rec;
+		rec["type"] = "debugger_break_error";
+		rec["time_ms"] = OS::get_singleton()->get_ticks_msec();
+		rec["message"] = td.error;
+		rec["is_warning"] = false;
+		rec["source"] = "debugger_stack_trace";
+		
+		// Try to extract file and line from error message if present
+		// Parser errors often include location like "res://path.gd:240 - Error"
+		String file;
+		int line = 0;
+		int c1 = td.error.find(":");
+		int c2 = (c1 >= 0) ? td.error.find(":", c1 + 1) : -1;
+		if (c1 >= 0 && c2 > c1) {
+			String maybe_path = td.error.substr(0, c1).strip_edges();
+			String line_str = td.error.substr(c1 + 1, c2 - c1 - 1).strip_edges();
+			if (maybe_path.contains("://") || maybe_path.contains(".gd") || maybe_path.begins_with("res://")) {
+				file = maybe_path;
+				if (line_str.is_valid_int()) {
+					line = line_str.to_int();
+				}
+			}
+		}
+		rec["file"] = file;
+		rec["line"] = line;
+		
+		// CRITICAL: Capture the actual stack dump as stack trace
+		// This is the stack shown below the error in Stack Trace tab
+		if (td.has_stackdump && stack_dump) {
+			Array stack_frames;
+			String stack_str;
+			TreeItem *root = stack_dump->get_root();
+			if (root) {
+				TreeItem *child = root->get_first_child();
+				while (child) {
+					Dictionary meta = child->get_metadata(0);
+					if (!meta.is_empty()) {
+						Dictionary frame;
+						frame["file"] = meta.get("file", "");
+						frame["line"] = meta.get("line", 0);
+						frame["function"] = meta.get("function", "");
+						frame["formatted"] = child->get_text(0);
+						stack_frames.push_back(frame);
+						stack_str += String(frame["formatted"]) + "\n";
+					}
+					child = child->get_next();
+				}
+			}
+			if (!stack_frames.is_empty()) {
+				rec["stack"] = stack_frames;
+				rec["stack_str"] = stack_str;
+			}
+		}
+		
+		#ifdef TOOLS_ENABLED
+		EditorTools::record_runtime_error(rec);
+		#endif
+	}
+	
 	emit_signal(SNAME("breaked"), true, td.can_debug, td.error, td.has_stackdump);
 	if (!td.error.is_empty() && EDITOR_GET("debugger/auto_switch_to_stack_trace")) {
 		tabs->set_current_tab(0);
@@ -542,6 +605,55 @@ void ScriptEditorDebugger::_msg_stack_dump(uint64_t p_thread_id, const Array &p_
 		}
 	}
 	emit_signal(SNAME("stack_dump"), stack_dump_info);
+	
+	// CRITICAL FIX: Update the most recent debugger break error with actual stack trace
+	// The stack dump arrives after the break, so we need to update the previously recorded error
+	#ifdef TOOLS_ENABLED
+	if (!stack_dump_info.is_empty() && !last_reason_text.is_empty()) {
+		// Find the most recent debugger_break_error and update it with stack trace
+		// We'll add a new entry with complete stack information
+		Dictionary rec;
+		rec["type"] = "debugger_stack_trace_error";
+		rec["time_ms"] = OS::get_singleton()->get_ticks_msec();
+		rec["message"] = last_reason_text;
+		rec["is_warning"] = false;
+		rec["source"] = "debugger_stack_trace";
+		
+		// Extract file and line from first stack frame (most relevant)
+		if (stack_dump_info.size() > 0) {
+			Dictionary first_frame = stack_dump_info[0];
+			rec["file"] = first_frame.get("file", "");
+			rec["line"] = first_frame.get("line", 0);
+			rec["source_func"] = first_frame.get("function", "");
+		}
+		
+		// Build complete stack trace for AI
+		Array stack_frames;
+		String stack_str;
+		for (int si = 0; si < stack_dump_info.size(); si++) {
+			Dictionary frame_data = stack_dump_info[si];
+			Dictionary frame;
+			frame["file"] = frame_data.get("file", "");
+			frame["line"] = frame_data.get("line", 0);
+			frame["function"] = frame_data.get("function", "");
+			frame["frame_index"] = frame_data.get("frame", 0);
+			
+			String formatted = itos(si) + " - " + String(frame["file"]) + ":" + 
+			                  itos((int)frame["line"]) + " - at function: " + String(frame["function"]);
+			frame["formatted"] = formatted;
+			stack_frames.push_back(frame);
+			stack_str += formatted + "\n";
+		}
+		
+		if (!stack_frames.is_empty()) {
+			rec["stack"] = stack_frames;
+			rec["stack_trace"] = stack_str;  // Use stack_trace for consistency with my earlier fix
+		}
+		
+		EditorTools::record_runtime_error(rec);
+		print_line("DEBUGGER_STACK_TRACE: Recorded error with stack: " + last_reason_text);
+	}
+	#endif
 }
 
 void ScriptEditorDebugger::_msg_stack_frame_vars(uint64_t p_thread_id, const Array &p_data) {

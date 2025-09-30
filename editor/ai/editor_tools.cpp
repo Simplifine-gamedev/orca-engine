@@ -524,6 +524,37 @@ Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
         summary["message"] = kv.key;
         summary["count"] = kv.value;
         summary["example"] = error_examples[kv.key];
+        
+        // CRITICAL FIX: Pull stack trace to top level so AI model can easily see it
+        Dictionary example = error_examples[kv.key];
+        summary["file"] = example.get("file", "");
+        summary["line"] = example.get("line", 0);
+        summary["source_func"] = example.get("source_func", "");
+        
+        // Include formatted stack trace at top level for AI visibility
+        if (example.has("stack_str")) {
+            summary["stack_trace"] = example.get("stack_str", "");
+        } else if (example.has("stack")) {
+            // Fallback: format stack array into readable string
+            Array stack = example.get("stack", Array());
+            String stack_text = "";
+            for (int si = 0; si < stack.size(); si++) {
+                Dictionary frame = stack[si];
+                String formatted = frame.get("formatted", "");
+                if (!formatted.is_empty()) {
+                    stack_text += formatted + "\n";
+                } else {
+                    String file = frame.get("file", "");
+                    int line = frame.get("line", 0);
+                    String func = frame.get("function", "");
+                    stack_text += "  at " + file + ":" + String::num_int64(line) + " in " + func + "\n";
+                }
+            }
+            if (!stack_text.is_empty()) {
+                summary["stack_trace"] = stack_text;
+            }
+        }
+        
         unique_errors.push_back(summary);
     }
     
@@ -612,13 +643,39 @@ Dictionary EditorTools::get_runtime_errors_detailed(const Dictionary &p_args) {
                 continue;
             }
             
-            out.push_back(e);
+            // CRITICAL FIX: Ensure stack trace is prominently available for AI
+            Dictionary error_with_trace = e;
+            if (!e.has("stack_trace") && e.has("stack_str")) {
+                error_with_trace["stack_trace"] = e.get("stack_str", "");
+            } else if (!e.has("stack_trace") && e.has("stack")) {
+                // Format stack array into readable string at top level
+                Array stack = e.get("stack", Array());
+                String stack_text = "";
+                for (int si = 0; si < stack.size(); si++) {
+                    Dictionary frame = stack[si];
+                    String formatted = frame.get("formatted", "");
+                    if (!formatted.is_empty()) {
+                        stack_text += formatted + "\n";
+                    } else {
+                        String file = frame.get("file", "");
+                        int line = frame.get("line", 0);
+                        String func = frame.get("function", "");
+                        stack_text += "  at " + file + ":" + String::num_int64(line) + " in " + func + "\n";
+                    }
+                }
+                if (!stack_text.is_empty()) {
+                    error_with_trace["stack_trace"] = stack_text;
+                }
+            }
+            
+            out.push_back(error_with_trace);
         }
         
         result["success"] = true;
         result["errors"] = out;
         result["count"] = out.size();
         result["grouped"] = false;
+        result["total_found"] = out.size();
         result["message"] = "Showing " + String::num_int64(out.size()) + " individual error instances";
     }
     
