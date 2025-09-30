@@ -110,6 +110,7 @@ class GodotLiteLLMLogger(CustomLogger):
                 if project_root:
                     import hashlib
                     user_context['project_id'] = hashlib.md5(project_root.encode()).hexdigest()
+                    user_context['project_root'] = project_root  # Save full path
                     
                     # Try to extract project name from path
                     try:

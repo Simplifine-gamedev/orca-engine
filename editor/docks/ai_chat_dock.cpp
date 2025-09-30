@@ -8919,7 +8919,29 @@ void AIChatDock::_on_apply_preview_to_editor(const String &p_path, const String 
 
 void AIChatDock::_on_discard_preview(const String &p_path, const NodePath &p_btns_path, const NodePath &p_status_label_path) {
     if (p_path.is_empty()) return;
-    EditorTools::clear_preview_overlay(p_path);
+    
+    // Find tool call ID first so we can access the unified handler
+    String tool_call_id;
+    for (const KeyValue<String, String> &entry : pending_apply_edits) {
+        if (entry.value == p_path) {
+            tool_call_id = entry.key;
+            break;
+        }
+    }
+    
+    // Use the unified reject handler which now restores original content
+    if (!tool_call_id.is_empty()) {
+        _handle_apply_edit_rejected(p_path);
+        // Update tool call button status
+        _update_tool_call_button_status(tool_call_id, "Rejected");
+        // Remove from pending edits
+        _remove_pending_edit(tool_call_id);
+    } else {
+        // Fallback if no tool call ID found
+        EditorTools::clear_preview_overlay(p_path);
+        _clear_pending_edit(p_path);
+    }
+    
     // Collapse to view mode: hide buttons
     if (!p_btns_path.is_empty() && has_node(p_btns_path)) {
         if (HBoxContainer *btns = Object::cast_to<HBoxContainer>(get_node(p_btns_path))) {
@@ -8933,24 +8955,6 @@ void AIChatDock::_on_discard_preview(const String &p_path, const NodePath &p_btn
                 lbl->set_text(t + " - Discarded");
             }
         }
-    }
-    // Clear from pending edits tracking
-    _clear_pending_edit(p_path);
-    
-    // Find tool call ID and use unified handler
-    String tool_call_id;
-    for (const KeyValue<String, String> &entry : pending_apply_edits) {
-        if (entry.value == p_path) {
-            tool_call_id = entry.key;
-            break;
-        }
-    }
-    
-    if (!tool_call_id.is_empty()) {
-        // Update tool call button status
-        _update_tool_call_button_status(tool_call_id, "Rejected");
-        // Remove from pending edits
-        _remove_pending_edit(tool_call_id);
     }
 }
 
@@ -15355,6 +15359,61 @@ void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const St
 
 void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
 	print_line("AI Chat: Unified reject handler for file: " + p_file_path);
+	
+	// CRITICAL FIX: Since we now write edits to disk immediately, we must restore the original content when rejecting
+	// Find the original content from the tool result in conversation history
+	String original_content = "";
+	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	
+	// Search for the tool result containing the original content for this file
+	for (int i = chat_history.size() - 1; i >= 0; i--) {
+		const ChatMessage &msg = chat_history[i];
+		if (msg.role == "tool" && !msg.tool_results.is_empty()) {
+			// Check if this tool result is for our file
+			Dictionary tool_result = msg.tool_results[0];
+			String result_path = tool_result.get("path", "");
+			if (result_path == p_file_path) {
+				original_content = tool_result.get("original_content", "");
+				if (!original_content.is_empty()) {
+					print_line("AI Chat: Found original content for " + p_file_path + " (" + String::num_int64(original_content.length()) + " chars)");
+					break;
+				}
+			}
+		}
+	}
+	
+	// Restore original content to disk if we found it
+	if (!original_content.is_empty() && !p_file_path.is_empty()) {
+		print_line("AI Chat: Restoring original content to disk for rejected edit: " + p_file_path);
+		
+		// Write original content back to disk
+		Ref<FileAccess> file = FileAccess::open(p_file_path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_string(original_content);
+			file->close();
+			print_line("AI Chat: Successfully restored original content (" + String::num_int64(original_content.length()) + " chars)");
+			
+			// Trigger Godot to reload the resource from disk
+			if (EditorFileSystem::get_singleton()) {
+				EditorFileSystem::get_singleton()->update_file(p_file_path);
+				EditorFileSystem::get_singleton()->scan_changes();
+			}
+			
+			// For resources (.tscn, .tres), reload them to refresh the editor
+			String ext = p_file_path.get_extension().to_lower();
+			if (ext == "tscn" || ext == "tres" || ext == "res") {
+				Ref<Resource> res = ResourceLoader::load(p_file_path);
+				if (res.is_valid()) {
+					ResourceSaver::save(res, p_file_path);
+					print_line("AI Chat: Reloaded and saved resource to ensure editor refresh: " + p_file_path);
+				}
+			}
+		} else {
+			print_line("AI Chat: Failed to open file for restoring original content: " + p_file_path);
+		}
+	} else if (original_content.is_empty()) {
+		print_line("AI Chat: WARNING - No original content found to restore for rejected edit: " + p_file_path);
+	}
 	
 	// Clear preview overlay
 	EditorTools::clear_preview_overlay(p_file_path);

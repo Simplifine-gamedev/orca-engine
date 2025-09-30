@@ -128,12 +128,22 @@ if [ -f ".env" ]; then
         echo "ℹ️  Skipping OAUTH_REDIRECT_URI auto-set (provide in .env or OAUTH_REDIRECT_URI env to configure)"
     fi
     
+    # CRITICAL: Force DEV_MODE=false for cloud deployments
+    echo "🔧 Overriding DEV_MODE=false for cloud deployment..."
+    if echo -n "false" | gcloud secrets create "DEV_MODE" --data-file=- --replication-policy="automatic" 2>/dev/null || \
+       echo -n "false" | gcloud secrets versions add "DEV_MODE" --data-file=- 2>/dev/null; then
+        echo "✅ DEV_MODE set to false for production"
+    fi
+    
     # Read .env and create secrets
-    SECRET_NAMES=("OAUTH_REDIRECT_URI")
+    SECRET_NAMES=("OAUTH_REDIRECT_URI" "DEV_MODE")
     while IFS='=' read -r key value || [ -n "$key" ]; do
         # Skip comments and empty lines
         [[ $key =~ ^#.*$ ]] && continue
         [[ -z "$key" ]] && continue
+        
+        # SKIP DEV_MODE - we force it to false above
+        [[ $key == "DEV_MODE" ]] && continue
         
         # Remove any quotes from value
         value=$(echo "$value" | sed 's/^"//;s/"$//')
@@ -174,7 +184,7 @@ if [ -n "$SECRET_REFS" ]; then
         --min-instances 2 \
         --max-instances 100 \
         --timeout 600 \
-        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION}" \
+        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION},DETAILED_LOGGING=auto" \
         --set-secrets "$SECRET_REFS"
 else
     echo "⚠️  No secrets found, deploying without secrets"
@@ -190,7 +200,7 @@ else
         --min-instances 2 \
         --max-instances 100 \
         --timeout 600 \
-        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION}"
+        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION},DETAILED_LOGGING=auto"
 fi
 
 # Get the service URL
@@ -202,6 +212,14 @@ echo ""
 echo "🔐 Secrets are securely managed via GCP Secret Manager"
 echo "💡 Your .env file values have been uploaded as secrets"
 echo ""
+if grep -q '^LOGGING_SERVER_URL=' .env 2>/dev/null; then
+    LOGGING_URL=$(grep '^LOGGING_SERVER_URL=' .env | head -n1 | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+    echo "📊 Logging Configuration:"
+    echo "   Logging Server: ${LOGGING_URL}"
+    echo "   Detailed Logging: ENABLED (auto mode for cloud)"
+    echo "   All LiteLLM API calls will be logged to Supabase"
+    echo ""
+fi
 echo "📋 To view logs:"
 echo "gcloud logs tail --follow --project=${PROJECT_ID} --resource-names=${SERVICE_NAME}"
 echo ""

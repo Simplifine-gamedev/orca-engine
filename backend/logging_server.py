@@ -168,6 +168,7 @@ def parse_log_data(raw_data: dict) -> dict:
             'user_provider': raw_data.get('user_provider'),
             'project_id': raw_data.get('project_id'),
             'project_name': raw_data.get('project_name'),
+            'project_root': raw_data.get('project_root'),  # Full project path
             'session_id': raw_data.get('session_id'),
             # Skip IP address for privacy: 'ip_address': None,
             'user_agent': raw_data.get('user_agent'),
@@ -308,9 +309,14 @@ def test_log():
         'test_data': structured_log
     })
 
+# CRITICAL: Start background processor at module level (not just in __main__)
+# This ensures it runs even when loaded by Gunicorn
+process_log_queue()
+logger.info("🔄 Log processing thread started at module level")
+
 if __name__ == '__main__':
-    # Start background log processor
-    process_log_queue()
+    # Already started above
+    # process_log_queue()
     
     # Print configuration
     logger.info("🚀 Starting LiteLLM Logging Server")

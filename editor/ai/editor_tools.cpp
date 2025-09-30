@@ -4127,9 +4127,42 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 		}
 		
 		if (root_node) {
-			result["success"] = true;
-			result["message"] = "New scene created with " + root_type + " root.";
-			result["root_type"] = root_type;
+			// CRITICAL FIX: Save the scene to disk if a path is provided
+			// Without this, the scene only exists in memory and is never written to disk
+			if (p_args.has("path")) {
+				String scene_path = p_args["path"];
+				
+				// Ensure directory exists
+				String dir_path = scene_path.get_base_dir();
+				String abs_dir = ProjectSettings::get_singleton()->globalize_path(dir_path);
+				if (!DirAccess::exists(abs_dir)) {
+					DirAccess::make_dir_recursive_absolute(abs_dir);
+				}
+				
+				// Save the scene to disk
+				EditorInterface::get_singleton()->save_scene_as(scene_path);
+				
+				// Verify the file was created
+				if (FileAccess::exists(scene_path)) {
+					result["success"] = true;
+					result["message"] = "New scene created and saved to " + scene_path;
+					result["root_type"] = root_type;
+					result["scene_path"] = scene_path;
+					result["file_created"] = true;
+				} else {
+					result["success"] = false;
+					result["message"] = "Scene created in memory but failed to save to disk: " + scene_path;
+					result["root_type"] = root_type;
+					result["scene_path"] = scene_path;
+					result["file_created"] = false;
+				}
+			} else {
+				// No path provided - scene only created in memory
+				result["success"] = true;
+				result["message"] = "New scene created with " + root_type + " root (in memory only - no path provided).";
+				result["root_type"] = root_type;
+				result["file_created"] = false;
+			}
 		} else {
 			result["success"] = false;
 			result["message"] = "Failed to create scene root node of type: " + root_type;
@@ -5926,9 +5959,49 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
             print_line("APPLY_EDIT: Skipping compilation check for better performance");
         }
 
+        // CRITICAL FIX: Write to disk immediately for ALL file types (like fs.write does)
+        // This matches the behavior of fs_write_whole_file and ensures consistency
+        String ext = path.get_extension().to_lower();
+        bool is_script_like = (ext == "gd" || ext == "cs");
+        bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
+        bool is_resource_file = (ext == "tscn" || ext == "tres" || ext == "res");
+        
+        print_line("APPLY_EDIT: Writing edited content to disk immediately for " + path + " (ext: " + ext + ")");
+        
+        // Write to disk FIRST (same as fs_write_whole_file)
+        Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+        if (file.is_valid()) {
+            file->store_string(full_edited_content);
+            file->close();
+            print_line("APPLY_EDIT: Successfully wrote " + String::num_int64(full_edited_content.length()) + " characters to disk");
+            
+            // Trigger Godot to reload the resource from disk
+            if (EditorFileSystem::get_singleton()) {
+                EditorFileSystem::get_singleton()->update_file(path);
+                EditorFileSystem::get_singleton()->scan_changes();
+                print_line("APPLY_EDIT: Triggered resource reload for " + path);
+            }
+            
+            // CRITICAL: Force shader cache clear for shader files
+            if (is_shader_like) {
+                Dictionary clear_args;
+                clear_args["cache_type"] = "all";
+                Dictionary clear_result = clear_shader_cache(clear_args);
+                print_line("APPLY_EDIT: Cleared shader cache for " + path);
+            }
+            
+            // Set preview overlay for diff UI (but file is already saved)
+            set_preview_overlay(path, full_edited_content);
+        } else {
+            Dictionary err_result;
+            err_result["success"] = false;
+            err_result["message"] = "Failed to write file to disk: " + path + " (FileAccess error)";
+            return err_result;
+        }
+        
         Dictionary result;
         result["success"] = true;
-        result["message"] = file_missing ? String("File does not exist; preview created. Use Accept/Reject to apply.") : String("Preview created. Use Accept/Reject to apply.");
+        result["message"] = file_missing ? String("File created and saved to disk. Use Reject to revert.") : String("Edit applied to disk. Use Reject to revert to original.");
         result["path"] = path;
         result["original_content"] = file_content;
         result["edited_content"] = full_edited_content;
@@ -5936,6 +6009,7 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         result["compilation_errors"] = comp_errors;
         result["has_errors"] = has_errors;
         result["dynamic_approach"] = false;
+        result["written_to_disk"] = true;  // Signal that file is already on disk
         
         // Copy inline_diff from backend response if available
         if (local_result.has("inline_diff")) {
