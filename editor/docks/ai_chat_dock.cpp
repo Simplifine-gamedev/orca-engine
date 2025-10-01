@@ -4151,7 +4151,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		// CRITICAL FIX: If last message is not assistant, create a new assistant message first!
 		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 		if (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role != "assistant") {
-			print_line("AI Chat: CONTENT_DELTA - Last message is " + chat_history[chat_history.size() - 1].role + ", creating new assistant message");
+			// print_line("AI Chat: CONTENT_DELTA - Last message is " + chat_history[chat_history.size() - 1].role + ", creating new assistant message");
 			_add_message_to_chat("assistant", "");  // Create empty assistant message
 		}
 		
@@ -4159,18 +4159,18 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		
 		// Safety check: ensure label is valid
 		if (!label) {
-			print_line("AI Chat: ERROR - invalid label in content_delta handler, cannot display text!");
+			// print_line("AI Chat: ERROR - invalid label in content_delta handler, cannot display text!");
 			return;
 		}
 		
-		print_line("AI Chat: CONTENT_DELTA - Label found: " + String(label->is_visible_in_tree() ? "VISIBLE" : "INVISIBLE"));
+		// print_line("AI Chat: CONTENT_DELTA - Label found: " + String(label->is_visible_in_tree() ? "VISIBLE" : "INVISIBLE"));
 		
 		if (!chat_history.is_empty()) {
 			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
 			if (last_msg.role == "assistant") {
 				last_msg.content += delta;
 				
-				print_line("AI Chat: CONTENT_DELTA - Accumulated content length: " + String::num_int64(last_msg.content.length()) + " chars");
+				// print_line("AI Chat: CONTENT_DELTA - Accumulated content length: " + String::num_int64(last_msg.content.length()) + " chars");
 				
 				// Update conversation timestamp for streaming content (but don't save yet)
 				if (current_conversation_index >= 0) {
@@ -4183,9 +4183,9 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					// Additional safety check for the converted content
 					if (!bbcode_content.is_empty()) {
 						label->set_text(bbcode_content);
-						print_line("AI Chat: CONTENT_DELTA - Text set on label (" + String::num_int64(bbcode_content.length()) + " chars BBCode)");
+						// print_line("AI Chat: CONTENT_DELTA - Text set on label (" + String::num_int64(bbcode_content.length()) + " chars BBCode)");
 					} else {
-						print_line("AI Chat: ERROR - BBCode conversion returned empty!");
+						// print_line("AI Chat: ERROR - BBCode conversion returned empty!");
 					}
 				}
 				
@@ -13829,8 +13829,17 @@ void AIChatDock::_on_editor_resource_saved(Object *p_res) {
         return;
     }
     print_line("AI Chat: resource_saved -> " + path);
-    // Clear overlay on save to ensure subsequent reads/checks use disk content
-    EditorTools::clear_preview_overlay(path);
+    
+    // CRITICAL FIX: Don't clear overlay if there are pending accept/reject buttons for this file
+    // When the agent calls tools like scene save, it shouldn't auto-reject pending file edits
+    bool has_pending_edits = file_to_tool_ids.has(path);
+    if (has_pending_edits) {
+        print_line("AI Chat: Skipping overlay clear for " + path + " - has pending accept/reject buttons");
+    } else {
+        // Only clear overlay if there are no pending user decisions
+        EditorTools::clear_preview_overlay(path);
+    }
+    
     // Always queue for periodic batch to avoid immediate requests
     String abs_path_res = ProjectSettings::get_singleton()->globalize_path(path);
     if (_should_index_file(abs_path_res)) {
@@ -14066,7 +14075,9 @@ void AIChatDock::_on_script_editor_diff_accepted(const String &p_path, const Str
 	print_line("AI Chat: *** SIGNAL RECEIVED *** Script editor diff accepted for: " + p_path);
 	print_line("AI Chat: Content length: " + itos(p_content.length()));
 	
-	// The script editor has already saved the file, so we just need to update our UI
+	// This signal is now ONLY emitted for user actions (not silent auto-accepts)
+	// Safe to handle it and update chat dock buttons
+	
 	// Find all tool call IDs for this file and update their UI
 	String matched_path = p_path;
 	if (!file_to_tool_ids.has(p_path)) {
@@ -14093,6 +14104,9 @@ void AIChatDock::_on_script_editor_diff_accepted(const String &p_path, const Str
 void AIChatDock::_on_script_editor_diff_rejected(const String &p_path) {
 	print_line("AI Chat: *** SIGNAL RECEIVED *** Script editor diff rejected for: " + p_path);
 	
+	// This signal is now ONLY emitted for user actions (not silent auto-rejects)
+	// Safe to handle it and update chat dock buttons
+	
 	// Find all tool call IDs for this file and update their UI
 	String matched_path = p_path;
 	if (!file_to_tool_ids.has(p_path)) {
@@ -14112,7 +14126,7 @@ void AIChatDock::_on_script_editor_diff_rejected(const String &p_path) {
 		}
 	}
 	
-	// Handle the rejection
+	// Handle the rejection - this will update chat dock buttons and restore original content
 	_handle_apply_edit_rejected(matched_path);
 }
 
@@ -14137,63 +14151,16 @@ void AIChatDock::_clear_pending_edit(const String &p_path) {
 void AIChatDock::_on_script_editor_save(const String &p_path) {
 	print_line("AI Chat: _on_script_editor_save called for: " + p_path);
 	
-	// Normalize the path
-	String normalized_path = p_path;
-	if (p_path.begins_with("res://")) {
-		// Path is already relative to project
-	} else if (p_path.is_absolute_path()) {
-		// Convert absolute to res:// if it's within the project
-		String project_path = ProjectSettings::get_singleton()->get_resource_path();
-		if (p_path.begins_with(project_path)) {
-			normalized_path = "res://" + p_path.substr(project_path.length()).lstrip("/");
-		}
-	}
+	// CRITICAL FIX: Don't auto-accept on script saves anymore
+	// This was causing false "Accepted (via Script Editor)" status when agent calls
+	// tools like scene.save_as which trigger script saves. The user should explicitly
+	// click Accept/Reject buttons - the files are already on disk anyway.
 	
-	// Check both paths in our new system
-	String matched_path = normalized_path;
-	if (!file_to_tool_ids.has(normalized_path)) {
-		matched_path = p_path;
-		if (!file_to_tool_ids.has(p_path)) {
-			print_line("AI Chat: No pending edits found for: " + p_path + " or " + normalized_path);
-			return;
-		}
-	}
+	print_line("AI Chat: Skipping auto-accept - user must click Accept/Reject buttons manually");
+	print_line("AI Chat: (Files are already written to disk, buttons control preview overlay only)");
 	
-	print_line("AI Chat: Found pending edits for: " + matched_path);
-	
-	// Get all tool call IDs for this file
-	Array tool_ids = file_to_tool_ids[matched_path];
-	for (int i = 0; i < tool_ids.size(); i++) {
-		String tool_id = tool_ids[i];
-		print_line("AI Chat: Auto-accepting edit via Script Editor - ID: " + tool_id);
-		
-		// Update the button status to show it was accepted via script editor
-		// Find the buttons container for this tool call
-		HBoxContainer *buttons_container = Object::cast_to<HBoxContainer>(chat_container->find_child("tool_call_buttons_" + tool_id, true, false));
-		if (buttons_container) {
-			// Clear existing buttons
-			for (int j = 0; j < buttons_container->get_child_count(); j++) {
-				Node *child = buttons_container->get_child(j);
-				child->queue_free();
-			}
-			
-			// Add status label showing it was accepted via script editor
-			Label *status_label = memnew(Label);
-			status_label->set_text("Accepted (via Script Editor)");
-			status_label->add_theme_icon_override("icon", get_theme_icon(SNAME("StatusSuccess"), SNAME("EditorIcons")));
-			status_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
-			status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-			buttons_container->add_child(status_label);
-		}
-	}
-	
-	// Remove all pending edits for this file
-	_remove_pending_edits_for_file(matched_path);
-	
-	// Clear any preview overlay since the file was saved
-	EditorTools::clear_preview_overlay(matched_path);
-	
-	print_line("AI Chat: Updated bubble for accepted diff: " + p_path);
+	// Do nothing - let accept/reject buttons stay visible until user clicks them
+	return;
 }
 
 void AIChatDock::_connect_script_editor_signals() {
@@ -15296,6 +15263,7 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 	// Apply preview overlay for instant feedback
 	if (!file_path.is_empty() && !edited_content.is_empty()) {
 		EditorTools::set_preview_overlay(file_path, edited_content);
+		print_line("AI Chat: Set preview overlay for " + file_path);
 		
 		// Show diff in script editor for script files
 		String ext = file_path.get_extension().to_lower();
@@ -15303,11 +15271,13 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 			bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
 			if (is_script_like) {
 				String original_content = p_result.get("original_content", "");
+				print_line("AI Chat: Showing diff in script editor for " + file_path + " (orig: " + itos(original_content.length()) + " chars, edited: " + itos(edited_content.length()) + " chars)");
 				// CRITICAL: Pass empty string for inline_diff - let script editor compute its own visual diff
 				// The inline_diff from tool result is for AI model context, not for visual display
 				_show_diff_in_script_editor(file_path, original_content, edited_content, "");
 			} else if (is_shader_like) {
 				String original_content = p_result.get("original_content", "");
+				print_line("AI Chat: Showing diff in shader editor for " + file_path);
 				// Same for shader editor
 				_show_diff_in_shader_editor_deferred(file_path, original_content, edited_content, "");
 			}

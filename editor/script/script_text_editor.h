@@ -170,7 +170,7 @@ class ScriptTextEditor : public ScriptEditorBase {
 	
 	// Core diff functions
 	void _clear_diff_data();
-	void _apply_all_diff_hunks(bool p_accept);
+	void _apply_all_diff_hunks(bool p_accept, bool p_silent = false);
 	void _apply_hunk(int p_hunk_index, bool p_accept);
 
 	void _create_diff_toolbar();
@@ -399,7 +399,7 @@ public:
 	bool has_diff() const { return has_pending_diffs; }
 	void apply_accepted_diffs();
 	String get_unified_diff_text() const;
-	void accept_all_diffs();
+	void accept_all_diffs(bool p_silent = false);
 	void reject_all_diffs();
 
 	ScriptTextEditor();

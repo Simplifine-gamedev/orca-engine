@@ -78,6 +78,79 @@ void EditorTools::clear_all_preview_overlays() {
 	s_preview_overlays.clear();
 }
 
+void EditorTools::_sync_script_editor_with_disk(const String &p_path, const String &p_content) {
+	// Update script editor's in-memory content to match what's on disk
+	// This prevents "reload from disk" popup when AI writes files
+	if (p_path.is_empty()) {
+		return;
+	}
+	
+	// First, reload the script resource from disk to get updated metadata
+	Ref<Script> script_resource = ResourceLoader::load(p_path);
+	if (script_resource.is_valid()) {
+		// Force reload from disk to update last_modified_time
+		script_resource->reload(true);
+		print_line("SYNC_EDITOR: Reloaded script resource from disk: " + p_path);
+	}
+	
+	// Find the script editor for this file
+	ScriptEditor *script_editor = ScriptEditor::get_singleton();
+	if (!script_editor) {
+		return;
+	}
+	
+	// Check all open script editors
+	TypedArray<ScriptEditorBase> open_editors = script_editor->call("get_open_script_editors");
+	for (int i = 0; i < open_editors.size(); i++) {
+		ScriptTextEditor *ste = Object::cast_to<ScriptTextEditor>(open_editors[i]);
+		if (ste) {
+			Ref<Script> script = ste->get_edited_resource();
+			if (script.is_valid() && script->get_path() == p_path) {
+				// Found the editor for this file
+				print_line("SYNC_EDITOR: Updating script editor content for " + p_path);
+				
+				// Update the source code
+				script->set_source_code(p_content);
+				
+				// Update the text editor content
+				CodeTextEditor *code_editor = ste->get_code_editor();
+				if (code_editor) {
+					CodeEdit *text_editor = code_editor->get_text_editor();
+					if (text_editor) {
+						// Preserve caret position
+						int caret_line = text_editor->get_caret_line();
+						int caret_col = text_editor->get_caret_column();
+						int h_scroll = text_editor->get_h_scroll();
+						int v_scroll = text_editor->get_v_scroll();
+						
+						// Update content
+						text_editor->set_text(p_content);
+						
+						// CRITICAL: Mark as saved version to prevent "unsaved" indicator
+						text_editor->tag_saved_version();
+						
+						// CRITICAL: Update last_modified_time to prevent "reload from disk" popup
+						// This is what _test_script_times_on_disk() checks!
+						ste->edited_file_data.last_modified_time = FileAccess::get_modified_time(p_path);
+						print_line("SYNC_EDITOR: Updated last_modified_time to " + String::num_uint64(ste->edited_file_data.last_modified_time));
+						
+						// Restore caret and scroll
+						if (caret_line < text_editor->get_line_count()) {
+							text_editor->set_caret_line(caret_line);
+							text_editor->set_caret_column(MIN(caret_col, text_editor->get_line(caret_line).length()));
+						}
+						text_editor->set_h_scroll(h_scroll);
+						text_editor->set_v_scroll(v_scroll);
+						
+						print_line("SYNC_EDITOR: Successfully synced editor content and marked as saved");
+					}
+				}
+				break; // Found and updated, exit loop
+			}
+		}
+	}
+}
+
 bool EditorTools::has_preview_overlay(const String &p_path) {
 	return !p_path.is_empty() && s_preview_overlays.has(p_path);
 }
@@ -2475,11 +2548,19 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
         file->close();
         print_line("FS_WRITE_WHOLE: Successfully wrote " + String::num_int64(content.length()) + " characters to disk");
         
-        // Trigger Godot to reload the resource from disk
+        // Trigger Godot to reload the resource from disk FIRST
         if (EditorFileSystem::get_singleton()) {
             EditorFileSystem::get_singleton()->update_file(path);
-            EditorFileSystem::get_singleton()->scan_changes();
             print_line("FS_WRITE_WHOLE: Triggered resource reload for " + path);
+        }
+        
+        // CRITICAL: Update script editor content to match disk to prevent "reload from disk" popup
+        // This must happen AFTER resource reload but BEFORE scan_changes
+        _sync_script_editor_with_disk(path, final_content);
+        
+        // Now scan for changes (script editor is already synced)
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->scan_changes();
         }
         
         // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
@@ -2683,14 +2764,21 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
         file->close();
         print_line("FS_WRITE_LINES: Successfully wrote " + String::num_int64(final_content.length()) + " characters to disk");
         
-        // Trigger Godot to reload the resource from disk
+        // Trigger Godot to reload the resource from disk FIRST
         if (EditorFileSystem::get_singleton()) {
             EditorFileSystem::get_singleton()->update_file(path);
-            EditorFileSystem::get_singleton()->scan_changes();
             print_line("FS_WRITE_LINES: Triggered resource reload for " + path);
         }
         
-        // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
+        // CRITICAL: Update script editor content to match disk to prevent "reload from disk" popup
+        _sync_script_editor_with_disk(path, final_content);
+        
+        // Now scan for changes (script editor is already synced)
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->scan_changes();
+        }
+        
+        // CRITICAL: Force shader cache clear for shader files to prevent compilation
         if (ext == "gdshader" || ext == "glsl" || ext == "shader") {
             Dictionary clear_args;
             clear_args["cache_type"] = "all";
@@ -3039,11 +3127,18 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
         file->close();
         print_line("FS_REPLACE_STRING: Successfully wrote " + String::num_int64(final_content.length()) + " characters to disk");
         
-        // Trigger Godot to reload the resource from disk
+        // Trigger Godot to reload the resource from disk FIRST
         if (EditorFileSystem::get_singleton()) {
             EditorFileSystem::get_singleton()->update_file(path);
-            EditorFileSystem::get_singleton()->scan_changes();
             print_line("FS_REPLACE_STRING: Triggered resource reload for " + path);
+        }
+        
+        // CRITICAL: Update script editor content to match disk to prevent "reload from disk" popup
+        _sync_script_editor_with_disk(path, final_content);
+        
+        // Now scan for changes (script editor is already synced)
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->scan_changes();
         }
         
         // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
@@ -6207,11 +6302,18 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
             file->close();
             print_line("APPLY_EDIT: Successfully wrote " + String::num_int64(full_edited_content.length()) + " characters to disk");
             
-            // Trigger Godot to reload the resource from disk
+            // Trigger Godot to reload the resource from disk FIRST
             if (EditorFileSystem::get_singleton()) {
                 EditorFileSystem::get_singleton()->update_file(path);
-                EditorFileSystem::get_singleton()->scan_changes();
                 print_line("APPLY_EDIT: Triggered resource reload for " + path);
+            }
+            
+            // CRITICAL: Update script editor content to match disk to prevent "reload from disk" popup
+            _sync_script_editor_with_disk(path, full_edited_content);
+            
+            // Now scan for changes (script editor is already synced)
+            if (EditorFileSystem::get_singleton()) {
+                EditorFileSystem::get_singleton()->scan_changes();
             }
             
             // CRITICAL: Force shader cache clear for shader files
@@ -7742,7 +7844,7 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 	
 	// Get parameters
 	String output_type = p_args.get("output_type", "all");
-	int max_lines = p_args.get("max_lines", 50);
+	int max_lines = p_args.get("max_lines", 200); // Increased to capture more game history
 	// uint64_t since_timestamp = p_args.get("since_timestamp", 0); // TODO: Implement timestamp filtering
 	
 	// Map output type to message type filter
@@ -7758,15 +7860,72 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 	// Get recent console output using our new EditorLog method
 	Array console_output = log->get_recent_console_output(max_lines, type_filter);
 	
+	// Filter out app debug messages (AI Chat: ...) before returning to AI
+	Array filtered_output;
+	int filtered_count = 0;
+	int kept_count = 0;
+	
+	print_line("CONSOLE_FILTER_START: Processing " + String::num_int64(console_output.size()) + " messages");
+	
+	for (int i = 0; i < console_output.size(); i++) {
+		Dictionary msg = console_output[i];
+		// CRITICAL: The field is "text" not "message"!
+		String message = msg.get("text", "");
+		
+		if (message.is_empty()) {
+			print_line("CONSOLE_FILTER_DEBUG [" + String::num_int64(i) + "]: EMPTY MESSAGE - SKIPPING");
+			filtered_count++;
+			continue;
+		}
+		
+		// Debug: Print ALL messages to see what we're getting
+		if (i < 10) {
+			print_line("CONSOLE_FILTER_DEBUG [" + String::num_int64(i) + "]: '" + message.substr(0, MIN(80, message.length())) + "'");
+		}
+		
+		// Skip app internal debug messages - be aggressive with filtering
+		if (message.begins_with("AI Chat:") || 
+		    message.begins_with("TOOL_") || 
+		    message.begins_with("RUNTIME_") ||
+		    message.begins_with("FRONTEND_") || 
+		    message.begins_with("BACKEND_") ||
+		    message.begins_with("STREAM_") || 
+		    message.begins_with("CONVERSATION_") ||
+		    message.begins_with("LITELLM_") ||
+		    message.begins_with("MODEL_") ||
+		    message.begins_with("CHAT_") ||
+		    message.begins_with("THINKING_") ||
+		    message.begins_with("RESPONSE_") ||
+		    message.begins_with("CLEANUP:") ||
+		    message.begins_with("HTTP_")) {
+			filtered_count++;
+			if (i < 5) {
+				print_line("  -> FILTERED (app debug)");
+			}
+			continue;
+		}
+		
+		// This is a game message - keep it!
+		filtered_output.push_back(msg);
+		kept_count++;
+		if (kept_count <= 3) {
+			print_line("  -> KEPT (game message)");
+		}
+	}
+	
+	print_line("CONSOLE_FILTER_RESULT: Filtered " + String::num_int64(filtered_count) + " messages, kept " + String::num_int64(kept_count) + " messages");
+	
 	result["success"] = true;
 	result["output_type"] = output_type;
 	result["max_lines"] = max_lines;
-	result["console_output"] = console_output;
-	result["total_messages"] = console_output.size();
-	result["message"] = "Retrieved " + String::num_int64(console_output.size()) + " console messages";
+	result["console_output"] = filtered_output;
+	result["total_messages"] = filtered_output.size();
+	result["filtered_debug_messages"] = filtered_count;
+	result["message"] = "Retrieved " + String::num_int64(filtered_output.size()) + " game console messages" + 
+	                   (filtered_count > 0 ? " (filtered " + String::num_int64(filtered_count) + " app debug messages)" : "");
 	
 	// Add helpful debug info
-	result["debug_tip"] = "This includes ALL print() statements from your game scripts during runtime!";
+	result["debug_tip"] = "This includes print() statements from your game scripts during runtime (app debug messages filtered out)";
 	
 	return result;
 }

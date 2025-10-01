@@ -61,6 +61,7 @@ public:
     static void set_preview_overlay(const String &p_path, const String &p_content);
     static void clear_preview_overlay(const String &p_path);
     static void clear_all_preview_overlays();
+    static void _sync_script_editor_with_disk(const String &p_path, const String &p_content);
     static bool has_preview_overlay(const String &p_path);
     static String get_preview_overlay(const String &p_path);
 

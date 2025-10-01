@@ -237,7 +237,7 @@ void ScriptTextEditor::apply_code() {
 		content.begins_with("+ ") || content.begins_with("- ")) {
 		print_line("WARNING: apply_code() detected diff markers in content! Auto-accepting diff to save clean content.");
 		if (has_pending_diffs) {
-			accept_all_diffs();
+			accept_all_diffs(true);  // CRITICAL: true = silent auto-accept, don't emit signals
 			return; // accept_all_diffs will call apply_code again with clean content
 		} else {
 			// Clean the content manually as a last resort
@@ -2114,7 +2114,7 @@ void ScriptTextEditor::_notification(int p_what) {
 			// to prevent saving diff markers in the file
 			if (has_pending_diffs) {
 				print_line("ScriptTextEditor: App closing with pending diffs, auto-accepting to save clean content");
-				accept_all_diffs();
+				accept_all_diffs(true);  // Silent auto-accept on close
 			}
 		} break;
 	}
@@ -3557,7 +3557,7 @@ void ScriptTextEditor::_apply_hunk(int p_hunk_index, bool p_accept) {
 
 // Removed old hunk action implementation - will use new approach
 
-void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
+void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept, bool p_silent) {
 	CodeEdit *te = code_editor->get_text_editor();
 
 	// Preserve current viewport and caret to avoid jumping to top after apply
@@ -3586,20 +3586,31 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 		}
 	}
 	
+	print_line("=== BRANCH SELECTION DEBUG ===");
+	print_line("p_accept = " + String(p_accept ? "true" : "false"));
+	print_line("p_silent = " + String(p_silent ? "true" : "false"));
+	print_line("has_individual_decisions = " + String(has_individual_decisions ? "true" : "false"));
+	print_line("has_inline_diff = " + String(has_inline_diff ? "true" : "false"));
+	print_line("all_hunks_rejected = " + String(all_hunks_rejected ? "true" : "false"));
+	print_line("diff_hunks.size() = " + itos(diff_hunks.size()));
+	print_line("=== END BRANCH DEBUG ===");
+	
 	if (!p_accept) {
 		// Rejecting all changes - use original content
 		final_content = original_content;
-		print_line("Using original content (rejecting all)");
+		print_line("BRANCH 1: Using original content (rejecting all)");
 	} else if (!has_individual_decisions || !has_inline_diff) {
 		// No individual decisions made or no inline diff - accept all changes
 		// Use modified_content which is the clean final content from backend
 		final_content = modified_content;
-		print_line("Using modified content (accepting all, no individual decisions)");
+		any_hunks_accepted = true;  // CRITICAL FIX: Mark as accepted to emit correct signal
+		print_line("BRANCH 2: Using modified content (accepting all, no individual decisions)");
 	} else if (all_hunks_rejected) {
 		// All hunks individually rejected
 		final_content = original_content;
-		print_line("Using original content (all hunks rejected)");
+		print_line("BRANCH 3: Using original content (all hunks rejected)");
 	} else {
+		print_line("BRANCH 4: Using individual hunk decisions");
         // Apply individual hunk decisions
         // We need to build the final content by processing the diff line by line
         if (has_inline_diff && !inline_diff_text.is_empty()) {
@@ -3722,7 +3733,16 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	print_line("Final content preview: " + final_content.left(200) + "...");
 	print_line("=== END CHECKING ===");
 
-	// Always clear the diff state and UI first.
+	// CRITICAL FIX: For silent auto-accepts (cleaning diff markers), don't touch the UI
+	// Just update the underlying source code so the file can be saved cleanly
+	if (p_silent) {
+		// Silent mode: Only update the source code for clean saves, preserve diff UI
+		script->set_source_code(final_content);
+		print_line("Silent auto-accept: Updated source code only, keeping diff UI visible");
+		return;  // Exit early - don't clear diff, don't update text editor, don't save
+	}
+
+	// Non-silent mode: Clear diff UI and apply changes normally
 	_clear_diff_data();
 
 	// Now, apply the final content (clean, without diff markers)
@@ -3735,7 +3755,7 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept) {
 	te->set_caret_column(MIN(prev_caret_col, te->get_line(safe_line).length()));
 	te->set_v_scroll(prev_v_scroll);
 
-	// Save the file after applying changes
+	// Save the file after applying changes and emit signals
 	if (script.is_valid()) {
 		String path = script->get_path();
 		
@@ -4214,14 +4234,14 @@ void ScriptTextEditor::_on_reject_all_pressed() {
 	}
 }
 
-void ScriptTextEditor::accept_all_diffs() {
-	print_line("ScriptTextEditor: accept_all_diffs called (from AI chat dock)");
+void ScriptTextEditor::accept_all_diffs(bool p_silent) {
+	print_line("ScriptTextEditor: accept_all_diffs called (silent=" + String(p_silent ? "true" : "false") + ")");
 	print_line("  has_pending_diffs: " + itos(has_pending_diffs));
 	print_line("  diff_hunks count: " + itos(diff_hunks.size()));
 	if (has_pending_diffs) {
 		// Don't modify individual hunk states when called from AI chat dock
 		// Just apply all changes
-		_apply_all_diff_hunks(true);
+		_apply_all_diff_hunks(true, p_silent);
 	}
 }
 
