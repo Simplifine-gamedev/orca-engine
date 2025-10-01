@@ -13,6 +13,11 @@ on:
 permissions:
   contents: write
 
+# Prevent multiple instances from publishing the same release simultaneously
+concurrency:
+  group: publish-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
 jobs:
   publish-when-all-complete:
     name: Publish Release When All Platforms Complete
@@ -23,39 +28,65 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check All Workflows Complete
+      - name: Wait and Check All Workflows Complete
         id: wait
         run: |
           # Get the commit SHA from the triggering workflow
           COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
           echo "Checking workflows for commit: $COMMIT_SHA"
           
-          # Check if all three required workflows have completed successfully
-          echo "Fetching workflow runs for commit $COMMIT_SHA..."
+          # Wait a bit to ensure all workflows are registered in the API
+          echo "Waiting 10 seconds for workflow registration..."
+          sleep 10
           
-          # Get all workflow runs for this commit
-          WORKFLOW_DATA=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$COMMIT_SHA&event=push")
+          # Retry logic: check up to 3 times with delays
+          MAX_RETRIES=3
+          RETRY_DELAY=15
+          ALL_SUCCESS=false
           
-          # Extract status for each required workflow
-          LINUX_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🐧 Linux Production Build") | .conclusion' | head -1)
-          MACOS_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🍎 macOS Clean Build") | .conclusion' | head -1)
-          WINDOWS_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🏁 Windows Production Build") | .conclusion' | head -1)
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo ""
+            echo "========== Attempt $i/$MAX_RETRIES =========="
+            
+            # Get all workflow runs for this commit
+            WORKFLOW_DATA=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=$COMMIT_SHA&event=push&per_page=100")
+            
+            # Extract status for each required workflow
+            LINUX_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🐧 Linux Production Build") | .conclusion' | head -1)
+            MACOS_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🍎 macOS Clean Build") | .conclusion' | head -1)
+            WINDOWS_STATUS=$(echo "$WORKFLOW_DATA" | jq -r '.workflow_runs[] | select(.name == "🏁 Windows Production Build") | .conclusion' | head -1)
+            
+            echo "Workflow Status Check:"
+            echo "  🐧 Linux: '$LINUX_STATUS'"
+            echo "  🍎 macOS: '$MACOS_STATUS'"
+            echo "  🏁 Windows: '$WINDOWS_STATUS'"
+            
+            # Check if all workflows completed successfully
+            if [[ "$LINUX_STATUS" == "success" && "$MACOS_STATUS" == "success" && "$WINDOWS_STATUS" == "success" ]]; then
+              echo ""
+              echo "✅ All workflows completed successfully!"
+              ALL_SUCCESS=true
+              break
+            else
+              echo ""
+              echo "⏳ Not all workflows completed yet"
+              
+              # If this is not the last retry, wait before trying again
+              if [[ $i -lt $MAX_RETRIES ]]; then
+                echo "Waiting $RETRY_DELAY seconds before retry..."
+                sleep $RETRY_DELAY
+              fi
+            fi
+          done
           
-          echo "Workflow Status Check:"
-          echo "  Linux: '$LINUX_STATUS'"
-          echo "  macOS: '$MACOS_STATUS'"
-          echo "  Windows: '$WINDOWS_STATUS'"
-          
-          # Check if all workflows completed successfully
-          if [[ "$LINUX_STATUS" == "success" && "$MACOS_STATUS" == "success" && "$WINDOWS_STATUS" == "success" ]]; then
-            echo "✅ All workflows completed successfully!"
+          if [[ "$ALL_SUCCESS" == "true" ]]; then
             echo "all_complete=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ Not all workflows have completed successfully yet"
-            echo "This is expected - will wait for other workflows to complete"
+            echo "❌ Final check: Not all workflows completed successfully"
+            echo "This workflow will not publish the release"
             echo "all_complete=false" >> $GITHUB_OUTPUT
           fi
 
@@ -97,7 +128,7 @@ jobs:
             -d '{
               "draft": false,
               "name": "Orca Engine v${{ steps.version.outputs.release_version }}",
-              "body": "🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**\n\n## Download for Your Platform:\n\n🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  \n🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  \n🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`\n\n## What's New:\n${{ github.event.workflow_run.display_title }}\n\n---\n**All builds completed**: Mac ✅ Signed & Notarized | Linux ✅ | Windows ✅\n\n### Build Details:\n- **Linux x86_64**: Complete editor with all features\n- **Windows x86_64**: Code-signed editor with all features  \n- **macOS Universal**: Notarized editor supporting Intel + Apple Silicon\n\n*Auto-update supported - The editor will notify you of newer versions.*"
+              "body": "🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**\n\n## Download for Your Platform:\n\n🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  \n🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  \n🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`\n\n## What's New:\n${{ github.event.workflow_run.head_commit.message }}\n\n---\n**All builds completed**: Mac ✅ Signed & Notarized | Linux ✅ | Windows ✅\n\n### Build Details:\n- **Linux x86_64**: Complete editor with all features\n- **Windows x86_64**: Code-signed editor with all features  \n- **macOS Universal**: Notarized editor supporting Intel + Apple Silicon\n\n*Auto-update supported - The editor will notify you of newer versions.*"
             }'
           
           echo "✅ Release published successfully: $RELEASE_TAG"
@@ -105,10 +136,31 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          echo "# 🚀 Publish Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
           if [ "${{ steps.wait.outputs.all_complete }}" = "true" ]; then
             echo "🎉 SUCCESS: Release v${{ steps.version.outputs.release_version }} published!"
             echo "All platform builds completed and release is now public."
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ✅ Success!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Release **v${{ steps.version.outputs.release_version }}** has been published successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All platform builds completed:" >> $GITHUB_STEP_SUMMARY
+            echo "- 🐧 Linux ✅" >> $GITHUB_STEP_SUMMARY
+            echo "- 🍎 macOS ✅" >> $GITHUB_STEP_SUMMARY
+            echo "- 🏁 Windows ✅" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.release_version }})" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ FAILED: Could not publish release"
-            echo "One or more platform builds may have failed or timed out."
+            echo "⏭️ SKIPPED: Not publishing yet"
+            echo "One or more platform builds are still in progress or incomplete."
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## ⏭️ Skipped" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Not all platform builds completed successfully yet." >> $GITHUB_STEP_SUMMARY
+            echo "Another workflow instance will publish when all builds complete." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Note:** This is normal behavior when builds complete at different times." >> $GITHUB_STEP_SUMMARY
           fi

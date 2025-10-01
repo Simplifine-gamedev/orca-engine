@@ -246,6 +246,35 @@ jobs:
             Orca-Linux-x86_64.tar.gz
             Orca-Linux-x86_64.AppImage
 
+      - name: Create and Push Git Tag
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          TAG_NAME="v${{ steps.version.outputs.release_version }}"
+          
+          # Check if tag already exists
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+            echo "Tag $TAG_NAME already exists"
+          else
+            echo "Creating tag $TAG_NAME"
+            git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+            git push origin "$TAG_NAME"
+            echo "✅ Tag $TAG_NAME created and pushed"
+            
+            # Wait and verify tag is available on remote
+            echo "Waiting for tag to propagate..."
+            for i in {1..10}; do
+              sleep 2
+              if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+                echo "✅ Tag verified on remote"
+                break
+              fi
+              echo "Retry $i/10..."
+            done
+          fi
+
       - name: Create Draft Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
@@ -257,15 +286,15 @@ jobs:
 
             ## Download for Your Platform:
             
-            🍎 **Mac**: Download `Orca.Mac.dmg` → Open DMG → Drag to Applications  
-            🏁 **Windows**: Download `Orca.Windows.exe` → Run directly  
+            🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  
+            🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  
             🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`
 
             ## What's New:
             ${{ github.event.head_commit.message }}
 
             ---
-            **Build completed**: Linux ✅ | Mac ⏳ | Windows ⏳
+            **Builds in progress...** Platform builds will complete shortly.
           files: |
             Orca-Linux-x86_64.tar.gz
             Orca-Linux-x86_64.AppImage
