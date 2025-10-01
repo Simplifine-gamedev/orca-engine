@@ -4957,8 +4957,8 @@ void AIChatDock::_execute_file_edit_deferred(const String &p_tool_call_id, const
                 original_disk_content = "";
             }
             
-            String cumulative_inline_diff = String();
-            call_deferred("_show_cumulative_diff_for_file", file_path, original_disk_content, final_content, cumulative_inline_diff);
+            // CRITICAL: Pass empty string for inline_diff - script editor generates its own visual diff
+            call_deferred("_show_cumulative_diff_for_file", file_path, original_disk_content, final_content, "");
         }
     }
     
@@ -5133,9 +5133,8 @@ void AIChatDock::_on_apply_edit_thread_done() {
                     original_disk_content = "";
                 }
                 
-                // Do not pass inline diff markers; let ScriptEditor compute display-only diff internally
-                String cumulative_inline_diff = String();
-                call_deferred("_show_cumulative_diff_for_file", file_path, original_disk_content, final_content, cumulative_inline_diff);
+                // CRITICAL: Pass empty string for inline_diff - script editor generates its own visual diff
+                call_deferred("_show_cumulative_diff_for_file", file_path, original_disk_content, final_content, "");
             }
         }
         
@@ -5457,6 +5456,7 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
     }
     
     // CRITICAL: Strip image data from content that goes to backend to prevent token explosion
+    // BUT preserve important debugging fields like inline_diff, original_content, edited_content
     content_to_serialize.erase("image_data");
     content_to_serialize.erase("base64");
     content_to_serialize.erase("data_uri");
@@ -5464,10 +5464,14 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
     content_to_serialize.erase("asset_data");
     content_to_serialize.erase("frames");
     
-    // Remove any other fields that look like base64 data
+    // Remove any other fields that look like base64 data, but preserve diff fields
     Array content_keys = content_to_serialize.keys();
     for (int k = 0; k < content_keys.size(); k++) {
         String key = content_keys[k];
+        // CRITICAL: Don't strip diff-related fields - AI model needs these!
+        if (key == "inline_diff" || key == "diff" || key == "original_content" || key == "edited_content") {
+            continue; // Keep these fields for AI model
+        }
         if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes")) {
             content_to_serialize.erase(key);
         }
@@ -5475,6 +5479,28 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
     
     if (add_response_start > 0) {
         print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - About to stringify (keys: " + String::num_int64(content_to_serialize.size()) + ")");
+    }
+    
+    // DIAGNOSTIC: Log if diff is present for file editing operations
+    if (p_name == "project_manager" || p_name == "apply_edit") {
+        bool has_inline_diff = content_to_serialize.has("inline_diff");
+        bool has_original_content = content_to_serialize.has("original_content");
+        bool has_edited_content = content_to_serialize.has("edited_content");
+        String op = p_args.get("op", "");
+        
+        print_line("AI Chat: FILE_EDIT_RESULT - Tool: " + p_name + ", Op: " + op + 
+                   ", has_inline_diff: " + String(has_inline_diff ? "YES" : "NO") + 
+                   ", has_original: " + String(has_original_content ? "YES" : "NO") + 
+                   ", has_edited: " + String(has_edited_content ? "YES" : "NO"));
+        
+        if (has_inline_diff) {
+            String diff_content = content_to_serialize.get("inline_diff", "");
+            int diff_length = diff_content.length();
+            print_line("AI Chat: FILE_EDIT_RESULT - inline_diff length: " + String::num_int64(diff_length) + " chars" + 
+                       (diff_length > 0 ? " ✅ WILL BE SENT TO AI MODEL" : " ⚠️ EMPTY DIFF"));
+        } else {
+            print_line("AI Chat: FILE_EDIT_RESULT - ⚠️ WARNING: inline_diff field missing from tool result!");
+        }
     }
     
     msg.content = json->stringify(content_to_serialize);
@@ -15277,12 +15303,13 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 			bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
 			if (is_script_like) {
 				String original_content = p_result.get("original_content", "");
-				String inline_diff = p_result.get("inline_diff", "");
-				_show_diff_in_script_editor(file_path, original_content, edited_content, inline_diff);
+				// CRITICAL: Pass empty string for inline_diff - let script editor compute its own visual diff
+				// The inline_diff from tool result is for AI model context, not for visual display
+				_show_diff_in_script_editor(file_path, original_content, edited_content, "");
 			} else if (is_shader_like) {
 				String original_content = p_result.get("original_content", "");
-				String inline_diff = p_result.get("inline_diff", "");
-				_show_diff_in_shader_editor_deferred(file_path, original_content, edited_content, inline_diff);
+				// Same for shader editor
+				_show_diff_in_shader_editor_deferred(file_path, original_content, edited_content, "");
 			}
 	}
 	

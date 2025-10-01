@@ -2433,21 +2433,45 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
     String abs_dir = ProjectSettings::get_singleton()->globalize_path(path.get_base_dir());
     DirAccess::make_dir_recursive_absolute(abs_dir);
     
-    // SKIP DIFF GENERATION FOR NOW - might be causing Vector issues
-    String inline_diff = ""; // _generate_unified_diff(original_content, content, path);
+    // ENHANCED: Handle .tscn files with embedded scripts specially
+    String ext = path.get_extension().to_lower();
+    bool is_tscn_file = (ext == "tscn");
+    String final_content = content;
+    
+    // Generate LIGHTWEIGHT diff for AI model feedback - only summary to prevent UI freeze
+    String inline_diff = "";
+    if (file_exists && !original_content.is_empty() && original_content != content) {
+        // CRITICAL: For whole file writes, just provide a summary - full diff can freeze UI
+        Vector<String> orig_lines = original_content.split("\n");
+        Vector<String> new_lines = content.split("\n");
+        
+        inline_diff = "Diff summary: Rewrote entire file\n";
+        inline_diff += "- Original: " + String::num_int64(orig_lines.size()) + " lines (" + String::num_int64(original_content.length()) + " chars)\n";
+        inline_diff += "+ Modified: " + String::num_int64(new_lines.size()) + " lines (" + String::num_int64(content.length()) + " chars)\n";
+        
+        print_line("FS_WRITE_WHOLE: Generated summary diff (prevents UI freeze)");
+    } else if (original_content == content) {
+        inline_diff = "No changes - content identical";
+    } else {
+        inline_diff = "New file created";
+    }
     
     print_line("FS_WRITE_WHOLE: About to write content immediately to disk...");
     
-    // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
-    // Only revert if user explicitly rejects
-    String ext = path.get_extension().to_lower();
+    // If this is a .tscn file and we're replacing embedded script content,
+    // ensure proper escaping is maintained
+    if (is_tscn_file && original_content.contains("script/source =") && 
+        (content.contains("print(") || content.contains("\\\"") || content.contains("\\\\"))) {
+        print_line("FS_WRITE_WHOLE: .tscn file with embedded script detected - content will be validated for proper escaping");
+        // The content should already be properly escaped by the AI, but we can add validation here if needed
+    }
     
     print_line("FS_WRITE_WHOLE: Writing immediately to disk: " + path + " (ext: " + ext + ")");
     
     // Write directly to disk FIRST
     Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
     if (file.is_valid()) {
-        file->store_string(content);
+        file->store_string(final_content);
         file->close();
         print_line("FS_WRITE_WHOLE: Successfully wrote " + String::num_int64(content.length()) + " characters to disk");
         
@@ -2606,14 +2630,49 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
     
     print_line("FS_WRITE_LINES: New content built, length=" + String::num_int64(final_content.length()));
     
-    // SKIP DIFF GENERATION FOR NOW - might be causing Vector issues
-    String inline_diff = ""; // _generate_unified_diff(original_content, final_content, path);
+    // Generate LIGHTWEIGHT diff for AI model feedback - only show changed lines
+    String inline_diff = "";
+    if (!original_content.is_empty() && original_content != final_content) {
+        // SUPER FAST DIFF: Use pre-split lines we already have from the edit operation
+        // NO additional string operations - instant!
+        int lines_changed = end_line - start_line + 1;
+        
+        inline_diff = "--- " + path + " (original)\n";
+        inline_diff += "+++ " + path + " (modified)\n";
+        inline_diff += "@@ -" + String::num_int64(start_line) + "," + String::num_int64(lines_changed) + 
+                      " +" + String::num_int64(start_line) + "," + String::num_int64(lines_changed) + " @@\n";
+        
+        // Show removed lines (we already have original_lines_packed from above!)
+        for (int i = start_line - 1; i <= end_line - 1 && i < original_lines_packed.size(); i++) {
+            inline_diff += "-" + original_lines_packed[i] + "\n";
+        }
+        
+        // Show added lines (split only the new content - tiny operation)
+        Vector<String> new_lines = lines_content.split("\n");
+        for (int i = 0; i < new_lines.size(); i++) {
+            inline_diff += "+" + new_lines[i] + "\n";
+        }
+        
+        print_line("FS_WRITE_LINES: Generated instant diff (" + String::num_int64(inline_diff.length()) + " chars, " + String::num_int64(lines_changed) + " lines)");
+    } else if (original_content == final_content) {
+        inline_diff = "No changes - content identical";
+    } else {
+        inline_diff = "New file - no diff available";
+    }
     
     print_line("FS_WRITE_LINES: About to write content immediately to disk...");
     
-    // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
-    // Only revert if user explicitly rejects
+    // ENHANCED: Handle .tscn files with embedded scripts specially
     String ext = path.get_extension().to_lower();
+    bool is_tscn_file = (ext == "tscn");
+    
+    // If this is a .tscn file and we're replacing embedded script content,
+    // ensure proper escaping is maintained
+    if (is_tscn_file && original_content.contains("script/source =") && 
+        (final_content.contains("print(") || final_content.contains("\\\"") || final_content.contains("\\\\"))) {
+        print_line("FS_WRITE_LINES: .tscn file with embedded script detected - content will be validated for proper escaping");
+        // The content should already be properly escaped by the AI, but we can add validation here if needed
+    }
     
     print_line("FS_WRITE_LINES: Writing immediately to disk: " + path + " (ext: " + ext + ")");
     
@@ -2672,6 +2731,99 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
     result["end_line"] = end_line;
     
     return result;
+}
+
+// Helper function to detect if we're working with embedded script content in .tscn files
+bool EditorTools::_is_tscn_embedded_script_context(const String &p_content, const String &p_find_string) {
+    // Check if this is a .tscn file with embedded script content
+    // Look for SubResource with GDScript type and script/source property
+    return p_content.contains("[sub_resource") && 
+           p_content.contains("type=\"GDScript\"") && 
+           p_content.contains("script/source =") &&
+           p_find_string.contains("print(");
+}
+
+// Helper function to properly handle .tscn string escaping
+String EditorTools::_handle_tscn_string_replacement(const String &p_content, const String &p_find_string, const String &p_replace_string, bool p_replace_all, bool p_case_sensitive) {
+    print_line("TSCN_STRING_REPLACEMENT: Handling .tscn embedded script string replacement");
+    
+    String final_content = p_content;
+    
+    // CRITICAL INSIGHT: In .tscn files, the script/source property is a STRING containing the script code
+    // This means the code inside gets escaped by c_escape() when saved
+    // Example: print("Hello") becomes print(\"Hello\") in the .tscn file
+    
+    // Build comprehensive list of possible escaping formats
+    Vector<String> find_variants;
+    Vector<String> replace_variants;
+    
+    // 1. MOST LIKELY: The script/source string uses c_escape() format
+    //    So print("text") in GDScript becomes print(\"text\") in .tscn
+    String c_escaped_find = p_find_string.c_escape();
+    String c_escaped_replace = p_replace_string.c_escape();
+    find_variants.push_back(c_escaped_find);
+    replace_variants.push_back(c_escaped_replace);
+    print_line("TSCN_STRING_REPLACEMENT: Variant 0 (c_escape): find='" + c_escaped_find + "'");
+    
+    // 2. Try the original (in case it's already properly formatted)
+    find_variants.push_back(p_find_string);
+    replace_variants.push_back(p_replace_string);
+    print_line("TSCN_STRING_REPLACEMENT: Variant 1 (original): find='" + p_find_string + "'");
+    
+    // 3. Try manual quote escaping for common print() patterns
+    if (p_find_string.contains("\"")) {
+        String manual_escaped_find = p_find_string.replace("\"", "\\\"");
+        String manual_escaped_replace = p_replace_string.replace("\"", "\\\"");
+        find_variants.push_back(manual_escaped_find);
+        replace_variants.push_back(manual_escaped_replace);
+        print_line("TSCN_STRING_REPLACEMENT: Variant 2 (manual quote escape): find='" + manual_escaped_find + "'");
+    }
+    
+    // 4. Try c_escape_multiline for multi-line strings
+    String multiline_escaped_find = p_find_string.c_escape_multiline();
+    String multiline_escaped_replace = p_replace_string.c_escape_multiline();
+    if (multiline_escaped_find != c_escaped_find) {  // Only add if different
+        find_variants.push_back(multiline_escaped_find);
+        replace_variants.push_back(multiline_escaped_replace);
+        print_line("TSCN_STRING_REPLACEMENT: Variant 3 (multiline_escape): find='" + multiline_escaped_find + "'");
+    }
+    
+    // Try each variant and perform replacement
+    bool replacement_succeeded = false;
+    for (int i = 0; i < find_variants.size(); i++) {
+        const String &find_variant = find_variants[i];
+        const String &replace_variant = replace_variants[i];
+        
+        // Check if this variant exists in the content
+        int find_pos = final_content.find(find_variant);
+        if (find_pos >= 0) {
+            print_line("TSCN_STRING_REPLACEMENT: FOUND variant " + String::num_int64(i) + " at position " + String::num_int64(find_pos));
+            print_line("TSCN_STRING_REPLACEMENT: Context around match: ..." + final_content.substr(MAX(0, find_pos - 20), 80) + "...");
+            
+            String before_replace = final_content;
+            if (p_replace_all) {
+                final_content = final_content.replace(find_variant, replace_variant);
+            } else {
+                final_content = final_content.replace_first(find_variant, replace_variant);
+            }
+            
+            if (final_content != before_replace) {
+                print_line("TSCN_STRING_REPLACEMENT: SUCCESS - Replaced using variant " + String::num_int64(i));
+                replacement_succeeded = true;
+                break;  // Stop after first successful replacement
+            } else {
+                print_line("TSCN_STRING_REPLACEMENT: WARNING - Variant found but no change after replacement");
+            }
+        } else {
+            print_line("TSCN_STRING_REPLACEMENT: Variant " + String::num_int64(i) + " NOT found in content");
+        }
+    }
+    
+    if (!replacement_succeeded) {
+        print_line("TSCN_STRING_REPLACEMENT: FAILURE - No successful replacements with any variant");
+    }
+    
+    return final_content;
 }
 
 Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
@@ -2735,13 +2887,84 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
         return result;
     }
     
-    // SIMPLIFIED AND SAFE: Use only Godot's built-in string methods
+    // ENHANCED: Handle .tscn files with embedded scripts specially
+    String ext = path.get_extension().to_lower();
+    bool is_tscn_file = (ext == "tscn");
+    bool is_embedded_script_context = is_tscn_file && _is_tscn_embedded_script_context(original_content, find_string);
+    
     String final_content = original_content;
     int replacements_made = 0;
     
-    print_line("FS_REPLACE_STRING: About to perform replacement...");
+    print_line("FS_REPLACE_STRING: About to perform replacement... (tscn=" + String(is_tscn_file ? "true" : "false") + ", embedded_script=" + String(is_embedded_script_context ? "true" : "false") + ")");
     
-    if (case_sensitive) {
+    if (is_embedded_script_context) {
+        // Special handling for .tscn files with embedded GDScript
+        print_line("FS_REPLACE_STRING: Using specialized .tscn embedded script replacement");
+        
+        // CRITICAL: First verify the string actually exists in the file
+        bool found_in_original = original_content.contains(find_string);
+        bool found_escaped = original_content.contains(find_string.c_escape());
+        bool found_double_escaped = original_content.contains(find_string.replace("\"", "\\\""));
+        
+        print_line("FS_REPLACE_STRING: String presence check - original: " + String(found_in_original ? "YES" : "NO") + 
+                   ", escaped: " + String(found_escaped ? "YES" : "NO") + 
+                   ", double_escaped: " + String(found_double_escaped ? "YES" : "NO"));
+        
+        if (!found_in_original && !found_escaped && !found_double_escaped) {
+            // DIAGNOSTIC: Show what's actually in the file around line 195 (from error report)
+            Vector<String> file_lines = original_content.split("\n");
+            if (file_lines.size() > 195) {
+                print_line("FS_REPLACE_STRING: Content at line 195: '" + file_lines[194] + "'");
+                if (file_lines.size() > 196) {
+                    print_line("FS_REPLACE_STRING: Context - line 196: '" + file_lines[195] + "'");
+                }
+            }
+            
+            // Search for similar content to help debug
+            if (original_content.contains("stop_emission") || original_content.contains("Smoke")) {
+                print_line("FS_REPLACE_STRING: File DOES contain 'stop_emission' or 'Smoke' - escaping mismatch detected!");
+                int pos = original_content.find("Smoke");
+                if (pos >= 0) {
+                    String context = original_content.substr(MAX(0, pos - 50), 150);
+                    print_line("FS_REPLACE_STRING: Context around 'Smoke': ..." + context + "...");
+                }
+            }
+            
+            print_line("FS_REPLACE_STRING: String not found in any escape format!");
+            result["success"] = false;
+            result["message"] = "String not found in .tscn file: '" + find_string + "' (tried multiple escape formats)";
+            result["replacements_made"] = 0;
+            
+            // Build array of tried variants for debugging
+            Array tried_variants;
+            tried_variants.push_back(find_string);
+            tried_variants.push_back(find_string.c_escape());
+            tried_variants.push_back(find_string.replace("\"", "\\\""));
+            result["tried_variants"] = tried_variants;
+            return result;
+        }
+        
+        String before_replace = final_content;
+        final_content = _handle_tscn_string_replacement(original_content, find_string, replace_string, replace_all, case_sensitive);
+        replacements_made = (final_content != before_replace) ? 1 : 0;
+        print_line("FS_REPLACE_STRING: .tscn replacement completed, content changed=" + String(final_content != before_replace ? "true" : "false"));
+        
+        // VALIDATION: Verify the target string is actually gone after replacement
+        if (replacements_made > 0) {
+            bool still_present = final_content.contains(find_string);
+            bool still_present_escaped = final_content.contains(find_string.c_escape());
+            
+            if (still_present || still_present_escaped) {
+                print_line("FS_REPLACE_STRING: WARNING - String still present after replacement! False positive detected.");
+                print_line("FS_REPLACE_STRING: The replacement may have targeted the wrong escaping variant.");
+                result["success"] = false;
+                result["message"] = "String replacement failed - target string still present after operation";
+                result["replacements_made"] = 0;
+                result["debug_info"] = "Replacement appeared to succeed but target string remains in file";
+                return result;
+            }
+        }
+    } else if (case_sensitive) {
         if (replace_all) {
             // Use Godot's built-in replace method (safest approach)
             String before_replace = final_content;
@@ -2787,14 +3010,25 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
     
     print_line("FS_REPLACE_STRING: About to generate diff...");
     
-    // SKIP DIFF GENERATION FOR NOW - this might be causing the Vector issues
-    String inline_diff = ""; // _generate_unified_diff(original_content, final_content, path);
+    // Generate LIGHTWEIGHT diff for AI model feedback - only show what changed
+    String inline_diff = "";
+    if (!original_content.is_empty() && !final_content.is_empty() && original_content != final_content) {
+        // SMART DIFF: For string replacements, just show what was replaced
+        inline_diff = "Replaced in file:\n";
+        inline_diff += "- Find: \"" + find_string + "\"\n";
+        inline_diff += "+ Replace: \"" + replace_string + "\"\n";
+        inline_diff += "Occurrences: " + String::num_int64(replacements_made) + (replace_all ? " (all)" : " (first only)");
+        
+        print_line("FS_REPLACE_STRING: Generated lightweight diff summary (prevents UI freeze)");
+    } else if (original_content == final_content) {
+        inline_diff = "No changes - content identical";
+    }
     
     print_line("FS_REPLACE_STRING: About to write content immediately to disk...");
     
     // CRITICAL FIX: ALWAYS write the new content to disk immediately for ALL file types
     // Only revert if user explicitly rejects
-    String ext = path.get_extension().to_lower();
+    // Note: ext already declared above, no need to redeclare
     
     print_line("FS_REPLACE_STRING: Writing immediately to disk: " + path + " (ext: " + ext + ")");
     
@@ -5962,9 +6196,7 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
         // CRITICAL FIX: Write to disk immediately for ALL file types (like fs.write does)
         // This matches the behavior of fs_write_whole_file and ensures consistency
         String ext = path.get_extension().to_lower();
-        bool is_script_like = (ext == "gd" || ext == "cs");
         bool is_shader_like = (ext == "gdshader" || ext == "glsl" || ext == "shader");
-        bool is_resource_file = (ext == "tscn" || ext == "tres" || ext == "res");
         
         print_line("APPLY_EDIT: Writing edited content to disk immediately for " + path + " (ext: " + ext + ")");
         

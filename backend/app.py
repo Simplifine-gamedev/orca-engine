@@ -4946,6 +4946,109 @@ def generate_script():
             "success": False
         }), 500
 
+def _analyze_tscn_embedded_script_context(file_content: str, edit_prompt: str) -> str:
+    """
+    Analyze .tscn files with embedded GDScript to provide proper escaping guidance.
+    This helps the AI understand how to properly format strings for .tscn files.
+    """
+    if not file_content.strip():
+        return ""
+    
+    # Check if this is a .tscn file with embedded scripts
+    has_embedded_script = ("[sub_resource" in file_content and 
+                          "type=\"GDScript\"" in file_content and 
+                          "script/source =" in file_content)
+    
+    if not has_embedded_script:
+        return ""
+    
+    # Extract embedded script content to analyze escaping patterns
+    import re
+    script_pattern = r'script/source = "([^"]*(?:\\.[^"]*)*)"'
+    matches = re.findall(script_pattern, file_content, re.DOTALL | re.MULTILINE)
+    
+    rules = [
+        "=== .TSCN EMBEDDED SCRIPT ESCAPING RULES ===",
+        "- You are editing a .tscn scene file with embedded GDScript",
+        "- Strings in the embedded script MUST be properly escaped for .tscn format",
+        "- Use \\\" instead of \" for quotation marks inside print statements",
+        "- Use \\\\ instead of \\ for backslashes",
+        "- Newlines should be literal \\n in the script/source string",
+        "- Example: print(\"Hello\") should become print(\\\"Hello\\\") in .tscn format",
+        "- Example: print(\"🌬️ Smoke emission stopped\") should become print(\\\"🌬️ Smoke emission stopped\\\") in .tscn",
+        "- The entire script content is stored as a single escaped string",
+        ""
+    ]
+    
+    if matches:
+        # Analyze existing escaping patterns in the file
+        for i, script_content in enumerate(matches[:2]):  # Only analyze first 2 scripts
+            rules.append(f"- Existing embedded script {i+1} escaping pattern detected:")
+            
+            # Show how quotes are currently escaped
+            if "\\\"" in script_content:
+                rules.append("  • Contains properly escaped quotes (\\\")")
+            
+            # Show how backslashes are escaped
+            if "\\\\" in script_content:
+                rules.append("  • Contains properly escaped backslashes (\\\\)")
+            
+            # Show a snippet of the escaping pattern
+            if len(script_content) > 0:
+                preview = script_content[:100].replace('\n', '\\n')
+                rules.append(f"  • Preview: {preview}...")
+    
+    rules.extend([
+        "",
+        "CRITICAL: When editing this file, maintain the EXACT same escaping pattern!",
+        "If you see \\\" in the original, keep using \\\" in your edits.",
+        "If you see \\\\ in the original, keep using \\\\ in your edits."
+    ])
+    
+    return '\n'.join(rules)
+
+def _validate_tscn_content(file_content: str, operation: str) -> dict:
+    """
+    Validate .tscn file content for common issues that cause tool failures.
+    Returns validation results to help debug .tscn editing problems.
+    """
+    validation = {
+        "is_tscn": file_content.strip().startswith("[gd_scene") or file_content.strip().startswith("[gd_resource"),
+        "has_embedded_script": False,
+        "embedded_script_count": 0,
+        "escaping_issues": [],
+        "recommendations": []
+    }
+    
+    if not validation["is_tscn"]:
+        return validation
+    
+    # Check for embedded scripts
+    if "[sub_resource" in file_content and "type=\"GDScript\"" in file_content:
+        validation["has_embedded_script"] = True
+        
+        # Count embedded scripts
+        import re
+        script_matches = re.findall(r'\[sub_resource[^]]*type="GDScript"[^]]*\]', file_content)
+        validation["embedded_script_count"] = len(script_matches)
+        
+        # Extract script content to check for escaping issues
+        script_content_pattern = r'script/source = "([^"]*(?:\\.[^"]*)*)"'
+        script_contents = re.findall(script_content_pattern, file_content, re.DOTALL)
+        
+        for i, script_content in enumerate(script_contents):
+            # Check for common escaping issues
+            if 'print("' in script_content and 'print(\\"' not in script_content:
+                validation["escaping_issues"].append(f"Script {i+1}: Unescaped quotes in print statement")
+                validation["recommendations"].append(f"Script {i+1}: Change print(\"...\") to print(\\\"...\\\")")
+            
+            if '\\' in script_content and '\\\\' not in script_content:
+                # Single backslashes that should be escaped
+                validation["escaping_issues"].append(f"Script {i+1}: Single backslashes detected - may need escaping")
+                validation["recommendations"].append(f"Script {i+1}: Ensure backslashes are properly escaped as \\\\")
+    
+    return validation
+
 def _analyze_gdscript_indentation(file_content: str, edit_prompt: str) -> str:
     """
     Analyze GDScript indentation patterns and provide context to help AI preserve structure.
@@ -5116,17 +5219,40 @@ def predict_code_edit():
         # OPTIMIZATION: Simpler, direct prompts without JSON schemas
         is_range = (lines_mode == 'range') or (start_line > 0 and end_line >= start_line)
         
-        # Analyze indentation for GDScript files FIRST (before building prompts)
+        # Analyze file-specific context FIRST (before building prompts)
         indentation_context = ""
+        tscn_escaping_context = ""
+        
         if path and path.endswith('.gd'):
             indentation_context = _analyze_gdscript_indentation(file_content, prompt)
             print(f"GDSCRIPT INDENTATION ANALYSIS for {path}:")
             print(indentation_context)
+        elif path and path.endswith('.tscn'):
+            tscn_escaping_context = _analyze_tscn_embedded_script_context(file_content, prompt)
+            if tscn_escaping_context:
+                print(f"TSCN ESCAPING ANALYSIS for {path}:")
+                print(tscn_escaping_context)
+                
+                # Also run validation to catch potential issues
+                validation = _validate_tscn_content(file_content, "edit")
+                if validation["escaping_issues"]:
+                    print(f"TSCN VALIDATION WARNINGS: {len(validation['escaping_issues'])} issues detected:")
+                    for issue in validation["escaping_issues"]:
+                        print(f"  - {issue}")
+                    for rec in validation["recommendations"]:
+                        print(f"  → {rec}")
         
         # Build a simple, clear prompt
         if is_range:
             # For range edits, provide context about the specific lines
-            indentation_reminder = f"\n\nCRITICAL INDENTATION RULES:\n{indentation_context}" if indentation_context else ""
+            context_reminders = []
+            if indentation_context:
+                context_reminders.append(f"CRITICAL INDENTATION RULES:\n{indentation_context}")
+            if tscn_escaping_context:
+                context_reminders.append(f"CRITICAL ESCAPING RULES:\n{tscn_escaping_context}")
+            
+            combined_context = "\n\n".join(context_reminders) if context_reminders else ""
+            indentation_reminder = f"\n\n{combined_context}" if combined_context else ""
             
             # Check if this is expanded context (context expansion detection)
             file_lines = file_content.split('\n')
@@ -5197,12 +5323,20 @@ def predict_code_edit():
                     "Reply with ONLY the complete edited file content. No explanations or markdown."
                 )
             else:
-                indentation_reminder = f"\n\nCRITICAL: {indentation_context}" if indentation_context else ""
+                context_reminders = []
+                if indentation_context:
+                    context_reminders.append(f"CRITICAL INDENTATION RULES:\n{indentation_context}")
+                if tscn_escaping_context:
+                    context_reminders.append(f"CRITICAL ESCAPING RULES:\n{tscn_escaping_context}")
+                
+                combined_context = "\n\n".join(context_reminders) if context_reminders else ""
+                context_reminder = f"\n\n{combined_context}" if combined_context else ""
+                
                 full_prompt = (
                     f"Task: {prompt}\n\n"
                     f"Current file content:\n"
                     f"{file_content}\n\n"
-                    f"IMPORTANT: Reply with the COMPLETE edited file content. You must include ALL original lines plus your changes.{indentation_reminder}\n\n"
+                    f"IMPORTANT: Reply with the COMPLETE edited file content. You must include ALL original lines plus your changes.{context_reminder}\n\n"
                     "Output format: Just the complete file content, no explanations, no markdown, no truncation."
                 )
 
@@ -5217,10 +5351,17 @@ def predict_code_edit():
         max_attempts = 5
         while True:
             try:
-                # Enhanced system prompt for GDScript indentation awareness
+                # Enhanced system prompt for file-specific awareness
                 system_prompt = "You are a code editor. Output only edited code, no explanations."
+                
+                context_requirements = []
                 if indentation_context:
-                    system_prompt += f"\n\nCRITICAL INDENTATION REQUIREMENTS:\n{indentation_context}\n\nYou MUST preserve exact indentation. Copy the whitespace characters exactly as shown. This is non-negotiable."
+                    context_requirements.append(f"CRITICAL INDENTATION REQUIREMENTS:\n{indentation_context}\n\nYou MUST preserve exact indentation. Copy the whitespace characters exactly as shown. This is non-negotiable.")
+                if tscn_escaping_context:
+                    context_requirements.append(f"CRITICAL ESCAPING REQUIREMENTS:\n{tscn_escaping_context}\n\nYou MUST preserve exact string escaping. This is essential for .tscn file format compatibility.")
+                
+                if context_requirements:
+                    system_prompt += "\n\n" + "\n\n".join(context_requirements)
                 
                 model_id = get_validated_chat_model(model_for_edit)
                 # Use the original model name to preserve thinking mode selection

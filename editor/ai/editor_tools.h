@@ -26,6 +26,11 @@ private:
 	static void _list_directory_files(Ref<DirAccess> p_dir, Array &r_files, bool p_recursive);
 	static void _find_files_by_extension(const String &p_path, Array &r_files, const PackedStringArray &p_extensions);
 	static Dictionary _grep_search_project(const String &p_query, const Dictionary &p_args);
+    
+    // .tscn file string escaping helpers
+    static bool _is_tscn_embedded_script_context(const String &p_content, const String &p_find_string);
+    static String _handle_tscn_string_replacement(const String &p_content, const String &p_find_string, const String &p_replace_string, bool p_replace_all, bool p_case_sensitive);
+    
     // Trace support
     static EditorTools *tracer_instance;
     static Dictionary trace_registry; // trace_id -> { events:Array, connections:Array, include_args:bool, max_events:int, next_index:int }
