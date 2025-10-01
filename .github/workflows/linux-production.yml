@@ -262,6 +262,17 @@ jobs:
             git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
             git push origin "$TAG_NAME"
             echo "✅ Tag $TAG_NAME created and pushed"
+            
+            # Wait and verify tag is available on remote
+            echo "Waiting for tag to propagate..."
+            for i in {1..10}; do
+              sleep 2
+              if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+                echo "✅ Tag verified on remote"
+                break
+              fi
+              echo "Retry $i/10..."
+            done
           fi
 
       - name: Create Draft Release
