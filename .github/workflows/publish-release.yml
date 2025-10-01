@@ -106,15 +106,21 @@ jobs:
           RELEASE_TAG="v${{ steps.version.outputs.release_version }}"
           echo "Publishing release: $RELEASE_TAG"
           
-          # Get the release ID
+          # Get the release ID from list (draft releases don't work with /releases/tags/ endpoint)
           RELEASE_ID=$(curl -s \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG" \
-            | jq -r '.id')
+            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            | jq -r ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id")
           
           if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
             echo "❌ Release not found: $RELEASE_TAG"
+            echo "Listing recent releases:"
+            curl -s \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases" \
+              | jq -r '.[] | "\(.tag_name) draft=\(.draft)"' | head -5
             exit 1
           fi
           
