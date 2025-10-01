@@ -127,15 +127,35 @@ jobs:
           echo "Found release ID: $RELEASE_ID"
           
           # Update the release to publish it (set draft: false)
+          RELEASE_BODY="🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**
+
+## Download for Your Platform:
+
+🍎 **Mac**: Download \`Orca (Mac).dmg\` → Open DMG → Drag to Applications  
+🏁 **Windows**: Download \`Orca (Windows).exe\` → Run directly  
+🐧 **Linux**: Download \`Orca-Linux-x86_64.tar.gz\` → Extract and run \`./Orca\`
+
+## What's New:
+${{ github.event.workflow_run.head_commit.message }}
+
+---
+**All builds completed**: Mac ✅ Signed & Notarized | Linux ✅ | Windows ✅
+
+### Build Details:
+- **Linux x86_64**: Complete editor with all features
+- **Windows x86_64**: Code-signed editor with all features  
+- **macOS Universal**: Notarized editor supporting Intel + Apple Silicon
+
+*Auto-update supported - The editor will notify you of newer versions.*"
+          
           curl -X PATCH \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID" \
-            -d '{
-              "draft": false,
-              "name": "Orca Engine v${{ steps.version.outputs.release_version }}",
-              "body": "🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**\n\n## Download for Your Platform:\n\n🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  \n🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  \n🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`\n\n## What's New:\n${{ github.event.workflow_run.head_commit.message }}\n\n---\n**All builds completed**: Mac ✅ Signed & Notarized | Linux ✅ | Windows ✅\n\n### Build Details:\n- **Linux x86_64**: Complete editor with all features\n- **Windows x86_64**: Code-signed editor with all features  \n- **macOS Universal**: Notarized editor supporting Intel + Apple Silicon\n\n*Auto-update supported - The editor will notify you of newer versions.*"
-            }'
+            -d "$(jq -n \
+              --arg name "Orca Engine v${{ steps.version.outputs.release_version }}" \
+              --arg body "$RELEASE_BODY" \
+              '{draft: false, name: $name, body: $body}')"
           
           echo "✅ Release published successfully: $RELEASE_TAG"
 
