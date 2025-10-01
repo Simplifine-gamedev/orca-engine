@@ -3814,33 +3814,41 @@ void Main::setup_boot_logo() {
 			RenderingServer::get_singleton()->set_boot_image(splash, boot_bg_color, false);
 		}
 
-#if defined(TOOLS_ENABLED) && defined(MACOS_ENABLED)
+#ifdef MACOS_ENABLED
 		if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON)) {
-			// Try new Logo.png first, then fallback to dock icon.png
-			Ref<Image> icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/Logo.png");
-			if (icon.is_null() || icon->is_empty()) {
-				icon = Image::load_from_file("/Users/egekaanduman/orca/orca-engine/orcabranding/dock icon.png");
+			// Always use Logo.png for all windows (editor, project manager, game)
+			Ref<Image> icon;
+			String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+			
+			// Try loading from absolute path first
+			String icon_path = "/Users/egekaanduman/orca/orca-engine/orcabranding/Logo.png";
+			if (FileAccess::exists(icon_path)) {
+				icon = Image::load_from_file(icon_path);
 			}
+			
+			// Try relative to executable
 			if (icon.is_null() || icon->is_empty()) {
-				String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
-				icon = Image::load_from_file(exe_dir.path_join("..").path_join("orcabranding/Logo.png"));
-				if (icon.is_null() || icon->is_empty()) {
-					icon = Image::load_from_file(exe_dir.path_join("..").path_join("orcabranding/dock icon.png"));
+				icon_path = exe_dir.path_join("..").path_join("orcabranding/Logo.png");
+				if (FileAccess::exists(icon_path)) {
+					icon = Image::load_from_file(icon_path);
+				}
+			}
+			
+			// Try app bundle resources
+			if (icon.is_null() || icon->is_empty()) {
+				icon_path = exe_dir.path_join("../Resources/Logo.png");
+				if (FileAccess::exists(icon_path)) {
+					icon = Image::load_from_file(icon_path);
 				}
 			}
 			
 			if (icon.is_valid() && !icon->is_empty()) {
-				// Resize icon if needed
-				if (icon->get_width() != 256 || icon->get_height() != 256) {
-					icon->resize(256, 256, Image::INTERPOLATE_LANCZOS);
-				}
-				
-				// Set the icon directly without white background
+				// Keep icon at high resolution for retina displays (don't resize from 1024x1024)
+				// macOS will automatically scale it as needed
 				DisplayServer::get_singleton()->set_icon(icon);
 			} else {
 				// Last resort fallback
 				Ref<Image> fallback = Ref<Image>(memnew(Image(app_icon_png)));
-				fallback->resize(256, 256, Image::INTERPOLATE_LANCZOS);
 				DisplayServer::get_singleton()->set_icon(fallback);
 			}
 		}
@@ -4605,10 +4613,30 @@ int Main::start() {
 				sml->add_current_scene(scene);
 
 #ifdef MACOS_ENABLED
-				String mac_icon_path = GLOBAL_GET("application/config/macos_native_icon");
-				if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_NATIVE_ICON) && !mac_icon_path.is_empty()) {
-					DisplayServer::get_singleton()->set_native_icon(mac_icon_path);
-					has_icon = true;
+				// Use the same Logo.png for game window to avoid duplicate dock icons
+				if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON)) {
+					Ref<Image> icon;
+					
+					// Try loading Logo.png from absolute path first
+					String icon_path = "/Users/egekaanduman/orca/orca-engine/orcabranding/Logo.png";
+					if (FileAccess::exists(icon_path)) {
+						icon = Image::load_from_file(icon_path);
+					}
+					
+					// Try relative to executable
+					if (icon.is_null() || icon->is_empty()) {
+						String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+						icon_path = exe_dir.path_join("..").path_join("orcabranding/Logo.png");
+						if (FileAccess::exists(icon_path)) {
+							icon = Image::load_from_file(icon_path);
+						}
+					}
+					
+					if (icon.is_valid() && !icon->is_empty()) {
+						// Keep high resolution for retina displays
+						DisplayServer::get_singleton()->set_icon(icon);
+						has_icon = true;
+					}
 				}
 #endif
 
@@ -4620,6 +4648,7 @@ int Main::start() {
 				}
 #endif
 
+				// Fallback to project icon if Logo.png wasn't found
 				String icon_path = GLOBAL_GET("application/config/icon");
 				if (DisplayServer::get_singleton()->has_feature(DisplayServer::FEATURE_ICON) && !icon_path.is_empty() && !has_icon) {
 					Ref<Image> icon;

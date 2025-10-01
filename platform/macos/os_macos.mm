@@ -1152,8 +1152,26 @@ OS_MacOS_NSApp::OS_MacOS_NSApp(const char *p_execpath, int p_argc, char **p_argv
 	// Implicitly create shared NSApplication instance.
 	[GodotApplication sharedApplication];
 
-	// In case we are unbundled, make us a proper UI application.
-	[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+	// Set activation policy based on mode to prevent duplicate dock icons
+	// Game instances (child processes) should not show dock icons
+	bool is_editor = false;
+	bool is_project_manager = false;
+	for (int i = 0; i < p_argc; i++) {
+		if (strcmp(p_argv[i], "--editor") == 0 || strcmp(p_argv[i], "-e") == 0) {
+			is_editor = true;
+		}
+		if (strcmp(p_argv[i], "--project-manager") == 0 || strcmp(p_argv[i], "-p") == 0) {
+			is_project_manager = true;
+		}
+	}
+	
+	// Only show dock icon for editor and project manager, hide for game instances
+	if (is_editor || is_project_manager) {
+		[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+	} else {
+		// Hide dock icon for game instances to prevent duplicates
+		[NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+	}
 
 	// Menu bar setup must go between sharedApplication above and
 	// finishLaunching below, in order to properly emulate the behavior
