@@ -36,12 +36,12 @@ jobs:
           echo "Checking workflows for commit: $COMMIT_SHA"
           
           # Wait a bit to ensure all workflows are registered in the API
-          echo "Waiting 10 seconds for workflow registration..."
-          sleep 10
+          echo "Waiting 30 seconds for workflow registration..."
+          sleep 30
           
-          # Retry logic: check up to 3 times with delays
-          MAX_RETRIES=3
-          RETRY_DELAY=15
+          # Retry logic: check up to 20 times with 1-minute delays (up to 20 minutes)
+          MAX_RETRIES=20
+          RETRY_DELAY=60
           ALL_SUCCESS=false
           
           for i in $(seq 1 $MAX_RETRIES); do

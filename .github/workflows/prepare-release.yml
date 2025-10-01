@@ -1,0 +1,98 @@
+name: 📦 Prepare Release
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  create-draft:
+    name: Create Draft Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate Release Version
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short=8 HEAD)
+          RELEASE_VERSION="0.01.$SHORT_SHA"
+          echo "release_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          echo "Release version: $RELEASE_VERSION"
+
+      - name: Create and Push Git Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          TAG_NAME="v${{ steps.version.outputs.release_version }}"
+          
+          # Check if tag already exists
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+            echo "⚠️  Tag $TAG_NAME already exists, skipping release creation"
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Creating tag $TAG_NAME"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+          git push origin "$TAG_NAME"
+          echo "✅ Tag $TAG_NAME created and pushed"
+          
+          # Wait for tag to propagate
+          echo "Waiting for tag to propagate..."
+          for i in {1..10}; do
+            sleep 2
+            if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+              echo "✅ Tag verified on remote"
+              break
+            fi
+            echo "Retry $i/10..."
+          done
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.release_version }}
+          name: Orca Engine v${{ steps.version.outputs.release_version }}
+          body: |
+            🚀 **Orca Engine Release v${{ steps.version.outputs.release_version }}**
+
+            ## Download for Your Platform:
+            
+            🍎 **Mac**: Download `Orca (Mac).dmg` → Open DMG → Drag to Applications  
+            🏁 **Windows**: Download `Orca (Windows).exe` → Run directly  
+            🐧 **Linux**: Download `Orca-Linux-x86_64.tar.gz` → Extract and run `./Orca`
+
+            ## What's New:
+            ${{ github.event.head_commit.message }}
+
+            ---
+            **Platform builds in progress...**
+            
+            This release will be automatically published once all platform builds complete successfully.
+          draft: true
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "# 📦 Release Preparation Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** v${{ steps.version.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Git tag created and pushed" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Draft release created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Platform builds will upload their assets" >> $GITHUB_STEP_SUMMARY
+          echo "- Release will auto-publish when all builds complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View Draft Release](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.release_version }})" >> $GITHUB_STEP_SUMMARY
+
