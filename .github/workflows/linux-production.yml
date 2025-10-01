@@ -246,6 +246,24 @@ jobs:
             Orca-Linux-x86_64.tar.gz
             Orca-Linux-x86_64.AppImage
 
+      - name: Create and Push Git Tag
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          TAG_NAME="v${{ steps.version.outputs.release_version }}"
+          
+          # Check if tag already exists
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+            echo "Tag $TAG_NAME already exists"
+          else
+            echo "Creating tag $TAG_NAME"
+            git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+            git push origin "$TAG_NAME"
+            echo "✅ Tag $TAG_NAME created and pushed"
+          fi
+
       - name: Create Draft Release
         uses: softprops/action-gh-release@v1
         if: github.ref == 'refs/heads/main'
