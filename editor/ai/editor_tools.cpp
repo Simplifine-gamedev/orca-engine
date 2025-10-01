@@ -6704,6 +6704,276 @@ void EditorTools::_set_owner_recursive(Node *p_node, Node *p_owner) {
 	}
 }
 
+// Helper function for native grep search across project files
+Dictionary EditorTools::_grep_search_project(const String &p_query, const Dictionary &p_args) {
+	Dictionary result;
+	
+	// Get grep-specific options
+	bool case_sensitive = p_args.get("case_sensitive", true);
+	bool whole_words = p_args.get("whole_words", false);
+	int max_results = p_args.get("max_results", 5);
+	Array file_extensions_arg = p_args.get("file_extensions", Array());
+	
+	// Default to Godot text-based files if no extensions specified
+	HashSet<String> extensions;
+	if (file_extensions_arg.is_empty()) {
+		// Default: only search text-based Godot files
+		extensions.insert("gd");      // GDScript
+		extensions.insert("tres");    // Text resources
+		extensions.insert("tscn");    // Text scenes
+		extensions.insert("gdshader"); // Shaders
+		extensions.insert("txt");     // Text files
+		extensions.insert("json");    // Config files
+		extensions.insert("cfg");     // Config files
+		extensions.insert("md");      // Documentation
+	} else {
+		// Use provided extensions
+		for (int i = 0; i < file_extensions_arg.size(); i++) {
+			String ext = String(file_extensions_arg[i]).to_lower();
+			// Remove leading dot if present
+			if (ext.begins_with(".")) {
+				ext = ext.substr(1);
+			}
+			extensions.insert(ext);
+		}
+	}
+	
+	print_line("GREP_SEARCH: Searching for '" + p_query + "' (case_sensitive=" + String(case_sensitive ? "true" : "false") + 
+			   ", whole_words=" + String(whole_words ? "true" : "false") + ")");
+	print_line("GREP_SEARCH: Extensions filter: " + itos(extensions.size()) + " types");
+	
+	// Get project root
+	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
+	
+	// Collect files to search (FAST: limit to 500 files for quick scan)
+	List<String> files_to_search;
+	_get_all_project_files_limited(project_root, files_to_search, extensions, 500); // Max 500 files (reduced from 2000 for speed)
+	
+	print_line("GREP_SEARCH: Found " + itos(files_to_search.size()) + " files to search (limit: 500)");
+	
+	// Search results storage
+	struct GrepMatch {
+		String file_path;
+		int line_number;
+		int column_start;
+		int column_end;
+		String line_content;
+		int match_count; // Total matches in this file
+	};
+	
+	Vector<GrepMatch> all_matches;
+	HashMap<String, int> file_match_counts; // Track total matches per file
+	
+	// Search each file with AGGRESSIVE time-slicing to avoid UI freeze
+	// Since this runs deferred (200ms after tool call), we can afford slightly longer search
+	// but still keep it snappy to avoid any noticeable freeze
+	uint64_t search_start_time = OS::get_singleton()->get_ticks_msec();
+	int files_searched = 0;
+	int files_with_matches = 0;
+	const uint64_t MAX_SEARCH_TIME_MS = 80; // Max 80ms (~5 frames at 60fps, barely perceptible)
+	const int MAX_FILES_TO_SEARCH = 300; // Hard limit on files to prevent runaway searches
+	
+	for (const String &file_path : files_to_search) {
+		// AGGRESSIVE: Check time budget more frequently
+		uint64_t elapsed = OS::get_singleton()->get_ticks_msec() - search_start_time;
+		if (elapsed > MAX_SEARCH_TIME_MS) {
+			print_line("GREP_SEARCH: Time budget (" + itos(MAX_SEARCH_TIME_MS) + "ms) exceeded after " + itos(files_searched) + " files, stopping early");
+			break;
+		}
+		
+		// Hard limit on file count to prevent excessive searching
+		if (files_searched >= MAX_FILES_TO_SEARCH) {
+			print_line("GREP_SEARCH: File limit (" + itos(MAX_FILES_TO_SEARCH) + ") reached, stopping");
+			break;
+		}
+		
+		files_searched++;
+		
+		// Read file
+		Ref<FileAccess> f = FileAccess::open(file_path, FileAccess::READ);
+		if (f.is_null()) {
+			continue; // Skip files we can't read
+		}
+		
+		// Skip very large files to prevent stalling (max 200KB)
+		int64_t file_size = f->get_length();
+		const int64_t MAX_FILE_SIZE = 200000; // 200KB limit
+		if (file_size > MAX_FILE_SIZE) {
+			f->close();
+			continue;
+		}
+		
+		int line_number = 0;
+		int file_match_count = 0;
+		const int MAX_LINES_PER_FILE = 5000; // Stop after 5000 lines to prevent runaway
+		
+		while (!f->eof_reached() && line_number < MAX_LINES_PER_FILE) {
+			line_number++;
+			String line = f->get_line();
+			
+			// Search this line for all occurrences
+			int search_from = 0;
+			while (true) {
+				int match_pos = case_sensitive ? line.find(p_query, search_from) : line.findn(p_query, search_from);
+				
+				if (match_pos == -1) {
+					break; // No more matches on this line
+				}
+				
+				// Check whole word constraint if enabled
+				if (whole_words) {
+					bool is_valid_match = true;
+					
+					// Check character before match
+					if (match_pos > 0 && is_ascii_identifier_char(line[match_pos - 1])) {
+						is_valid_match = false;
+					}
+					
+					// Check character after match
+					int match_end = match_pos + p_query.length();
+					if (match_end < line.length() && is_ascii_identifier_char(line[match_end])) {
+						is_valid_match = false;
+					}
+					
+					if (!is_valid_match) {
+						search_from = match_pos + 1;
+						continue;
+					}
+				}
+				
+				// Valid match found!
+				file_match_count++;
+				
+				// Only store detailed results for first few matches per file
+				if (all_matches.size() < max_results * 20) { // Collect more than needed for filtering
+					GrepMatch match;
+					match.file_path = file_path;
+					match.line_number = line_number;
+					match.column_start = match_pos;
+					match.column_end = match_pos + p_query.length();
+					match.line_content = line;
+					match.match_count = 0; // Will be updated later
+					all_matches.push_back(match);
+				}
+				
+				// Continue searching the same line
+				search_from = match_pos + 1;
+			}
+		}
+		
+		if (file_match_count > 0) {
+			files_with_matches++;
+			file_match_counts[file_path] = file_match_count;
+			
+			// AGGRESSIVE: Early exit as soon as we have enough results
+			if (files_with_matches >= max_results * 2) { // Reduced multiplier from 3 to 2 for faster exit
+				print_line("GREP_SEARCH: Found enough matches (" + itos(files_with_matches) + " files), stopping early");
+				break;
+			}
+		}
+		
+		f->close();
+	}
+	
+	print_line("GREP_SEARCH: Searched " + itos(files_searched) + " files in " + 
+			   itos(OS::get_singleton()->get_ticks_msec() - search_start_time) + "ms, found " + 
+			   itos(files_with_matches) + " files with matches");
+	
+	// Update match counts for all matches
+	for (int i = 0; i < all_matches.size(); i++) {
+		all_matches.write[i].match_count = file_match_counts[all_matches[i].file_path];
+	}
+	
+	// Group matches by file and create search results
+	HashMap<String, Array> matches_by_file;
+	for (const GrepMatch &match : all_matches) {
+		if (!matches_by_file.has(match.file_path)) {
+			matches_by_file[match.file_path] = Array();
+		}
+		
+		Dictionary match_dict;
+		match_dict["line"] = match.line_number;
+		match_dict["column_start"] = match.column_start;
+		match_dict["column_end"] = match.column_end;
+		match_dict["line_content"] = match.line_content;
+		
+		matches_by_file[match.file_path].push_back(match_dict);
+	}
+	
+	// Convert to project root relative paths
+	Array similar_files;
+	int file_count = 0;
+	
+	for (const KeyValue<String, int> &entry : file_match_counts) {
+		if (file_count >= max_results) {
+			break;
+		}
+		
+		String file_path = entry.key;
+		int match_count = entry.value;
+		
+		// Convert to res:// path
+		String relative_path = file_path.replace(project_root, "res://");
+		
+		Dictionary file_result;
+		file_result["file_path"] = relative_path;
+		file_result["similarity"] = 1.0; // Grep matches are exact
+		file_result["search_type"] = "grep";
+		file_result["match_count"] = match_count;
+		file_result["modality"] = "text";
+		
+		// Add match details if available
+		if (matches_by_file.has(file_path)) {
+			Array matches = matches_by_file[file_path];
+			file_result["matches"] = matches;
+			
+			// Add first match location as chunk info
+			if (matches.size() > 0) {
+				Dictionary first_match = matches[0];
+				file_result["chunk_start"] = first_match.get("line", 1);
+				file_result["chunk_end"] = first_match.get("line", 1);
+				file_result["chunk_index"] = 0;
+			}
+		}
+		
+		similar_files.push_back(file_result);
+		file_count++;
+	}
+	
+	// Format result in standard search format
+	Dictionary results_dict;
+	results_dict["similar_files"] = similar_files;
+	results_dict["central_files"] = Array(); // Grep doesn't use graph analysis
+	results_dict["graph_summary"] = Dictionary();
+	
+	// Build status message
+	String status_message = "Found " + itos(all_matches.size()) + " matches in " + itos(file_count) + " files";
+	
+	// Add performance info
+	uint64_t total_time = OS::get_singleton()->get_ticks_msec() - search_start_time;
+	status_message += " (searched " + itos(files_searched) + " files in " + itos(total_time) + "ms)";
+	
+	// Warn if search was truncated
+	if (files_searched < files_to_search.size()) {
+		status_message += " - Partial results (time limited for UI responsiveness)";
+	}
+	
+	result["success"] = true;
+	result["query"] = p_query;
+	result["search_mode"] = "grep";
+	result["results"] = results_dict;
+	result["file_count"] = file_count;
+	result["total_matches"] = all_matches.size();
+	result["files_searched"] = files_searched;
+	result["total_files_available"] = files_to_search.size();
+	result["search_truncated"] = files_searched < files_to_search.size();
+	result["search_time_ms"] = total_time;
+	result["include_graph"] = false;
+	result["message"] = status_message;
+	
+	return result;
+}
+
 // --- Universal Tools Implementation ---
 
 Dictionary EditorTools::universal_node_manager(const Dictionary &p_args) {
@@ -8227,6 +8497,12 @@ Dictionary EditorTools::search_across_project(const Dictionary &p_args) {
 	int max_results = p_args.get("max_results", 5);
 	String modality_filter = p_args.get("modality_filter", "");
 	int graph_depth = p_args.get("graph_depth", 2);
+	String search_mode = p_args.get("search_mode", "semantic");
+	
+	// GREP MODE: Direct filesystem search for exact text matching
+	if (search_mode == "grep") {
+		return _grep_search_project(query, p_args);
+	}
 	
 	// Get project root path - FIXED: Use globalize_path("res://") to get actual project directory
 	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");

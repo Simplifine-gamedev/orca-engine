@@ -547,7 +547,12 @@ godot_tools = [
                     "project_root": {"type": "string"},
                     "project_id": {"type": "string"},
                     "trace_dependencies": {"type": "boolean", "default": False},
-                    "search_mode": {"type": "string", "enum": ["semantic", "keyword", "hybrid", "auto"], "default": "semantic"},
+                    "search_mode": {"type": "string", "enum": ["semantic", "keyword", "hybrid", "grep", "auto"], "default": "semantic"},
+
+                    # Grep-specific options (only for grep mode)
+                    "case_sensitive": {"type": "boolean", "default": True, "description": "Case-sensitive grep search"},
+                    "whole_words": {"type": "boolean", "default": False, "description": "Match whole words only"},
+                    "file_extensions": {"type": "array", "items": {"type": "string"}, "description": "Limit grep to specific file extensions (e.g., ['gd', 'tres', 'tscn'])"},
 
                     # Docs filters
                     "section_filter": {"type": "string", "enum": ["overview", "methods", "properties", "signals"]},

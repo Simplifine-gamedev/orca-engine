@@ -1197,10 +1197,7 @@ void AIChatDock::_on_send_button_pressed() {
 		_update_conversation_dropdown();
 	}
 
-	// Auto-suggest relevant files based on message content
-	if (embedding_system_initialized && initial_indexing_done) {
-		_auto_attach_relevant_context();
-	}
+
 
 	// PERFORMANCE OPTIMIZATION: Instant UI feedback with deferred heavy processing
 	// This prevents UI freezing by splitting operations across frames
@@ -4148,20 +4145,32 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 	// This handles streaming content deltas
 	if (response_data.has("content_delta")) {
+		String delta = response_data["content_delta"];
+		print_line("AI Chat: CONTENT_DELTA received (" + String::num_int64(delta.length()) + " chars): " + delta.substr(0, 50) + (delta.length() > 50 ? "..." : ""));
+		
+		// CRITICAL FIX: If last message is not assistant, create a new assistant message first!
+		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+		if (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role != "assistant") {
+			print_line("AI Chat: CONTENT_DELTA - Last message is " + chat_history[chat_history.size() - 1].role + ", creating new assistant message");
+			_add_message_to_chat("assistant", "");  // Create empty assistant message
+		}
+		
 		RichTextLabel *label = _get_or_create_current_assistant_message_label();
 		
 		// Safety check: ensure label is valid
 		if (!label) {
-			print_line("AI Chat: Warning - invalid label in content_delta handler");
+			print_line("AI Chat: ERROR - invalid label in content_delta handler, cannot display text!");
 			return;
 		}
 		
-		String delta = response_data["content_delta"];
-		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+		print_line("AI Chat: CONTENT_DELTA - Label found: " + String(label->is_visible_in_tree() ? "VISIBLE" : "INVISIBLE"));
+		
 		if (!chat_history.is_empty()) {
 			ChatMessage &last_msg = chat_history.write[chat_history.size() - 1];
 			if (last_msg.role == "assistant") {
 				last_msg.content += delta;
+				
+				print_line("AI Chat: CONTENT_DELTA - Accumulated content length: " + String::num_int64(last_msg.content.length()) + " chars");
 				
 				// Update conversation timestamp for streaming content (but don't save yet)
 				if (current_conversation_index >= 0) {
@@ -4174,12 +4183,19 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					// Additional safety check for the converted content
 					if (!bbcode_content.is_empty()) {
 						label->set_text(bbcode_content);
+						print_line("AI Chat: CONTENT_DELTA - Text set on label (" + String::num_int64(bbcode_content.length()) + " chars BBCode)");
+					} else {
+						print_line("AI Chat: ERROR - BBCode conversion returned empty!");
 					}
 				}
 				
 				// Note: We don't save during streaming to avoid performance issues
 				// Saving happens when the message is complete or stopped
+			} else {
+				print_line("AI Chat: ERROR - Last message role is not assistant: " + last_msg.role);
 			}
+		} else {
+			print_line("AI Chat: ERROR - Chat history is empty!");
 		}
 	}
 
@@ -4438,7 +4454,31 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			backend_only_tools.insert("generate_3d_model");
 		}
 		
-		if (backend_only_tools.has(function_name)) {
+		// SPECIAL HANDLING: search_manager needs mode-aware backend routing
+		bool is_backend_only = backend_only_tools.has(function_name);
+		if (function_name == "search_manager") {
+			// Parse to check search mode
+			Ref<JSON> mode_json;
+			mode_json.instantiate();
+			if (mode_json->parse(arguments_str) == OK) {
+				Dictionary mode_args = mode_json->get_data();
+				String search_mode = mode_args.get("search_mode", "semantic");
+				String op = mode_args.get("op", "");
+				
+				// Only grep mode runs on frontend, all others are backend-only
+				if (op == "project.search" && search_mode == "grep") {
+					is_backend_only = false; // Allow grep to run on frontend
+					print_line("AI Chat: search_manager in grep mode - will execute on frontend");
+				} else {
+					is_backend_only = true; // Semantic/keyword/hybrid/docs all go to backend
+					print_line("AI Chat: search_manager in " + search_mode + " mode - backend-only, skipping frontend");
+				}
+			} else {
+				is_backend_only = true; // Default to backend if we can't parse
+			}
+		}
+		
+		if (is_backend_only) {
 			print_line("AI Chat: Tool " + function_name + " should be handled by backend, skipping frontend execution");
 			// Don't execute locally - this should have been caught earlier in the flow
 			Dictionary result;
@@ -4457,19 +4497,20 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			continue;
 		}
 
-		// SMART FIX: Only defer SLOW tools, execute fast tools immediately
-		static HashSet<String> slow_tools;
-		if (slow_tools.is_empty()) {
-			slow_tools.insert("get_all_nodes");
-			slow_tools.insert("universal_scene_manager"); // The "analyze" operation
-			slow_tools.insert("get_project_context"); // Heavy project scanning
-			slow_tools.insert("scene_manager"); // Can call expensive operations like scene.nodes.get_all
-			// Add file editing operations to slow tools for better status feedback
-			slow_tools.insert("apply_edit"); // Already handled as slow
-			slow_tools.insert("settings_manager"); // Listing/searching settings can be heavy
-			slow_tools.insert("project_manager"); // CRITICAL: Defer for UI feedback on fs.write/write_lines/replace_string
-			// Add other slow tools as needed
-		}
+	// SMART FIX: Only defer SLOW tools, execute fast tools immediately
+	static HashSet<String> slow_tools;
+	if (slow_tools.is_empty()) {
+		slow_tools.insert("get_all_nodes");
+		slow_tools.insert("universal_scene_manager"); // The "analyze" operation
+		slow_tools.insert("get_project_context"); // Heavy project scanning
+		slow_tools.insert("scene_manager"); // Can call expensive operations like scene.nodes.get_all
+		// Add file editing operations to slow tools for better status feedback
+		slow_tools.insert("apply_edit"); // Already handled as slow
+		slow_tools.insert("settings_manager"); // Listing/searching settings can be heavy
+		slow_tools.insert("project_manager"); // CRITICAL: Defer for UI feedback on fs.write/write_lines/replace_string
+		// NOTE: search_manager is NOT in slow_tools - it's backend-only (except grep mode)
+		// Add other slow tools as needed
+	}
 
 		if (slow_tools.has(function_name)) {
 			// Slow tools: use deferred execution with descriptive status
@@ -4722,7 +4763,20 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		} else if (function_name == "resource_manager") {
 			result = EditorTools::resource_manager(args);
 		} else if (function_name == "search_manager") {
-			result = EditorTools::search_manager(args);
+			// CRITICAL FIX: Only execute grep search on frontend, all others go to backend
+			String op = args.get("op", "");
+			String search_mode = args.get("search_mode", "semantic");
+			
+			if (op == "project.search" && search_mode == "grep") {
+				// Grep search runs on frontend (needs local filesystem)
+				result = EditorTools::search_manager(args);
+			} else {
+				// Semantic/keyword/hybrid/docs search should be handled by backend
+				result["success"] = false;
+				result["message"] = "search_manager with mode '" + search_mode + "' should be handled by backend";
+				result["backend_only"] = true;
+				print_line("AI Chat: search_manager (" + search_mode + ") should be backend-only, skipping frontend execution");
+			}
 		} else if (function_name == "runtime_manager") {
 			result = EditorTools::runtime_manager(args);
 		} else if (function_name == "runtime_inspector") {
@@ -5175,6 +5229,13 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 	call_deferred("_scroll_to_bottom");
 }
 void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const String &p_name, const Dictionary &p_args, const Dictionary &p_result) {
+	// FREEZE DEBUG: Log timing for search_manager specifically
+	uint64_t add_response_start = 0;
+	if (p_name == "search_manager" || p_name == "search_across_project") {
+		add_response_start = OS::get_singleton()->get_ticks_msec();
+		print_line("AI Chat: ADD_RESPONSE [START] - Adding " + p_name + " response");
+	}
+	
 	Ref<JSON> json;
 	json.instantiate();
 
@@ -5185,6 +5246,10 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
     // Prepare a content payload we can enrich with metadata like image_name
     Dictionary result_for_content = p_result;
 	msg.timestamp = _get_timestamp();
+	
+	if (add_response_start > 0) {
+		print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Created message struct");
+	}
 	
 	// Store the original tool arguments for proper UI recreation
 	msg.tool_results.clear();
@@ -5365,6 +5430,32 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
         }
     }
     
+    // CRITICAL FREEZE FIX: For search results, strip massive text fields
+    if (p_name == "search_manager" || p_name == "search_across_project") {
+        // Remove the truly massive nested graph object
+        content_to_serialize.erase("graph");  // This is the 100KB+ killer
+        
+        // DOCS SEARCH: Strip full_content from each result (10,000+ chars per doc!)
+        if (content_to_serialize.has("results") && content_to_serialize["results"].get_type() == Variant::ARRAY) {
+            Array results_array = content_to_serialize["results"];
+            Array lightweight_results;
+            for (int i = 0; i < results_array.size(); i++) {
+                if (results_array[i].get_type() == Variant::DICTIONARY) {
+                    Dictionary doc = results_array[i];
+                    doc.erase("full_content");  // REMOVE: 10,000+ chars per doc!
+                    doc.erase("full_text");     // Also remove any other full text fields
+                    lightweight_results.push_back(doc);
+                } else {
+                    lightweight_results.push_back(results_array[i]);
+                }
+            }
+            content_to_serialize["results"] = lightweight_results;
+            print_line("AI Chat: FREEZE_FIX - Stripped full_content from docs results");
+        }
+        
+        print_line("AI Chat: FREEZE_FIX - Removed massive fields, keeping metadata for AI");
+    }
+    
     // CRITICAL: Strip image data from content that goes to backend to prevent token explosion
     content_to_serialize.erase("image_data");
     content_to_serialize.erase("base64");
@@ -5382,11 +5473,22 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
         }
     }
     
+    if (add_response_start > 0) {
+        print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - About to stringify (keys: " + String::num_int64(content_to_serialize.size()) + ")");
+    }
+    
     msg.content = json->stringify(content_to_serialize);
+    
+    if (add_response_start > 0) {
+        print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Stringify DONE (result length: " + String::num_int64(msg.content.length()) + " chars)");
+    }
 
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
 	
+	if (add_response_start > 0) {
+		print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Added to chat history");
+	}
 
 	// Find the placeholder for this tool and replace its content.
 	if (chat_container == nullptr) {
@@ -5399,6 +5501,11 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	}
 
 	PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false));
+	
+	if (add_response_start > 0) {
+		print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Found placeholder: " + String(placeholder ? "YES" : "NO"));
+	}
+	
 	if (!placeholder) {
 		// Avoid creating a second bubble; schedule a deferred retry to give
 		// the assistant message a moment to render its placeholders.
@@ -5416,6 +5523,10 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	// Create the replacement UI.
 	VBoxContainer *tool_container = memnew(VBoxContainer);
 	placeholder->add_child(tool_container);
+	
+	if (add_response_start > 0) {
+		print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Created tool_container, about to create toggle button");
+	}
 
 	Button *toggle_button = memnew(Button);
 	
@@ -5486,11 +5597,21 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	// Removed HSeparator to reduce spacing after tool results
 
 	// Use the shared tool-specific UI creation function
+	print_line("AI Chat: TOOL_UI [START] - Creating UI for " + p_name + " (success=" + String(success ? "true" : "false") + ")");
+	uint64_t ui_start = OS::get_singleton()->get_ticks_msec();
+	
 	_create_tool_specific_ui(content_vbox, p_name, p_result, success, p_args);
+	
+	print_line("AI Chat: TOOL_UI [DONE] - " + p_name + " UI created in " + String::num_uint64(OS::get_singleton()->get_ticks_msec() - ui_start) + "ms");
 
 	// Accept/reject buttons are now added directly in the final UI rebuild
 
 	tool_calls_ui_applied.insert(p_tool_call_id);
+	
+	if (add_response_start > 0) {
+		print_line("AI Chat: ADD_RESPONSE [COMPLETE] - Total time: " + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms");
+	}
+	
 	call_deferred("_scroll_to_bottom");
 }
 
@@ -6967,11 +7088,37 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		}
 
 	} else if (p_tool_name == "search_across_godot_docs" && p_success) {
-		// Compact rows that expand on demand; keep DOM light by toggling two nodes
+		// ULTRA-MINIMAL UI: Just show summary, don't create heavy widgets
 		Array results = p_result.get("results", Array());
+		
 		Label *count_label = memnew(Label);
-		count_label->set_text("Docs results: " + String::num_int64(results.size()));
+		count_label->set_text("✅ Found " + String::num_int64(results.size()) + " documentation results");
 		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		count_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		p_content_vbox->add_child(count_label);
+		
+		// Show just the titles (no heavy widgets!)
+		for (int i = 0; i < MIN(5, results.size()); i++) {
+			if (results[i].get_type() != Variant::DICTIONARY) continue;
+			Dictionary r = results[i];
+			String title = r.get("title", "(untitled)");
+			
+			Label *doc_label = memnew(Label);
+			doc_label->set_text("  • " + title);
+			p_content_vbox->add_child(doc_label);
+		}
+		
+		if (results.size() > 5) {
+			Label *more_label = memnew(Label);
+			more_label->set_text("  ... and " + String::num_int64(results.size() - 5) + " more results");
+			more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			p_content_vbox->add_child(more_label);
+		}
+		
+		return; // Skip the old widget-heavy code below
+		
+		// OLD CODE DISABLED (was creating freeze):
+		if (false) {
 		p_content_vbox->add_child(count_label);
 
 		for (int i = 0; i < results.size(); i++) {
@@ -7048,6 +7195,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				holder->add_child(fp);
 			}
 		}
+		} // End if (false) - old docs code disabled
 
 	} else if (p_tool_name == "get_editor_selection" && p_success) {
 		VBoxContainer *selection_vbox = memnew(VBoxContainer);
@@ -7943,12 +8091,21 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			p_content_vbox->add_child(content_label);
 		}
 	} else if (p_tool_name == "search_across_project" && p_success) {
+		print_line("AI Chat: RENDER_SEARCH [START] - Beginning search results rendering");
+		uint64_t render_start = OS::get_singleton()->get_ticks_msec();
+		
 		// Display search results with nice formatting
 		VBoxContainer *search_vbox = memnew(VBoxContainer);
 		p_content_vbox->add_child(search_vbox);
+		
+		print_line("AI Chat: RENDER_SEARCH [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - render_start) + "ms] - Created search_vbox");
 
 		Dictionary results = p_result.get("results", Dictionary());
+		print_line("AI Chat: RENDER_SEARCH [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - render_start) + "ms] - Got results dict");
+		
 		Array similar_files = results.get("similar_files", Array());
+		print_line("AI Chat: RENDER_SEARCH [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - render_start) + "ms] - Got similar_files array (" + String::num_int64(similar_files.size()) + " files)");
+		
 		Array central_files = results.get("central_files", Array());
 		Dictionary graph_summary = results.get("graph_summary", Dictionary());
 		String query;
@@ -7976,7 +8133,16 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			similar_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			search_vbox->add_child(similar_header);
 			
-			for (int i = 0; i < similar_files.size(); i++) {
+			// CRITICAL FREEZE FIX: Limit UI widgets created to max 10 to prevent multi-second freeze
+			int max_results_to_display = MIN(10, similar_files.size());
+			if (similar_files.size() > max_results_to_display) {
+				Label *truncation_warning = memnew(Label);
+				truncation_warning->set_text("⚡ Showing first " + String::num_int64(max_results_to_display) + " results (performance optimized)");
+				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+				search_vbox->add_child(truncation_warning);
+			}
+			
+			for (int i = 0; i < max_results_to_display; i++) {
 				Dictionary file_result = similar_files[i];
 				String file_path = file_result.get("file_path", "");
 				float similarity = file_result.get("similarity", 0.0);
@@ -8003,82 +8169,12 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				
                 // Hide similarity score for a cleaner UI
 
-                // Try to display scene node/component name for .tscn/.tres sections
-                // Extract a header line around chunk_start for readability
-                String node_hint;
-                if (file_path.ends_with(".tscn") || file_path.ends_with(".tres")) {
-                    String fixed_path = _convert_to_godot_path(file_path);
-                    String abs_path = ProjectSettings::get_singleton()->globalize_path(fixed_path);
-                    Ref<FileAccess> f = FileAccess::open(abs_path, FileAccess::READ);
-                    if (f.is_valid()) {
-                        // Read up to chunk_end, but only scan nearby lines for section header
-                        Vector<String> lines;
-                        int64_t max_lines_to_read = chunk_end > 0 ? chunk_end : (chunk_start + 20);
-                        for (int64_t ln = 1; ln <= max_lines_to_read && !f->eof_reached(); ln++) {
-                            lines.push_back(f->get_line());
-                        }
-                        // Look backwards from chunk_start for a line that starts a section
-                        int64_t idx = MAX((int64_t)0, chunk_start - 1);
-                        for (int64_t i = idx; i >= 0 && i >= idx - 20; i--) {
-                            if (i < lines.size()) {
-                                String l = lines[i].strip_edges();
-                                if (l.begins_with("[node")) {
-                                    // Extract clean node info: name and type
-                                    String clean_hint = "";
-                                    int name_idx = l.find("name=\"");
-                                    int type_idx = l.find("type=\"");
-                                    
-                                    if (name_idx != -1) {
-                                        int start = name_idx + 6;
-                                        int end = l.find("\"", start + 1);
-                                        String name = end > start ? l.substr(start + 1, end - start - 1) : String("Node");
-                                        clean_hint = "[NODE] " + name;
-                                    }
-                                    
-                                    if (type_idx != -1) {
-                                        int start = type_idx + 6;
-                                        int end = l.find("\"", start + 1);
-                                        String type = end > start ? l.substr(start + 1, end - start - 1) : String("Node");
-                                        if (!clean_hint.is_empty() && type != "Node") {
-                                            clean_hint += " (" + type + ")";
-                                        } else if (clean_hint.is_empty()) {
-                                            clean_hint = "[NODE] " + type;
-                                        }
-                                    }
-                                    
-                                    node_hint = clean_hint.is_empty() ? "[NODE] Scene Node" : clean_hint;
-                                    break;
-                                } else if (l.begins_with("[sub_resource")) {
-                                    // Clean display: extract just the resource type
-                                    int type_idx = l.find("type=\"");
-                                    if (type_idx != -1) {
-                                        int start = type_idx + 6; // after type="
-                                        int end = l.find("\"", start + 1);
-                                        String t = end > start ? l.substr(start + 1, end - start - 1) : String("Resource");
-                                        node_hint = "[RES] " + t + " Resource";
-                                    } else {
-                                        node_hint = "[RES] Sub Resource";
-                                    }
-                                    break;
-                                } else if (l.begins_with("[ext_resource")) {
-                                    // Clean display for external resources
-                                    int type_idx = l.find("type=\"");
-                                    if (type_idx != -1) {
-                                        int start = type_idx + 6;
-                                        int end = l.find("\"", start + 1);
-                                        String t = end > start ? l.substr(start + 1, end - start - 1) : String("Resource");
-                                        node_hint = "[EXT] " + t + " (External)";
-                                    } else {
-                                        node_hint = "[EXT] External Resource";
-                                    }
-                                    break;
-                                } else if (l.begins_with("[resource")) {
-                                    node_hint = "[RES] Main Resource";
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                // CRITICAL FREEZE FIX: COMPLETELY DISABLE file reading during UI rendering
+                // Reading files synchronously on the main thread causes multi-second freezes
+                // Users can click the file link to see details
+                String node_hint; // Keep variable but don't populate it
+                if (false) { // DISABLED to prevent UI freeze
+                    // This entire block was reading files during UI rendering = freeze!
                 }
 
                 HBoxContainer *meta_box = memnew(HBoxContainer);
@@ -8097,14 +8193,17 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
                     meta_box->add_child(range_label);
                 }
 
-                // Simple structure view for scenes/resources
-                if (p_result.has("graph") && p_result["graph"].get_type() == Variant::DICTIONARY) {
+                // PERFORMANCE FIX: Skip graph structure rendering to prevent UI freeze
+                // The graph data creates hundreds of UI widgets that freeze the editor
+                // Users can see structure by opening the file directly
+                if (false && p_result.has("graph") && p_result["graph"].get_type() == Variant::DICTIONARY) {
                     Dictionary graph_map = p_result["graph"];
                     if (graph_map.has(file_path) && graph_map[file_path].get_type() == Variant::DICTIONARY) {
                         Dictionary fg = graph_map[file_path];
                         Array g_nodes = fg.get("nodes", Array());
                         Array g_edges = fg.get("edges", Array());
 
+                        // DISABLED: This code path creates too many UI widgets and freezes the editor
                         // Find scene nodes and connections
                         Array scene_nodes;
                         HashMap<String, String> node_scripts; // node_id -> script_path
@@ -8248,7 +8347,9 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			central_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			search_vbox->add_child(central_header);
 			
-			for (int i = 0; i < central_files.size(); i++) {
+			// FREEZE FIX: Limit central files displayed
+			int max_central_to_show = MIN(5, central_files.size());
+			for (int i = 0; i < max_central_to_show; i++) {
 				Dictionary central_file = central_files[i];
 				String file_path = central_file.get("file_path", "");
 				float centrality = central_file.get("centrality", 0.0);
@@ -8292,6 +8393,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
 			search_vbox->add_child(summary_label);
 		}
+		
+		print_line("AI Chat: RENDER_SEARCH [DONE] - Completed in " + String::num_uint64(OS::get_singleton()->get_ticks_msec() - render_start) + "ms");
 	} else if (p_tool_name == "search_godot_assets" && p_success) {
 		// Display Godot Asset Library search results
 		VBoxContainer *assets_vbox = memnew(VBoxContainer);
@@ -8602,6 +8705,23 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
 
+	} else if (p_tool_name == "search_manager" && p_success) {
+		// ULTRA-MINIMAL UI for search_manager (handles both project and docs search)
+		String search_mode = p_result.get("search_mode", "semantic");
+		int file_count = p_result.get("file_count", 0);
+		String query = p_result.get("query", "");
+		
+		Label *summary_label = memnew(Label);
+		summary_label->set_text("✅ " + search_mode.capitalize() + " search found " + String::num_int64(file_count) + " results for: \"" + query + "\"");
+		summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		p_content_vbox->add_child(summary_label);
+		
+		Label *note_label = memnew(Label);
+		note_label->set_text("Results are available to the AI for analysis and follow-up questions.");
+		note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+		p_content_vbox->add_child(note_label);
+		
 	} else {
 		// Default case - show formatted JSON output with better styling
 		// CRITICAL: Strip large data fields to prevent UI freeze
@@ -8610,6 +8730,8 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		safe_result.erase("glb_data");
 		safe_result.erase("asset_data");
 		safe_result.erase("frames");
+		safe_result.erase("results");  // ADDED: Don't show results array in fallback (can be huge)
+		
 		// Remove any fields that look like base64 payloads
 		Array keys = safe_result.keys();
 		for (int k = 0; k < keys.size(); k++) {
@@ -12947,7 +13069,9 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 	} else if (p_tool_name == "search_manager") {
 		if (op == "project.search") {
 			String query = args.get("query", "");
-			return "Searching project for: " + query.substr(0, 30) + (query.length() > 30 ? "..." : "");
+			String search_mode = args.get("search_mode", "semantic");
+			String mode_label = search_mode == "grep" ? "grep" : (search_mode == "keyword" ? "keyword" : "semantic");
+			return "Searching project (" + mode_label + "): " + query.substr(0, 25) + (query.length() > 25 ? "..." : "");
 		} else if (op == "docs.search") {
 			String query = args.get("query", "");
 			return "Searching docs for: " + query.substr(0, 30) + (query.length() > 30 ? "..." : "");
@@ -13734,22 +13858,16 @@ void AIChatDock::_on_embedding_poll_tick() {
     }
     // If there were FS changes but nothing queued, avoid aggressive full project scan
     if (pending_fs_changes) {
-        print_line("AI Chat: FS changes detected but no specific files queued. Skipping full project scan to avoid unnecessary re-indexing.");
+        // print_line("AI Chat: FS changes detected but no specific files queued. Skipping full project scan to avoid unnecessary re-indexing.");
         // Only clear the flag - don't trigger full project indexing for generic FS changes
         // Real changes should be caught by the specific save handlers above
         pending_fs_changes = false;
     }
 }
 
-void AIChatDock::_suggest_relevant_files(const String &p_query) {
-	// TODO: Implement smart file suggestions based on embedding similarity
-	print_line("AI Chat: Smart file suggestions not implemented yet for query: " + p_query);
-}
 
-void AIChatDock::_auto_attach_relevant_context() {
-	// TODO: Implement automatic context attachment based on message content
-	print_line("AI Chat: Auto context attachment not implemented yet");
-}
+
+
 
 void AIChatDock::_scan_and_index_project_files() {
 	print_line("AI Chat: Scanning project files for indexing...");

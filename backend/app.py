@@ -1868,6 +1868,9 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
             files = [r['file_path'] for r in enhanced_results['similar_files']]
             graph_context = cloud_vector_manager.get_graph_context_for_files(files, user['id'], project_id)
         
+        # CRITICAL FREEZE FIX: Don't send massive graph data to frontend
+        # Graph context can be hundreds of KB of nested JSON which freezes the UI
+        # The frontend doesn't need it anyway - it just displays file lists
         return {
             "success": True,
             "query": query,
@@ -1875,7 +1878,7 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
             "results": formatted_results,
             "include_graph": include_graph,
             "trace_dependencies": trace_dependencies,
-            "graph": graph_context,
+            "graph": {},  # STRIPPED: Sending graph freezes frontend UI for several seconds
             "file_count": len(enhanced_results['similar_files']),
             "message": f"Found {len(enhanced_results['similar_files'])} relevant files using {detected_mode.upper()} search for query: {query}"
         }
@@ -3516,9 +3519,15 @@ def chat():
                         if func_name == "project_manager":
                             return op in ["assets.search", "assets.install", "updates.check"]
                         
-                        # search_manager: both operations need backend  
+                        # search_manager: check search mode to decide frontend vs backend
                         elif func_name == "search_manager":
-                            return op in ["project.search", "docs.search"]
+                            if op == "docs.search":
+                                return True  # Docs search always on backend
+                            elif op == "project.search":
+                                # Grep search needs frontend (local filesystem), others need backend
+                                search_mode = args.get('search_mode', 'semantic')
+                                return search_mode != 'grep'  # Backend for semantic/keyword/hybrid, frontend for grep
+                            return False
                         
                         # resource_manager: only image operations need backend
                         elif func_name == "resource_manager":
@@ -3591,6 +3600,29 @@ def chat():
                 if backend_calls:
                     # This is a backend-only tool call, so we will execute it,
                     # add the results to the conversation, and loop again for the AI's final response.
+                    
+                    # CRITICAL LOOP PREVENTION: Check if these tools were already called recently
+                    skip_duplicate_tools = []
+                    for i, func in backend_calls.items():
+                        cache_key = _make_tool_cache_key(func["name"], func["arguments"])
+                        current_count = tool_call_counts.get(cache_key, 0)
+                        
+                        if current_count >= 3:
+                            print(f"LOOP_PREVENTION: Tool {func['name']} already called {current_count} times with same args - SKIPPING to prevent infinite loop!")
+                            skip_duplicate_tools.append(i)
+                        else:
+                            tool_call_counts[cache_key] = current_count + 1
+                            print(f"LOOP_DETECTION: {func['name']} call count: {current_count + 1}")
+                    
+                    # Remove duplicate tools from backend_calls
+                    for skip_key in skip_duplicate_tools:
+                        del backend_calls[skip_key]
+                    
+                    if not backend_calls:
+                        print(f"LOOP_PREVENTION: All tools were duplicates, skipping execution")
+                        # Send a message to break the loop
+                        yield json.dumps({"status": "completed", "message": "Prevented infinite tool loop"}) + '\n'
+                        break
                     
                     # CRITICAL: Send executing_tools status first so frontend creates assistant message with tool calls
                     original_tool_calls_for_history = []
@@ -3802,17 +3834,53 @@ def chat():
                             # Log tool result 
                             log_tool_result("search_across_project", tool_id, search_result, duration_ms=0)
                             
-                            # Yield result to frontend immediately
-                            yield json.dumps({"tool_executed": "search_across_project", "tool_result": search_result, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
+                            # CRITICAL FREEZE FIX: Only remove the massive graph object, keep file metadata for AI
+                            search_result_for_frontend = dict(search_result)
+                            search_result_for_frontend.pop("graph", None)  # Remove only the 100KB+ graph object
                             
-                            # Prepare tool result for conversation history
+                            # Limit number of files but keep their metadata for AI
+                            if "results" in search_result_for_frontend and isinstance(search_result_for_frontend["results"], dict):
+                                results_copy = dict(search_result_for_frontend["results"])
+                                
+                                # Limit quantity but preserve quality (metadata intact for AI)
+                                if "similar_files" in results_copy and len(results_copy["similar_files"]) > 10:
+                                    results_copy["similar_files"] = results_copy["similar_files"][:10]
+                                if "central_files" in results_copy and len(results_copy["central_files"]) > 5:
+                                    results_copy["central_files"] = results_copy["central_files"][:5]
+                                    
+                                search_result_for_frontend["results"] = results_copy
+                                print(f"FREEZE_FIX: Limited to {len(results_copy.get('similar_files', []))} files, keeping metadata for AI")
+                            
+                            # Yield result to frontend immediately (stripped version)
+                            yield json.dumps({"tool_executed": "search_across_project", "tool_result": search_result_for_frontend, "tool_call_id": tool_id, "status": "tool_completed"}) + '\n'
+                            
+                            # Prepare tool result for AI model - include essential file info + graph intelligence
+                            similar_files_full = search_result.get("results", {}).get("similar_files", [])[:10]
+                            
+                            # Keep essential fields + graph scores for AI decision making
+                            similar_files_for_ai = []
+                            for file_info in similar_files_full:
+                                similar_files_for_ai.append({
+                                    "file_path": file_info.get("file_path"),               # ESSENTIAL
+                                    "chunk_start": file_info.get("chunk_start"),           # ESSENTIAL (line number)
+                                    "chunk_end": file_info.get("chunk_end"),               # ESSENTIAL
+                                    "similarity": file_info.get("similarity", 0.0),        # USEFUL (how relevant)
+                                    "centrality_score": file_info.get("centrality_score"), # USEFUL (architectural importance)
+                                    "ranking_explanation": file_info.get("ranking_explanation", "")  # USEFUL (why selected)
+                                })
+                            
                             tool_result_for_openai = {
                                 "success": search_result.get("success"),
                                 "query": search_result.get("query"),
                                 "file_count": search_result.get("file_count", 0),
                                 "message": search_result.get("message"),
-                                "similar_files": search_result.get("results", {}).get("similar_files", [])[:3]  # Limit to first 3 for token efficiency
+                                "similar_files": similar_files_for_ai,                    # Files with metadata!
+                                "graph_summary": search_result.get("results", {}).get("graph_summary", {})  # Graph stats
                             }
+                            # Add central files for AI (architecturally important)
+                            central_files = search_result.get("results", {}).get("central_files", [])
+                            if central_files:
+                                tool_result_for_openai["central_files"] = central_files[:5]
                             
                             tool_results_for_history.append({
                                 "tool_call_id": tool_id,
@@ -4314,18 +4382,133 @@ def chat():
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
                             
+                            # CRITICAL FREEZE FIX: Only remove the massive graph object, keep file metadata for AI
+                            # Handle both project search (dict) and docs search (list) formats
+                            sm_result_for_frontend = dict(sm_result)
+                            sm_result_for_frontend.pop("graph", None)  # Remove only the 100KB+ graph object
+                            
+                            # Handle different result formats
+                            if "results" in sm_result_for_frontend:
+                                if isinstance(sm_result_for_frontend["results"], dict):
+                                    # PROJECT SEARCH: {"results": {"similar_files": [...]}}
+                                    results_dict = dict(sm_result_for_frontend["results"])
+                                    
+                                    # Limit quantity but preserve quality (metadata intact for AI)
+                                    if "similar_files" in results_dict and len(results_dict["similar_files"]) > 10:
+                                        results_dict["similar_files"] = results_dict["similar_files"][:10]
+                                    if "central_files" in results_dict and len(results_dict["central_files"]) > 5:
+                                        results_dict["central_files"] = results_dict["central_files"][:5]
+                                    
+                                    sm_result_for_frontend["results"] = results_dict
+                                    print(f"FREEZE_FIX: Limited project search to {len(results_dict.get('similar_files', []))} files")
+                                
+                                elif isinstance(sm_result_for_frontend["results"], list):
+                                    # DOCS SEARCH: {"results": [...]}
+                                    # CRITICAL: Strip full_content which can be 10,000+ chars per result!
+                                    print(f"FREEZE_FIX: Processing docs search with {len(sm_result_for_frontend['results'])} results")
+                                    lightweight_docs = []
+                                    total_stripped = 0
+                                    for doc in sm_result_for_frontend["results"][:10]:
+                                        if isinstance(doc, dict):
+                                            lightweight_doc = dict(doc)
+                                            # Check if full_content exists and how big it is
+                                            if "full_content" in lightweight_doc:
+                                                content_size = len(str(lightweight_doc["full_content"]))
+                                                total_stripped += content_size
+                                                lightweight_doc.pop("full_content", None)  # REMOVE: 10KB+ per doc!
+                                                print(f"FREEZE_FIX: Removed full_content ({content_size} chars) from doc: {lightweight_doc.get('title', 'unknown')}")
+                                            lightweight_docs.append(lightweight_doc)
+                                        else:
+                                            lightweight_docs.append(doc)
+                                    sm_result_for_frontend["results"] = lightweight_docs
+                                    print(f"FREEZE_FIX: Stripped {total_stripped} total chars of full_content from {len(lightweight_docs)} docs results")
+                            
                             yield json.dumps({
                                 "tool_executed": "search_manager",
-                                "tool_result": sm_result,
+                                "tool_result": sm_result_for_frontend,  # STRIPPED version
                                 "tool_call_id": tool_id,
                                 "status": "tool_completed"
                             }) + '\n'
+                            
+                            # For AI model history, handle both project search and docs search formats
+                            sm_result_for_history = {
+                                "success": sm_result.get("success"),
+                                "query": sm_result.get("query"),
+                                "file_count": sm_result.get("file_count", 0),
+                                "message": sm_result.get("message"),
+                                "search_mode": sm_result.get("search_mode", "unknown")
+                            }
+                            
+                            # Handle different result formats
+                            results_data = sm_result.get("results")
+                            if isinstance(results_data, dict):
+                                # PROJECT SEARCH: Extract file info with graph metadata
+                                similar_files_full = results_data.get("similar_files", [])[:10]
+                                similar_files_for_ai = []
+                                for file_info in similar_files_full:
+                                    similar_files_for_ai.append({
+                                        "file_path": file_info.get("file_path"),
+                                        "chunk_start": file_info.get("chunk_start"),
+                                        "chunk_end": file_info.get("chunk_end"),
+                                        "similarity": file_info.get("similarity", 0.0),
+                                        "centrality_score": file_info.get("centrality_score"),
+                                        "ranking_explanation": file_info.get("ranking_explanation", "")
+                                    })
+                                sm_result_for_history["similar_files"] = similar_files_for_ai
+                                sm_result_for_history["graph_summary"] = results_data.get("graph_summary", {})
+                                
+                                # Add central files
+                                central_files = results_data.get("central_files", [])
+                                if central_files:
+                                    sm_result_for_history["central_files"] = central_files[:5]
+                                
+                                # ADDED: Send lightweight graph relationships (not the massive nested object!)
+                                # Extract key connections from the graph for AI to understand project structure
+                                full_graph = sm_result.get("graph", {})
+                                if full_graph and isinstance(full_graph, dict):
+                                    graph_relationships = {}
+                                    for file_path, file_context in list(full_graph.items())[:10]:  # Max 10 files
+                                        if isinstance(file_context, dict):
+                                            edges = file_context.get("edges", [])
+                                            if edges:
+                                                # Keep only essential edge info
+                                                lightweight_edges = []
+                                                for edge in edges[:5]:  # Max 5 edges per file
+                                                    lightweight_edges.append({
+                                                        "type": edge.get("type"),  # extends, preload, scene_ref, etc.
+                                                        "target": edge.get("target") or edge.get("source"),  # Connected file
+                                                        "weight": edge.get("weight", 1.0)
+                                                    })
+                                                graph_relationships[file_path] = lightweight_edges
+                                    
+                                    if graph_relationships:
+                                        sm_result_for_history["graph_relationships"] = graph_relationships
+                                        print(f"AI_CONTEXT: Added graph relationships for {len(graph_relationships)} files")
+                            
+                            elif isinstance(results_data, list):
+                                # DOCS SEARCH: Results are a flat list
+                                # Strip full_content but keep snippet for AI
+                                docs_for_ai = []
+                                for doc in results_data[:10]:
+                                    if isinstance(doc, dict):
+                                        doc_minimal = {
+                                            "title": doc.get("title"),
+                                            "snippet": doc.get("snippet"),  # Keep short preview
+                                            "similarity": doc.get("similarity"),
+                                            "class_name": doc.get("class_name"),
+                                            "section": doc.get("section")
+                                            # STRIPPED: full_content (10,000+ chars per doc!)
+                                        }
+                                        docs_for_ai.append(doc_minimal)
+                                    else:
+                                        docs_for_ai.append(doc)
+                                sm_result_for_history["results"] = docs_for_ai
                             
                             tool_results_for_history.append({
                                 "tool_call_id": tool_id,
                                 "role": "tool",
                                 "name": "search_manager",
-                                "content": json.dumps(sm_result)
+                                "content": json.dumps(sm_result_for_history)
                             })
                         
                         elif func["name"] == "resource_manager":
@@ -4445,9 +4628,19 @@ def chat():
                         conversation_messages.append(tool_result)
                                                     # print(f"CONVERSATION_ADD: Added tool result: {tool_result.get('name', 'unknown')}")
 
+                    # CRITICAL FIX: These lines must be INSIDE the "if backend_calls:" block!
                     # Now, loop again to get the final text response from the AI
-                    # print("CONVERSATION_LOOP: Backend tool executed. Continuing loop for final AI response.")
-                    continue
+                    print(f"CONVERSATION_LOOP: Backend tools complete. Continuing loop for AI's final text response (conversation now has {len(conversation_messages)} messages)")
+                    print(f"CONVERSATION_LOOP: Last 3 message roles: {[conversation_messages[i]['role'] for i in range(max(0, len(conversation_messages)-3), len(conversation_messages))]}")
+                    
+                    # CRITICAL DEBUG: Show what we're sending back to AI
+                    if len(conversation_messages) > 0:
+                        last_msg = conversation_messages[-1]
+                        if last_msg.get('role') == 'tool':
+                            content_preview = str(last_msg.get('content', ''))[:200]
+                            print(f"CONVERSATION_LOOP: Last tool result preview: {content_preview}...")
+                    
+                    continue  # MUST be inside "if backend_calls:" block!
 
                 # --- Frontend Tool Calls & Final Text Responses ---
                 
