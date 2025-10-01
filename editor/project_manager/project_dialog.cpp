@@ -552,13 +552,24 @@ void ProjectDialog::ok_pressed() {
 			return;
 		}
 
-		// Store default project icon in SVG format.
-		Ref<FileAccess> fa_icon = FileAccess::open(path.path_join("icon.svg"), FileAccess::WRITE, &err);
-		if (err != OK) {
-			_set_message(TTRC("Couldn't create icon.svg in project path."), MESSAGE_ERROR);
-			return;
+		// Copy Orca logo to project as icon
+		String icon_source = "res://orcabranding/Logo.svg";
+		Ref<FileAccess> fa_icon_src = FileAccess::open(icon_source, FileAccess::READ, &err);
+		if (err == OK) {
+			String svg_content = fa_icon_src->get_as_utf8_string();
+			Ref<FileAccess> fa_icon = FileAccess::open(path.path_join("icon.svg"), FileAccess::WRITE, &err);
+			if (err == OK) {
+				fa_icon->store_string(svg_content);
+			}
+		} else {
+			// Fallback to embedded icon if Logo.svg not found
+			Ref<FileAccess> fa_icon = FileAccess::open(path.path_join("icon.svg"), FileAccess::WRITE, &err);
+			if (err != OK) {
+				_set_message(TTRC("Couldn't create icon.svg in project path."), MESSAGE_ERROR);
+				return;
+			}
+			fa_icon->store_string(get_default_project_icon());
 		}
-		fa_icon->store_string(get_default_project_icon());
 
 		EditorVCSInterface::create_vcs_metadata_files(EditorVCSInterface::VCSMetadata(vcs_metadata_selection->get_selected()), path);
 
