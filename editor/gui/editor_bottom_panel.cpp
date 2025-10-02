@@ -340,11 +340,7 @@ EditorBottomPanel::EditorBottomPanel() {
 	editor_toaster = memnew(EditorToaster);
 	bottom_hbox->add_child(editor_toaster);
 
-	EditorVersionButton *version_btn = memnew(EditorVersionButton(EditorVersionButton::FORMAT_BASIC));
-	// Fade out the version label to be less prominent, but still readable.
-	version_btn->set_self_modulate(Color(1, 1, 1, 0.65));
-	version_btn->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-	bottom_hbox->add_child(version_btn);
+	// Version button removed per user request
 
 	// Add a dummy control node for horizontal spacing.
 	Control *h_spacer = memnew(Control);

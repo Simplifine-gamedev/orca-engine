@@ -8410,7 +8410,12 @@ EditorNode::EditorNode() {
 	// FileSystem: Bottom left.
 	editor_dock_manager->add_dock(FileSystemDock::get_singleton(), TTRC("FileSystem"), EditorDockManager::DOCK_SLOT_LEFT_BR, ED_SHORTCUT_AND_COMMAND("docks/open_filesystem", TTRC("Open FileSystem Dock"), KeyModifierMask::ALT | Key::F), "Folder");
 
-	// Inspector: Full height right.
+	// AI Chat: Full height right, FIRST TAB (only if enabled).
+	if (ai_chat_dock) {
+		editor_dock_manager->add_dock(ai_chat_dock, TTRC("AI Chat"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_ai_chat", TTRC("Open AI Chat Dock")), "RigidBody3D");
+	}
+
+	// Inspector: Full height right, behind AI Chat.
 	editor_dock_manager->add_dock(InspectorDock::get_singleton(), TTRC("Inspector"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_inspector", TTRC("Open Inspector Dock")), "AnimationTrackList");
 
 	// Node: Full height right, behind Inspector.
@@ -8418,11 +8423,6 @@ EditorNode::EditorNode() {
 
 	// History: Full height right, behind Node.
 	editor_dock_manager->add_dock(history_dock, TTRC("History"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_history", TTRC("Open History Dock")), "History");
-
-	// AI Chat: Full height right, behind History (only if enabled).
-	if (ai_chat_dock) {
-		editor_dock_manager->add_dock(ai_chat_dock, TTRC("AI Chat"), EditorDockManager::DOCK_SLOT_RIGHT_UL, ED_SHORTCUT_AND_COMMAND("docks/open_ai_chat", TTRC("Open AI Chat Dock")), "RigidBody3D");
-	}
 
 	// Add some offsets to left_r and main hsplits to make LEFT_R and RIGHT_L docks wider than minsize.
 	left_r_hsplit->set_split_offset(270 * EDSCALE);
@@ -8584,7 +8584,7 @@ EditorNode::EditorNode() {
 
 	disk_changed = memnew(ConfirmationDialog);
 	{
-		disk_changed->set_title(TTR("Files have been modified outside Godot"));
+		disk_changed->set_title(TTR("Files have been modified outside Orca"));
 
 		VBoxContainer *vbc = memnew(VBoxContainer);
 		disk_changed->add_child(vbc);
