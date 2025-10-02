@@ -2189,11 +2189,51 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
     String save_path = p_args.get("save_path", String());
     if (!save_path.is_empty()) {
         Ref<Resource> res_ref = Ref<Resource>(res);
+        
+        // CRITICAL FIX (Issue #1): Follow fs_write pattern - write, update, sync, scan
+        // This ensures immediate availability and prevents race conditions
+        
+        // Step 1: Save to disk FIRST
         Error e = ResourceSaver::save(res_ref, save_path);
         if (e != OK) {
             result["success"] = false; result["message"] = "Failed to save resource to " + save_path; return result;
         }
         result["path"] = save_path;
+        print_line("CREATE_RESOURCE: Resource saved to disk: " + save_path);
+        
+        // Step 2: Force immediate filesystem update to register the file
+        if (EditorFileSystem::get_singleton()) {
+            print_line("CREATE_RESOURCE: Forcing immediate filesystem update for " + save_path);
+            EditorFileSystem::get_singleton()->update_file(save_path);
+            print_line("CREATE_RESOURCE: File registered in editor");
+        }
+        
+        // Step 3: For text resources (.tres), sync with editor if open
+        String ext = save_path.get_extension().to_lower();
+        if (ext == "tres" || ext == "res") {
+            // Read back the saved content for preview overlay
+            Error read_err;
+            String saved_content = FileAccess::get_file_as_string(save_path, &read_err);
+            if (read_err == OK && !saved_content.is_empty()) {
+                // Set preview overlay so subsequent reads see the new content immediately
+                set_preview_overlay(save_path, saved_content);
+                print_line("CREATE_RESOURCE: Set preview overlay for " + save_path);
+            }
+        }
+        
+        // Step 4: Scan for changes to update editor UI
+        if (EditorFileSystem::get_singleton()) {
+            EditorFileSystem::get_singleton()->scan_changes();
+        }
+        
+        // Step 5: Force immediate reimport to ensure .import file is created
+        Vector<String> to_reimport;
+        to_reimport.push_back(save_path);
+        EditorFileSystem::get_singleton()->reimport_files(to_reimport);
+        
+        // Step 6: Brief wait to ensure filesystem has fully processed
+        OS::get_singleton()->delay_usec(300000); // 300ms wait - increased for reliability
+        print_line("CREATE_RESOURCE: Complete - resource immediately available for loading");
     }
 
     // Provide a lightweight handle back; we cannot send raw pointer, so return a temp path-less id
@@ -2224,7 +2264,8 @@ Dictionary EditorTools::assign_resource_to_node_property(const Dictionary &p_arg
                 res = Ref<Resource>(raw);
             }
         } else if (d.has("type")) {
-            // Inline creation - handle both "properties" and "props" parameter names
+            // CRITICAL FIX (Issue #2): Inline resource creation
+            // Create the resource and ensure it stays alive by assigning to the node
             Dictionary create_args; 
             create_args["type"] = d["type"]; 
             
@@ -2246,23 +2287,38 @@ Dictionary EditorTools::assign_resource_to_node_property(const Dictionary &p_arg
             if (cr.get("success", false)) {
                 int64_t rid = (int64_t)cr.get("rid", (int64_t)0);
                 Resource *raw = (Resource*)rid;
-                if (Object::cast_to<Resource>(raw)) res = Ref<Resource>(raw);
-                print_line("INLINE_RESOURCE_CREATE: Successfully created and got resource reference");
+                if (Object::cast_to<Resource>(raw)) {
+                    res = Ref<Resource>(raw);
+                    print_line("INLINE_RESOURCE_CREATE: Successfully created resource, keeping alive via Ref");
+                }
             } else {
-                print_line("INLINE_RESOURCE_CREATE: Failed to create resource: " + String(cr.get("message", "Unknown error")));
+                result["success"] = false;
+                result["message"] = "Failed to create inline resource: " + String(cr.get("message", "Unknown error"));
+                return result;
             }
         }
     } else if (res_spec.get_type() == Variant::STRING) {
         res = ResourceLoader::load((String)res_spec);
     }
     if (res.is_null()) { result["success"] = false; result["message"] = "Could not resolve resource"; return result; }
-    node->set(prop, res);
+    
+    // CRITICAL FIX (Issue #2): Assign to node BEFORE checking if scene should be marked dirty
+    // This ensures the resource is owned and won't be garbage collected
+    bool set_valid = false;
+    node->set(prop, res, &set_valid);
+    if (!set_valid) {
+        result["success"] = false;
+        result["message"] = "Failed to set property '" + String(prop) + "' on node (setter may have failed or property doesn't exist)";
+        return result;
+    }
+    print_line("ASSIGN_RESOURCE: Successfully assigned " + res->get_class() + " to " + String(node->get_name()) + "." + String(prop));
+    
     Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
     if (root && node->get_owner() == root) {
         // Mark scene dirty by touching owner; editor will handle actual save
         // No-op here; Godot tracks property changes automatically
     }
-    result["success"] = true; result["message"] = "Resource assigned"; return result;
+    result["success"] = true; result["message"] = "Resource assigned successfully"; return result;
 }
 
 // Create a new scene with a specific root type and optionally attach current root under it.
@@ -2914,16 +2970,57 @@ String EditorTools::_handle_tscn_string_replacement(const String &p_content, con
     return final_content;
 }
 
+// CRITICAL FIX (Issue #4): Helper function to process escape sequences
+// Converts literal escape sequences like "\\t" to actual characters like tab
+static String _process_escape_sequences(const String &p_input) {
+    String output = p_input;
+    
+    // Process escape sequences in order (most specific to least specific)
+    // NOTE: We need to process \\ last to avoid interfering with other sequences
+    
+    // Handle common escape sequences
+    output = output.replace("\\t", "\t");   // Tab
+    output = output.replace("\\n", "\n");   // Newline
+    output = output.replace("\\r", "\r");   // Carriage return
+    output = output.replace("\\\"", "\"");  // Quote
+    output = output.replace("\\'", "'");    // Single quote
+    output = output.replace("\\\\", "\\");  // Backslash (do this last!)
+    
+    return output;
+}
+
+// Helper function to get available signal names from a node for debugging
+static Array _get_node_signals(Node *p_node) {
+    Array signal_names;
+    if (!p_node) return signal_names;
+    
+    List<MethodInfo> signals;
+    p_node->get_signal_list(&signals);
+    
+    for (const MethodInfo &mi : signals) {
+        signal_names.push_back(String(mi.name));
+    }
+    
+    return signal_names;
+}
+
 Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
     // Precise string replacement with find/replace functionality
     Dictionary result;
     String path = p_args.get("path", "");
-    String find_string = p_args.get("find_string", "");
-    String replace_string = p_args.get("replace_string", "");
+    String find_string_raw = p_args.get("find_string", "");
+    String replace_string_raw = p_args.get("replace_string", "");
     bool replace_all = p_args.get("replace_all", false);
     bool case_sensitive = p_args.get("case_sensitive", true);
     
-    print_line("FS_REPLACE_STRING: Starting with path=" + path + ", find='" + find_string + "', replace='" + replace_string + "'");
+    // CRITICAL FIX (Issue #4): Process escape sequences in find/replace strings
+    // This allows AI to specify \t for tab, \n for newline, etc.
+    String find_string = _process_escape_sequences(find_string_raw);
+    String replace_string = _process_escape_sequences(replace_string_raw);
+    
+    print_line("FS_REPLACE_STRING: Starting with path=" + path);
+    print_line("FS_REPLACE_STRING: Raw find='" + find_string_raw + "' → Processed='" + find_string.c_escape() + "'");
+    print_line("FS_REPLACE_STRING: Raw replace='" + replace_string_raw + "' → Processed='" + replace_string.c_escape() + "'");
     
     if (path.is_empty()) {
         result["success"] = false;
@@ -2931,7 +3028,7 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
         return result;
     }
     
-    if (find_string.is_empty()) {
+    if (find_string.is_empty() && find_string_raw.is_empty()) {
         result["success"] = false;
         result["message"] = "find_string parameter required for fs.replace_string";
         return result;
@@ -3055,10 +3152,19 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
     } else if (case_sensitive) {
         if (replace_all) {
             // Use Godot's built-in replace method (safest approach)
-            String before_replace = final_content;
-            final_content = before_replace.replace(find_string, replace_string);
-            replacements_made = (final_content != before_replace) ? 1 : 0; // Conservative count
-            print_line("FS_REPLACE_STRING: Used built-in replace_all, content changed=" + String(final_content != before_replace ? "true" : "false"));
+            // Count occurrences BEFORE replacement for accurate reporting
+            int count = 0;
+            int search_pos = 0;
+            while (true) {
+                int found = final_content.find(find_string, search_pos);
+                if (found == -1) break;
+                count++;
+                search_pos = found + find_string.length();
+            }
+            
+            final_content = final_content.replace(find_string, replace_string);
+            replacements_made = count;
+            print_line("FS_REPLACE_STRING: Used built-in replace_all, replaced " + String::num_int64(replacements_made) + " occurrences");
         } else {
             // Replace first occurrence only using built-in methods
             int pos = final_content.find(find_string);
@@ -3073,19 +3179,39 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
         // For case insensitive, convert to case sensitive by finding actual case
         String content_lower = original_content.to_lower();
         String find_lower = find_string.to_lower();
-        int pos = content_lower.find(find_lower);
         
-        if (pos >= 0 && pos < original_content.length()) {
-            // Extract the actual case version from original content
-            String actual_find = original_content.substr(pos, find_string.length());
+        if (replace_all) {
+            // Count and replace all case-insensitive matches
+            int count = 0;
+            int search_pos = 0;
+            String temp_content = final_content;
             
-            if (replace_all) {
-                final_content = final_content.replace(actual_find, replace_string);
-            } else {
-                final_content = final_content.replace_first(actual_find, replace_string);
+            while (true) {
+                String temp_lower = temp_content.to_lower();
+                int found = temp_lower.find(find_lower, search_pos);
+                if (found == -1) break;
+                
+                // Extract actual case version and replace it
+                String actual_find = temp_content.substr(found, find_string.length());
+                temp_content = temp_content.substr(0, found) + replace_string + temp_content.substr(found + find_string.length());
+                count++;
+                search_pos = found + replace_string.length();
             }
-            replacements_made = 1;
-            print_line("FS_REPLACE_STRING: Case insensitive replacement completed");
+            
+            final_content = temp_content;
+            replacements_made = count;
+            print_line("FS_REPLACE_STRING: Case insensitive replace_all completed, replaced " + String::num_int64(replacements_made) + " occurrences");
+        } else {
+            // Replace first occurrence only (case insensitive)
+            int pos = content_lower.find(find_lower);
+            
+            if (pos >= 0 && pos < original_content.length()) {
+                // Extract the actual case version from original content
+                String actual_find = original_content.substr(pos, find_string.length());
+                final_content = final_content.replace_first(actual_find, replace_string);
+                replacements_made = 1;
+                print_line("FS_REPLACE_STRING: Case insensitive replacement completed");
+            }
         }
     }
     
@@ -10088,8 +10214,24 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
     }
     
     if (operation == "signals.connect") {
-        Node *source_node = require_path(result);
-        if (!source_node) return result;
+        // CRITICAL FIX (Issue #3): Handle multiple parameter name variations
+        // Support both 'path' and 'source_path' for source node
+        String source_path = p_args.get("path", p_args.get("source_path", ""));
+        
+        if (source_path.is_empty()) {
+            result["success"] = false;
+            result["message"] = "Missing 'path' or 'source_path' parameter for source node";
+            return result;
+        }
+        
+        // Get source node using the path
+        Dictionary source_error;
+        Node *source_node = _get_node_from_path(source_path, source_error);
+        if (!source_node) {
+            result["success"] = false;
+            result["message"] = "Source node not found: " + source_path;
+            return result;
+        }
         
         String signal_name = p_args.get("signal_name", p_args.get("signal", ""));
         String target_path = p_args.get("target_path", p_args.get("target", ""));
@@ -10097,19 +10239,19 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         
         if (signal_name.is_empty()) {
             result["success"] = false;
-            result["message"] = "Missing 'signal_name' parameter";
+            result["message"] = "Missing 'signal_name' or 'signal' parameter";
             return result;
         }
         
         if (target_path.is_empty()) {
             result["success"] = false;
-            result["message"] = "Missing 'target_path' parameter";
+            result["message"] = "Missing 'target_path' or 'target' parameter";
             return result;
         }
         
         if (method_name.is_empty()) {
             result["success"] = false;
-            result["message"] = "Missing 'method' parameter";
+            result["message"] = "Missing 'method' or 'method_name' parameter";
             return result;
         }
         
@@ -10125,14 +10267,16 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         // Check if signal exists on source node
         if (!source_node->has_signal(signal_name)) {
             result["success"] = false;
-            result["message"] = "Signal '" + signal_name + "' not found on source node";
+            result["message"] = "Signal '" + signal_name + "' not found on source node '" + String(source_node->get_name()) + "'";
+            result["available_signals"] = _get_node_signals(source_node);
             return result;
         }
         
         // Check if method exists on target node
         if (!target_node->has_method(method_name)) {
             result["success"] = false;
-            result["message"] = "Method '" + method_name + "' not found on target node";
+            result["message"] = "Method '" + method_name + "' not found on target node '" + String(target_node->get_name()) + "'";
+            result["note"] = "Ensure the method exists in the target node's script. Method names are case-sensitive.";
             return result;
         }
         
@@ -10142,12 +10286,18 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
         
         if (err != OK) {
             result["success"] = false;
-            result["message"] = "Failed to connect signal: " + String::num_int64(err);
+            result["message"] = "Failed to connect signal (error code: " + String::num_int64(err) + ")";
             return result;
         }
         
+        // Mark scene as modified
+        Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+        if (root) {
+            root->set_edited(true);
+        }
+        
         result["success"] = true;
-        result["message"] = "Connected signal '" + signal_name + "' to method '" + method_name + "'";
+        result["message"] = "Connected signal '" + signal_name + "' from '" + String(source_node->get_name()) + "' to method '" + method_name + "' on '" + String(target_node->get_name()) + "'";
         result["source_node"] = String(source_node->get_path());
         result["target_node"] = String(target_node->get_path());
         result["signal"] = signal_name;
