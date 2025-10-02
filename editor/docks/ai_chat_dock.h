@@ -168,6 +168,7 @@ private:
 	EditorFileDialog *save_image_dialog = nullptr;
 	EditorFileDialog *save_3d_model_dialog = nullptr;
 	EditorFileDialog *export_dialog = nullptr;
+	EditorFileDialog *import_dialog = nullptr;
 	AcceptDialog *image_warning_dialog = nullptr;
 	ConfirmationDialog *restore_checkpoint_dialog = nullptr;
 
@@ -195,6 +196,7 @@ private:
 	HTTPRequest *auth_request = nullptr;
 	HTTPRequest *auth_providers_request = nullptr;
 	Button *login_button = nullptr;
+	Button *import_button = nullptr;
 	Button *export_button = nullptr;
 	Label *user_status_label = nullptr;
 	String current_user_id;
@@ -560,6 +562,8 @@ private:
 	// User authentication methods
 	void _setup_authentication_ui();
 	void _on_login_button_pressed();
+	void _on_import_button_pressed();
+	void _on_import_file_selected(const String &p_file_path);
 	void _on_export_button_pressed();
 	void _on_export_file_selected(const String &p_file_path);
 	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);

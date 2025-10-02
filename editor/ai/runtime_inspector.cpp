@@ -1073,3 +1073,419 @@ Dictionary RuntimeInspector::get_watch_values() {
 	
 	return result;
 }
+
+// ========== ADVANCED DIAGNOSTICS - "System Observatory" Implementation ==========
+
+Dictionary RuntimeInspector::diagnose_node(const String &p_node_path, bool p_compare_to_editor) {
+	Dictionary result;
+	
+	if (!_is_game_running()) {
+		result["success"] = false;
+		result["error"] = "Game is not running";
+		return result;
+	}
+	
+	Node *node = _get_remote_node(p_node_path);
+	if (!node) {
+		result["success"] = false;
+		result["error"] = "Node not found: " + p_node_path;
+		return result;
+	}
+	
+	result["success"] = true;
+	result["node_path"] = String(node->get_path());
+	result["node_type"] = node->get_class();
+	result["node_name"] = node->get_name();
+	
+	// Get current runtime properties
+	Dictionary current_state;
+	List<PropertyInfo> prop_list;
+	node->get_property_list(&prop_list);
+	
+	for (const PropertyInfo &prop : prop_list) {
+		if (prop.name.begins_with("_") || !(prop.usage & PROPERTY_USAGE_EDITOR)) {
+			continue;
+		}
+		current_state[prop.name] = node->get(prop.name);
+	}
+	result["current_state"] = current_state;
+	
+	// List attached scripts and their effects
+	Ref<Script> script = node->get_script();
+	Array scripts_info;
+	if (script.is_valid()) {
+		Dictionary script_dict;
+		script_dict["path"] = script->get_path();
+		script_dict["class"] = script->get_class();
+		
+		// Detect if script has _process or _physics_process (property modifiers)
+		Array potential_modifiers;
+		if (script->has_method("_process")) {
+			potential_modifiers.push_back("_process() - runs every frame");
+		}
+		if (script->has_method("_physics_process")) {
+			potential_modifiers.push_back("_physics_process() - runs every physics frame");
+		}
+		if (script->has_method("_ready")) {
+			potential_modifiers.push_back("_ready() - runs on scene start");
+		}
+		script_dict["potential_modifiers"] = potential_modifiers;
+		
+		scripts_info.push_back(script_dict);
+	}
+	result["attached_scripts"] = scripts_info;
+	
+	// Detect animation players affecting this node
+	Array animations_affecting;
+	TypedArray<Node> anim_players = node->find_children("*", "AnimationPlayer", true, false);
+	for (int i = 0; i < anim_players.size(); i++) {
+		Node *anim_node = Object::cast_to<Node>(anim_players[i]);
+		if (anim_node) {
+			Dictionary anim_dict;
+			anim_dict["path"] = String(anim_node->get_path());
+			anim_dict["name"] = anim_node->get_name();
+			animations_affecting.push_back(anim_dict);
+		}
+	}
+	result["animations_affecting"] = animations_affecting;
+	
+	// Compare to editor state if requested
+	if (p_compare_to_editor) {
+		Dictionary editor_state;
+		Node *editor_scene = EditorNode::get_singleton()->get_edited_scene();
+		if (editor_scene) {
+			Node *editor_node = editor_scene->get_node_or_null(NodePath(p_node_path));
+			if (editor_node) {
+				List<PropertyInfo> editor_props;
+				editor_node->get_property_list(&editor_props);
+				for (const PropertyInfo &prop : editor_props) {
+					if (prop.name.begins_with("_") || !(prop.usage & PROPERTY_USAGE_EDITOR)) {
+						continue;
+					}
+					editor_state[prop.name] = editor_node->get(prop.name);
+				}
+			}
+		}
+		result["editor_state"] = editor_state;
+		
+		// Find differences
+		Array differences;
+		for (const Variant *key = current_state.next(); key; key = current_state.next(key)) {
+			String prop_name = *key;
+			if (editor_state.has(prop_name)) {
+				Variant runtime_val = current_state[prop_name];
+				Variant editor_val = editor_state[prop_name];
+				if (runtime_val != editor_val) {
+					Dictionary diff;
+					diff["property"] = prop_name;
+					diff["runtime_value"] = runtime_val;
+					diff["editor_value"] = editor_val;
+					diff["conclusion"] = "Property is being modified at runtime";
+					differences.push_back(diff);
+				}
+			}
+		}
+		result["differences"] = differences;
+		result["differences_count"] = differences.size();
+	}
+	
+	// Generate diagnostic summary
+	String summary = "Node: " + node->get_name() + " (" + node->get_class() + ")\n";
+	summary += "Scripts attached: " + String::num_int64(scripts_info.size()) + "\n";
+	if (scripts_info.size() > 0) {
+		summary += "⚠ Scripts may be modifying properties in _process() or _physics_process()\n";
+	}
+	if (animations_affecting.size() > 0) {
+		summary += "Animations affecting node: " + String::num_int64(animations_affecting.size()) + "\n";
+	}
+	if (p_compare_to_editor && result.has("differences_count")) {
+		int diff_count = result.get("differences_count", 0);
+		if (diff_count > 0) {
+			summary += "⚠ " + String::num_int64(diff_count) + " properties differ between editor and runtime!\n";
+			summary += "💡 Suggestion: Check scripts and animations for property modifications\n";
+		}
+	}
+	result["diagnostic_summary"] = summary;
+	
+	return result;
+}
+
+Dictionary RuntimeInspector::trace_property_changes(const String &p_node_path, const String &p_property, float p_duration, bool p_include_callstack) {
+	Dictionary result;
+	
+	if (!_is_game_running()) {
+		result["success"] = false;
+		result["error"] = "Game is not running";
+		return result;
+	}
+	
+	Node *node = _get_remote_node(p_node_path);
+	if (!node) {
+		result["success"] = false;
+		result["error"] = "Node not found: " + p_node_path;
+		return result;
+	}
+	
+	// Record initial value
+	Variant initial_value = node->get(p_property);
+	
+	// Wait for the trace duration (simplified - in production would use callbacks)
+	OS::get_singleton()->delay_usec((int)(p_duration * 1000000)); // Convert seconds to microseconds
+	
+	// Record final value
+	Variant final_value = node->get(p_property);
+	
+	result["success"] = true;
+	result["property"] = p_property;
+	result["initial_value"] = initial_value;
+	result["final_value"] = final_value;
+	result["changed"] = (initial_value != final_value);
+	result["trace_duration"] = p_duration;
+	
+	if (initial_value != final_value) {
+		result["conclusion"] = "Property '" + p_property + "' is being modified during runtime";
+		result["suggestion"] = "Check scripts with _process() or _physics_process() methods, or active animations";
+		
+		// Try to identify likely modifier
+		Ref<Script> script = node->get_script();
+		if (script.is_valid()) {
+			if (script->has_method("_process") || script->has_method("_physics_process")) {
+				result["likely_modifier"] = script->get_path() + " (_process or _physics_process method)";
+			}
+		}
+	} else {
+		result["conclusion"] = "Property '" + p_property + "' remained stable over " + String::num(p_duration, 2) + " seconds";
+	}
+	
+	return result;
+}
+
+Dictionary RuntimeInspector::analyze_script_effects(const String &p_script_path) {
+	Dictionary result;
+	
+	if (!_is_game_running()) {
+		result["success"] = false;
+		result["error"] = "Game is not running";
+		return result;
+	}
+	
+	result["success"] = true;
+	result["script_path"] = p_script_path;
+	
+	// Find all nodes using this script in the running scene
+	Node *scene_root = _get_running_scene_root();
+	if (!scene_root) {
+		result["success"] = false;
+		result["error"] = "No running scene found";
+		return result;
+	}
+	
+	Array affected_nodes;
+	TypedArray<Node> all_nodes = scene_root->find_children("*", "", true, false);
+	
+	for (int i = 0; i < all_nodes.size(); i++) {
+		Node *node = Object::cast_to<Node>(all_nodes[i]);
+		if (node) {
+			Ref<Script> node_script = node->get_script();
+			if (node_script.is_valid() && node_script->get_path() == p_script_path) {
+				Dictionary node_info;
+				node_info["path"] = String(node->get_path());
+				node_info["name"] = node->get_name();
+				node_info["type"] = node->get_class();
+				affected_nodes.push_back(node_info);
+			}
+		}
+	}
+	
+	result["affected_nodes"] = affected_nodes;
+	result["affected_count"] = affected_nodes.size();
+	
+	// Analyze script content to detect property modifications
+	Ref<FileAccess> file = FileAccess::open(p_script_path, FileAccess::READ);
+	if (file.is_valid()) {
+		String script_content = file->get_as_text();
+		file->close();
+		
+		// Simple pattern detection for property assignments
+		Array detected_modifications;
+		PackedStringArray lines = script_content.split("\n");
+		
+		for (int i = 0; i < lines.size(); i++) {
+			String line = lines[i].strip_edges();
+			
+			// Detect property assignments (self.property = value or just property = value)
+			if (line.contains(" = ") && !line.begins_with("#") && !line.begins_with("var ")) {
+				// Check for common property patterns
+				if (line.contains("position") || line.contains("rotation") || line.contains("scale") ||
+					line.contains("emission") || line.contains("energy") || line.contains("color") ||
+					line.contains("material") || line.contains("modulate")) {
+					
+					Dictionary mod_info;
+					mod_info["line_number"] = i + 1;
+					mod_info["code"] = line;
+					
+					// Extract property name (simplified)
+					String prop_name = "";
+					if (line.contains(".")) {
+						prop_name = line.get_slice("=", 0).get_slice(".", 1).strip_edges();
+					} else {
+						prop_name = line.get_slice("=", 0).strip_edges();
+					}
+					mod_info["property"] = prop_name;
+					
+					detected_modifications.push_back(mod_info);
+				}
+			}
+		}
+		
+		result["detected_modifications"] = detected_modifications;
+		result["modification_count"] = detected_modifications.size();
+		
+		// Detect process methods
+		Array process_methods;
+		if (script_content.contains("func _process(")) {
+			process_methods.push_back("_process() - runs every frame");
+		}
+		if (script_content.contains("func _physics_process(")) {
+			process_methods.push_back("_physics_process() - runs every physics frame");
+		}
+		result["process_methods"] = process_methods;
+		
+		// Generate diagnostic conclusion
+		if (detected_modifications.size() > 0 && process_methods.size() > 0) {
+			result["conclusion"] = "⚠ Script modifies " + String::num_int64(detected_modifications.size()) + " properties in process methods - these will override manual changes!";
+			result["suggestion"] = "To fix conflicts: Either modify the script parameters, disable the script temporarily, or set values in the script instead of inspector";
+		}
+	}
+	
+	return result;
+}
+
+Dictionary RuntimeInspector::list_node_scripts(const String &p_node_path) {
+	Dictionary result;
+	
+	if (!_is_game_running()) {
+		result["success"] = false;
+		result["error"] = "Game is not running";
+		return result;
+	}
+	
+	Node *node = _get_remote_node(p_node_path);
+	if (!node) {
+		result["success"] = false;
+		result["error"] = "Node not found: " + p_node_path;
+		return result;
+	}
+	
+	result["success"] = true;
+	result["node_path"] = String(node->get_path());
+	
+	// Get direct script
+	Array scripts;
+	Ref<Script> script = node->get_script();
+	if (script.is_valid()) {
+		Dictionary script_dict;
+		script_dict["path"] = script->get_path();
+		script_dict["type"] = "attached";
+		script_dict["enabled"] = true; // Can't easily detect if disabled
+		scripts.push_back(script_dict);
+	}
+	
+	result["scripts"] = scripts;
+	result["script_count"] = scripts.size();
+	
+	return result;
+}
+
+Dictionary RuntimeInspector::get_node_full_state(const String &p_node_path) {
+	// Combines diagnose_node with property trace results for comprehensive view
+	Dictionary result = diagnose_node(p_node_path, true);
+	
+	if (result.get("success", false)) {
+		// Add runtime-specific context
+		Node *node = _get_remote_node(p_node_path);
+		if (node) {
+			// Add process mode info
+			result["process_mode"] = node->get_process_mode();
+			result["physics_process_enabled"] = node->can_process();
+			
+			// Add tree position context
+			result["parent"] = node->get_parent() ? String(node->get_parent()->get_path()) : "";
+			result["child_count"] = node->get_child_count();
+			
+			// Add visibility/active state
+			if (CanvasItem *canvas_item = Object::cast_to<CanvasItem>(node)) {
+				result["visible"] = canvas_item->is_visible_in_tree();
+			} else if (Node3D *node_3d = Object::cast_to<Node3D>(node)) {
+				result["visible"] = node_3d->is_visible_in_tree();
+			}
+		}
+	}
+	
+	return result;
+}
+
+Dictionary RuntimeInspector::toggle_script(const String &p_node_path, const String &p_script_path, bool p_enabled) {
+	Dictionary result;
+	
+	if (!_is_game_running()) {
+		result["success"] = false;
+		result["error"] = "Game is not running";
+		return result;
+	}
+	
+	Node *node = _get_remote_node(p_node_path);
+	if (!node) {
+		result["success"] = false;
+		result["error"] = "Node not found: " + p_node_path;
+		return result;
+	}
+	
+	Ref<Script> current_script = node->get_script();
+	
+	if (p_enabled) {
+		// Enable: Load and attach script
+		if (current_script.is_valid() && current_script->get_path() == p_script_path) {
+			result["success"] = true;
+			result["message"] = "Script already attached and enabled";
+			result["already_enabled"] = true;
+			return result;
+		}
+		
+		// Load and attach the script
+		Ref<Script> script = ResourceLoader::load(p_script_path);
+		if (script.is_null()) {
+			result["success"] = false;
+			result["error"] = "Failed to load script: " + p_script_path;
+			return result;
+		}
+		
+		node->set_script(script);
+		result["success"] = true;
+		result["message"] = "Script enabled: " + p_script_path;
+		result["action"] = "enabled";
+	} else {
+		// Disable: Remove script temporarily
+		if (current_script.is_null()) {
+			result["success"] = true;
+			result["message"] = "No script attached to disable";
+			result["already_disabled"] = true;
+			return result;
+		}
+		
+		if (!p_script_path.is_empty() && current_script->get_path() != p_script_path) {
+			result["success"] = false;
+			result["error"] = "Script mismatch - node has different script: " + current_script->get_path();
+			return result;
+		}
+		
+		// Remove the script
+		node->set_script(Ref<Script>());
+		result["success"] = true;
+		result["message"] = "Script disabled (removed temporarily)";
+		result["action"] = "disabled";
+		result["warning"] = "Script will be re-enabled if scene is reloaded";
+	}
+	
+	return result;
+}

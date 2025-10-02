@@ -35,6 +35,7 @@
 #include "editor/animation/animation_player_editor_plugin.h"
 #include "editor/docks/editor_dock_manager.h"
 #include "editor/docks/node_dock.h"
+#include "editor/docks/ai_chat_dock.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/editor_undo_redo_manager.h"
@@ -186,6 +187,32 @@ void SceneTreeEditor::_cell_button_pressed(Object *p_item, int p_column, int p_i
 		all_warnings = String("\n").join(lines).indent("    ").replace(U"    •", U"\n•").substr(2);
 
 		warning->set_text(all_warnings);
+		
+		// CRITICAL FIX: Clear any existing custom buttons to prevent duplicates
+		// Find and remove all custom buttons except OK button
+		HBoxContainer *buttons_hbox = Object::cast_to<HBoxContainer>(warning->get_ok_button()->get_parent());
+		if (buttons_hbox) {
+			// Remove all buttons except the OK button (which is always last)
+			for (int i = buttons_hbox->get_child_count() - 1; i >= 0; i--) {
+				Button *btn = Object::cast_to<Button>(buttons_hbox->get_child(i));
+				if (btn && btn != warning->get_ok_button() && btn->get_text() == TTR("Fix with AI")) {
+					buttons_hbox->remove_child(btn);
+					btn->queue_free();
+				}
+			}
+		}
+		
+		// Add "Fix with AI" button for warnings (like errors have)
+		if (!warning->is_connected("custom_action", callable_mp(this, &SceneTreeEditor::_warning_fix_with_ai))) {
+			warning->connect("custom_action", callable_mp(this, &SceneTreeEditor::_warning_fix_with_ai));
+		}
+		// Store the warning text and node path for the AI button callback
+		warning->set_meta("warning_text", all_warnings);
+		warning->set_meta("node_path", n->get_path());
+		warning->set_meta("node_name", n->get_name());
+		
+		// Add custom button for "Fix with AI" (button ID 0 for custom_action)
+		warning->add_button(TTR("Fix with AI"), false, "fix_ai");
 		warning->popup_centered();
 
 	} else if (p_id == BUTTON_SIGNALS) {
@@ -226,6 +253,45 @@ void SceneTreeEditor::_update_ask_before_revoking_unique_name() {
 	}
 
 	_revoke_unique_name();
+}
+
+void SceneTreeEditor::_warning_fix_with_ai(const String &p_action) {
+	// Handle "Fix with AI" button click for node configuration warnings
+	if (p_action != "fix_ai") {
+		return;
+	}
+	
+	// Get the stored warning data from the dialog
+	String warning_text = warning->get_meta("warning_text", "");
+	NodePath node_path = warning->get_meta("node_path", NodePath());
+	String node_name = warning->get_meta("node_name", "");
+	
+	if (warning_text.is_empty()) {
+		return;
+	}
+	
+	// Get AI Chat dock
+	EditorNode *en = EditorNode::get_singleton();
+	if (!en) {
+		return;
+	}
+	AIChatDock *dock = en->get_ai_chat_dock();
+	if (!dock) {
+		print_line("SceneTreeEditor: AI Chat dock not available for warning fix");
+		return;
+	}
+	
+	// Build context-rich prompt for the AI
+	String prompt = "Please help me fix this node configuration warning:\n\n";
+	prompt += "Node: " + node_name + " (Path: " + String(node_path) + ")\n\n";
+	prompt += "Warning:\n" + warning_text;
+	
+	// Send to AI Chat
+	dock->send_error_message(prompt);
+	print_line("SceneTreeEditor: Sent node warning to AI Chat for fixing");
+	
+	// Close the warning dialog
+	warning->hide();
 }
 
 void SceneTreeEditor::_revoke_unique_name() {
@@ -507,7 +573,11 @@ void SceneTreeEditor::_update_node(Node *p_node, TreeItem *p_item, bool p_part_o
 				all_warnings.remove_at(0); // With only one warning, two newlines do not look great.
 			}
 
-			p_item->add_button(0, get_editor_theme_icon(warning_icon), BUTTON_WARNING, false, TTR("Node configuration warning:") + all_warnings);
+			// Add "Fix with AI" hint to the tooltip so users can see it on hover
+			String tooltip_text = TTR("Node configuration warning:") + all_warnings;
+			tooltip_text += "\n\n" + TTR("💡 Click to view details and fix with AI");
+			
+			p_item->add_button(0, get_editor_theme_icon(warning_icon), BUTTON_WARNING, false, tooltip_text);
 		}
 
 		if (p_node->is_unique_name_in_owner()) {
