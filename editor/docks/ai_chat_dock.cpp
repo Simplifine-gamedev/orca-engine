@@ -4,6 +4,7 @@
  * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from Simplifine.
  */
 #include "ai_chat_dock.h"
+#include "ai_chat_input_box.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -811,108 +812,8 @@ void AIChatDock::_notification(int p_notification) {
 			input_spacer->set_custom_minimum_size(Size2(0, 4));
 			add_child(input_spacer);
 
-			// Input area at the bottom - now a container with send button inside
-			VBoxContainer *input_wrapper = memnew(VBoxContainer);
-			add_child(input_wrapper);
-
-			// Create a panel container for the chatbox with always visible border
-			PanelContainer *input_panel = memnew(PanelContainer);
-			input_wrapper->add_child(input_panel);
-			
-			// Always visible border style for the chatbox
-			Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
-			panel_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-			panel_style->set_border_width_all(2);
-			panel_style->set_border_color(get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8)); // Always visible border
-			panel_style->set_corner_radius_all(8);
-			input_panel->add_theme_style_override("panel", panel_style);
-
-			// Container inside the panel for text field and send button
-			VBoxContainer *input_content = memnew(VBoxContainer);
-			input_panel->add_child(input_content);
-
-			input_field = memnew(TextEdit);
-					
-			// Enable word wrapping and disable auto-height expansion
-			input_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-			input_field->set_fit_content_height_enabled(false); // Disable auto-expand to enable scrolling
-			
-			// Remove border from input field since panel provides it
-			Ref<StyleBoxFlat> input_style = memnew(StyleBoxFlat);
-			input_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-			input_style->set_border_width_all(0); // No border on input field itself
-			input_style->set_corner_radius_all(0);
-			input_style->set_content_margin_all(8);
-			input_field->add_theme_style_override("normal", input_style);
-			input_field->add_theme_style_override("focus", input_style);
-			
-			input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			input_field->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-			input_field->set_placeholder("Ask me anything about Orca...");
-			input_field->set_custom_minimum_size(Size2(0, 150)); // 1.5x taller (was 100, now 150)
-			input_field->connect("text_changed", callable_mp(this, &AIChatDock::_on_input_text_changed));
-			input_field->connect("gui_input", callable_mp(this, &AIChatDock::_on_input_field_gui_input));
-			input_content->add_child(input_field);
-
-			// Send button container positioned at bottom right
-			HBoxContainer *button_row = memnew(HBoxContainer);
-			button_row->set_alignment(BoxContainer::ALIGNMENT_END); // Right align
-			input_content->add_child(button_row);
-
-			send_button = memnew(Button);
-			send_button->set_text(""); // No text, just icon
-			send_button->set_disabled(true);
-			send_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Play"), SNAME("EditorIcons"))); // Modern send/play icon
-			send_button->set_custom_minimum_size(Size2(32, 24)); // Smaller button
-			send_button->set_tooltip_text("Send (Enter)");
-			
-			// Small button styling
-			Ref<StyleBoxFlat> button_style = memnew(StyleBoxFlat);
-			button_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")));
-			button_style->set_corner_radius_all(4);
-			button_style->set_content_margin_all(4);
-			send_button->add_theme_style_override("normal", button_style);
-			
-			// Hover style
-			Ref<StyleBoxFlat> button_hover_style = memnew(StyleBoxFlat);
-			button_hover_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1.1, 1.1, 1.1));
-			button_hover_style->set_corner_radius_all(4);
-			button_hover_style->set_content_margin_all(4);
-			send_button->add_theme_style_override("hover", button_hover_style);
-			
-			send_button->connect("pressed", callable_mp(this, &AIChatDock::_on_send_button_pressed));
-			button_row->add_child(send_button);
-
-			// Stop button (initially hidden)
-			stop_button = memnew(Button);
-			stop_button->set_text("Stop");
-			stop_button->set_visible(false); // Hidden by default
-			stop_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Stop"), SNAME("EditorIcons")));
-			stop_button->set_custom_minimum_size(Size2(80, 40));
-			
-			// Stop button styling (red theme)
-			Ref<StyleBoxFlat> stop_button_style = memnew(StyleBoxFlat);
-			stop_button_style->set_bg_color(Color(0.8, 0.2, 0.2)); // Red color
-			stop_button_style->set_corner_radius_all(6);
-			stop_button_style->set_content_margin_all(8);
-			stop_button->add_theme_style_override("normal", stop_button_style);
-			
-			// Stop button hover style
-			Ref<StyleBoxFlat> stop_button_hover_style = memnew(StyleBoxFlat);
-			stop_button_hover_style->set_bg_color(Color(0.9, 0.3, 0.3)); // Lighter red on hover
-			stop_button_hover_style->set_corner_radius_all(6);
-			stop_button_hover_style->set_content_margin_all(8);
-			stop_button->add_theme_style_override("hover", stop_button_hover_style);
-			
-			// Stop button disabled style - keep red when disabled
-			Ref<StyleBoxFlat> stop_button_disabled_style = memnew(StyleBoxFlat);
-			stop_button_disabled_style->set_bg_color(Color(0.8, 0.2, 0.2));
-			stop_button_disabled_style->set_corner_radius_all(6);
-			stop_button_disabled_style->set_content_margin_all(8);
-			stop_button->add_theme_style_override("disabled", stop_button_disabled_style);
-
-			stop_button->connect("pressed", callable_mp(this, &AIChatDock::_on_stop_button_pressed));
-			button_row->add_child(stop_button);
+			// Input area at the bottom - create using AIChatInputBox component
+			AIChatInputBox::create_input_ui(this, this);
 
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			String selected_model = "claude-4"; // Default to claude-4
