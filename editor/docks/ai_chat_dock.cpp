@@ -137,6 +137,8 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_reindex_project_pressed"), &AIChatDock::_on_reindex_project_pressed);
 	ClassDB::bind_method(D_METHOD("_perform_project_reindex"), &AIChatDock::_perform_project_reindex);
 	ClassDB::bind_method(D_METHOD("_on_reindex_response"), &AIChatDock::_on_reindex_response);
+	ClassDB::bind_method(D_METHOD("_on_import_button_pressed"), &AIChatDock::_on_import_button_pressed);
+	ClassDB::bind_method(D_METHOD("_on_import_file_selected", "file_path"), &AIChatDock::_on_import_file_selected);
 	ClassDB::bind_method(D_METHOD("_on_scene_tree_node_selected"), &AIChatDock::_on_scene_tree_node_selected);
 	ClassDB::bind_method(D_METHOD("_on_files_selected"), &AIChatDock::_on_files_selected);
 	ClassDB::bind_method(D_METHOD("_on_remove_attachment", "path"), &AIChatDock::_on_remove_attachment);
@@ -585,6 +587,14 @@ void AIChatDock::_notification(int p_notification) {
 		export_dialog->add_filter("*.json", "JSON Files");
 		export_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_export_file_selected));
 		add_child(export_dialog);
+		
+		// Import conversation dialog
+		import_dialog = memnew(EditorFileDialog);
+		import_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+		import_dialog->set_access(EditorFileDialog::ACCESS_RESOURCES);
+		import_dialog->add_filter("*.json", "JSON Files");
+		import_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_import_file_selected));
+		add_child(import_dialog);
 
 		// Loading screen for conversation loading
 		loading_screen = memnew(PanelContainer);
@@ -1721,6 +1731,14 @@ void AIChatDock::_setup_authentication_ui() {
 	login_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Key"), SNAME("EditorIcons")));
 	login_button->connect("pressed", callable_mp(this, &AIChatDock::_on_login_button_pressed));
 	auth_container->add_child(login_button);
+	
+	// Import conversation button
+	import_button = memnew(Button);
+	import_button->set_text("Import");
+	import_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Load"), SNAME("EditorIcons")));
+	import_button->connect("pressed", callable_mp(this, &AIChatDock::_on_import_button_pressed));
+	import_button->set_tooltip_text("Import conversation from JSON file");
+	auth_container->add_child(import_button);
 	
 	// Export conversation button
 	export_button = memnew(Button);
@@ -3667,6 +3685,161 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		
 		// Continue processing other status updates instead of returning
 	}
+	
+	// Handle emergency summarization (triggered by context overflow)
+	if (response_data.has("status") && response_data["status"] == "emergency_summarizing") {
+		String message = response_data.get("message", "Emergency: Conversation too large, condensing...");
+		int original_count = response_data.get("original_count", 0);
+		
+		print_line("AI Chat: 🚨 EMERGENCY SUMMARIZATION TRIGGERED! Conversation: " + String::num_int64(original_count) + " messages");
+		
+		// Show urgent notification
+		_show_status_notification("emergency", message, "🚨", 6.0);
+		
+		// Maintain waiting state - backend will retry after summarizing
+		return;
+	}
+	
+	// Handle summarization STARTING (sent before backend blocks)
+	if (response_data.has("status") && response_data["status"] == "summarizing_starting") {
+		int original_count = response_data.get("original_count", 0);
+		String message = response_data.get("message", "Condensing conversation...");
+		
+		print_line("AI Chat: 🎯 SUMMARIZING STARTING! " + String::num_int64(original_count) + " messages");
+		
+		// Show immediate visual feedback that summarization is happening
+		_show_status_notification("summarization", "⏳ " + message, "⏳", 30.0);
+		
+		// Create inline placeholder
+		if (chat_container) {
+			PanelContainer *existing = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_summarization", true, false));
+			if (!existing) {
+				_create_backend_tool_placeholder("summarization", "Conversation summarization");
+			}
+			_update_tool_placeholder_with_description("summarization", "Conversation summarization", "executing", "⏳ Summarizing older messages for AI context...");
+		}
+		
+		return; // Don't process further
+	}
+	
+	// Handle normal conversation summarization COMPLETED status
+	if (response_data.has("status") && response_data["status"] == "summarizing") {
+		String message = response_data.get("message", "Condensing older messages for efficiency...");
+		int original_count = response_data.get("original_count", 0);
+		int new_count = response_data.get("new_count", 0);
+		String action = response_data.get("action", "");
+		
+		print_line("AI Chat: 🎯 SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages");
+		print_line("AI Chat: Action: '" + action + "', has_new_messages: " + String(response_data.has("new_messages") ? "YES" : "NO"));
+		
+		// CORRECT ARCHITECTURE:
+		// Backend summarizes and sends condensed conversation
+		// Frontend ACCEPTS the summary BUT restores tool_results/attached_files (not sent by backend)
+		// This way:
+		// - Backend only deals with summarized conversation (efficient)
+		// - Frontend preserves full UI data locally
+		// - Next request sends summarized conversation (no re-summarization needed!)
+		
+		Array new_messages = response_data.get("new_messages", Array());
+		
+		if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			print_line("AI Chat: ✅ ACCEPTING backend summary: " + String::num_int64(original_count) + " → " + String::num_int64(new_messages.size()) + " messages");
+			
+			// STEP 1: Build preservation maps for tool_results and attached_files
+			HashMap<String, Array> tool_results_map;
+			HashMap<String, Vector<AttachedFile>> attached_files_map;
+			
+			Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+			
+			for (int i = 0; i < chat_history.size(); i++) {
+				const ChatMessage &msg = chat_history[i];
+				
+				if (msg.role == "tool" && !msg.tool_call_id.is_empty() && !msg.tool_results.is_empty()) {
+					tool_results_map[msg.tool_call_id] = msg.tool_results;
+				}
+				
+				if (!msg.attached_files.is_empty()) {
+					String key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
+					attached_files_map[key] = msg.attached_files;
+				}
+			}
+			
+			print_line("AI Chat: Preserved " + String::num_int64(tool_results_map.size()) + " tool_results, " + String::num_int64(attached_files_map.size()) + " attached_files");
+			
+			// STEP 2: Clear and rebuild from backend's summarized messages
+			chat_history.clear();
+			
+			for (int i = 0; i < new_messages.size(); i++) {
+				Dictionary msg_dict = new_messages[i];
+				AIChatDock::ChatMessage msg;
+				msg.role = msg_dict.get("role", "");
+				msg.content = msg_dict.get("content", "");
+				msg.timestamp = msg_dict.get("timestamp", _get_timestamp());
+				msg.tool_calls = msg_dict.get("tool_calls", Array());
+				msg.tool_call_id = msg_dict.get("tool_call_id", "");
+				msg.name = msg_dict.get("name", "");
+				msg.project_context = msg_dict.get("project_context", "");
+				
+				// STEP 3: Restore tool_results from preservation map
+				if (msg.role == "tool" && !msg.tool_call_id.is_empty() && tool_results_map.has(msg.tool_call_id)) {
+					msg.tool_results = tool_results_map[msg.tool_call_id];
+				}
+				
+				// STEP 4: Restore attached_files from preservation map
+				String attach_key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
+				if (attached_files_map.has(attach_key)) {
+					msg.attached_files = attached_files_map[attach_key];
+				}
+				
+				// Also try fallback keys
+				for (const KeyValue<String, Vector<AttachedFile>> &kv : attached_files_map) {
+					if (kv.key.begins_with(msg.role + "_") && msg.attached_files.is_empty()) {
+						msg.attached_files = kv.value;
+						break;
+					}
+				}
+				
+				msg.reasoning_content = msg_dict.get("reasoning_content", "");
+				msg.thinking_blocks = msg_dict.get("thinking_blocks", Array());
+				
+				chat_history.push_back(msg);
+			}
+			
+			// STEP 5: Rebuild UI with summarized conversation
+			if (chat_container) {
+				for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+					Node *child = chat_container->get_child(i);
+					if (child && child != pending_edits_banner) {
+						child->queue_free();
+					}
+				}
+			}
+			call_deferred("_rebuild_conversation_ui_deferred", current_conversation_index);
+			
+			conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+			_queue_delayed_save();
+			
+			print_line("AI Chat: ✅ Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
+		}
+		
+		// Update notification
+		_show_status_notification("summarization", "✅ Conversation condensed (" + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages)", "📊", 4.0);
+		
+		// Mark inline placeholder as completed and remove it
+		if (chat_container) {
+			_update_tool_placeholder_status("summarization", "Conversation summarization", "completed");
+			PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_summarization", true, false));
+			if (placeholder) {
+				Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.75, true);
+				timer->connect("timeout", callable_mp((Node*)placeholder, &Node::queue_free), CONNECT_ONE_SHOT);
+			}
+		}
+		
+		// CRITICAL: Maintain waiting state during summarization
+		print_line("AI Chat: Summarization notification shown, maintaining waiting state");
+		
+		// Continue processing other status updates instead of returning
+	}
 
 	// PRODUCTION-GRADE: Handle any other backend status messages that should maintain waiting state
 	String status = response_data.get("status", "");
@@ -3683,6 +3856,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		active_statuses.insert("provider_switched");
 		active_statuses.insert("switching_model");
 		active_statuses.insert("recovering");
+		active_statuses.insert("summarizing");
+		active_statuses.insert("emergency_summarizing");
 		
 		// Terminal statuses that should clear waiting state
 		HashSet<String> terminal_statuses;
@@ -5355,6 +5530,24 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
         }
         
         print_line("AI Chat: FREEZE_FIX - Removed massive fields, keeping metadata for AI");
+    }
+    
+    // SMART FIX: For runtime errors, keep FULL details for AI but limit UI display
+    if (p_name == "runtime_manager" || p_name == "get_runtime_errors_summary" || p_name == "get_runtime_errors_detailed") {
+        // DON'T strip errors from backend context - AI needs full details!
+        // The UI display (in _create_tool_specific_ui) already handles truncation
+        // So we keep the full arrays here for conversation history
+        
+        // Just log what we're keeping (for debugging)
+        if (content_to_serialize.has("errors")) {
+            Array errors = content_to_serialize["errors"];
+            print_line("AI Chat: KEEPING full errors array (" + String::num_int64(errors.size()) + " items) for AI context (UI will show summary)");
+        }
+        if (content_to_serialize.has("unique_errors")) {
+            Array unique_errors = content_to_serialize["unique_errors"];
+            print_line("AI Chat: KEEPING full unique_errors array (" + String::num_int64(unique_errors.size()) + " items) for AI context");
+        }
+        // UI rendering already limits display to prevent freeze (see _create_tool_specific_ui)
     }
     
     // CRITICAL: Strip image data from content that goes to backend to prevent token explosion
@@ -7784,8 +7977,11 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		status_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		compile_vbox->add_child(status_label);
 		
+		// PERFORMANCE FIX: Limit error display to prevent UI freeze
 		if (errors.size() > 0) {
-			for (int i = 0; i < errors.size(); i++) {
+			int display_limit = MIN(15, errors.size()); // Show max 15 errors in UI
+			
+			for (int i = 0; i < display_limit; i++) {
 				Dictionary error = errors[i];
 				VBoxContainer *error_vbox = memnew(VBoxContainer);
 				compile_vbox->add_child(error_vbox);
@@ -7809,6 +8005,14 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
 				}
 				error_vbox->add_child(error_label);
+			}
+			
+			// Show "and X more" label if there are more errors
+			if (errors.size() > display_limit) {
+				Label *more_label = memnew(Label);
+				more_label->set_text("... and " + String::num_int64(errors.size() - display_limit) + " more errors (full list available to AI)");
+				more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+				compile_vbox->add_child(more_label);
 			}
 		}
 	} else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager" || p_tool_name == "runtime_manager" || p_tool_name == "runtime_inspector") && p_success) {
@@ -8596,6 +8800,168 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
 		p_content_vbox->add_child(note_label);
 		
+	} else if (p_tool_name == "runtime_manager" && p_success) {
+		// Special handling for runtime_manager operations to prevent UI freeze
+		String op = p_args.get("op", "");
+		
+		if (op == "console.get_output") {
+			// Console output - show summary, not massive text dump
+			Array console_output = p_result.get("console_output", Array());
+			int total_messages = p_result.get("total_messages", console_output.size());
+			int filtered_count = p_result.get("filtered_debug_messages", 0);
+			
+			Label *summary_label = memnew(Label);
+			summary_label->set_text("✅ Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " debug messages)");
+			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(summary_label);
+			
+			// Show just the first 10 messages in UI (full content available to AI via chat history)
+			int display_limit = MIN(10, console_output.size());
+			if (display_limit > 0) {
+				Label *preview_header = memnew(Label);
+				preview_header->set_text("Preview (first " + String::num_int64(display_limit) + " messages):");
+				preview_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
+				p_content_vbox->add_child(preview_header);
+				
+				VBoxContainer *messages_container = memnew(VBoxContainer);
+				p_content_vbox->add_child(messages_container);
+				
+				for (int i = 0; i < display_limit; i++) {
+					Dictionary msg = console_output[i];
+					String text = msg.get("text", "");
+					String type = msg.get("type", "stdout");
+					
+					Label *msg_label = memnew(Label);
+					// Truncate individual messages too
+					String display_text = text.length() > 100 ? text.substr(0, 97) + "..." : text;
+					msg_label->set_text("[" + type + "] " + display_text);
+					msg_label->add_theme_font_override("font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
+					msg_label->add_theme_font_size_override("font_size", 11);
+					messages_container->add_child(msg_label);
+				}
+				
+				if (console_output.size() > display_limit) {
+					Label *more_label = memnew(Label);
+					more_label->set_text("... and " + String::num_int64(console_output.size() - display_limit) + " more messages (full output available to AI)");
+					more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+					p_content_vbox->add_child(more_label);
+				}
+			}
+		} else if (op == "errors.summary") {
+			// Runtime errors summary - show UNIQUE errors with occurrence counts
+			Array unique_errors = p_result.get("unique_errors", Array());
+			int total_errors = p_result.get("total_errors", 0);
+			int total_warnings = p_result.get("total_warnings", 0);
+			
+			Label *summary_label = memnew(Label);
+			summary_label->set_text("✅ Found " + String::num_int64(unique_errors.size()) + " unique error types (" + 
+									String::num_int64(total_errors) + " errors, " + String::num_int64(total_warnings) + " warnings)");
+			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(summary_label);
+			
+			// Show top 10 unique errors with occurrence counts (NO MASSIVE TEXT!)
+			int display_limit = MIN(10, unique_errors.size());
+			if (display_limit > 0) {
+				Label *preview_header = memnew(Label);
+				preview_header->set_text("Top " + String::num_int64(display_limit) + " most frequent:");
+				preview_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
+				p_content_vbox->add_child(preview_header);
+				
+				VBoxContainer *errors_container = memnew(VBoxContainer);
+				p_content_vbox->add_child(errors_container);
+				
+				for (int i = 0; i < display_limit; i++) {
+					Dictionary error_summary = unique_errors[i];
+					String error_msg = error_summary.get("message", "Unknown error");
+					int count = error_summary.get("count", 1);
+					String file = error_summary.get("file", "");
+					int line = error_summary.get("line", 0);
+					
+					HBoxContainer *error_row = memnew(HBoxContainer);
+					errors_container->add_child(error_row);
+					
+					// Count badge
+					Label *count_label = memnew(Label);
+					count_label->set_text("[" + String::num_int64(count) + "x]");
+					count_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+					count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+					count_label->set_custom_minimum_size(Size2(50, 0));
+					error_row->add_child(count_label);
+					
+					// Error message (TRUNCATED for UI)
+					Label *error_label = memnew(Label);
+					String display_msg = error_msg.length() > 80 ? error_msg.substr(0, 77) + "..." : error_msg;
+					String location = file.is_empty() ? "" : " (" + file.get_file() + ":" + String::num_int64(line) + ")";
+					error_label->set_text(display_msg + location);
+					error_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+					error_row->add_child(error_label);
+				}
+				
+				if (unique_errors.size() > display_limit) {
+					Label *more_label = memnew(Label);
+					more_label->set_text("... and " + String::num_int64(unique_errors.size() - display_limit) + " more error types (full data available to AI)");
+					more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+					p_content_vbox->add_child(more_label);
+				}
+			}
+		} else if (op == "errors.details") {
+			// Runtime errors details - show individual errors with deduplication
+			Array errors = p_result.get("errors", Array());
+			int total_found = p_result.get("total_found", errors.size());
+			
+			Label *summary_label = memnew(Label);
+			summary_label->set_text("✅ Retrieved " + String::num_int64(total_found) + " runtime error instances");
+			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(summary_label);
+			
+			// Show only first 10 individual errors (NO MASSIVE TEXT!)
+			int display_limit = MIN(10, errors.size());
+			if (display_limit > 0) {
+				Label *preview_header = memnew(Label);
+				preview_header->set_text("Preview (first " + String::num_int64(display_limit) + " errors):");
+				preview_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
+				p_content_vbox->add_child(preview_header);
+				
+				VBoxContainer *errors_container = memnew(VBoxContainer);
+				p_content_vbox->add_child(errors_container);
+				
+				for (int i = 0; i < display_limit; i++) {
+					Dictionary error = errors[i];
+					String error_msg = error.get("message", "Unknown error");
+					String file = error.get("file", "");
+					int line = error.get("line", 0);
+					
+					Label *error_label = memnew(Label);
+					// TRUNCATE message for UI
+					String display_msg = error_msg.length() > 100 ? error_msg.substr(0, 97) + "..." : error_msg;
+					String location = file.is_empty() ? "" : file.get_file() + ":" + String::num_int64(line) + " - ";
+					error_label->set_text(location + display_msg);
+					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+					error_label->add_theme_font_size_override("font_size", 11);
+					errors_container->add_child(error_label);
+				}
+				
+				if (errors.size() > display_limit) {
+					Label *more_label = memnew(Label);
+					more_label->set_text("... and " + String::num_int64(errors.size() - display_limit) + " more errors (full data available to AI)");
+					more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+					p_content_vbox->add_child(more_label);
+				}
+			}
+		} else {
+			// Other runtime_manager operations - show summary
+			String op_message = p_result.get("message", "Operation completed");
+			Label *op_summary_label = memnew(Label);
+			op_summary_label->set_text("✅ " + op_message);
+			op_summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			op_summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(op_summary_label);
+		}
+		
 	} else {
 		// Default case - show formatted JSON output with better styling
 		// CRITICAL: Strip large data fields to prevent UI freeze
@@ -8605,12 +8971,15 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		safe_result.erase("asset_data");
 		safe_result.erase("frames");
 		safe_result.erase("results");  // ADDED: Don't show results array in fallback (can be huge)
+		safe_result.erase("console_output");  // ADDED: Console output arrays can be massive (100+ messages)
+		safe_result.erase("errors");  // ADDED: Error arrays can be large too
+		safe_result.erase("unique_errors");  // ADDED: Unique errors array can be large (deduplicated errors)
 		
-		// Remove any fields that look like base64 payloads
+		// Remove any fields that look like base64 payloads or large arrays
 		Array keys = safe_result.keys();
 		for (int k = 0; k < keys.size(); k++) {
 			String key = keys[k];
-			if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes")) {
+			if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes") || key.ends_with("_output")) {
 				safe_result.erase(key);
 			}
 		}
@@ -9259,81 +9628,20 @@ void AIChatDock::_send_chat_request() {
 	
 	print_line("AI Chat: Sending chat request with " + String::num_int64(chat_history.size()) + " messages");
 	
-	// CRITICAL: Prevent HTTP corruption by checking actual content size
+	// Calculate total content size for monitoring only (no pruning)
 	int total_content_size = 0;
 	for (int i = 0; i < chat_history.size(); i++) {
 		total_content_size += chat_history[i].content.length();
-		// Also count tool call content and attached files
 		for (const AttachedFile &file : chat_history[i].attached_files) {
 			total_content_size += file.content.length();
 			total_content_size += file.base64_data.length();
 		}
 	}
 	
-	if (total_content_size > 500000) { // 500KB limit
-		print_line("🚨 AI Chat: HUGE conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars) - HIGH HTTP CORRUPTION RISK!");
-		print_line("🔧 AI Chat: EMERGENCY PRUNE - Reducing content to prevent HTTP chunked encoding failure");
-		
-		// Create a pruned conversation by removing messages until under size limit
-		Vector<ChatMessage> pruned_history;
-		int current_size = 0;
-		int size_limit = 300000; // 300KB target after pruning
-		
-		// Start from the end and work backwards, keeping messages that fit
-		for (int i = chat_history.size() - 1; i >= 0; i--) {
-			const ChatMessage &msg = chat_history[i];
-			int msg_size = msg.content.length();
-			for (const AttachedFile &file : msg.attached_files) {
-				msg_size += file.content.length() + file.base64_data.length();
-			}
-			
-			if (current_size + msg_size <= size_limit) {
-				pruned_history.insert(0, msg); // Insert at beginning to maintain order
-				current_size += msg_size;
-			} else {
-				break; // Stop adding messages when we hit the limit
-			}
-		}
-		
-		print_line("🔧 AI Chat: SIZE_PRUNE - Reduced from " + String::num_int64(total_content_size) + " to " + String::num_int64(current_size) + " chars (" + String::num_int64(chat_history.size()) + " to " + String::num_int64(pruned_history.size()) + " messages)");
-		
-		// Validate no orphaned tool responses remain
-		HashSet<String> active_tool_calls;
-		for (const ChatMessage &msg : pruned_history) {
-			if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
-				for (int j = 0; j < msg.tool_calls.size(); j++) {
-					Dictionary tc = msg.tool_calls[j];
-					String tc_id = tc.get("id", "");
-					if (!tc_id.is_empty()) {
-						active_tool_calls.insert(tc_id);
-					}
-				}
-			} else if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
-				active_tool_calls.erase(msg.tool_call_id);
-			}
-		}
-		
-		if (!active_tool_calls.is_empty()) {
-			print_line("🚨 AI Chat: PRUNE_ERROR - Found orphaned tool calls, using fallback minimal conversation");
-			// Fallback: just use the last user message
-			pruned_history.clear();
-			for (int i = chat_history.size() - 1; i >= 0; i--) {
-				if (chat_history[i].role == "user") {
-					pruned_history.push_back(chat_history[i]);
-					break;
-				}
-			}
-		}
-		
-		// Replace current conversation with pruned version
-		if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-			conversations.write[current_conversation_index].messages = pruned_history;
-		}
-		
-		print_line("🔧 AI Chat: EMERGENCY PRUNE completed - reduced from " + String::num_int64(chat_history.size()) + " to " + String::num_int64(pruned_history.size()) + " messages");
-		
-		// Update chat_history reference to point to pruned version
-		chat_history = _get_current_chat_history();
+	// REMOVED: Emergency pruning - backend handles conversation management via intelligent summarization
+	if (total_content_size > 500000) {
+		print_line("⚠️ AI Chat: Large conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+		print_line("ℹ️ Backend will manage conversation length via intelligent summarization if needed");
 	}
 	
 	// For large conversation histories, process in chunks to prevent UI blocking
@@ -9611,7 +9919,7 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
 void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	
-	// CRITICAL: Check for massive conversations by content size
+	// REMOVED: Emergency pruning - backend handles conversation management
 	if (p_start_index == 0) {
 		int total_content_size = 0;
 		for (int i = 0; i < chat_history.size(); i++) {
@@ -9622,44 +9930,9 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 			}
 		}
 		
-		if (total_content_size > 400000) { // 400KB limit for chunked
-			print_line("🚨 AI Chat: CHUNKED - HUGE conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars) - HIGH HTTP CORRUPTION RISK!");
-			print_line("🔧 AI Chat: CHUNKED EMERGENCY PRUNE - Using content-size based pruning");
-			
-			// Create a pruned conversation by content size
-			Vector<ChatMessage> pruned_history;
-			int current_size = 0;
-			int size_limit = 250000; // 250KB target for chunked
-		
-			// Start from the end and work backwards, keeping messages that fit
-			for (int i = chat_history.size() - 1; i >= 0; i--) {
-				const ChatMessage &msg = chat_history[i];
-				int msg_size = msg.content.length();
-				for (const AttachedFile &file : msg.attached_files) {
-					msg_size += file.content.length() + file.base64_data.length();
-				}
-				
-				if (current_size + msg_size <= size_limit) {
-					pruned_history.insert(0, msg); // Insert at beginning to maintain order
-					current_size += msg_size;
-				} else {
-					break; // Stop adding messages when we hit the limit
-				}
-			}
-			
-			print_line("🔧 AI Chat: CHUNKED SIZE_PRUNE - Reduced from " + String::num_int64(total_content_size) + " to " + String::num_int64(current_size) + " chars (" + String::num_int64(chat_history.size()) + " to " + String::num_int64(pruned_history.size()) + " messages)");
-		
-			// Replace current conversation with pruned version
-			if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-				conversations.write[current_conversation_index].messages = pruned_history;
-			}
-			
-			// Update chat_history reference to point to pruned version and restart the process
-			chat_history = _get_current_chat_history();
-			
-			// Restart with pruned conversation - call the main function again
-			call_deferred("_send_chat_request");
-			return;
+		if (total_content_size > 400000) {
+			print_line("⚠️ AI Chat: Large conversation in chunked mode (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+			print_line("ℹ️ Backend will manage conversation length via intelligent summarization if needed");
 		}
 	}
 	
@@ -12396,6 +12669,81 @@ void AIChatDock::_on_save_image_location_selected(const String &p_file_path) {
 	pending_save_image_format = "";
 }
 
+void AIChatDock::_on_import_button_pressed() {
+	print_line("AI Chat: Import conversation requested");
+	
+	// Show file dialog to select JSON file
+	import_dialog->popup_centered(Size2(800, 600));
+}
+
+void AIChatDock::_on_import_file_selected(const String &p_file_path) {
+	print_line("AI Chat: Importing conversation from: " + p_file_path);
+	
+	// Read JSON file
+	Error err;
+	String json_text = FileAccess::get_file_as_string(p_file_path, &err);
+	if (err != OK) {
+		print_line("AI Chat: Failed to read import file: " + p_file_path);
+		EditorNode::get_singleton()->show_warning("Failed to read file: " + p_file_path);
+		return;
+	}
+	
+	// Parse JSON
+	Ref<JSON> json;
+	json.instantiate();
+	Error parse_err = json->parse(json_text);
+	if (parse_err != OK) {
+		print_line("AI Chat: Failed to parse JSON");
+		EditorNode::get_singleton()->show_warning("Invalid JSON format in file");
+		return;
+	}
+	
+	Dictionary import_data = json->get_data();
+	
+	// Validate format
+	if (!import_data.has("messages")) {
+		EditorNode::get_singleton()->show_warning("Invalid conversation format - missing 'messages' field");
+		return;
+	}
+	
+	// Create new conversation from imported data
+	AIChatDock::Conversation new_conv;
+	new_conv.id = _generate_conversation_id();
+	new_conv.title = import_data.get("title", "Imported: " + p_file_path.get_file().get_basename());
+	new_conv.created_timestamp = _get_timestamp();
+	new_conv.last_modified_timestamp = _get_timestamp();
+	
+	// Parse messages
+	Array messages_array = import_data.get("messages", Array());
+	for (int i = 0; i < messages_array.size(); i++) {
+		Dictionary msg_dict = messages_array[i];
+		
+		AIChatDock::ChatMessage msg;
+		msg.role = msg_dict.get("role", "");
+		msg.content = msg_dict.get("content", "");
+		msg.timestamp = msg_dict.get("timestamp", _get_timestamp());
+		msg.tool_calls = msg_dict.get("tool_calls", Array());
+		msg.tool_call_id = msg_dict.get("tool_call_id", "");
+		msg.name = msg_dict.get("name", "");
+		
+		// Skip loading tool_results and attached_files for simplicity (can add later if needed)
+		
+		new_conv.messages.push_back(msg);
+	}
+	
+	// Add to conversations
+	conversations.push_back(new_conv);
+	current_conversation_index = conversations.size() - 1;
+	
+	// Save and update UI
+	_queue_delayed_save();
+	_update_conversation_dropdown();
+	_switch_to_conversation(current_conversation_index);
+	
+	print_line("AI Chat: Successfully imported conversation with " + String::num_int64(new_conv.messages.size()) + " messages");
+	_show_status_notification("success", "Imported conversation: " + new_conv.title + " (" + String::num_int64(new_conv.messages.size()) + " messages)", "📥", 3.0);
+}
+
 void AIChatDock::_on_export_button_pressed() {
 	// Check if there's a current conversation to export
 	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
@@ -14565,119 +14913,13 @@ int AIChatDock::_get_model_token_limit(const String &p_model) const {
 }
 
 void AIChatDock::_check_and_trigger_summarization() {
-	print_line("AI Chat: _check_and_trigger_summarization() called");
+	// DISABLED: Frontend summarization removed - backend handles conversation management
+	// The backend's _manage_conversation_length_fallback() and conversation_memory system
+	// already handle intelligent summarization with proper summary application.
+	// Frontend was triggering summarization but never applying the summary, causing confusion.
 	
-	if (current_conversation_index < 0 || conversations.is_empty()) {
-		print_line("AI Chat: No active conversation, skipping summarization check");
-		return;
-	}
-	
-	Vector<ChatMessage> &chat_history = _get_current_chat_history();
-	if (chat_history.size() < 5) {
-		print_line("AI Chat: Conversation too short (" + String::num_int64(chat_history.size()) + " messages), skipping summarization");
-		return; // Too short to summarize
-	}
-	
-	int current_tokens = _calculate_conversation_tokens(chat_history);
-	int token_limit = _get_model_token_limit(model);
-	int trigger_threshold = token_limit * 0.5; // 50% threshold for proactive management
-	
-	// Also check character count for early detection of massive conversations
-	int total_chars = 0;
-	for (int i = 0; i < chat_history.size(); i++) {
-		total_chars += chat_history[i].content.length();
-	}
-	
-	// Emergency trigger if conversation is getting huge (500k+ chars)
-	bool emergency_trigger = total_chars > 500000;
-	
-	print_line("AI Chat: Token check - Current: " + String::num_int64(current_tokens) + 
-		  ", Limit: " + String::num_int64(token_limit) + 
-		  ", Threshold (50%): " + String::num_int64(trigger_threshold) + 
-		  ", Total chars: " + String::num_int64(total_chars) + 
-		  ", Emergency trigger: " + String(emergency_trigger ? "YES" : "NO") + 
-		  ", Model: " + model);
-	
-	if (current_tokens >= trigger_threshold || emergency_trigger) {
-		String trigger_reason = emergency_trigger ? "emergency char limit (500k+)" : "token threshold (50%)";
-		print_line("AI Chat: Triggering summarization due to " + trigger_reason + 
-			  " - tokens: " + String::num_int64(current_tokens) + "/" + String::num_int64(token_limit) + 
-			  ", chars: " + String::num_int64(total_chars));
-		
-		// SMART SUMMARIZATION STRATEGY: Check if we already have a summary
-		bool has_existing_summary = false;
-		int summary_message_index = -1;
-		int recent_messages_to_keep = 20; // Keep last 20 messages visible to model
-		
-		for (int i = 0; i < chat_history.size(); i++) {
-			String content = chat_history[i].content;
-			if (content.contains("[CONVERSATION CONTEXT SUMMARY]") || content.contains("Previous conversation context")) {
-				has_existing_summary = true;
-				summary_message_index = i;
-				break;
-			}
-		}
-		
-		Array messages_for_api;
-		int messages_to_summarize_start = 0;
-		int messages_to_summarize_end = chat_history.size() - recent_messages_to_keep;
-		
-		if (has_existing_summary) {
-			// Already have a summary - only summarize NEW messages since the summary
-			messages_to_summarize_start = summary_message_index + 1;
-			print_line("AI Chat: Found existing summary at index " + String::num_int64(summary_message_index) + 
-					  ", will summarize messages " + String::num_int64(messages_to_summarize_start) + 
-					  " to " + String::num_int64(messages_to_summarize_end));
-		} else {
-			// No existing summary - summarize earliest messages
-			messages_to_summarize_start = 0;
-			print_line("AI Chat: No existing summary found, will summarize earliest messages " + 
-					  String::num_int64(messages_to_summarize_start) + " to " + String::num_int64(messages_to_summarize_end));
-		}
-		
-		// Only summarize if there are enough messages to warrant it
-		if (messages_to_summarize_end > messages_to_summarize_start && 
-			(messages_to_summarize_end - messages_to_summarize_start) >= 3) {
-			
-			// Build messages array for summarization (only the section to be summarized)
-			for (int i = messages_to_summarize_start; i < messages_to_summarize_end; i++) {
-				Dictionary api_msg = _build_api_message(chat_history[i]);
-				messages_for_api.push_back(api_msg);
-			}
-			
-			print_line("AI Chat: Prepared " + String::num_int64(messages_for_api.size()) + " messages for summarization");
-		} else {
-			print_line("AI Chat: Not enough messages to summarize (" + 
-					  String::num_int64(messages_to_summarize_end - messages_to_summarize_start) + 
-					  " messages), skipping summarization");
-			return;
-		}
-		
-		// Send summarization request
-		Dictionary request_data;
-		request_data["messages"] = messages_for_api;
-		request_data["has_existing_summary"] = has_existing_summary;
-		request_data["summary_message_index"] = summary_message_index;
-		request_data["recent_messages_to_keep"] = recent_messages_to_keep;
-		
-		Ref<JSON> json;
-		json.instantiate();
-		String request_body = json->stringify(request_data);
-		
-		PackedStringArray headers;
-		headers.push_back("Content-Type: application/json");
-		headers.push_back("X-Machine-ID: " + get_machine_id());
-		headers.push_back("X-Allow-Guest: true");
-		
-		if (!auth_token.is_empty()) {
-			headers.push_back("Authorization: Bearer " + auth_token);
-		}
-		
-		String summarization_url = _get_api_base_url() + "/summarize_conversation";
-		summarization_http_request->request(summarization_url, headers, HTTPClient::METHOD_POST, request_body);
-		
-		print_line("AI Chat: Sent summarization request to backend");
-	}
+	print_line("AI Chat: Frontend summarization disabled - backend manages conversation length");
+	return;
 }
 
 void AIChatDock::_on_summarization_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {

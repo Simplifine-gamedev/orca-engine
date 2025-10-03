@@ -871,6 +871,20 @@ Dictionary EditorTools::_get_node_info(Node *p_node) {
 	
 	node_info["owner"] = p_node->get_owner() ? String(p_node->get_owner()->get_name()) : String();
 	node_info["child_count"] = p_node->get_child_count();
+	
+	// CRITICAL: Include configuration warnings for AI agent visibility
+	PackedStringArray warnings = p_node->get_configuration_warnings();
+	if (!warnings.is_empty()) {
+		String warning_text = "";
+		for (int i = 0; i < warnings.size(); i++) {
+			warning_text += warnings[i];
+			if (i < warnings.size() - 1) warning_text += "; ";
+		}
+		node_info["warnings"] = warning_text;
+		node_info["has_warnings"] = true;
+		node_info["warning_count"] = warnings.size();
+	}
+	
 	return node_info;
 }
 Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error_result) {
@@ -4368,6 +4382,20 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
 	
 	result["success"] = true;
 	result["message"] = "Property set successfully and scene saved.";
+	
+	// Check for configuration warnings after property change
+	PackedStringArray warnings = node->get_configuration_warnings();
+	if (!warnings.is_empty()) {
+		String warning_text = "";
+		for (int i = 0; i < warnings.size(); i++) {
+			warning_text += warnings[i];
+			if (i < warnings.size() - 1) warning_text += "; ";
+		}
+		result["warnings"] = warning_text;
+		result["has_warnings"] = true;
+		result["message"] = String(result["message"]) + " (Warning: " + warning_text + ")";
+	}
+	
 	return result;
 }
 
@@ -4390,6 +4418,20 @@ Dictionary EditorTools::move_node(const Dictionary &p_args) {
 	new_parent->add_child(node);
 	result["success"] = true;
 	result["message"] = "Node moved successfully.";
+	
+	// Check for configuration warnings after move
+	PackedStringArray warnings = node->get_configuration_warnings();
+	if (!warnings.is_empty()) {
+		String warning_text = "";
+		for (int i = 0; i < warnings.size(); i++) {
+			warning_text += warnings[i];
+			if (i < warnings.size() - 1) warning_text += "; ";
+		}
+		result["warnings"] = warning_text;
+		result["has_warnings"] = true;
+		result["message"] = String(result["message"]) + " (Warning: " + warning_text + ")";
+	}
+	
 	return result;
 }
 
@@ -7840,6 +7882,13 @@ Dictionary EditorTools::runtime_inspector(const Dictionary &p_args) {
 		operations.push_back("runtime.watch.add");
 		operations.push_back("runtime.watch.remove");
 		operations.push_back("runtime.watch.get_values");
+		// Advanced diagnostics
+		operations.push_back("runtime.node.diagnose - Full node diagnosis with conflict detection");
+		operations.push_back("runtime.property.trace - Track property changes over time");
+		operations.push_back("runtime.node.list_scripts - List scripts affecting a node");
+		operations.push_back("runtime.script.analyze_effects - Analyze what a script modifies");
+		operations.push_back("runtime.node.get_full_state - Complete node state snapshot");
+		operations.push_back("runtime.script.toggle - Enable/disable scripts temporarily");
 		result["available_operations"] = operations;
 		result["game_running"] = RuntimeInspector::_is_game_running();
 		
@@ -7946,6 +7995,38 @@ Dictionary EditorTools::runtime_inspector(const Dictionary &p_args) {
 		return RuntimeInspector::get_watch_values();
 	}
 	
+	// ADVANCED DIAGNOSTICS - "System Observatory" features
+	else if (operation == "runtime.node.diagnose") {
+		String node_path = p_args.get("node_path", "");
+		bool compare_to_editor = p_args.get("compare_to_editor", false);
+		return RuntimeInspector::diagnose_node(node_path, compare_to_editor);
+	}
+	else if (operation == "runtime.property.trace") {
+		String node_path = p_args.get("node_path", "");
+		String property = p_args.get("property", "");
+		float trace_duration = p_args.get("trace_duration", 1.0);
+		bool include_callstack = p_args.get("include_callstack", true);
+		return RuntimeInspector::trace_property_changes(node_path, property, trace_duration, include_callstack);
+	}
+	else if (operation == "runtime.node.list_scripts") {
+		String node_path = p_args.get("node_path", "");
+		return RuntimeInspector::list_node_scripts(node_path);
+	}
+	else if (operation == "runtime.script.analyze_effects") {
+		String script_path = p_args.get("script_path", "");
+		return RuntimeInspector::analyze_script_effects(script_path);
+	}
+	else if (operation == "runtime.node.get_full_state") {
+		String node_path = p_args.get("node_path", "");
+		return RuntimeInspector::get_node_full_state(node_path);
+	}
+	else if (operation == "runtime.script.toggle") {
+		String node_path = p_args.get("node_path", "");
+		String script_path = p_args.get("script_path", "");
+		bool enabled = p_args.get("enabled", true);
+		return RuntimeInspector::toggle_script(node_path, script_path, enabled);
+	}
+	
 	// Unknown operation
 	else {
 		Dictionary result;
@@ -7970,7 +8051,7 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 	
 	// Get parameters
 	String output_type = p_args.get("output_type", "all");
-	int max_lines = p_args.get("max_lines", 200); // Increased to capture more game history
+	int max_lines = p_args.get("max_lines", 200); // Target number of NON-DEBUG messages to return
 	// uint64_t since_timestamp = p_args.get("since_timestamp", 0); // TODO: Implement timestamp filtering
 	
 	// Map output type to message type filter
@@ -7983,29 +8064,37 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 		type_filter = EditorLog::MSG_TYPE_WARNING;
 	}
 	
-	// Get recent console output using our new EditorLog method
-	Array console_output = log->get_recent_console_output(max_lines, type_filter);
+	// FIXED: Fetch MORE logs initially, filter out debug messages, THEN limit to max_lines
+	// This ensures we always return close to max_lines game messages, not max_lines - debug_count
+	int fetch_multiplier = 3; // Fetch 3x to account for filtering
+	int initial_fetch_count = max_lines * fetch_multiplier;
 	
-	// Filter out app debug messages (AI Chat: ...) before returning to AI
+	Array console_output = log->get_recent_console_output(initial_fetch_count, type_filter);
+	
+	// Filter out app debug messages FIRST, keeping track of what we filter
 	Array filtered_output;
 	int filtered_count = 0;
 	int kept_count = 0;
 	
-	print_line("CONSOLE_FILTER_START: Processing " + String::num_int64(console_output.size()) + " messages");
+	print_line("CONSOLE_FILTER_START: Fetched " + String::num_int64(console_output.size()) + " messages, targeting " + String::num_int64(max_lines) + " game messages");
 	
 	for (int i = 0; i < console_output.size(); i++) {
+		// Stop once we have enough game messages
+		if (kept_count >= max_lines) {
+			print_line("CONSOLE_FILTER: Reached target of " + String::num_int64(max_lines) + " game messages, stopping");
+			break;
+		}
+		
 		Dictionary msg = console_output[i];
-		// CRITICAL: The field is "text" not "message"!
 		String message = msg.get("text", "");
 		
 		if (message.is_empty()) {
-			print_line("CONSOLE_FILTER_DEBUG [" + String::num_int64(i) + "]: EMPTY MESSAGE - SKIPPING");
 			filtered_count++;
 			continue;
 		}
 		
-		// Debug: Print ALL messages to see what we're getting
-		if (i < 10) {
+		// Debug: Print first few messages
+		if (i < 5) {
 			print_line("CONSOLE_FILTER_DEBUG [" + String::num_int64(i) + "]: '" + message.substr(0, MIN(80, message.length())) + "'");
 		}
 		
@@ -8039,7 +8128,7 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 		}
 	}
 	
-	print_line("CONSOLE_FILTER_RESULT: Filtered " + String::num_int64(filtered_count) + " messages, kept " + String::num_int64(kept_count) + " messages");
+	print_line("CONSOLE_FILTER_RESULT: Filtered " + String::num_int64(filtered_count) + " debug messages, returning " + String::num_int64(kept_count) + " game messages (target was " + String::num_int64(max_lines) + ")");
 	
 	result["success"] = true;
 	result["output_type"] = output_type;

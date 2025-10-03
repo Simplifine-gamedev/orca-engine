@@ -607,7 +607,7 @@ godot_tools = [
         "type": "function",
         "function": {
             "name": "runtime_inspector",
-            "description": "Inspect and modify runtime node properties, materials, shaders, environment settings, and mesh data during play.",
+            "description": "Inspect and modify runtime node properties, materials, shaders, environment settings, and mesh data during play. Includes advanced diagnostics for conflict detection and script behavior analysis.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -625,12 +625,16 @@ godot_tools = [
                             "runtime.mesh.get_surface_count", "runtime.mesh.get_surface_material",
                             # Environment/lighting
                             "runtime.environment.get", "runtime.environment.set",
-                            "runtime.camera.get_exposure", 
+                            "runtime.camera.get_exposure",
                             # Debug helpers
                             "runtime.watch.add", "runtime.watch.remove", "runtime.watch.get_values",
                             "runtime.breakpoint.set", "runtime.breakpoint.clear",
                             # Help/info
-                            "runtime.debug.info", "help", "runtime.debug.tree_dump"
+                            "runtime.debug.info", "help", "runtime.debug.tree_dump",
+                            # ADVANCED DIAGNOSTICS - The "System Observatory"
+                            "runtime.node.diagnose", "runtime.property.trace",
+                            "runtime.node.list_scripts", "runtime.script.analyze_effects",
+                            "runtime.node.get_full_state", "runtime.script.toggle"
                         ],
                         "description": "Runtime inspection operation"
                     },
@@ -663,7 +667,14 @@ godot_tools = [
                     # Search/filter params
                     "type_filter": {"type": "string", "description": "Node type to filter by"},
                     "max_depth": {"type": "integer", "default": 10, "description": "Maximum tree depth to traverse"},
-                    "include_internal": {"type": "boolean", "default": False, "description": "Include internal nodes"}
+                    "include_internal": {"type": "boolean", "default": False, "description": "Include internal nodes"},
+                    
+                    # ADVANCED DIAGNOSTICS params (System Observatory features)
+                    "script_path": {"type": "string", "description": "Path to script to analyze or toggle"},
+                    "enabled": {"type": "boolean", "description": "Enable/disable script (for runtime.script.toggle)"},
+                    "trace_duration": {"type": "number", "default": 1.0, "description": "How long to trace property changes (seconds)"},
+                    "include_callstack": {"type": "boolean", "default": True, "description": "Include script callstack in trace"},
+                    "compare_to_editor": {"type": "boolean", "default": False, "description": "Compare runtime values to editor values (for diagnose)"}
                 },
                 "required": ["op"]
             }

@@ -65,6 +65,14 @@ public:
 	static Dictionary add_watch(const String &p_id, const String &p_expression);
 	static Dictionary remove_watch(const String &p_id);
 	static Dictionary get_watch_values();
+	
+	// ADVANCED DIAGNOSTICS - "System Observatory" features
+	static Dictionary diagnose_node(const String &p_node_path, bool p_compare_to_editor);
+	static Dictionary trace_property_changes(const String &p_node_path, const String &p_property, float p_duration, bool p_include_callstack);
+	static Dictionary list_node_scripts(const String &p_node_path);
+	static Dictionary analyze_script_effects(const String &p_script_path);
+	static Dictionary get_node_full_state(const String &p_node_path);
+	static Dictionary toggle_script(const String &p_node_path, const String &p_script_path, bool p_enabled);
 };
 
 #endif // RUNTIME_INSPECTOR_H

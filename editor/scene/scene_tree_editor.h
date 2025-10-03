@@ -192,6 +192,7 @@ class SceneTreeEditor : public Control {
 	void _toggle_visible(Node *p_node);
 	void _cell_multi_selected(Object *p_object, int p_cell, bool p_selected);
 	void _update_selection(TreeItem *item);
+	void _warning_fix_with_ai(const String &p_action);
 	void _node_script_changed(Node *p_node);
 	void _node_visibility_changed(Node *p_node);
 	void _update_visibility_color(Node *p_node, TreeItem *p_item);
