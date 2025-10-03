@@ -65,6 +65,7 @@ class DiffViewer;
 class ScriptEditor;
 class ScriptTextEditor;
 class HFlowContainer;
+class UserMessageHandler;
 
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
@@ -73,6 +74,9 @@ public:
 	// Static singleton-like access for script editor integration
 	static AIChatDock *singleton;
 	static AIChatDock *get_singleton() { return singleton; }
+	
+	// Friend class for user message handling
+	friend class UserMessageHandler;
 
 private:
 	// Version Management - These should match version.py values
@@ -81,6 +85,7 @@ private:
 	
 	DiffViewer *diff_viewer;
 	Ref<AIToolServer> tool_server;
+	UserMessageHandler *user_message_handler = nullptr;
 	// Helper to find RichTextLabel recursively.
 	static RichTextLabel *find_rich_text_label_in_children(Node *p_node) {
 		if (!p_node) {
@@ -739,4 +744,11 @@ public:
 
 	// Attach an external file (e.g., screenshot) to the current chat input attachments.
 	void attach_external_file(const String &p_file_path);
+	
+	// User message interaction helpers (for UserMessageHandler)
+	TextEdit *get_input_field() const { return input_field; }
+	void _truncate_conversation_at(int p_message_index);
+	void _update_message_content_at(int p_message_index, const String &p_content);
+	void _rebuild_current_conversation_ui();
+	Array _get_messages_as_array() const;
 };

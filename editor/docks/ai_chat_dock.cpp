@@ -90,6 +90,7 @@ void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, con
 #include "../ai/editor_tools.h"
 #include "diff_viewer.h"
 #include "ai_image_lazy_loader.h"
+#include "ai_chat_dock_user_messages.h"
 #include "core/version_generated.h"
 
 void AIChatDock::_bind_methods() {
@@ -1195,6 +1196,16 @@ void AIChatDock::_on_send_button_pressed() {
 		print_line("AI Chat: Invalid conversation index, creating new conversation");
 		_create_new_conversation();
 		_update_conversation_dropdown();
+	}
+	
+	// Check if message matches an old user message (restore/edit flow)
+	if (user_message_handler) {
+		bool handled = user_message_handler->handle_send_request(message);
+		if (handled) {
+			// Handler intercepted the send (restore or dialog shown)
+			return;
+		}
+		// Otherwise continue with normal flow
 	}
 
 
@@ -6081,43 +6092,16 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	VBoxContainer *message_vbox = memnew(VBoxContainer);
 	message_panel->add_child(message_vbox);
 
-	// Role label with edit button for user messages
-	HBoxContainer *role_container = memnew(HBoxContainer);
-	message_vbox->add_child(role_container);
-	
-	Label *role_label = memnew(Label);
-	role_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-	// Only show role label for user messages, hide for assistant messages
+	// For user messages: use new handler (no header, clickable bubble)
 	if (p_message.role == "user") {
-		role_label->set_text(p_message.role.capitalize());
-	} else {
-		role_label->set_text(""); // Empty text for assistant messages
-	}
-	role_label->add_theme_color_override("font_color", role_color);
-	role_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	role_container->add_child(role_label);
-	
-    // Add edit and checkpoint buttons for user messages only
-    if (p_message.role == "user" && p_message_index >= 0) {
-        Button *edit_button = memnew(Button);
-		edit_button->set_text("Edit");
-		edit_button->set_custom_minimum_size(Size2(50, 20));
-		edit_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
-		
-		edit_button->connect("pressed", callable_mp(this, &AIChatDock::_on_edit_message_pressed).bind(p_message_index));
-		role_container->add_child(edit_button);
-		
-		Button *checkpoint_button = memnew(Button);
-		checkpoint_button->set_text("Restore");
-		checkpoint_button->set_custom_minimum_size(Size2(80, 20));
-		checkpoint_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
-		checkpoint_button->set_tooltip_text("Restore conversation to this user message (will lose newer messages)");
-		
-		checkpoint_button->connect("pressed", callable_mp(this, &AIChatDock::_on_checkpoint_message_pressed).bind(p_message_index));
-		role_container->add_child(checkpoint_button);
+		if (user_message_handler) {
+			user_message_handler->create_user_message_bubble(message_vbox, p_message.content, p_message_index);
+			message_panel->set_visible(true);
+		}
+		return; // User message bubble is complete - no need for further processing
 	}
 
-	// Always create a content label for assistant to allow streaming.
+	// For assistant/system messages: create content label as before
 	RichTextLabel *content_label = memnew(RichTextLabel);
 	content_label->set_fit_content(true);
 	content_label->set_selection_enabled(true);
@@ -6290,43 +6274,16 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	VBoxContainer *message_vbox = memnew(VBoxContainer);
 	p_message_panel->add_child(message_vbox);
 
-	// Role label with edit button for user messages
-	HBoxContainer *role_container = memnew(HBoxContainer);
-	message_vbox->add_child(role_container);
-	
-	Label *role_label = memnew(Label);
-	role_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-	// Only show role label for user messages, hide for assistant messages
+	// For user messages: use new handler (no header, clickable bubble)
 	if (p_message.role == "user") {
-		role_label->set_text(p_message.role.capitalize());
-	} else {
-		role_label->set_text(""); // Empty text for assistant messages
-	}
-	role_label->add_theme_color_override("font_color", role_color);
-	role_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	role_container->add_child(role_label);
-	
-    // Add edit and checkpoint buttons for user messages only
-    if (p_message.role == "user" && p_message_index >= 0) {
-        Button *edit_button = memnew(Button);
-		edit_button->set_text("Edit");
-		edit_button->set_custom_minimum_size(Size2(50, 20));
-		edit_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
-		
-		edit_button->connect("pressed", callable_mp(this, &AIChatDock::_on_edit_message_pressed).bind(p_message_index));
-		role_container->add_child(edit_button);
-		
-		Button *checkpoint_button = memnew(Button);
-		checkpoint_button->set_text("Restore");
-		checkpoint_button->set_custom_minimum_size(Size2(80, 20));
-		checkpoint_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
-		checkpoint_button->set_tooltip_text("Restore conversation to this user message (will lose newer messages)");
-		
-		checkpoint_button->connect("pressed", callable_mp(this, &AIChatDock::_on_checkpoint_message_pressed).bind(p_message_index));
-		role_container->add_child(checkpoint_button);
+		if (user_message_handler) {
+			user_message_handler->create_user_message_bubble(message_vbox, p_message.content, p_message_index);
+			p_message_panel->set_visible(true);
+		}
+		return; // User message bubble is complete
 	}
 
-	// Always create a content label for assistant to allow streaming.
+	// For assistant/system messages: create content label as before
 	RichTextLabel *content_label = memnew(RichTextLabel);
 	content_label->set_fit_content(true);
 	content_label->set_selection_enabled(true);
@@ -11756,6 +11713,10 @@ AIChatDock::AIChatDock() {
 	// Connect to script editor save signals for dual acceptance
 	// We'll do this in a deferred call to ensure ScriptEditor is ready
 	call_deferred("_connect_script_editor_signals");
+	
+	// Initialize user message handler
+	user_message_handler = memnew(UserMessageHandler);
+	user_message_handler->initialize(this);
 }
 
 
@@ -17370,7 +17331,80 @@ void AIChatDock::_rebuild_conversation_ui_deferred(int p_conversation_index) {
 	call_deferred("_scroll_to_bottom");
 }
 
+// User message interaction helper methods for UserMessageHandler
+
+Array AIChatDock::_get_messages_as_array() const {
+	Array result;
+	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+		const Vector<ChatMessage> &messages = conversations[current_conversation_index].messages;
+		for (int i = 0; i < messages.size(); i++) {
+			Dictionary msg_dict;
+			msg_dict["role"] = messages[i].role;
+			msg_dict["content"] = messages[i].content;
+			msg_dict["timestamp"] = messages[i].timestamp;
+			result.push_back(msg_dict);
+		}
+	}
+	return result;
+}
+
+void AIChatDock::_truncate_conversation_at(int p_message_index) {
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	if (p_message_index < 0 || p_message_index >= chat_history.size()) {
+		return;
+	}
+	
+	// Truncate conversation (keep messages up to and including p_message_index)
+	chat_history.resize(p_message_index + 1);
+	
+	// Update conversation timestamp
+	if (current_conversation_index >= 0) {
+		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+		_queue_delayed_save();
+	}
+	
+	print_line("AI Chat: Truncated conversation to " + String::num_int64(chat_history.size()) + " messages");
+}
+
+void AIChatDock::_update_message_content_at(int p_message_index, const String &p_content) {
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	if (p_message_index < 0 || p_message_index >= chat_history.size()) {
+		return;
+	}
+	
+	chat_history.write[p_message_index].content = p_content;
+	chat_history.write[p_message_index].timestamp = _get_timestamp();
+	
+	print_line("AI Chat: Updated message content at index " + String::num_int64(p_message_index));
+}
+
+void AIChatDock::_rebuild_current_conversation_ui() {
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	
+	// Clear current UI (preserve pending edits banner)
+	if (chat_container != nullptr) {
+		for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+			Node *child = chat_container->get_child(i);
+			if (child != nullptr && child != pending_edits_banner) {
+				chat_container->remove_child(child);
+				child->queue_free();
+			}
+		}
+	}
+	
+	// Rebuild UI
+	_rebuild_conversation_ui(chat_history);
+	
+	// Scroll to bottom
+	call_deferred("_scroll_to_bottom");
+}
+
 AIChatDock::~AIChatDock() {
+	// Clean up user message handler
+	if (user_message_handler) {
+		memdelete(user_message_handler);
+	}
+	
 	// Clear singleton instance
 	if (singleton == this) {
 		singleton = nullptr;
