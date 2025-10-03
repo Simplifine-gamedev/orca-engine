@@ -72,12 +72,12 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	button_row->set_alignment(BoxContainer::ALIGNMENT_END);
 	button_margin->add_child(button_row);
 
-	// Send button with keyboard icon
+	// Send button with Enter key icon
 	p_chat_dock->send_button = memnew(Button);
 	p_chat_dock->send_button->set_text("");
 	p_chat_dock->send_button->set_disabled(true);
-	p_chat_dock->send_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("KeyboardPhysical"), SNAME("EditorIcons")));
-	p_chat_dock->send_button->set_custom_minimum_size(Size2(32, 28));
+	p_chat_dock->send_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("KeyboardLabel"), SNAME("EditorIcons")));
+	p_chat_dock->send_button->set_custom_minimum_size(Size2(24, 24));
 	p_chat_dock->send_button->set_tooltip_text("Send (Enter)");
 	
 	style_send_button(p_chat_dock->send_button, p_chat_dock);
@@ -90,7 +90,7 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	p_chat_dock->stop_button->set_text("");
 	p_chat_dock->stop_button->set_visible(false);
 	p_chat_dock->stop_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("Stop"), SNAME("EditorIcons")));
-	p_chat_dock->stop_button->set_custom_minimum_size(Size2(32, 28));
+	p_chat_dock->stop_button->set_custom_minimum_size(Size2(24, 24));
 	p_chat_dock->stop_button->set_tooltip_text("Stop");
 	
 	style_stop_button(p_chat_dock->stop_button, p_chat_dock, false);
