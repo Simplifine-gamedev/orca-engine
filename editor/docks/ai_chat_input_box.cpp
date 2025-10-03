@@ -8,11 +8,11 @@
 
 #include "ai_chat_dock.h"
 #include "scene/gui/button.h"
+#include "scene/gui/margin_container.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/text_edit.h"
 #include "scene/resources/style_box_flat.h"
-#include "editor/editor_settings.h"
-#include "editor/themes/editor_scale.h"
+#include "editor/settings/editor_settings.h"
 
 void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_parent_container) {
 	// Wrapper for input panel (adds margin from edges)

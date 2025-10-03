@@ -77,6 +77,7 @@ public:
 	
 	// Friend class for user message handling
 	friend class UserMessageHandler;
+	friend class AIChatInputBox;
 
 private:
 	// Version Management - These should match version.py values
