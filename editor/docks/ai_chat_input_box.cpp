@@ -72,11 +72,11 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	button_row->set_alignment(BoxContainer::ALIGNMENT_END);
 	button_margin->add_child(button_row);
 
-	// Send button with Enter key icon
+	// Send button with arrow icon
 	p_chat_dock->send_button = memnew(Button);
 	p_chat_dock->send_button->set_text("");
 	p_chat_dock->send_button->set_disabled(true);
-	p_chat_dock->send_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("KeyboardEnter"), SNAME("EditorIcons")));
+	p_chat_dock->send_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("ArrowLeft"), SNAME("EditorIcons")));
 	p_chat_dock->send_button->set_custom_minimum_size(Size2(24, 24));
 	p_chat_dock->send_button->set_tooltip_text("Send (Enter)");
 	
