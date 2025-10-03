@@ -22,13 +22,19 @@ class UserMessageHandler : public Object {
 private:
 	AIChatDock *chat_dock = nullptr;
 	ConfirmationDialog *restore_send_dialog = nullptr;
-	int clicked_message_index = -1;
-	String edited_message_content;
+	int editing_message_index = -1;
+	String original_message_content;
 	
 	void _on_bubble_gui_input(const Ref<InputEvent> &p_event, int p_message_index);
+	void _on_edit_send_pressed(TextEdit *p_edit_field, int p_message_index);
+	void _on_edit_cancel_pressed(int p_message_index);
 	void _on_restore_send_option(bool p_restore);
 	void _restore_and_send(int p_message_index, const String &p_content);
-	void _send_without_restoring(const String &p_content);
+	void _send_without_restoring(int p_message_index, const String &p_content);
+	
+	// UI manipulation
+	void _replace_bubble_with_edit_field(PanelContainer *p_bubble, const String &p_content, int p_message_index);
+	void _replace_edit_field_with_bubble(int p_message_index, bool p_scroll_to_bottom = true);
 	
 protected:
 	static void _bind_methods();
