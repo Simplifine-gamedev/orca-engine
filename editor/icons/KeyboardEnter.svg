@@ -1,4 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <path fill="#e0e0e0" d="M2 2c-.554 0-1 .446-1 1v10c0 .554.446 1 1 1h12c0-.554 0-1 0-1V3c0-.554-.446-1-1-1H2zm1 2h10v8H3V4zm8 2v1h-5l1.5-1.5-.707-.707L4.086 7.5l2.707 2.707.707-.707L6 8h5v2h1V6h-1z"/>
+  <!-- Rounded rectangle key shape -->
+  <rect x="1" y="1" width="14" height="14" rx="2" ry="2" fill="none" stroke="#e0e0e0" stroke-width="1.5"/>
+  <!-- Return arrow -->
+  <path fill="none" stroke="#e0e0e0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M10 5.5 H6 V8.5 M6 8.5 L7.5 7 M6 8.5 L7.5 10"/>
 </svg>
 
