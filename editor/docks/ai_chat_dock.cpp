@@ -2645,8 +2645,10 @@ void AIChatDock::_on_model_selected(int p_index) {
 		// Keep the full model name including [FAST] prefix for backend communication
 		model = selected_model;
 		print_line("AI Chat: Model selected: '" + selected_model + "' -> internal: '" + model + "'");
-		// Save the selected model to editor settings
-		EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
+		// Save the selected model to editor settings (only if setting exists - prevents errors in older versions)
+		if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
+			EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
+		}
 	}
 }
 void AIChatDock::_on_attachment_menu_item_pressed(int p_id) {
