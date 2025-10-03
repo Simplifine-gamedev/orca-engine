@@ -6,7 +6,7 @@ See LICENSES/COMPANY-NONCOMMERCIAL.md.
 from flask import Flask, request, Response, jsonify, redirect, session, stream_with_context, g
 from flask_cors import CORS
 import openai
-from litellm import completion
+from litellm import completion, token_counter, get_max_tokens
 import litellm
 import json
 import os
@@ -209,49 +209,61 @@ def log_event(event_name: str, props: dict | None = None, severity: str = 'INFO'
     except Exception:
         pass
 
-def _estimate_token_count(text: str) -> int:
-    """Conservative token estimation - actual usage is often 2x higher due to JSON encoding"""
-    # Use 2 chars per token (more conservative) to account for:
-    # - JSON serialization overhead
-    # - Multi-byte characters
-    # - Tokenizer differences between models
-    return len(text) // 2
+def _count_tokens_for_messages(messages: list, model: str) -> int:
+    """Use LiteLLM's actual token counter for accurate counting"""
+    try:
+        # Use LiteLLM's built-in token counter
+        token_count = token_counter(model=model, messages=messages)
+        return token_count
+    except Exception as e:
+        print(f"TOKEN_COUNTER: Error using LiteLLM token_counter ({e}), falling back to estimation")
+        # Fallback to rough estimation if token_counter fails
+        total = 0
+        for msg in messages:
+            content = str(msg.get('content', ''))
+            total += len(content) // 2  # Conservative estimate
+        return total
 
-def _estimate_message_tokens(msg: dict) -> int:
-    """Smart token estimation that handles images separately"""
-    if not isinstance(msg, dict):
-        return 0
+def _get_model_token_limit(model: str) -> int:
+    """Get INPUT context window limit for model (manually set, with safety margins)"""
     
-    content = msg.get('content', '')
-    base_tokens = 0
+    # CRITICAL: These are INPUT context limits with safety margins built in
+    # We use 180k for Claude-4 (actual: 200k) and OpenAI (actual: 128k) for safety
     
-    # Handle different content types
-    if isinstance(content, str):
-        # Check for massive base64 data in content and cap it
-        if 'base64' in content and len(content) > 50000:
-            # This is likely a message with embedded base64 - cap at reasonable estimate
-            base_tokens = 1000  # Fixed cost for large base64 content
-        else:
-            base_tokens = _estimate_token_count(content)
-    elif isinstance(content, list):
-        # Multi-modal content (text + images)
-        for item in content:
-            if isinstance(item, dict):
-                if item.get('type') == 'text':
-                    base_tokens += _estimate_token_count(item.get('text', ''))
-                elif item.get('type') == 'image_url':
-                    # Images are ~85 tokens each in GPT-4V, regardless of size
-                    base_tokens += 85
+    input_context_limits = {
+        # Anthropic models - 180k with 20k safety margin
+        "anthropic/claude-sonnet-4-20250514": 180000,
+        "anthropic/claude-3-5-sonnet-20241022": 180000,
+        "anthropic/claude-3-5-sonnet": 180000,
+        "anthropic/claude-3-opus": 180000,
+        
+        # OpenAI models - 120k with 8k safety margin
+        "openai/gpt-5": 120000,
+        "openai/gpt-4o": 120000,
+        "openai/gpt-4o-mini": 120000,
+        "openai/gpt-4-turbo": 120000,
+        
+        # Google models - conservative limits
+        "gemini/gemini-2.5-pro": 1800000,  # 2M actual, using 1.8M
+        "gemini/gemini-2.0-flash-exp": 900000,  # 1M actual, using 900k
+        
+        # Cerebras models
+        "cerebras/llama-3.3-70b": 120000,
+        "cerebras/llama3.1-8b": 120000,
+    }
     
-    # Check for images field (frontend format)
-    if 'images' in msg and isinstance(msg['images'], list):
-        base_tokens += 85 * len(msg['images'])  # 85 tokens per image
+    # Try exact match first
+    if model in input_context_limits:
+        return input_context_limits[model]
     
-    # Add tokens for other fields
-    if msg.get('tool_calls'):
-        base_tokens += 50 * len(msg['tool_calls'])  # ~50 tokens per tool call
+    # Try partial match (handles model variants)
+    for key, limit in input_context_limits.items():
+        if key in model or model in key:
+            return limit
     
-    return base_tokens
+    # Conservative default for unknown models
+    print(f"⚠️ TOKEN_LIMIT: Unknown model {model}, using conservative 100k default")
+    return 100000
 
 def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> tuple[list, bool]:
     """
@@ -472,40 +484,95 @@ Conversation ({len(messages)} messages):
         # Fallback to simple placeholder
         return f"[{summary_type}] {len(messages)} messages summarized for token efficiency. Key context preserved in recent messages."
 
-def _manage_conversation_length_fallback(messages: list, model: str) -> list:
-    """PRODUCTION-GRADE: Incremental summarization with emergency overflow protection"""
-    # Model-specific token limits
-    TOKEN_LIMITS = {
-        "anthropic/claude-sonnet-4-20250514": 200000,
-        "openai/gpt-5": 128000,
-        "openai/gpt-4o": 128000,
-        "openai/gpt-4-turbo": 128000,
-        "anthropic/claude-3-5-sonnet-20241022": 200000,
-    }
+def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[list, bool]:
+    """PRODUCTION-GRADE: Incremental summarization using LiteLLM's actual token counting"""
     
-    limit = TOKEN_LIMITS.get(model, 100000)
-    # TRIGGER EARLY: Use 50% token threshold OR 100 message count (whichever hits first)
-    trigger_threshold = int(limit * 0.5)
-    # HARD LIMIT: If we hit 80%, force aggressive summarization
-    emergency_threshold = int(limit * 0.8)
+    # Get ACTUAL model token limit using LiteLLM
+    model_limit = _get_model_token_limit(model)
+    print(f"TOKEN_LIMIT: Model {model} has limit of {model_limit} tokens (via LiteLLM)")
+
+    # Test-mode override to trigger summarization sooner for local testing
+    # Configure via ENV:
+    #   SUMMARIZATION_TEST_MODE=true
+    #   SUMMARIZATION_TEST_TRIGGER_PCT=0.08              (default 8%)
+    #   SUMMARIZATION_TEST_EMERGENCY_PCT=0.15            (default 15%)
+    #   SUMMARIZATION_TEST_MESSAGE_COUNT=8               (default 8 messages)
+    #   SUMMARIZATION_TEST_KEEP_RECENT_NORMAL=12         (default 12)
+    #   SUMMARIZATION_TEST_KEEP_RECENT_EMERGENCY=8       (default 8)
+    #   SUMMARIZATION_TEST_MIN_INITIAL=3                 (default 3)
+    #   SUMMARIZATION_TEST_MIN_INCREMENTAL=3             (default 3)
+    test_mode = os.getenv('SUMMARIZATION_TEST_MODE', 'false').lower() == 'true'
+
+    if test_mode:
+        try:
+            trigger_ratio = float(os.getenv('SUMMARIZATION_TEST_TRIGGER_PCT', '0.08'))
+        except Exception:
+            trigger_ratio = 0.08
+        try:
+            emergency_ratio = float(os.getenv('SUMMARIZATION_TEST_EMERGENCY_PCT', '0.15'))
+        except Exception:
+            emergency_ratio = 0.15
+        try:
+            message_count_limit = int(os.getenv('SUMMARIZATION_TEST_MESSAGE_COUNT', '8'))
+        except Exception:
+            message_count_limit = 8
+        try:
+            keep_recent_normal = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_NORMAL', '12'))
+        except Exception:
+            keep_recent_normal = 12
+        try:
+            keep_recent_emergency = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_EMERGENCY', '8'))
+        except Exception:
+            keep_recent_emergency = 8
+        try:
+            min_initial_needed = int(os.getenv('SUMMARIZATION_TEST_MIN_INITIAL', '3'))
+        except Exception:
+            min_initial_needed = 3
+        try:
+            min_incremental_needed = int(os.getenv('SUMMARIZATION_TEST_MIN_INCREMENTAL', '3'))
+        except Exception:
+            min_incremental_needed = 3
+    else:
+        trigger_ratio = 0.5
+        emergency_ratio = 0.75
+        message_count_limit = 100
+        keep_recent_normal = 40
+        keep_recent_emergency = 30
+        min_initial_needed = 10
+        min_incremental_needed = 15
+
+    # TRIGGER EARLY: Use token threshold OR message count (whichever hits first)
+    trigger_threshold = int(model_limit * trigger_ratio)
+    # HARD LIMIT: emergency threshold
+    emergency_threshold = int(model_limit * emergency_ratio)
+
+    # Model-specific early trigger: Force very low threshold for gpt-4o for testing
+    # Default to 1500 tokens unless overridden by env GPT4O_SUMMARY_TRIGGER_TOKENS
+    try:
+        gpt4o_fixed = int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '1500'))
+    except Exception:
+        gpt4o_fixed = 1500
+    if isinstance(model, str) and (model == 'openai/gpt-4o' or model.startswith('openai/gpt-4o@') or model.endswith('/gpt-4o')):
+        old_threshold = trigger_threshold
+        trigger_threshold = min(trigger_threshold, gpt4o_fixed)
+        print(f"SUMMARIZATION_TUNING[gpt-4o]: trigger_threshold {old_threshold} -> {trigger_threshold} tokens (env GPT4O_SUMMARY_TRIGGER_TOKENS={gpt4o_fixed})")
     
-    # Calculate current token usage
-    total_tokens = 0
-    for msg in messages:
-        total_tokens += _estimate_message_tokens(msg)
+    # Calculate ACTUAL token usage using LiteLLM's token_counter
+    total_tokens = _count_tokens_for_messages(messages, model)
+    print(f"TOKEN_COUNT: Conversation using {total_tokens} tokens ({(total_tokens/model_limit*100):.1f}% of {model_limit} limit)")
     
     # SMART TRIGGER: Use BOTH message count and token count
-    message_count_trigger = len(messages) >= 100  # Trigger at 100 messages
+    message_count_trigger = len(messages) >= message_count_limit
     token_count_trigger = total_tokens > trigger_threshold
     
     if not message_count_trigger and not token_count_trigger:
-        return messages  # No management needed yet
+        return messages, False  # No management needed yet
     
-    # Check if this is an emergency (already over 80%)
+    # Check if this is an emergency (already over 75%)
     is_emergency = total_tokens >= emergency_threshold
     
     if is_emergency:
-        print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds 80% limit ({emergency_threshold})! Forcing aggressive summarization")
+        print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds 75% limit ({emergency_threshold})! Forcing aggressive summarization")
     elif message_count_trigger:
         print(f"CONVERSATION_MANAGE: {len(messages)} messages exceeds 100-message threshold, starting smart summarization")
     else:
@@ -514,11 +581,26 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
     # PRODUCTION-GRADE INCREMENTAL SUMMARIZATION
     # Strategy: Keep system message + summaries + recent N messages
     # When summarizing: Create numbered summaries (Summary 1, Summary 2, etc.)
+
+    recent_messages_to_keep = keep_recent_emergency if is_emergency else keep_recent_normal
+
+    # Force summarization path for gpt-4o (or any model) when token threshold hit even with few messages
+    force_summarize_now = False
+    if isinstance(model, str) and (model == 'openai/gpt-4o' or model.startswith('openai/gpt-4o@') or model.endswith('/gpt-4o')):
+        if total_tokens >= trigger_threshold:
+            force_summarize_now = True
+            print(f"FORCE_SUMMARIZE[gpt-4o]: total_tokens={total_tokens} >= trigger_threshold={trigger_threshold} — overriding guards")
+
+    if force_summarize_now:
+        # Ensure there is something to summarize by reducing recent_keep if needed
+        # Keep at least 2 recent messages; try to summarize at least 1
+        recent_messages_to_keep = min(recent_messages_to_keep, max(2, len(messages) - 2))
+        # Lower minimums so we don't block summarization on short threads
+        min_initial_needed = 1
+        min_incremental_needed = 1
     
-    recent_messages_to_keep = 30 if is_emergency else 40  # Keep more context normally
-    
-    if len(messages) <= recent_messages_to_keep + 5:
-        return messages  # Too short to summarize
+    if len(messages) <= recent_messages_to_keep + 5 and not force_summarize_now:
+        return messages, False  # Too short to summarize (unless forced above)
     
     # Separate system messages (NEVER summarize these!)
     system_messages = []
@@ -549,20 +631,22 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
         # We have existing summaries - summarize messages between last summary and recent
         messages_to_summarize = conversation_messages[last_summary_index + 1:recent_start_index]
         
-        if len(messages_to_summarize) < 15:  # Not enough to warrant new summary
+        if len(messages_to_summarize) < min_incremental_needed:  # Not enough to warrant new summary
             print(f"SUMMARIZATION_SKIP: Only {len(messages_to_summarize)} messages since last summary (need 15+)")
             # Emergency: just trim older messages more aggressively
             if is_emergency:
                 print(f"EMERGENCY_TRIM: Keeping only existing summaries + last {recent_messages_to_keep} messages")
-                return system_messages + existing_summaries + conversation_messages[-recent_messages_to_keep:]
+                return system_messages + existing_summaries + conversation_messages[-recent_messages_to_keep:], True
             print(f"SUMMARIZATION_SKIP: Returning original messages unchanged")
-            return messages  # Keep as-is
+            return messages, False  # Keep as-is
         
-        # Create REAL AI summary using claude-4
+        # Create REAL AI summary using the same model or fallback to gpt-4o-mini for speed
         summary_number = len(existing_summaries) + 1
-        print(f"📝 CONVERSATION_MANAGE: Generating AI summary #{summary_number} of {len(messages_to_summarize)} messages using claude-4...")
+        # Use current model if it's OpenAI, otherwise use fast gpt-4o-mini
+        summary_model = model if model.startswith('openai/') else 'openai/gpt-4o-mini'
+        print(f"📝 CONVERSATION_MANAGE: Generating AI summary #{summary_number} of {len(messages_to_summarize)} messages using {summary_model}...")
         
-        summary_content = _generate_ai_summary(messages_to_summarize, f"INCREMENTAL SUMMARY {summary_number}", "anthropic/claude-sonnet-4-20250514")
+        summary_content = _generate_ai_summary(messages_to_summarize, f"INCREMENTAL SUMMARY {summary_number}", summary_model)
         
         new_summary = {"role": "assistant", "content": summary_content}
         
@@ -574,14 +658,16 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
         # No existing summaries - create first summary
         messages_to_summarize = conversation_messages[:recent_start_index]
         
-        if len(messages_to_summarize) < 10:  # Need at least 10 messages to summarize (was 20 - too high!)
+        if len(messages_to_summarize) < min_initial_needed:  # Need at least N messages to summarize
             print(f"CONVERSATION_MANAGE: Only {len(messages_to_summarize)} messages to summarize, skipping (need 10+)")
-            return messages
+            return messages, False
         
-        print(f"📝 CONVERSATION_MANAGE: Generating AI summary of {len(messages_to_summarize)} messages using claude-4...")
+        # Use current model if it's OpenAI, otherwise use fast gpt-4o-mini
+        summary_model = model if model.startswith('openai/') else 'openai/gpt-4o-mini'
+        print(f"📝 CONVERSATION_MANAGE: Generating AI summary of {len(messages_to_summarize)} messages using {summary_model}...")
         
-        # Create REAL AI summary using claude-4 (high quality!)
-        summary_content = _generate_ai_summary(messages_to_summarize, "INITIAL SUMMARY", "anthropic/claude-sonnet-4-20250514")
+        # Create REAL AI summary using the selected model (or fast fallback)
+        summary_content = _generate_ai_summary(messages_to_summarize, "INITIAL SUMMARY", summary_model)
         
         new_summary = {"role": "assistant", "content": summary_content}
         
@@ -590,15 +676,24 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> list:
         
         print(f"✅ CONVERSATION_MANAGE: Created first summary, structure: 1 summary + {len(conversation_messages[recent_start_index:])} recent messages")
     
-    # Verify we're under the limit
-    result_tokens = sum(_estimate_message_tokens(msg) for msg in result_messages)
+    # Verify we're under the limit using ACTUAL token counting
+    result_tokens = _count_tokens_for_messages(result_messages, model)
     reduction_percent = ((total_tokens - result_tokens) / total_tokens * 100) if total_tokens > 0 else 0
+    result_percent_of_limit = (result_tokens / model_limit * 100)
     
     print(f"✅ CONVERSATION_MANAGE: Reduced from {total_tokens} to {result_tokens} tokens ({len(messages)} to {len(result_messages)} messages)")
     print(f"📊 CONVERSATION_MANAGE: Saved {reduction_percent:.1f}% of tokens through summarization")
-    print(f"🏗️  CONVERSATION_MANAGE: Structure: {len(system_messages)} system + {len(existing_summaries) + (1 if last_summary_index >= 0 or len(messages_to_summarize) >= 20 else 0)} summaries + {len(result_messages) - len(system_messages) - len(existing_summaries) - (1 if last_summary_index >= 0 or len(messages_to_summarize) >= 20 else 0)} recent")
+    print(f"📈 CONVERSATION_MANAGE: Now at {result_percent_of_limit:.1f}% of model limit ({result_tokens}/{model_limit})")
+    print(f"🏗️  CONVERSATION_MANAGE: Structure: {len(system_messages)} system + {len(existing_summaries) + (1 if last_summary_index >= 0 or len(messages_to_summarize) >= 10 else 0)} summaries + {len(result_messages) - len(system_messages) - len(existing_summaries) - (1 if last_summary_index >= 0 or len(messages_to_summarize) >= 10 else 0)} recent")
     
-    return result_messages
+    # SAFETY CHECK: If still over 85% after summarization, force more aggressive trimming
+    if result_tokens > model_limit * 0.85:
+        print(f"⚠️ STILL TOO LARGE: {result_tokens} tokens > 85% limit! Force trimming to last 15 messages...")
+        result_messages = system_messages + [m for m in result_messages if m.get('role') == 'assistant' and '[SUMMARY' in str(m.get('content', ''))] + result_messages[-15:]
+        result_tokens = _count_tokens_for_messages(result_messages, model)
+        print(f"✅ FORCE_TRIM: Now {result_tokens} tokens ({(result_tokens/model_limit*100):.1f}% of limit)")
+    
+    return result_messages, True  # Return True to indicate summarization happened
 
 app = Flask(__name__)
 
@@ -3147,37 +3242,52 @@ def chat():
                 # The conversation_memory system is experimental, fallback is proven
                 original_message_count = len(conversation_messages)
                 
-                # ALWAYS use fallback for now (it's more reliable and tested)
-                conversation_messages = _manage_conversation_length_fallback(conversation_messages, model)
+                # Check if we WILL summarize (before actually doing it)
+                total_tokens = _count_tokens_for_messages(conversation_messages, model)
+                model_limit = _get_model_token_limit(model)
+                trigger_threshold = int(model_limit * 0.5)
+                if model.startswith('openai/gpt-4o'):
+                    trigger_threshold = min(trigger_threshold, int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '1500')))
                 
-                # SAFETY CHECK: Verify we're under limit before sending
-                post_summary_tokens = sum(_estimate_message_tokens(msg) for msg in conversation_messages)
-                # Re-define TOKEN_LIMITS for safety check
-                TOKEN_LIMITS = {
-                    "anthropic/claude-sonnet-4-20250514": 200000,
-                    "openai/gpt-5": 128000,
-                    "openai/gpt-4o": 128000,
-                    "openai/gpt-4-turbo": 128000,
-                    "anthropic/claude-3-5-sonnet-20241022": 200000,
-                }
-                model_limit = TOKEN_LIMITS.get(model, 100000)
+                will_summarize = total_tokens > trigger_threshold or len(conversation_messages) >= 100
+                
+                if will_summarize:
+                    # SEND STATUS BEFORE SUMMARIZATION STARTS
+                    yield json.dumps({
+                        "status": "summarizing_starting",
+                        "message": f"Starting summarization of {len(conversation_messages)} messages...",
+                        "original_count": len(conversation_messages)
+                    }) + '\n'
+                    print(f"📤 SENT: summarizing_starting status to frontend BEFORE blocking")
+                
+                # ALWAYS use fallback for now (it's more reliable and tested)
+                # Track if summarization happened by checking return value
+                conversation_messages, summarization_was_attempted = _manage_conversation_length_fallback(conversation_messages, model)
+                
+                # SAFETY CHECK: Verify we're under limit using ACTUAL token counting
+                model_limit = _get_model_token_limit(model)
+                post_summary_tokens = _count_tokens_for_messages(conversation_messages, model)
+                percent_of_limit = (post_summary_tokens / model_limit * 100)
+                
+                print(f"🔍 SAFETY_CHECK: Post-summary token count: {post_summary_tokens} ({percent_of_limit:.1f}% of {model_limit} limit)")
                 
                 if post_summary_tokens > model_limit * 0.9:  # Still over 90% after summarization!
-                    print(f"⚠️ CONVERSATION_SAFETY: Post-summary still at {post_summary_tokens} tokens (90%+ of limit)! Force trimming...")
-                    # Emergency: Keep only system + last 30 messages
+                    print(f"⚠️ CONVERSATION_SAFETY: Post-summary still at {post_summary_tokens} tokens (>90% of limit)! Force trimming...")
+                    # Emergency: Keep only system + last 20 messages
                     system_msgs = [m for m in conversation_messages if m.get('role') == 'system']
-                    conversation_messages = system_msgs + conversation_messages[-30:]
-                    final_tokens = sum(_estimate_message_tokens(msg) for msg in conversation_messages)
-                    print(f"CONVERSATION_SAFETY: Emergency trim to {len(conversation_messages)} messages ({final_tokens} tokens)")
+                    conversation_messages = system_msgs + conversation_messages[-20:]
+                    final_tokens = _count_tokens_for_messages(conversation_messages, model)
+                    print(f"CONVERSATION_SAFETY: Emergency trim to {len(conversation_messages)} messages ({final_tokens} tokens, {(final_tokens/model_limit*100):.1f}% of limit)")
                 
                 # CRITICAL: Update frontend conversation history with summary
-                if len(conversation_messages) < original_message_count:
-                    messages_removed = original_message_count - len(conversation_messages)
+                # ALWAYS notify if summarization was attempted (tracked above)
+                if summarization_was_attempted:
+                    messages_removed = max(0, original_message_count - len(conversation_messages))
                     
                     # Notify frontend AND send the new summarized structure
                     yield json.dumps({
                         "status": "summarizing",
-                        "message": f"Conversation summarized: {messages_removed} older messages condensed for efficiency",
+                        "message": f"Conversation summarized: {messages_removed} older messages condensed, summary created for AI efficiency",
                         "original_count": original_message_count,
                         "new_count": len(conversation_messages),
                         "action": "replace_conversation_history",
@@ -3291,10 +3401,13 @@ def chat():
                     system_msg = {"role": "system", "content": SYSTEM_PROMPT}
                     openai_messages = [system_msg] + openai_messages
                 
-                # Debug: Check total token usage with smart counting
-                total_tokens = sum(_estimate_message_tokens(msg) for msg in openai_messages)
+                # Debug: Check total token usage with ACTUAL LiteLLM counting
+                total_tokens = _count_tokens_for_messages(openai_messages, model)
                 total_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages)
-                print(f"LITELLM_PREP: Sending {len(openai_messages)} messages to {model_friendly_name} ({model}), estimated tokens: {total_tokens}, total chars: {total_chars}")
+                model_limit = _get_model_token_limit(model)
+                percent_used = (total_tokens / model_limit * 100) if model_limit > 0 else 0
+                print(f"LITELLM_PREP: Sending {len(openai_messages)} messages to {model_friendly_name} ({model})")
+                print(f"LITELLM_PREP: Token usage: {total_tokens} tokens ({percent_used:.1f}% of {model_limit} limit), {total_chars} chars")
                 if total_tokens > 150000:
                     print(f"LITELLM_PREP: WARNING - High token count ({total_tokens} tokens), may hit limits!")
                 if total_chars > 500000:
@@ -3509,24 +3622,33 @@ def chat():
                                               "tokens >" in error_str)
                         
                         if is_context_exceeded and attempts == 0:  # First attempt with this error
-                            print(f"🚨 CONTEXT_OVERFLOW: Detected context window exceeded! Triggering emergency summarization...")
+                            print(f"🚨 CONTEXT_OVERFLOW: Context window exceeded! Triggering emergency summarization...")
+                            
+                            # Get actual model limit
+                            actual_limit = _get_model_token_limit(model_try)
+                            current_tokens = _count_tokens_for_messages(openai_messages, model_try)
+                            print(f"🚨 OVERFLOW_STATS: {current_tokens} tokens used, limit is {actual_limit}")
                             
                             # Notify frontend
                             yield json.dumps({
                                 "status": "emergency_summarizing",
-                                "message": "Conversation too large - condensing older messages...",
-                                "original_count": len(openai_messages)
+                                "message": f"Conversation too large ({current_tokens} tokens > {actual_limit} limit) - condensing...",
+                                "original_count": len(openai_messages),
+                                "tokens_used": current_tokens,
+                                "tokens_limit": actual_limit
                             }) + '\n'
                             
-                            # Force aggressive summarization (keep only 20 recent messages)
+                            # Force AGGRESSIVE summarization to get well under limit
                             original_count = len(openai_messages)
                             system_msgs = [m for m in openai_messages if m.get('role') == 'system']
                             other_msgs = [m for m in openai_messages if m.get('role') != 'system']
                             
-                            # Emergency: Keep only last 20 messages
-                            openai_messages = system_msgs + other_msgs[-20:]
+                            # Emergency: Keep only last 15 messages (aggressive!)
+                            openai_messages = system_msgs + other_msgs[-15:]
+                            final_tokens = _count_tokens_for_messages(openai_messages, model_try)
                             
-                            print(f"✅ EMERGENCY_SUMMARIZE: Reduced {original_count} → {len(openai_messages)} messages for retry")
+                            print(f"✅ EMERGENCY_SUMMARIZE: Reduced {current_tokens} → {final_tokens} tokens ({original_count} → {len(openai_messages)} messages)")
+                            print(f"✅ EMERGENCY_RESULT: Now at {(final_tokens/actual_limit*100):.1f}% of limit - safe to retry")
                             
                             # Notify frontend of completion
                             yield json.dumps({
@@ -3539,6 +3661,7 @@ def chat():
                             }) + '\n'
                             
                             # Retry immediately with trimmed conversation
+                            attempts = 0  # Reset attempts for retry
                             continue
                         
                         # SPECIAL CASE: Orphaned tool calls recovery

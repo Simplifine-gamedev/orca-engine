@@ -3798,68 +3798,140 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		return;
 	}
 	
-	// Handle normal conversation summarization status
+	// Handle summarization STARTING (sent before backend blocks)
+	if (response_data.has("status") && response_data["status"] == "summarizing_starting") {
+		int original_count = response_data.get("original_count", 0);
+		String message = response_data.get("message", "Condensing conversation...");
+		
+		print_line("AI Chat: 🎯 SUMMARIZING STARTING! " + String::num_int64(original_count) + " messages");
+		
+		// Show immediate visual feedback that summarization is happening
+		_show_status_notification("summarization", "⏳ " + message, "⏳", 30.0);
+		
+		// Create inline placeholder
+		if (chat_container) {
+			PanelContainer *existing = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_summarization", true, false));
+			if (!existing) {
+				_create_backend_tool_placeholder("summarization", "Conversation summarization");
+			}
+			_update_tool_placeholder_with_description("summarization", "Conversation summarization", "executing", "⏳ Summarizing older messages for AI context...");
+		}
+		
+		return; // Don't process further
+	}
+	
+	// Handle normal conversation summarization COMPLETED status
 	if (response_data.has("status") && response_data["status"] == "summarizing") {
 		String message = response_data.get("message", "Condensing older messages for efficiency...");
 		int original_count = response_data.get("original_count", 0);
 		int new_count = response_data.get("new_count", 0);
 		String action = response_data.get("action", "");
 		
-		print_line("AI Chat: 🎯 SUMMARIZING STATUS RECEIVED! " + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages");
+		print_line("AI Chat: 🎯 SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages");
 		print_line("AI Chat: Action: '" + action + "', has_new_messages: " + String(response_data.has("new_messages") ? "YES" : "NO"));
 		
-		// CRITICAL: If backend sends new_messages, replace our conversation history with it!
-		if (action == "replace_conversation_history" && response_data.has("new_messages")) {
-			Array new_messages = response_data.get("new_messages", Array());
+		// CORRECT ARCHITECTURE:
+		// Backend summarizes and sends condensed conversation
+		// Frontend ACCEPTS the summary BUT restores tool_results/attached_files (not sent by backend)
+		// This way:
+		// - Backend only deals with summarized conversation (efficient)
+		// - Frontend preserves full UI data locally
+		// - Next request sends summarized conversation (no re-summarization needed!)
+		
+		Array new_messages = response_data.get("new_messages", Array());
+		
+		if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			print_line("AI Chat: ✅ ACCEPTING backend summary: " + String::num_int64(original_count) + " → " + String::num_int64(new_messages.size()) + " messages");
 			
-			if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-				print_line("AI Chat: ✅ REPLACING conversation history with " + String::num_int64(new_messages.size()) + " summarized messages from backend");
+			// STEP 1: Build preservation maps for tool_results and attached_files
+			HashMap<String, Array> tool_results_map;
+			HashMap<String, Vector<AttachedFile>> attached_files_map;
+			
+			Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+			
+			for (int i = 0; i < chat_history.size(); i++) {
+				const ChatMessage &msg = chat_history[i];
 				
-				// Clear current conversation messages
-				Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
-				int old_size = chat_history.size();
-				chat_history.clear();
-				
-				// Parse and add new messages from backend (including the summary!)
-				for (int i = 0; i < new_messages.size(); i++) {
-					Dictionary msg_dict = new_messages[i];
-					AIChatDock::ChatMessage msg;
-					msg.role = msg_dict.get("role", "");
-					msg.content = msg_dict.get("content", "");
-					msg.timestamp = _get_timestamp();
-					msg.tool_calls = msg_dict.get("tool_calls", Array());
-					msg.tool_call_id = msg_dict.get("tool_call_id", "");
-					msg.name = msg_dict.get("name", "");
-					
-					// DEBUG: Log if this is a summary message
-					if (msg.role == "assistant" && (msg.content.contains("[SUMMARY") || msg.content.contains("INITIAL SUMMARY"))) {
-						print_line("AI Chat: 📊 Found summary message at index " + String::num_int64(i) + ": " + msg.content.substr(0, 100) + "...");
-					}
-					
-					chat_history.push_back(msg);
+				if (msg.role == "tool" && !msg.tool_call_id.is_empty() && !msg.tool_results.is_empty()) {
+					tool_results_map[msg.tool_call_id] = msg.tool_results;
 				}
 				
-				// CRITICAL: Rebuild UI to show the summary!
-				if (chat_container) {
-					for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
-						Node *child = chat_container->get_child(i);
-						if (child && child != pending_edits_banner) {
-							child->queue_free();
-						}
-					}
+				if (!msg.attached_files.is_empty()) {
+					String key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
+					attached_files_map[key] = msg.attached_files;
 				}
-				call_deferred("_rebuild_conversation_ui_deferred", current_conversation_index);
-				
-				// Mark conversation as modified and save
-				conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
-				_queue_delayed_save();
-				
-				print_line("AI Chat: ✅ Conversation history updated - " + String::num_int64(old_size) + " → " + String::num_int64(chat_history.size()) + " messages (UI rebuilt)");
 			}
+			
+			print_line("AI Chat: Preserved " + String::num_int64(tool_results_map.size()) + " tool_results, " + String::num_int64(attached_files_map.size()) + " attached_files");
+			
+			// STEP 2: Clear and rebuild from backend's summarized messages
+			chat_history.clear();
+			
+			for (int i = 0; i < new_messages.size(); i++) {
+				Dictionary msg_dict = new_messages[i];
+				AIChatDock::ChatMessage msg;
+				msg.role = msg_dict.get("role", "");
+				msg.content = msg_dict.get("content", "");
+				msg.timestamp = msg_dict.get("timestamp", _get_timestamp());
+				msg.tool_calls = msg_dict.get("tool_calls", Array());
+				msg.tool_call_id = msg_dict.get("tool_call_id", "");
+				msg.name = msg_dict.get("name", "");
+				msg.project_context = msg_dict.get("project_context", "");
+				
+				// STEP 3: Restore tool_results from preservation map
+				if (msg.role == "tool" && !msg.tool_call_id.is_empty() && tool_results_map.has(msg.tool_call_id)) {
+					msg.tool_results = tool_results_map[msg.tool_call_id];
+				}
+				
+				// STEP 4: Restore attached_files from preservation map
+				String attach_key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
+				if (attached_files_map.has(attach_key)) {
+					msg.attached_files = attached_files_map[attach_key];
+				}
+				
+				// Also try fallback keys
+				for (const KeyValue<String, Vector<AttachedFile>> &kv : attached_files_map) {
+					if (kv.key.begins_with(msg.role + "_") && msg.attached_files.is_empty()) {
+						msg.attached_files = kv.value;
+						break;
+					}
+				}
+				
+				msg.reasoning_content = msg_dict.get("reasoning_content", "");
+				msg.thinking_blocks = msg_dict.get("thinking_blocks", Array());
+				
+				chat_history.push_back(msg);
+			}
+			
+			// STEP 5: Rebuild UI with summarized conversation
+			if (chat_container) {
+				for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+					Node *child = chat_container->get_child(i);
+					if (child && child != pending_edits_banner) {
+						child->queue_free();
+					}
+				}
+			}
+			call_deferred("_rebuild_conversation_ui_deferred", current_conversation_index);
+			
+			conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+			_queue_delayed_save();
+			
+			print_line("AI Chat: ✅ Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
 		}
 		
-		// Show summarization notification
-		_show_status_notification("summarization", message, "📊", 4.0);
+		// Update notification
+		_show_status_notification("summarization", "✅ Conversation condensed (" + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages)", "📊", 4.0);
+		
+		// Mark inline placeholder as completed and remove it
+		if (chat_container) {
+			_update_tool_placeholder_status("summarization", "Conversation summarization", "completed");
+			PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_summarization", true, false));
+			if (placeholder) {
+				Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.75, true);
+				timer->connect("timeout", callable_mp((Node*)placeholder, &Node::queue_free), CONNECT_ONE_SHOT);
+			}
+		}
 		
 		// CRITICAL: Maintain waiting state during summarization
 		print_line("AI Chat: Summarization notification shown, maintaining waiting state");
