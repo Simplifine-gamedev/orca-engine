@@ -76,7 +76,7 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	p_chat_dock->send_button = memnew(Button);
 	p_chat_dock->send_button->set_text("");
 	p_chat_dock->send_button->set_disabled(true);
-	p_chat_dock->send_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("KeyboardLabel"), SNAME("EditorIcons")));
+	p_chat_dock->send_button->add_theme_icon_override("icon", p_chat_dock->get_theme_icon(SNAME("KeyboardEnter"), SNAME("EditorIcons")));
 	p_chat_dock->send_button->set_custom_minimum_size(Size2(24, 24));
 	p_chat_dock->send_button->set_tooltip_text("Send (Enter)");
 	
