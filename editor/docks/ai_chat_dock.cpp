@@ -1197,18 +1197,6 @@ void AIChatDock::_on_send_button_pressed() {
 		_create_new_conversation();
 		_update_conversation_dropdown();
 	}
-	
-	// Check if message matches an old user message (restore/edit flow)
-	if (user_message_handler) {
-		bool handled = user_message_handler->handle_send_request(message);
-		if (handled) {
-			// Handler intercepted the send (restore or dialog shown)
-			return;
-		}
-		// Otherwise continue with normal flow
-	}
-
-
 
 	// PERFORMANCE OPTIMIZATION: Instant UI feedback with deferred heavy processing
 	// This prevents UI freezing by splitting operations across frames
