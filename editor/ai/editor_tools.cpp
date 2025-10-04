@@ -4591,8 +4591,15 @@ Dictionary EditorTools::attach_script(const Dictionary &p_args) {
 	}
 
 	node->set_script(script);
+	
+	// CRITICAL FIX: Mark scene as unsaved so Godot knows to persist the change to disk
+	// Without this, script attachments only exist in editor memory and are lost on reload
+	EditorInterface::get_singleton()->mark_scene_as_unsaved();
+	print_line("EditorTools: Script attached and scene marked as unsaved: " + String(p_args["script_path"]));
+	
 	result["success"] = true;
-	result["message"] = "Script attached successfully.";
+	result["message"] = "Script attached successfully and scene marked for save";
+	result["scene_modified"] = true;
 	return result;
 }
 
@@ -10868,6 +10875,94 @@ Dictionary EditorTools::settings_manager(const Dictionary &p_args) {
             result["error"] = "Key parameter required for project_settings.set";
             return result;
         }
+        
+        // CRITICAL FIX: Special handling for input/* keys to update runtime InputMap
+        // Input actions need to be registered in BOTH ProjectSettings (for persistence) 
+        // AND InputMap (for runtime/editor UI) to work correctly
+        if (key.begins_with("input/")) {
+            String action_name = key.substr(6); // Extract action name after "input/"
+            
+            if (value.get_type() == Variant::DICTIONARY) {
+                Dictionary action_dict = value;
+                float deadzone = action_dict.get("deadzone", 0.5f);
+                Array events = action_dict.get("events", Array());
+                
+                // Update runtime InputMap first
+                if (!InputMap::get_singleton()->has_action(action_name)) {
+                    InputMap::get_singleton()->add_action(action_name, deadzone);
+                    print_line("EditorTools: Created new input action in runtime: " + action_name);
+                } else {
+                    InputMap::get_singleton()->action_set_deadzone(action_name, deadzone);
+                    print_line("EditorTools: Updated existing input action deadzone: " + action_name);
+                }
+                
+                // Clear existing events and add new ones
+                InputMap::get_singleton()->action_erase_events(action_name);
+                
+                // Add events to runtime InputMap AND build proper events array for ProjectSettings
+                Array events_for_project_settings;
+                for (int i = 0; i < events.size(); i++) {
+                    Ref<InputEvent> event;
+                    
+                    // Support both InputEvent objects and dictionaries
+                    if (events[i].get_type() == Variant::OBJECT) {
+                        event = events[i];
+                    } else if (events[i].get_type() == Variant::DICTIONARY) {
+                        Dictionary event_dict = events[i];
+                        String type = event_dict.get("type", "");
+                        if (type == "key") {
+                            Ref<InputEventKey> key_event;
+                            key_event.instantiate();
+                            
+                            // Support both keycode and physical_keycode
+                            if (event_dict.has("physical_keycode")) {
+                                key_event->set_physical_keycode((Key)(int)event_dict.get("physical_keycode", 0));
+                            } else if (event_dict.has("keycode")) {
+                                key_event->set_keycode((Key)(int)event_dict.get("keycode", 0));
+                            }
+                            
+                            event = key_event;
+                        }
+                        // TODO: Add support for mouse, joypad, etc. if needed
+                    }
+                    
+                    if (event.is_valid()) {
+                        // Add to runtime InputMap
+                        InputMap::get_singleton()->action_add_event(action_name, event);
+                        // Add to array for ProjectSettings (must be actual InputEvent objects!)
+                        events_for_project_settings.push_back(event);
+                    }
+                }
+                
+                // CRITICAL: Update the action_dict with proper InputEvent objects for ProjectSettings
+                // Runtime game loads these via InputMap::load_from_project_settings() which expects
+                // InputEvent objects, not dictionaries
+                action_dict["events"] = events_for_project_settings;
+                action_dict["deadzone"] = deadzone; // Ensure deadzone is preserved
+                
+                print_line("EditorTools: Synced input action '" + action_name + "' to runtime InputMap with " + 
+                          String::num_int64(events_for_project_settings.size()) + " events");
+                
+                // CRITICAL: Save the UPDATED action_dict (with InputEvent objects) to ProjectSettings
+                // Not the original value which might have dictionary events
+                ProjectSettings::get_singleton()->set_setting(key, action_dict);
+                Error err = ProjectSettings::get_singleton()->save();
+                result["success"] = (err == OK);
+                result["key"] = key;
+                result["value"] = action_dict; // Return the updated value
+                if (err != OK) {
+                    result["error"] = "Failed to save project settings";
+                } else {
+                    result["message"] = "Input action saved to project.godot and synced to runtime InputMap (will work immediately in game)";
+                }
+                return result;
+            } else {
+                // If value is not a dictionary (e.g., trying to delete), handle gracefully
+                print_line("EditorTools: Warning - input/* key set with non-dictionary value, skipping InputMap sync");
+            }
+        }
+        
+        // Now save to ProjectSettings (for persistence to project.godot) - for non-input keys
         ProjectSettings::get_singleton()->set_setting(key, value);
         Error err = ProjectSettings::get_singleton()->save();
         result["success"] = (err == OK);

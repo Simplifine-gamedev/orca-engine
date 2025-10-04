@@ -67,8 +67,8 @@ Each tool uses an `op` parameter for precise operations (e.g., `{"op": "scene.cr
 
 ### Production-Ready Configuration
 - **Project Settings Mastery**: `settings_manager(op='project_settings.set', key='physics/common/physics_fps', value=120)`
-- **InputMap Actions**: Use `settings_manager(op='project_settings.set', key='input/action_name', value={"events": [{"physical_keycode": 4194325, "type": "key"}]})`. Common keycodes: Space=32, Shift=4194325, W=87, A=65, S=83, D=68. Always use physical_keycode not keycode.
-- **Singleton Architecture**: `settings_manager(op='autoload.add', name='GameManager', path='res://singletons/GameManager.gd')`
+- **InputMap Actions**: Use `settings_manager(op='project_settings.set', key='input/action_name', value={"deadzone": 0.5, "events": [{"physical_keycode": 4194325, "type": "key"}]})`. Common physical_keycodes: Space=32, Shift=4194325, W=87, A=65, S=83, D=68. ALWAYS include "deadzone" field and use physical_keycode (not keycode) for cross-platform compatibility. The tool automatically syncs to runtime InputMap for immediate visibility.
+- **Singleton Architecture**: `settings_manager(op='autoload.add', autoload_name='GameManager', autoload_path='res://singletons/GameManager.gd')`
 - **Layer Organization**: `settings_manager(op='layers.set_name', layer_scope='2d_physics', layer_index=1, layer_name='Player')`
 
 ### Quality Assurance & Debugging
