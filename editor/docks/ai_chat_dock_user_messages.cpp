@@ -15,7 +15,7 @@
 #include "scene/gui/panel_container.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/resources/style_box_flat.h"
-#include "scene/resources/style_box_empty.h"
+#include "scene/resources/style_box.h"
 #include "scene/main/viewport.h"
 #include "core/input/input_event.h"
 #include "core/io/file_access.h"
