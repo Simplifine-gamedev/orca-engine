@@ -238,6 +238,14 @@ void AIChatDock::_handle_thinking_content_delta(const String &p_reasoning_delta)
 		return;
 	}
 	
+	// Check if the thinking label is still valid and in the scene tree
+	if (!current_thinking_label->is_inside_tree()) {
+		print_line("AI Chat: Warning - thinking label was removed from tree, clearing pointer");
+		current_thinking_label = nullptr;
+		current_thinking_section = nullptr;
+		return;
+	}
+	
 	// Accumulate thinking content
 	current_thinking_content += p_reasoning_delta;
 	
@@ -268,6 +276,14 @@ void AIChatDock::_handle_thinking_blocks_delta(const Array &p_thinking_blocks_de
 	
 	if (!current_thinking_label) {
 		print_line("AI Chat: Warning - no thinking label available for thinking blocks");
+		return;
+	}
+	
+	// Check if the thinking label is still valid and in the scene tree
+	if (!current_thinking_label->is_inside_tree()) {
+		print_line("AI Chat: Warning - thinking label was removed from tree, clearing pointer");
+		current_thinking_label = nullptr;
+		current_thinking_section = nullptr;
 		return;
 	}
 	
@@ -1388,6 +1404,10 @@ void AIChatDock::_on_edit_message_pressed(int p_message_index) {
     PanelContainer *old_panel = Object::cast_to<PanelContainer>(node);
     if (!old_panel) {
         // Fallback to rebuild if we cannot find the targeted panel, but keep proper panel naming and structure.
+        // Clear thinking pointers since we're about to delete all UI elements
+        current_thinking_label = nullptr;
+        current_thinking_section = nullptr;
+        
         for (int i = 0; i < chat_container->get_child_count(); i++) {
             Node *child = chat_container->get_child(i);
             child->queue_free();
