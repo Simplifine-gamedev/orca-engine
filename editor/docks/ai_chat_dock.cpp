@@ -6924,6 +6924,40 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     if (p_tool_message.name == "image_operation" || (result.get("success", false) && result.has("image_data"))) {
         content_panel->set_visible(true);
     }
+    
+    // CRITICAL: After updating tool result, reposition streaming indicator to the END
+    // This ensures the ... always appears after the latest content (text or tool results)
+    // BUT only do this during active streaming, not when loading saved conversations
+    if (is_waiting_for_response && current_assistant_message_label) {
+        Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
+        if (bubble_panel) {
+            VBoxContainer *message_vbox = Object::cast_to<VBoxContainer>(bubble_panel->get_child(0));
+            if (message_vbox) {
+                // Find the indicator_container
+                HBoxContainer *indicator_container = nullptr;
+                for (int i = 0; i < message_vbox->get_child_count(); i++) {
+                    Node *child = message_vbox->get_child(i);
+                    HBoxContainer *hbox = Object::cast_to<HBoxContainer>(child);
+                    if (hbox) {
+                        for (int j = 0; j < hbox->get_child_count(); j++) {
+                            if (Object::cast_to<StreamingIndicator>(hbox->get_child(j))) {
+                                indicator_container = hbox;
+                                // Move to end if not already at the end
+                                int current_index = indicator_container->get_index();
+                                int last_index = message_vbox->get_child_count() - 1;
+                                if (current_index != last_index) {
+                                    message_vbox->move_child(indicator_container, last_index);
+                                    print_line("AI Chat: Moved streaming indicator to end after tool result update");
+                                }
+                                break;
+                            }
+                        }
+                        if (indicator_container) break;
+                    }
+                }
+            }
+        }
+    }
 }
 void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
 	Ref<JSON> json;
