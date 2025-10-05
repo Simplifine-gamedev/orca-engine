@@ -17,6 +17,7 @@ class StreamingIndicator : public Label {
 private:
 	Timer *animation_timer = nullptr;
 	int dot_count = 0;
+	bool is_animating = false; // Track animation state
 	
 	void _on_animation_timer_timeout();
 	
@@ -29,6 +30,7 @@ public:
 	
 	void start_animation();
 	void stop_animation();
+	bool is_animation_active() const { return is_animating; }
 	
 	void _notification(int p_what);
 };
