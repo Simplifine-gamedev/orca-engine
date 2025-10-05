@@ -22,6 +22,7 @@
 void UserMessageHandler::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_restore_send_option", "restore"), &UserMessageHandler::_on_restore_send_option);
 	ClassDB::bind_method(D_METHOD("_on_bubble_gui_input", "event", "message_index"), &UserMessageHandler::_on_bubble_gui_input);
+	ClassDB::bind_method(D_METHOD("_on_chat_container_gui_input", "event", "editing_message_index"), &UserMessageHandler::_on_chat_container_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_edit_send_pressed", "edit_field", "message_index"), &UserMessageHandler::_on_edit_send_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_cancel_pressed", "message_index"), &UserMessageHandler::_on_edit_cancel_pressed);
 	ClassDB::bind_method(D_METHOD("_on_restore_only_pressed", "message_index"), &UserMessageHandler::_on_restore_only_pressed);
@@ -94,6 +95,38 @@ void UserMessageHandler::_on_bubble_gui_input(const Ref<InputEvent> &p_event, in
 	}
 }
 
+void UserMessageHandler::_on_chat_container_gui_input(const Ref<InputEvent> &p_event, int p_editing_message_index) {
+	if (!chat_dock || editing_message_index < 0) return;
+	
+	Ref<InputEventMouseButton> mb = p_event;
+	if (mb.is_valid() && mb->is_pressed() && mb->get_button_index() == MouseButton::LEFT) {
+		// Get the edit panel
+		VBoxContainer *chat_container = chat_dock->chat_container;
+		if (!chat_container) return;
+		
+		PanelContainer *edit_panel = Object::cast_to<PanelContainer>(
+			chat_container->find_child("message_panel_" + String::num_int64(editing_message_index), true, false)
+		);
+		
+		if (!edit_panel || !edit_panel->get_meta("is_editing", false)) return;
+		
+		// Check if click is outside the edit panel
+		Vector2 local_pos = edit_panel->get_local_mouse_position();
+		Rect2 panel_rect = Rect2(Vector2(), edit_panel->get_size());
+		
+		if (!panel_rect.has_point(local_pos)) {
+			// Clicked outside - cancel edit mode
+			print_line("AI Chat: Clicked outside edit panel - canceling edit mode");
+			_on_edit_cancel_pressed(editing_message_index);
+			
+			// Disconnect the click-outside handler
+			if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+				chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
+			}
+		}
+	}
+}
+
 void UserMessageHandler::on_user_bubble_clicked(int p_message_index) {
 	if (!chat_dock) return;
 	
@@ -154,6 +187,16 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	
 	print_line("AI Chat: Cleared bubble children, creating edit UI");
 	
+	// Update bubble styling to match chat inbox background (dark gray like buttons)
+	Ref<StyleBoxFlat> edit_panel_style = memnew(StyleBoxFlat);
+	edit_panel_style->set_content_margin_all(12);
+	edit_panel_style->set_corner_radius_all(8);
+	// Use the same dark base color as editor widgets
+	edit_panel_style->set_bg_color(chat_dock->get_theme_color(SNAME("base_color"), SNAME("Editor")));
+	edit_panel_style->set_border_width_all(1);
+	edit_panel_style->set_border_color(chat_dock->get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
+	p_bubble->add_theme_style_override("panel", edit_panel_style);
+	
 	// Create edit UI
 	VBoxContainer *edit_vbox = memnew(VBoxContainer);
 	edit_vbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
@@ -173,6 +216,10 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	Ref<StyleBoxEmpty> transparent_style = memnew(StyleBoxEmpty);
 	edit_field->add_theme_style_override("normal", transparent_style);
 	edit_field->add_theme_style_override("focus", transparent_style);
+	
+	// Store reference to edit field for click-outside detection
+	p_bubble->set_meta("edit_field", edit_field);
+	p_bubble->set_meta("is_editing", true);
 	
 	edit_vbox->add_child(edit_field);
 	
@@ -198,6 +245,15 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	
 	print_line("AI Chat: Added buttons");
 	
+	// Enable click-outside detection on the chat scroll container
+	if (chat_dock->chat_scroll) {
+		// If not already connected, connect gui_input for click-outside
+		if (!chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+			chat_dock->chat_scroll->connect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input).bind(p_message_index));
+			chat_dock->chat_scroll->set_mouse_filter(Control::MOUSE_FILTER_PASS);
+		}
+	}
+	
 	// Make bubble visible and force redraw
 	p_bubble->set_visible(true);
 	p_bubble->queue_redraw();
@@ -218,6 +274,11 @@ void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_mes
 	}
 	
 	print_line("AI Chat: Edit send pressed for message " + String::num_int64(p_message_index));
+	
+	// Disconnect click-outside handler if connected
+	if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+		chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
+	}
 	
 	// Get total messages to calculate how many will be lost
 	Array messages = chat_dock->_get_messages_as_array();
@@ -269,6 +330,11 @@ void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_mes
 void UserMessageHandler::_on_edit_cancel_pressed(int p_message_index) {
 	print_line("AI Chat: Edit cancelled for message " + String::num_int64(p_message_index));
 	
+	// Disconnect click-outside handler if connected
+	if (chat_dock && chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+		chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
+	}
+	
 	// Reset state
 	editing_message_index = -1;
 	original_message_content = "";
@@ -281,6 +347,11 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 	if (!chat_dock) return;
 	
 	print_line("AI Chat: Restore only pressed for message " + String::num_int64(p_message_index));
+	
+	// Disconnect click-outside handler if connected
+	if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+		chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
+	}
 	
 	// Save scroll position BEFORE any operations
 	ScrollContainer *chat_scroll = chat_dock->chat_scroll;
@@ -379,6 +450,11 @@ void UserMessageHandler::_on_restore_send_option(bool p_restore) {
 	
 	String edited_content = restore_send_dialog->get_meta("edited_content", "");
 	bool content_changed = restore_send_dialog->get_meta("content_changed", false);
+	
+	// Disconnect click-outside handler if connected
+	if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+		chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
+	}
 	
 	if (p_restore) {
 		// Restore to message and send
