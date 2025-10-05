@@ -3731,10 +3731,10 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		int original_count = response_data.get("original_count", 0);
 		String message = response_data.get("message", "Condensing conversation...");
 		
-		print_line("AI Chat: 🎯 SUMMARIZING STARTING! " + String::num_int64(original_count) + " messages");
+		print_line("AI Chat: SUMMARIZING STARTING! " + String::num_int64(original_count) + " messages");
 		
 		// Show immediate visual feedback that summarization is happening
-		_show_status_notification("summarization", "⏳ " + message, "⏳", 30.0);
+		_show_status_notification("summarization", message, "", 30.0);
 		
 		// Create inline placeholder
 		if (chat_container) {
@@ -3742,7 +3742,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			if (!existing) {
 				_create_backend_tool_placeholder("summarization", "Conversation summarization");
 			}
-			_update_tool_placeholder_with_description("summarization", "Conversation summarization", "executing", "⏳ Summarizing older messages for AI context...");
+			_update_tool_placeholder_with_description("summarization", "Conversation summarization", "executing", "Summarizing older messages for AI context...");
 		}
 		
 		return; // Don't process further
@@ -3755,7 +3755,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		int new_count = response_data.get("new_count", 0);
 		String action = response_data.get("action", "");
 		
-		print_line("AI Chat: 🎯 SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages");
+		print_line("AI Chat: SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " -> " + String::num_int64(new_count) + " messages");
 		print_line("AI Chat: Action: '" + action + "', has_new_messages: " + String(response_data.has("new_messages") ? "YES" : "NO"));
 		
 		// CORRECT ARCHITECTURE:
@@ -3769,7 +3769,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		Array new_messages = response_data.get("new_messages", Array());
 		
 		if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-			print_line("AI Chat: ✅ ACCEPTING backend summary: " + String::num_int64(original_count) + " → " + String::num_int64(new_messages.size()) + " messages");
+			print_line("AI Chat: ACCEPTING backend summary: " + String::num_int64(original_count) + " -> " + String::num_int64(new_messages.size()) + " messages");
 			
 			// STEP 1: Build preservation maps for tool_results and attached_files
 			HashMap<String, Array> tool_results_map;
@@ -3845,11 +3845,11 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 			_queue_delayed_save();
 			
-			print_line("AI Chat: ✅ Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
+			print_line("AI Chat: Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
 		}
 		
 		// Update notification
-		_show_status_notification("summarization", "✅ Conversation condensed (" + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages)", "📊", 4.0);
+		_show_status_notification("summarization", "Conversation condensed (" + String::num_int64(original_count) + " -> " + String::num_int64(new_count) + " messages)", "", 4.0);
 		
 		// Mark inline placeholder as completed and remove it
 		if (chat_container) {
@@ -3996,7 +3996,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 	if (response_data.has("status") && response_data["status"] == "executing_tools") {
 		uint64_t receive_time = OS::get_singleton()->get_ticks_msec();
-		print_line("AI Chat: ⚡ RECEIVED executing_tools at T+" + String::num_uint64(receive_time) + "ms");
+		print_line("AI Chat: RECEIVED executing_tools at T+" + String::num_uint64(receive_time) + "ms");
 		
 		if (response_data.has("assistant_message")) {
 			Dictionary assistant_message = response_data["assistant_message"];
@@ -5623,9 +5623,9 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
             String diff_content = content_to_serialize.get("inline_diff", "");
             int diff_length = diff_content.length();
             print_line("AI Chat: FILE_EDIT_RESULT - inline_diff length: " + String::num_int64(diff_length) + " chars" + 
-                       (diff_length > 0 ? " ✅ WILL BE SENT TO AI MODEL" : " ⚠️ EMPTY DIFF"));
+                       (diff_length > 0 ? " WILL BE SENT TO AI MODEL" : " EMPTY DIFF"));
         } else {
-            print_line("AI Chat: FILE_EDIT_RESULT - ⚠️ WARNING: inline_diff field missing from tool result!");
+            print_line("AI Chat: FILE_EDIT_RESULT - WARNING: inline_diff field missing from tool result!");
         }
     }
     
@@ -5950,30 +5950,30 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             }
         } else if (p_tool_name == "runtime_manager") {
             if (actual_op == "game.start") {
-                return "✓ Started game";
+                return "Started game";
             } else if (actual_op == "game.stop") {
-                return "✓ Stopped game";
+                return "Stopped game";
             } else if (actual_op == "errors.summary") {
                 int error_count = p_result.get("total_errors", 0);
-                return "✓ Found " + String::num_int64(error_count) + " runtime errors";
+                return "Found " + String::num_int64(error_count) + " runtime errors";
             } else if (actual_op == "errors.details") {
                 int error_count = p_result.get("total_found", 0);
-                return "✓ Retrieved " + String::num_int64(error_count) + " detailed runtime errors";
+                return "Retrieved " + String::num_int64(error_count) + " detailed runtime errors";
             } else if (actual_op == "errors.test") {
-                return "✓ Added test runtime errors for debugging";
+                return "Added test runtime errors for debugging";
             } else if (actual_op == "errors.debug") {
                 int total_recorded = p_result.get("total_recorded", 0);
-                return "✓ Debug: " + String::num_int64(total_recorded) + " errors currently tracked";
+                return "Debug: " + String::num_int64(total_recorded) + " errors currently tracked";
             } else if (actual_op == "screenshot.take") {
                 bool any_captured = p_result.get("success", false);
                 int count = p_result.get("count", 0);
                 String target = p_args.get("target", "editor");
                 if (any_captured) {
-                    return "✓ Screenshot captured (" + String::num_int64(count) + " viewport(s))";
+                    return "Screenshot captured (" + String::num_int64(count) + " viewport(s))";
                 } else if (target == "game" || target == "both") {
-                    return "ℹ Game screenshots: Use 'Snap to Chat' button in Game View for best results";
+                    return "Game screenshots: Use 'Snap to Chat' button in Game View for best results";
                 } else {
-                    return "⚠ Editor screenshot failed - viewport not ready";
+                    return "Editor screenshot failed - viewport not ready";
                 }
             }
         }
@@ -6094,7 +6094,7 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
         return "Managing runtime...";
     } else {
         // Fallback for unknown tools
-        return "⚡ Executing: " + p_tool_name + "...";
+        return "Executing: " + p_tool_name + "...";
     }
 }
 
@@ -6679,7 +6679,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 
         Label *tool_label = memnew(Label);
         // CRITICAL FIX: Use descriptive status from the start, not generic "[TOOL]"
-        tool_label->set_text("⚡ " + descriptive_status);
+        tool_label->set_text(descriptive_status);
 		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color
 		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		tool_hbox->add_child(tool_label);
@@ -6874,7 +6874,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		if (files_truncated) {
 			Label *truncation_warning = memnew(Label);
-			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_files) + " files only (performance optimized)");
+			truncation_warning->set_text("Showing first " + String::num_int64(max_display_files) + " files only (performance optimized)");
 			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			files_vbox->add_child(truncation_warning);
 			
@@ -7073,7 +7073,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		if (ui_truncated) {
 			Label *truncation_warning = memnew(Label);
-			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " nodes only (performance optimized)");
+			truncation_warning->set_text("Showing first " + String::num_int64(max_display_nodes) + " nodes only (performance optimized)");
 			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			nodes_vbox->add_child(truncation_warning);
 			
@@ -7175,7 +7175,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			
 			if (ui_truncated) {
 				Label *truncation_warning = memnew(Label);
-				truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " results only (performance optimized)");
+				truncation_warning->set_text("Showing first " + String::num_int64(max_display_nodes) + " results only (performance optimized)");
 				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 				search_vbox->add_child(truncation_warning);
 				
@@ -7230,7 +7230,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		Array results = p_result.get("results", Array());
 		
 		Label *count_label = memnew(Label);
-		count_label->set_text("✅ Found " + String::num_int64(results.size()) + " documentation results");
+		count_label->set_text("Found " + String::num_int64(results.size()) + " documentation results");
 		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		count_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		p_content_vbox->add_child(count_label);
@@ -8286,7 +8286,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int max_results_to_display = MIN(10, similar_files.size());
 			if (similar_files.size() > max_results_to_display) {
 				Label *truncation_warning = memnew(Label);
-				truncation_warning->set_text("⚡ Showing first " + String::num_int64(max_results_to_display) + " results (performance optimized)");
+				truncation_warning->set_text("Showing first " + String::num_int64(max_results_to_display) + " results (performance optimized)");
 				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 				search_vbox->add_child(truncation_warning);
 			}
@@ -8861,7 +8861,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		String query = p_result.get("query", "");
 		
 		Label *summary_label = memnew(Label);
-		summary_label->set_text("✅ " + search_mode.capitalize() + " search found " + String::num_int64(file_count) + " results for: \"" + query + "\"");
+		summary_label->set_text(search_mode.capitalize() + " search found " + String::num_int64(file_count) + " results for: \"" + query + "\"");
 		summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		p_content_vbox->add_child(summary_label);
@@ -8882,7 +8882,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int filtered_count = p_result.get("filtered_debug_messages", 0);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("✅ Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " debug messages)");
+			summary_label->set_text("Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " debug messages)");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
@@ -8926,7 +8926,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int total_warnings = p_result.get("total_warnings", 0);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("✅ Found " + String::num_int64(unique_errors.size()) + " unique error types (" + 
+			summary_label->set_text("Found " + String::num_int64(unique_errors.size()) + " unique error types (" + 
 									String::num_int64(total_errors) + " errors, " + String::num_int64(total_warnings) + " warnings)");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
@@ -8984,7 +8984,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int total_found = p_result.get("total_found", errors.size());
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("✅ Retrieved " + String::num_int64(total_found) + " runtime error instances");
+			summary_label->set_text("Retrieved " + String::num_int64(total_found) + " runtime error instances");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
@@ -9027,7 +9027,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			// Other runtime_manager operations - show summary
 			String op_message = p_result.get("message", "Operation completed");
 			Label *op_summary_label = memnew(Label);
-			op_summary_label->set_text("✅ " + op_message);
+			op_summary_label->set_text(op_message);
 			op_summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			op_summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(op_summary_label);
@@ -9711,8 +9711,8 @@ void AIChatDock::_send_chat_request() {
 	
 	// REMOVED: Emergency pruning - backend handles conversation management via intelligent summarization
 	if (total_content_size > 500000) {
-		print_line("⚠️ AI Chat: Large conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
-		print_line("ℹ️ Backend will manage conversation length via intelligent summarization if needed");
+		print_line("WARNING: AI Chat: Large conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+		print_line("INFO: Backend will manage conversation length via intelligent summarization if needed");
 	}
 	
 	// For large conversation histories, process in chunks to prevent UI blocking
@@ -10002,8 +10002,8 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 		}
 		
 		if (total_content_size > 400000) {
-			print_line("⚠️ AI Chat: Large conversation in chunked mode (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
-			print_line("ℹ️ Backend will manage conversation length via intelligent summarization if needed");
+			print_line("WARNING: AI Chat: Large conversation in chunked mode (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+			print_line("INFO: Backend will manage conversation length via intelligent summarization if needed");
 		}
 	}
 	
@@ -13258,16 +13258,16 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 			if (tool_label) {
 				print_line("AI Chat: UPDATE_STATUS - Found Label, updating text");
 			if (p_status == "executing") {
-				tool_label->set_text("⚡ " + p_description);
+				tool_label->set_text(p_description);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
 			} else if (p_status == "starting") {
-				tool_label->set_text("🔄 Starting: " + p_description);
+				tool_label->set_text("Starting: " + p_description);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for starting
 			} else if (p_status == "running") {
-				tool_label->set_text("⏳ " + p_description);
+				tool_label->set_text(p_description);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			} else if (p_status == "completed") {
-				tool_label->set_text("✅ Completed: " + p_tool_name);
+				tool_label->set_text("Completed: " + p_tool_name);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
 			
@@ -16410,8 +16410,8 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     // Rebuild the UI to reflect the restored conversation
     _rebuild_conversation_ui(chat_history);
     
-    // Force scroll to bottom after restore
-    call_deferred("_scroll_to_bottom");
+    // NOTE: Don't auto-scroll - let caller decide if they want to scroll
+    // (restore button keeps position, send button scrolls to bottom)
     
     // Save the modified conversation
     if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
@@ -17167,42 +17167,42 @@ void AIChatDock::_create_truncated_tool_ui(VBoxContainer *p_content_vbox, const 
 String AIChatDock::_generate_tool_result_summary(const String &p_tool_name, const Dictionary &p_result, bool p_success) {
 	if (!p_success) {
 		String error_msg = p_result.get("message", "Tool failed");
-		return "❌ " + p_tool_name + " failed: " + (error_msg.length() > 50 ? error_msg.substr(0, 47) + "..." : error_msg);
+		return p_tool_name + " failed: " + (error_msg.length() > 50 ? error_msg.substr(0, 47) + "..." : error_msg);
 	}
 	
 	// Generate concise summaries for different tool types
 	if (p_tool_name == "get_all_nodes") {
 		Array nodes = p_result.get("nodes", Array());
-		return "✅ Found " + String::num_int64(nodes.size()) + " nodes in scene";
+		return "Found " + String::num_int64(nodes.size()) + " nodes in scene";
 	} else if (p_tool_name == "list_project_files") {
 		Array files = p_result.get("files", Array());
-		return "✅ Listed " + String::num_int64(files.size()) + " project files";
+		return "Listed " + String::num_int64(files.size()) + " project files";
 	} else if (p_tool_name == "search_across_project") {
 		Dictionary results = p_result.get("results", Dictionary());
 		Array similar_files = results.get("similar_files", Array());
-		return "✅ Found " + String::num_int64(similar_files.size()) + " relevant files";
+		return "Found " + String::num_int64(similar_files.size()) + " relevant files";
 	} else if (p_tool_name == "get_project_context") {
 		Dictionary context = p_result.get("context", Dictionary());
 		Array scenes_array = context.get("scenes", Array());
 		Array scripts_array = context.get("scripts", Array());
 		int scenes = scenes_array.size();
 		int scripts = scripts_array.size();
-		return "✅ Project context: " + String::num_int64(scenes) + " scenes, " + String::num_int64(scripts) + " scripts";
+		return "Project context: " + String::num_int64(scenes) + " scenes, " + String::num_int64(scripts) + " scripts";
 	} else if (p_tool_name == "apply_edit" || p_tool_name == "project_manager") {
 		String path = p_result.get("path", "");
 		if (path.is_empty()) {
 			path = p_result.get("file_path", "unknown file");
 		}
-		return "✅ Edited: " + path.get_file();
+		return "Edited: " + path.get_file();
 	} else if (p_tool_name == "create_node") {
 		String name = p_result.get("node_name", "");
 		String type = p_result.get("node_type", "");
-		return "✅ Created " + type + " node: " + name;
+		return "Created " + type + " node: " + name;
 	}
 	
 	// Generic success message
 	String message = p_result.get("message", "Tool completed successfully");
-	return "✅ " + p_tool_name + ": " + (message.length() > 40 ? message.substr(0, 37) + "..." : message);
+	return p_tool_name + ": " + (message.length() > 40 ? message.substr(0, 37) + "..." : message);
 }
 
 void AIChatDock::_expand_truncated_tool_result(Button *p_expand_button, VBoxContainer *p_content_vbox) {
@@ -17587,7 +17587,7 @@ void AIChatDock::_update_message_content_at(int p_message_index, const String &p
 	print_line("AI Chat: Updated message content at index " + String::num_int64(p_message_index));
 }
 
-void AIChatDock::_rebuild_current_conversation_ui() {
+void AIChatDock::_rebuild_current_conversation_ui(bool p_scroll_to_bottom) {
 	Vector<ChatMessage> &chat_history = _get_current_chat_history();
 	
 	// Clear current UI (preserve pending edits banner)
@@ -17604,8 +17604,10 @@ void AIChatDock::_rebuild_current_conversation_ui() {
 	// Rebuild UI
 	_rebuild_conversation_ui(chat_history);
 	
-	// Scroll to bottom
-	call_deferred("_scroll_to_bottom");
+	// Scroll to bottom only if requested
+	if (p_scroll_to_bottom) {
+		call_deferred("_scroll_to_bottom");
+	}
 }
 
 AIChatDock::~AIChatDock() {

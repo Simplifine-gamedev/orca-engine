@@ -156,21 +156,32 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	
 	// Create edit UI
 	VBoxContainer *edit_vbox = memnew(VBoxContainer);
+	edit_vbox->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	p_bubble->add_child(edit_vbox);
 	
-	// Editable text field
+	// Editable text field with transparent background
 	TextEdit *edit_field = memnew(TextEdit);
 	edit_field->set_text(p_content);
-	edit_field->set_custom_minimum_size(Size2(0, 100));
 	edit_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	edit_field->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	edit_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	edit_field->set_fit_content_height_enabled(false);
+	
+	// Make text field auto-size to content
+	edit_field->set_fit_content_height_enabled(true);
+	
+	// Remove background styling from TextEdit
+	Ref<StyleBoxEmpty> transparent_style = memnew(StyleBoxEmpty);
+	edit_field->add_theme_style_override("normal", transparent_style);
+	edit_field->add_theme_style_override("focus", transparent_style);
+	
 	edit_vbox->add_child(edit_field);
 	
 	print_line("AI Chat: Added TextEdit field");
 	
-	// Buttons
+	// Buttons container aligned to right
 	HBoxContainer *button_container = memnew(HBoxContainer);
+	button_container->set_alignment(BoxContainer::ALIGNMENT_END);
+	button_container->add_theme_constant_override("separation", 8);
 	edit_vbox->add_child(button_container);
 	
 	Button *send_button = memnew(Button);
@@ -352,7 +363,7 @@ void UserMessageHandler::_replace_edit_field_with_bubble(int p_message_index, bo
 	}
 	
 	// Rebuild the conversation UI to restore all bubbles
-	chat_dock->_rebuild_current_conversation_ui();
+	chat_dock->_rebuild_current_conversation_ui(p_scroll_to_bottom);
 	
 	// Restore scroll position if we're not scrolling to bottom
 	if (chat_scroll && !p_scroll_to_bottom) {
