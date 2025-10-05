@@ -245,7 +245,10 @@ bool EditorSettings::_get(const StringName &p_name, Variant &r_ret) const {
 }
 
 void EditorSettings::_initial_set(const StringName &p_name, const Variant &p_value, bool p_basic) {
-	set(p_name, p_value);
+	// Only set the value if it doesn't exist yet (don't overwrite user settings)
+	if (!props.has(p_name)) {
+		set(p_name, p_value);
+	}
 	props[p_name].initial = p_value;
 	props[p_name].has_default_value = true;
 	props[p_name].basic = p_basic;
@@ -577,7 +580,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 
 	// Theme
 	EDITOR_SETTING_BASIC(Variant::BOOL, PROPERTY_HINT_ENUM, "interface/theme/follow_system_theme", false, "")
-	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_ENUM, "interface/theme/preset", "Custom", "Default,Breeze Dark,Godot 2,Gray,Light,Solarized (Dark),Solarized (Light),Black (OLED),Custom")
+	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_ENUM, "interface/theme/preset", "Default", "Default,Breeze Dark,Godot 2,Gray,Light,Solarized (Dark),Solarized (Light),Black (OLED),Custom")
 	EDITOR_SETTING_BASIC(Variant::STRING, PROPERTY_HINT_ENUM, "interface/theme/spacing_preset", "Default", "Compact,Default,Spacious,Custom")
 	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_ENUM, "interface/theme/icon_and_font_color", 0, "Auto,Dark,Light")
 	EDITOR_SETTING_BASIC(Variant::COLOR, PROPERTY_HINT_NONE, "interface/theme/base_color", Color(0, 0, 0), "")
@@ -1059,6 +1062,8 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 	_initial_set("run/output/always_clear_output_on_play", true, true);
 
 	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "run/output/max_lines", 10000, "100,100000,1")
+	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "run/output/max_flush_per_frame", 100, "1,1000,1")
+	EDITOR_SETTING(Variant::INT, PROPERTY_HINT_RANGE, "run/output/max_messages", 100000, "100,1000000,1")
 
 	// Platform
 	_initial_set("run/platforms/linuxbsd/prefer_wayland", false, true);
@@ -1289,6 +1294,9 @@ void EditorSettings::create() {
 
 		print_verbose("EditorSettings: Load OK!");
 
+		// Load defaults to ensure new settings are registered even when loading from old config
+		singleton->_load_defaults(extra_config);
+
 		singleton->setup_language();
 		singleton->setup_network();
 		singleton->load_favorites_and_recent_dirs();
@@ -1511,7 +1519,10 @@ Variant _EDITOR_DEF(const String &p_setting, const Variant &p_default, bool p_re
 }
 
 Variant _EDITOR_GET(const String &p_setting) {
-	ERR_FAIL_COND_V(!EditorSettings::get_singleton() || !EditorSettings::get_singleton()->has_setting(p_setting), Variant());
+	if (!EditorSettings::get_singleton() || !EditorSettings::get_singleton()->has_setting(p_setting)) {
+		print_error(vformat("Missing editor setting: %s", p_setting));
+		return Variant();
+	}
 	return EditorSettings::get_singleton()->get_setting(p_setting);
 }
 
