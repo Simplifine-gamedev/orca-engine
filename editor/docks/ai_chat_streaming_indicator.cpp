@@ -150,5 +150,5 @@ void StreamingIndicator::_on_animation_timer_timeout() {
 	}
 	
 	set_text(dots);
-	print_line("AI Chat: StreamingIndicator animation tick - dots: '" + dots + "', visible: " + String(is_visible_in_tree() ? "YES" : "NO"));
+	// Removed verbose logging - indicator is working correctly
 }
