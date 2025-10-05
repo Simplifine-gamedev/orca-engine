@@ -4254,8 +4254,11 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		String delta = response_data["content_delta"];
 		print_line("AI Chat: CONTENT_DELTA received (" + String::num_int64(delta.length()) + " chars): " + delta.substr(0, 50) + (delta.length() > 50 ? "..." : ""));
 		
-		// DON'T stop streaming indicator - keep it visible at the end until terminal status
-		// The indicator shows that AI is still thinking/responding
+		// Hide streaming indicator during text streaming (we don't show dots alongside streaming text)
+		if (streaming_indicator && streaming_indicator->is_visible()) {
+			print_line("AI Chat: CONTENT_DELTA - hiding streaming indicator (text is streaming)");
+			streaming_indicator->stop_animation();
+		}
 		
 		// CRITICAL FIX: If last message is not assistant, create a new assistant message first!
 		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
@@ -6660,19 +6663,19 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	
 	print_line("AI Chat: Successfully found bubble panel and message vbox, creating tool placeholders");
 	
-	// DON'T hide streaming indicator - keep it visible at the END to show AI is still processing
-	// We'll move the indicator to the end after adding tool calls
-	
 	// Find and temporarily remove the indicator_container so we can add it at the end
 	HBoxContainer *indicator_container = nullptr;
+	StreamingIndicator *found_indicator = nullptr;
 	for (int i = 0; i < message_vbox->get_child_count(); i++) {
 		Node *child = message_vbox->get_child(i);
 		HBoxContainer *hbox = Object::cast_to<HBoxContainer>(child);
 		if (hbox) {
 			// Check if this HBoxContainer contains a StreamingIndicator
 			for (int j = 0; j < hbox->get_child_count(); j++) {
-				if (Object::cast_to<StreamingIndicator>(hbox->get_child(j))) {
+				StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(hbox->get_child(j));
+				if (indicator) {
 					indicator_container = hbox;
+					found_indicator = indicator;
 					message_vbox->remove_child(indicator_container);
 					print_line("AI Chat: Temporarily removed indicator_container to reposition at end");
 					break;
@@ -6686,12 +6689,6 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
 	message_vbox->add_child(tools_container);
-	
-	// Re-add the indicator_container at the very end (after tool calls)
-	if (indicator_container) {
-		message_vbox->add_child(indicator_container);
-		print_line("AI Chat: Moved indicator_container to end (after tool calls)");
-	}
 
 	// Add a label for the tool calls section
 	if (p_tool_calls.size() > 1) {
@@ -6790,6 +6787,20 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		if (chat_scroll) {
 			chat_scroll->queue_redraw();
 		}
+	}
+	
+	// NOW re-add the indicator_container at the very end (AFTER all tool placeholders are created)
+	// BUT only show it if we're actively waiting for a response (not during conversation loading)
+	if (indicator_container && found_indicator) {
+		message_vbox->add_child(indicator_container);
+		// Only show the indicator if we're actively streaming (not loading a saved conversation)
+		if (is_waiting_for_response && !found_indicator->is_visible()) {
+			print_line("AI Chat: Showing streaming indicator at end (after ALL tool calls created) - more content may be coming");
+			found_indicator->start_animation();
+		} else if (!is_waiting_for_response) {
+			print_line("AI Chat: NOT showing indicator - not waiting for response (loading saved conversation)");
+		}
+		print_line("AI Chat: Moved indicator_container to end (after all tool calls)");
 	}
 	
 	print_line("AI Chat: _create_tool_call_bubbles completed successfully");
