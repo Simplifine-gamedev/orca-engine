@@ -15,6 +15,7 @@
 #include "scene/gui/panel_container.h"
 #include "scene/main/viewport.h"
 #include "core/input/input_event.h"
+#include "core/io/file_access.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 
@@ -23,6 +24,7 @@ void UserMessageHandler::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_bubble_gui_input", "event", "message_index"), &UserMessageHandler::_on_bubble_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_edit_send_pressed", "edit_field", "message_index"), &UserMessageHandler::_on_edit_send_pressed);
 	ClassDB::bind_method(D_METHOD("_on_edit_cancel_pressed", "message_index"), &UserMessageHandler::_on_edit_cancel_pressed);
+	ClassDB::bind_method(D_METHOD("_on_restore_only_pressed", "message_index"), &UserMessageHandler::_on_restore_only_pressed);
 }
 
 UserMessageHandler::UserMessageHandler() {
@@ -177,11 +179,11 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	send_button->connect("pressed", callable_mp(this, &UserMessageHandler::_on_edit_send_pressed).bind(edit_field, p_message_index));
 	button_container->add_child(send_button);
 	
-	Button *cancel_button = memnew(Button);
-	cancel_button->set_text("Cancel");
-	cancel_button->add_theme_icon_override("icon", chat_dock->get_theme_icon(SNAME("Stop"), SNAME("EditorIcons")));
-	cancel_button->connect("pressed", callable_mp(this, &UserMessageHandler::_on_edit_cancel_pressed).bind(p_message_index));
-	button_container->add_child(cancel_button);
+	Button *restore_button = memnew(Button);
+	restore_button->set_text("Restore");
+	restore_button->add_theme_icon_override("icon", chat_dock->get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
+	restore_button->connect("pressed", callable_mp(this, &UserMessageHandler::_on_restore_only_pressed).bind(p_message_index));
+	button_container->add_child(restore_button);
 	
 	print_line("AI Chat: Added buttons");
 	
@@ -261,6 +263,58 @@ void UserMessageHandler::_on_edit_cancel_pressed(int p_message_index) {
 	original_message_content = "";
 	
 	// Replace edit field back with bubble (without scrolling)
+	_replace_edit_field_with_bubble(p_message_index, false);
+}
+
+void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
+	if (!chat_dock) return;
+	
+	print_line("AI Chat: Restore only pressed for message " + String::num_int64(p_message_index));
+	
+	// Backup the ENTIRE chat history file before git restore
+	String chat_file_path = chat_dock->conversations_file_path;
+	String chat_backup_content;
+	bool has_backup = false;
+	
+	if (FileAccess::exists(chat_file_path)) {
+		Error err;
+		chat_backup_content = FileAccess::get_file_as_string(chat_file_path, &err);
+		if (err == OK) {
+			has_backup = true;
+			print_line("AI Chat: Backed up chat history file (" + String::num_int64(chat_backup_content.length()) + " bytes)");
+		}
+	}
+	
+	// Call the Git restore function directly (UserMessageHandler is friend of AIChatDock)
+	bool success = chat_dock->_restore_from_checkpoint(p_message_index);
+	
+	if (success) {
+		print_line("AI Chat: Successfully restored project to checkpoint at message " + String::num_int64(p_message_index));
+		
+		// Restore the chat history file that we backed up (keep ALL messages)
+		if (has_backup) {
+			Error err;
+			Ref<FileAccess> file = FileAccess::open(chat_file_path, FileAccess::WRITE, &err);
+			if (err == OK && file.is_valid()) {
+				file->store_string(chat_backup_content);
+				file->close();
+				print_line("AI Chat: Restored chat history file after checkpoint - kept all messages");
+				
+				// Reload conversations from the restored file
+				chat_dock->_load_conversations();
+			} else {
+				print_line("AI Chat: Failed to restore chat history file: " + String::num_int64(err));
+			}
+		}
+	} else {
+		print_line("AI Chat: Failed to restore project to checkpoint");
+	}
+	
+	// Reset state
+	editing_message_index = -1;
+	original_message_content = "";
+	
+	// Exit edit mode - replace edit field back with bubble (without scrolling)
 	_replace_edit_field_with_bubble(p_message_index, false);
 }
 

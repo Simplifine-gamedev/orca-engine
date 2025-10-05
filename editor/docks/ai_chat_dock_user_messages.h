@@ -28,6 +28,7 @@ private:
 	void _on_bubble_gui_input(const Ref<InputEvent> &p_event, int p_message_index);
 	void _on_edit_send_pressed(TextEdit *p_edit_field, int p_message_index);
 	void _on_edit_cancel_pressed(int p_message_index);
+	void _on_restore_only_pressed(int p_message_index);
 	void _on_restore_send_option(bool p_restore);
 	void _restore_and_send(int p_message_index, const String &p_content);
 	void _send_without_restoring(int p_message_index, const String &p_content);
