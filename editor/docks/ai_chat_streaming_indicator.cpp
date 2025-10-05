@@ -12,7 +12,7 @@ void StreamingIndicator::_bind_methods() {
 
 StreamingIndicator::StreamingIndicator() {
 	animation_timer = memnew(Timer);
-	animation_timer->set_wait_time(0.5); // Update every 500ms
+	animation_timer->set_wait_time(0.4); // Update every 400ms for smoother animation
 	animation_timer->set_one_shot(false);
 	animation_timer->connect("timeout", callable_mp(this, &StreamingIndicator::_on_animation_timer_timeout));
 	add_child(animation_timer);
@@ -21,6 +21,9 @@ StreamingIndicator::StreamingIndicator() {
 	set_text("");
 	set_visible(false);
 	dot_count = 0;
+	
+	// Set modulate to a dimmed color so it's visible but subtle
+	set_modulate(Color(0.7, 0.7, 0.7, 1.0));
 }
 
 StreamingIndicator::~StreamingIndicator() {
@@ -42,33 +45,51 @@ void StreamingIndicator::_notification(int p_what) {
 
 void StreamingIndicator::start_animation() {
 	set_visible(true);
-	dot_count = 0;
+	dot_count = 1;
 	set_text(".");
+	
+	// Show the container if it exists
+	if (has_meta("indicator_container")) {
+		Control *container = Object::cast_to<Control>(get_meta("indicator_container"));
+		if (container) {
+			container->set_visible(true);
+		}
+	}
+	
 	if (animation_timer) {
 		animation_timer->start();
 	}
+	print_line("AI Chat: Streaming indicator animation started");
 }
 
 void StreamingIndicator::stop_animation() {
 	set_visible(false);
 	set_text("");
+	
+	// Hide the container if it exists
+	if (has_meta("indicator_container")) {
+		Control *container = Object::cast_to<Control>(get_meta("indicator_container"));
+		if (container) {
+			container->set_visible(false);
+		}
+	}
+	
 	if (animation_timer) {
 		animation_timer->stop();
 	}
 	dot_count = 0;
+	print_line("AI Chat: Streaming indicator animation stopped");
 }
 
 void StreamingIndicator::_on_animation_timer_timeout() {
-	dot_count = (dot_count + 1) % 4; // Cycle through 0, 1, 2, 3
+	dot_count++;
+	if (dot_count > 3) {
+		dot_count = 1;
+	}
 	
 	String dots;
 	for (int i = 0; i < dot_count; i++) {
 		dots += ".";
-	}
-	
-	// Show at least one space to prevent flicker when empty
-	if (dots.is_empty()) {
-		dots = " ";
 	}
 	
 	set_text(dots);

@@ -271,6 +271,17 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 	
 	print_line("AI Chat: Restore only pressed for message " + String::num_int64(p_message_index));
 	
+	// Save scroll position BEFORE any operations
+	ScrollContainer *chat_scroll = chat_dock->chat_scroll;
+	float saved_scroll_position = 0.0f;
+	if (chat_scroll) {
+		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+		if (vbar) {
+			saved_scroll_position = vbar->get_value();
+			print_line("AI Chat: Saved scroll position: " + String::num(saved_scroll_position));
+		}
+	}
+	
 	// Backup the ENTIRE chat history file before git restore
 	String chat_file_path = chat_dock->conversations_file_path;
 	String chat_backup_content;
@@ -316,6 +327,15 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 	
 	// Exit edit mode - replace edit field back with bubble (without scrolling)
 	_replace_edit_field_with_bubble(p_message_index, false);
+	
+	// Restore scroll position after everything is rebuilt
+	if (chat_scroll) {
+		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+		if (vbar) {
+			vbar->call_deferred("set_value", saved_scroll_position);
+			print_line("AI Chat: Restored scroll position: " + String::num(saved_scroll_position));
+		}
+	}
 }
 
 void UserMessageHandler::_replace_edit_field_with_bubble(int p_message_index, bool p_scroll_to_bottom) {

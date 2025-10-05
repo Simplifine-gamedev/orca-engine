@@ -6236,10 +6236,25 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
 		
-		// Create streaming indicator for assistant messages
+		// Create streaming indicator container for assistant messages
+		HBoxContainer *indicator_container = memnew(HBoxContainer);
+		indicator_container->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		message_vbox->add_child(indicator_container);
+		
+		// Add "Streaming" label
+		Label *streaming_label = memnew(Label);
+		streaming_label->set_text("Streaming");
+		streaming_label->set_modulate(Color(0.6, 0.6, 0.6, 1.0));
+		indicator_container->add_child(streaming_label);
+		
+		// Create animated dots indicator
 		streaming_indicator = memnew(StreamingIndicator);
 		streaming_indicator->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-		message_vbox->add_child(streaming_indicator);
+		indicator_container->add_child(streaming_indicator);
+		
+		// Hide container by default
+		indicator_container->set_visible(false);
+		streaming_indicator->set_meta("indicator_container", indicator_container);
 	}
 
 	if (!p_message.content.strip_edges().is_empty()) {
@@ -6423,10 +6438,25 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
 		
-		// Create streaming indicator for assistant messages
+		// Create streaming indicator container for assistant messages
+		HBoxContainer *indicator_container = memnew(HBoxContainer);
+		indicator_container->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		message_vbox->add_child(indicator_container);
+		
+		// Add "Streaming" label
+		Label *streaming_label = memnew(Label);
+		streaming_label->set_text("Streaming");
+		streaming_label->set_modulate(Color(0.6, 0.6, 0.6, 1.0));
+		indicator_container->add_child(streaming_label);
+		
+		// Create animated dots indicator
 		streaming_indicator = memnew(StreamingIndicator);
 		streaming_indicator->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-		message_vbox->add_child(streaming_indicator);
+		indicator_container->add_child(streaming_indicator);
+		
+		// Hide container by default
+		indicator_container->set_visible(false);
+		streaming_indicator->set_meta("indicator_container", indicator_container);
 
 		// Create thinking section if this assistant message has reasoning content
 		if (!p_message.reasoning_content.is_empty() || !p_message.thinking_blocks.is_empty()) {
