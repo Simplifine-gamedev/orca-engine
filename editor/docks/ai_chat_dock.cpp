@@ -525,36 +525,21 @@ void AIChatDock::_notification(int p_notification) {
 			conversation_history_manager->connect("conversation_delete_requested", callable_mp(this, &AIChatDock::_on_conversation_delete_requested));
 			add_child(conversation_history_manager);
 
-			// Keep references for backward compatibility
-			conversation_history_dropdown = conversation_history_manager->get_conversation_dropdown();
-			new_conversation_button = conversation_history_manager->get_new_conversation_button();
+		// Keep references for backward compatibility
+		conversation_history_dropdown = conversation_history_manager->get_conversation_dropdown();
+		new_conversation_button = conversation_history_manager->get_new_conversation_button();
 
-            // Model selection row
-            HBoxContainer *top_container = memnew(HBoxContainer);
-			add_child(top_container);
-
-			Label *model_label = memnew(Label);
-			model_label->set_text("Model:");
-			top_container->add_child(model_label);
-
-            model_dropdown = memnew(OptionButton);
-            // Populate all models dynamically from backend to ensure accuracy
-            _populate_all_models();
-			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
-			top_container->add_child(model_dropdown);
-
-            // Index button removed; indexing will be managed automatically
-
-            // Embedding status label (hidden by default)
-            embedding_status_label = memnew(Label);
-            embedding_status_label->set_text("");
-            embedding_status_label->set_modulate(Color(0.8, 0.8, 0.8));
-            embedding_status_label->set_visible(false);
-            top_container->add_child(embedding_status_label);
-			
-			// Setup authentication UI
-			_setup_authentication_ui();
+		// Embedding status label (hidden by default)
+		embedding_status_label = memnew(Label);
+		embedding_status_label->set_text("");
+		embedding_status_label->set_modulate(Color(0.8, 0.8, 0.8));
+		embedding_status_label->set_visible(false);
+		HBoxContainer *embedding_container = memnew(HBoxContainer);
+		embedding_container->add_child(embedding_status_label);
+		add_child(embedding_container);
+		
+		// Setup authentication UI
+		_setup_authentication_ui();
 
 			// Container for attached files (initially hidden) - will be added to bottom panel later
 			attached_files_container = memnew(HFlowContainer);
@@ -794,53 +779,19 @@ void AIChatDock::_notification(int p_notification) {
 			
 			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
-			// Add a container for attachments just above the input field
-			VBoxContainer *bottom_panel = memnew(VBoxContainer);
-			add_child(bottom_panel);
-			
-			// Add attachments container to the bottom panel (positioned above input)
-			bottom_panel->add_child(attached_files_container);
-			
-			// Attach files button row (above input)
-			HBoxContainer *attach_container = memnew(HBoxContainer);
-			bottom_panel->add_child(attach_container);
+		// Add a container for attachments just above the input field
+		VBoxContainer *bottom_panel = memnew(VBoxContainer);
+		add_child(bottom_panel);
+		
+		// Add attachments container to the bottom panel (positioned above input)
+		bottom_panel->add_child(attached_files_container);
 
-			// Add spacer to push button to the right
-			Control *spacer = memnew(Control);
-			spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			attach_container->add_child(spacer);
+		// Input area at the bottom - create using AIChatInputBox component
+		// This now includes model selector and attach button inside
+		AIChatInputBox::create_input_ui(this, bottom_panel);
 
-			// Attach files button
-			attach_button = memnew(MenuButton);
-			attach_button->set_text("Attach");
-			attach_button->set_tooltip_text("Attach project files to your message");
-			attach_button->add_theme_icon_override("icon", get_theme_icon(SNAME("FileList"), SNAME("EditorIcons")));
-			attach_button->set_custom_minimum_size(Size2(80, 32));
-			
-			// Set up the popup menu
-			PopupMenu *popup = attach_button->get_popup();
-			popup->add_item("Files", 0);
-			popup->set_item_icon(0, get_theme_icon(SNAME("FileList"), SNAME("EditorIcons")));
-			popup->add_item("Scene Nodes", 1);
-			popup->set_item_icon(1, get_theme_icon(SNAME("SceneTree"), SNAME("EditorIcons")));
-			popup->add_item("Current Script", 2);
-			popup->set_item_icon(2, get_theme_icon(SNAME("Script"), SNAME("EditorIcons")));
-			popup->add_item("Resources", 3);
-			popup->set_item_icon(3, get_theme_icon(SNAME("ResourcePreloader"), SNAME("EditorIcons")));
-			popup->add_separator();
-			popup->add_item("Re-index Project", 4);
-			popup->set_item_icon(4, get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
-			popup->connect("id_pressed", callable_mp(this, &AIChatDock::_on_attachment_menu_item_pressed));
-			
-			attach_container->add_child(attach_button);
-
-			// Add some spacing before input area
-			Control *input_spacer = memnew(Control);
-			input_spacer->set_custom_minimum_size(Size2(0, 4));
-			add_child(input_spacer);
-
-			// Input area at the bottom - create using AIChatInputBox component
-			AIChatInputBox::create_input_ui(this, this);
+		// Populate models AFTER input box is created (model_dropdown now exists)
+		_populate_all_models();
 
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			String selected_model = "claude-4"; // Default to claude-4
