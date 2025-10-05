@@ -159,8 +159,58 @@ void UserMessageHandler::on_user_bubble_clicked(int p_message_index) {
 	);
 	
 	if (!bubble_panel) {
-		print_line("AI Chat: Could not find bubble panel for editing");
-		return;
+		print_line("AI Chat: Bubble panel not loaded yet (lazy loading) - forcing full conversation load");
+		
+		// Message not loaded due to performance optimization - validate index first
+		Array all_messages = chat_dock->_get_messages_as_array();
+		if (p_message_index >= all_messages.size()) {
+			print_line("AI Chat: Invalid message index: " + String::num_int64(p_message_index));
+			return;
+		}
+		
+		// Save scroll position before rebuild
+		ScrollContainer *chat_scroll = chat_dock->chat_scroll;
+		float scroll_position = 0.0f;
+		if (chat_scroll) {
+			VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+			if (vbar) {
+				scroll_position = vbar->get_value();
+			}
+		}
+		
+		// Clear and rebuild UI with ALL messages loaded (no lazy loading)
+		if (chat_container) {
+			for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+				Node *child = chat_container->get_child(i);
+				if (child != chat_dock->pending_edits_banner) {
+					chat_container->remove_child(child);
+					child->queue_free();
+				}
+			}
+		}
+		
+		// Use full rebuild to load all messages
+		chat_dock->_rebuild_conversation_ui_full();
+		
+		// Restore scroll position
+		if (chat_scroll) {
+			VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
+			if (vbar) {
+				vbar->call_deferred("set_value", scroll_position);
+			}
+		}
+		
+		// Try to find the panel again after rebuild
+		bubble_panel = Object::cast_to<PanelContainer>(
+			chat_container->find_child("message_panel_" + String::num_int64(p_message_index), true, false)
+		);
+		
+		if (!bubble_panel) {
+			print_line("AI Chat: ERROR - Still could not find bubble panel after full reload");
+			return;
+		}
+		
+		print_line("AI Chat: Successfully loaded and found bubble panel after full reload");
 	}
 	
 	print_line("AI Chat: Found bubble panel, transforming to edit field");
@@ -187,12 +237,12 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	
 	print_line("AI Chat: Cleared bubble children, creating edit UI");
 	
-	// Update bubble styling to match chat inbox background (dark gray like buttons)
+	// Update bubble styling to match normal user message background (dark gray)
 	Ref<StyleBoxFlat> edit_panel_style = memnew(StyleBoxFlat);
 	edit_panel_style->set_content_margin_all(12);
 	edit_panel_style->set_corner_radius_all(8);
-	// Use the same dark base color as editor widgets
-	edit_panel_style->set_bg_color(chat_dock->get_theme_color(SNAME("base_color"), SNAME("Editor")));
+	// Use the same dark gray as normal user message bubbles
+	edit_panel_style->set_bg_color(chat_dock->get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
 	edit_panel_style->set_border_width_all(1);
 	edit_panel_style->set_border_color(chat_dock->get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 	p_bubble->add_theme_style_override("panel", edit_panel_style);
