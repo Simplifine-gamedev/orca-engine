@@ -5,6 +5,7 @@
  */
 #include "ai_chat_dock.h"
 #include "ai_chat_input_box.h"
+#include "ai_chat_streaming_indicator.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -1276,6 +1277,11 @@ void AIChatDock::_on_send_button_pressed() {
 }
 void AIChatDock::_on_stop_button_pressed() {
 	print_line("AI Chat: Stop button pressed! is_waiting_for_response=" + String(is_waiting_for_response ? "true" : "false") + ", current_request_id='" + current_request_id + "'");
+
+	// Stop streaming indicator animation
+	if (streaming_indicator && streaming_indicator->is_visible()) {
+		streaming_indicator->stop_animation();
+	}
 
 	// Always honor stop: cancel backend stream if we have a request_id,
 	// and locally stop any ongoing HTTP streaming and async tool tasks.
@@ -4252,6 +4258,11 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			_add_message_to_chat("assistant", "");  // Create empty assistant message
 		}
 		
+		// Start streaming indicator if it exists and isn't already animating
+		if (streaming_indicator && !streaming_indicator->is_visible()) {
+			streaming_indicator->start_animation();
+		}
+		
 		RichTextLabel *label = _get_or_create_current_assistant_message_label();
 		
 		// Safety check: ensure label is valid
@@ -6224,6 +6235,11 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
+		
+		// Create streaming indicator for assistant messages
+		streaming_indicator = memnew(StreamingIndicator);
+		streaming_indicator->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		message_vbox->add_child(streaming_indicator);
 	}
 
 	if (!p_message.content.strip_edges().is_empty()) {
@@ -6406,6 +6422,11 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
+		
+		// Create streaming indicator for assistant messages
+		streaming_indicator = memnew(StreamingIndicator);
+		streaming_indicator->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		message_vbox->add_child(streaming_indicator);
 
 		// Create thinking section if this assistant message has reasoning content
 		if (!p_message.reasoning_content.is_empty() || !p_message.thinking_blocks.is_empty()) {
@@ -10679,6 +10700,11 @@ void AIChatDock::_update_ui_state() {
 void AIChatDock::_request_completed() {
 	stream_completed_successfully = true;
 	print_line("AI Chat: Server signaled end of stream");
+	
+	// Stop streaming indicator animation
+	if (streaming_indicator && streaming_indicator->is_visible()) {
+		streaming_indicator->stop_animation();
+	}
 
 	// Finalize/save regardless of async state
 	if (current_conversation_index >= 0) {

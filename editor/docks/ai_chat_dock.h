@@ -66,6 +66,7 @@ class ScriptEditor;
 class ScriptTextEditor;
 class HFlowContainer;
 class UserMessageHandler;
+class StreamingIndicator;
 
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
@@ -269,6 +270,7 @@ private:
 	PackedByteArray pending_request_body;
 
 	RichTextLabel *current_assistant_message_label = nullptr;
+	StreamingIndicator *streaming_indicator = nullptr;
 	String response_buffer;
 
 	// Auto-scroll state management
