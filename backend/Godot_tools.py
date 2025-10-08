@@ -366,7 +366,7 @@ godot_tools = [
                         "enum": [
                             "res.create", "res.inspect", "res.modify", "res.assign",
                             "res.copy_from_template", "res.refresh",
-                            "res.load_and_assign",
+                            "res.load_and_assign", "res.create_and_assign",
                             "import.set_options", "import.reimport",
                             "shader.clear_cache", "shader.force_recompile", "shader.debug_cache",
                             "image.generate_or_edit", "image.save", "image.slice_spritesheet"
@@ -376,7 +376,9 @@ godot_tools = [
 
                     # Resources
                     "type": {"type": "string", "description": "Resource type (e.g., 'StandardMaterial3D', 'BoxMesh', 'SphereMesh')"},
+                    "resource_type": {"type": "string", "description": "Resource type for res.create_and_assign (e.g., 'StandardMaterial3D', 'BoxMesh', 'SphereMesh')"},
                     "props": {"type": "object", "description": "Properties to set/modify. For BoxMesh use: {size: {x: 50, y: 0.2, z: 50}}. For SphereMesh: {radius: 1.0, radial_segments: 16, rings: 8}. For materials: {albedo_color: {r: 1, g: 0, b: 0, a: 1}, metallic: 0.5, albedo_texture: {path: 'res://texture.png'}} or {albedo_texture: 'res://texture.png'}"},
+                    "properties": {"type": "object", "description": "Properties for res.create_and_assign - same format as props"},
                     "save_path": {"type": "string"},
                     "target": {"type": "string", "description": "Resource target path to inspect/modify"},
                     "path": {"type": "string", "description": "Node path (for res.assign)"},

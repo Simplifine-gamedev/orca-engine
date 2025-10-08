@@ -93,6 +93,7 @@ public:
 	static Dictionary reload_script(const Dictionary &p_args);
 	static Dictionary manage_scene(const Dictionary &p_args);
 	static Dictionary load_and_assign_resource(const Dictionary &p_args);
+	static Dictionary create_and_assign_resource(const Dictionary &p_args); // CRITICAL FIX: Robust two-step workflow
 	static Dictionary add_collision_shape(const Dictionary &p_args);
 	static Dictionary generalnodeeditor(const Dictionary &p_args);
 	static Dictionary list_project_files(const Dictionary &p_args);
@@ -209,4 +210,15 @@ public:
 	static Dictionary set_node_properties_pattern(const Dictionary &p_args);      // { node_pattern:String, property_pattern:String, value_pattern:Variant }
 	static Dictionary delete_nodes_pattern(const Dictionary &p_args);             // { node_pattern:String }
 	static Dictionary assign_resource_pattern(const Dictionary &p_args);          // { node_pattern:String, property_pattern:String, resource_path_pattern:String }
+
+private:
+	// CRITICAL FIX (ORCA-TOOL-731): Scene tree refresh helper to prevent stale node references
+	static void _refresh_scene_tree();
+	
+	// CRITICAL FIX (ORCA-TOOL-001): Scene context validation helper 
+	static bool _validate_scene_context(const Dictionary &p_args, Dictionary &r_error_result);
+	
+	// CRITICAL FIX: Parameter normalization and error enhancement
+	static Dictionary _normalize_parameters(const Dictionary &p_args);
+	static Dictionary _create_enhanced_error(const String &p_error_code, const String &p_base_message, const Dictionary &p_context);
 }; 

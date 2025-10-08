@@ -170,6 +170,12 @@ Dictionary EditorTools::batch_set_node_properties(const Dictionary &p_args) {
     Array failures;
     
     for (int i = 0; i < ops.size(); i++) {
+        // CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree every few property changes to prevent stale references
+        if (i > 0 && i % 10 == 0) {
+            _refresh_scene_tree();
+            print_line("BATCH_SET_PROPERTIES: Intermediate scene tree refresh at " + String::num_int64(i) + "/" + String::num_int64(ops.size()));
+        }
+        
         Dictionary op = ops[i];
         Dictionary r = set_node_property(op);
         if (r.get("success", false)) {
@@ -178,6 +184,11 @@ Dictionary EditorTools::batch_set_node_properties(const Dictionary &p_args) {
             failures.push_back(r);
         }
     }
+    // CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree after batch property changes
+    if (applied > 0) {
+        _refresh_scene_tree();
+    }
+    
     if (save_after) {
         String current_scene = EditorNode::get_singleton()->get_edited_scene()->get_scene_file_path();
         if (!current_scene.is_empty()) {
@@ -888,16 +899,37 @@ Dictionary EditorTools::_get_node_info(Node *p_node) {
 	return node_info;
 }
 Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error_result) {
+	// CRITICAL FIX (ORCA-TOOL-731): Add scene tree refresh and better state validation
 	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
 	if (!root) {
 		r_error_result["success"] = false;
-		r_error_result["message"] = "No scene is currently being edited.";
+		r_error_result["message"] = "No scene is currently being edited. Please open or create a scene first.";
+		r_error_result["error_code"] = "NO_SCENE_OPEN";
 		return nullptr;
 	}
+	
+	// CRITICAL FIX: Force scene tree update to handle recent modifications
+	// This ensures the scene tree state is current after recent node operations
+	SceneTree *scene_tree = EditorNode::get_singleton()->get_tree();
+	if (scene_tree) {
+		// Force process the scene tree to update any pending changes
+		scene_tree->process(0.0f);
+	}
+	
+	// Revalidate root after refresh (in case scene was modified)
+	root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	if (!root) {
+		r_error_result["success"] = false;
+		r_error_result["message"] = "Scene root became invalid during operation. Scene may need to be reopened.";
+		r_error_result["error_code"] = "SCENE_ROOT_INVALID";
+		return nullptr;
+	}
+	
     // Accept common root references and tolerant root-name matching
     if (p_path.is_empty() || p_path == "." || p_path.to_lower() == String(root->get_name()).to_lower()) {
         return root;
     }
+    
     // Normalize a few absolute/root-like prefixes
     String norm_path = p_path;
     if (norm_path.begins_with("/")) {
@@ -911,16 +943,26 @@ Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error
         return root;
     }
 
+    // CRITICAL FIX: Enhanced path resolution with better debugging info
     Node *node = root->get_node_or_null(norm_path);
+    
+    // Track resolution attempts for better error messages
+    Vector<String> attempted_paths;
+    attempted_paths.push_back(norm_path);
+    
     if (!node && !norm_path.begins_with("./") && norm_path.begins_with(".")) {
         String alt = norm_path;
         if (alt.begins_with("./")) alt = alt.substr(2);
+        attempted_paths.push_back(alt);
         node = root->get_node_or_null(alt);
     }
     if (!node && !norm_path.begins_with("./") && !norm_path.begins_with(".")) {
         String prefixed = String("./") + norm_path;
+        attempted_paths.push_back(prefixed);
         node = root->get_node_or_null(prefixed);
     }
+    
+    // Fallback: Deep search by node name only (case-insensitive)
     if (!node && !norm_path.contains("/")) {
         String target_name_lc = norm_path.to_lower();
         std::function<Node*(Node*)> dfs = [&](Node *n) -> Node* {
@@ -932,7 +974,11 @@ Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error
             return nullptr;
         };
         node = dfs(root);
+        if (node) {
+            attempted_paths.push_back("(found via deep search: " + String(node->get_path()) + ")");
+        }
     }
+    
     // Tolerant segment-wise resolution: allow matching by name (case-insensitive), by class name,
     // and normalize engine-generated instance names like "@Area2D@24529"
     if (!node && norm_path.find("/") != -1) {
@@ -943,9 +989,12 @@ Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error
             start_i = 1;
         }
         Node *current = root;
+        String resolved_path = String(root->get_name());
+        
         for (int i = start_i; i < segments.size() && current; i++) {
             String seg = segments[i].strip_edges();
             if (seg.is_empty() || seg == ".") continue;
+            
             // Normalize engine instance-style segments: @Class@12345 -> Class
             String class_hint;
             if (seg.begins_with("@")) {
@@ -959,38 +1008,261 @@ Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error
             Node *exact = current->get_node_or_null(seg);
             if (exact) {
                 current = exact;
+                resolved_path += "/" + String(exact->get_name());
                 continue;
             }
+            
             // Try case-insensitive name match among direct children
             Node *match = nullptr;
             for (int c = 0; c < current->get_child_count(); c++) {
                 Node *child = current->get_child(c);
-                if (String(child->get_name()).to_lower() == seg.to_lower()) { match = child; break; }
+                if (String(child->get_name()).to_lower() == seg.to_lower()) {
+                    match = child;
+                    resolved_path += "/" + String(child->get_name());
+                    break;
+                }
             }
+            
             if (!match) {
                 // Try class-name match among direct children (e.g., "AnimatedSprite2D")
                 for (int c = 0; c < current->get_child_count(); c++) {
                     Node *child = current->get_child(c);
-                    if (String(child->get_class()).to_lower() == seg.to_lower()) { match = child; break; }
+                    if (String(child->get_class()).to_lower() == seg.to_lower()) {
+                        match = child;
+                        resolved_path += "/" + String(child->get_name()) + "(" + String(child->get_class()) + ")";
+                        break;
+                    }
                 }
             }
+            
             if (!match && !class_hint.is_empty()) {
                 String lc = class_hint.to_lower();
                 for (int c = 0; c < current->get_child_count(); c++) {
                     Node *child = current->get_child(c);
-                    if (String(child->get_class()).to_lower() == lc) { match = child; break; }
+                    if (String(child->get_class()).to_lower() == lc) {
+                        match = child;
+                        resolved_path += "/" + String(child->get_name()) + "(@" + class_hint + ")";
+                        break;
+                    }
                 }
             }
-            current = match; // may become null breaking the loop
+            
+            if (!match) {
+                // ENHANCED ERROR: Show what nodes ARE available at this level
+                String available_nodes = "";
+                for (int c = 0; c < current->get_child_count(); c++) {
+                    Node *child = current->get_child(c);
+                    if (c > 0) available_nodes += ", ";
+                    available_nodes += "\"" + String(child->get_name()) + "\"(" + String(child->get_class()) + ")";
+                    if (c >= 4) { // Limit to 5 nodes for readability
+                        available_nodes += "...";
+                        break;
+                    }
+                }
+                
+                r_error_result["success"] = false;
+                r_error_result["error_code"] = "NODE_SEGMENT_NOT_FOUND";
+                r_error_result["message"] = "Node path segment '" + seg + "' not found under '" + resolved_path + "'. Available nodes: [" + available_nodes + "]";
+                r_error_result["failed_segment"] = seg;
+                r_error_result["resolved_up_to"] = resolved_path;
+                r_error_result["available_children"] = available_nodes;
+                r_error_result["attempted_paths"] = attempted_paths;
+                return nullptr;
+            }
+            
+            current = match;
         }
         node = current;
+        if (node) {
+            attempted_paths.push_back("(resolved via segment matching: " + resolved_path + ")");
+        }
     }
+    
     if (!node) {
+        // ENHANCED ERROR: Provide comprehensive debugging info
+        String scene_name = String(root->get_name());
+        String scene_path = root->get_scene_file_path();
+        if (scene_path.is_empty()) {
+            scene_path = "(unsaved scene)";
+        }
+        
+        // Show actual scene structure for debugging
+        String scene_nodes = "";
+        int node_count = 0;
+        std::function<void(Node*, int)> collect_nodes = [&](Node *n, int depth) -> void {
+            if (node_count >= 10) return; // Limit for readability
+            if (depth > 3) return; // Max depth of 3
+            for (int i = 0; i < depth; i++) scene_nodes += "  ";
+            scene_nodes += String(n->get_name()) + "(" + String(n->get_class()) + ")\n";
+            node_count++;
+            for (int i = 0; i < n->get_child_count() && node_count < 10; i++) {
+                collect_nodes(n->get_child(i), depth + 1);
+            }
+        };
+        collect_nodes(root, 0);
+        
         r_error_result["success"] = false;
         r_error_result["error_code"] = "NODE_NOT_FOUND";
-        r_error_result["message"] = "Node not found at path: " + p_path + " (root='" + String(root->get_name()) + "')";
+        r_error_result["message"] = "Node not found at path: '" + p_path + 
+            "' in scene '" + scene_name + "' (" + scene_path + ").\n" +
+            "Attempted paths: " + String(", ").join(attempted_paths) + "\n" +
+            "Scene structure:\n" + scene_nodes;
+        r_error_result["requested_path"] = p_path;
+        r_error_result["normalized_path"] = norm_path;
+        r_error_result["attempted_paths"] = attempted_paths;
+        r_error_result["scene_name"] = scene_name;
+        r_error_result["scene_path"] = scene_path;
+        r_error_result["scene_structure"] = scene_nodes;
     }
+    
 	return node;
+}
+
+// CRITICAL FIX (ORCA-TOOL-731): Scene tree refresh helper to prevent stale node references
+void EditorTools::_refresh_scene_tree() {
+	SceneTree *scene_tree = EditorNode::get_singleton()->get_tree();
+	if (scene_tree) {
+		// Force process the scene tree to update any pending changes
+		scene_tree->process(0.0f);
+	}
+	
+	// Force editor interface to update its view of the scene
+	EditorInterface *editor_interface = EditorInterface::get_singleton();
+	if (editor_interface) {
+		EditorSelection *selection = editor_interface->get_selection();
+		if (selection) {
+			// This triggers internal scene tree validation
+			Array selected = selection->get_selected_nodes();
+			(void)selected; // Suppress unused warning - the call itself is what matters
+		}
+	}
+	
+	// Also notify the editor that the scene has changed
+	Node *edited_scene = EditorNode::get_singleton()->get_edited_scene();
+	if (edited_scene) {
+		// Mark the scene as modified to trigger UI updates
+		edited_scene->set_edited(true);
+	}
+}
+
+// CRITICAL FIX (ORCA-TOOL-001): Scene context validation helper 
+bool EditorTools::_validate_scene_context(const Dictionary &p_args, Dictionary &r_error_result) {
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	if (!scene_root) {
+		r_error_result["success"] = false;
+		r_error_result["error_code"] = "NO_SCENE_OPEN";
+		r_error_result["message"] = "No scene is currently open. Please open or create a scene first.";
+		return false;
+	}
+	
+	// Check if we have scene file context
+	String scene_path = scene_root->get_scene_file_path();
+	if (scene_path.is_empty()) {
+		// Some operations can work on unsaved scenes, but warn about it
+		r_error_result["warning"] = "Working on unsaved scene - some operations may not persist properly";
+		r_error_result["scene_saved"] = false;
+	} else {
+		r_error_result["scene_saved"] = true;
+		r_error_result["scene_path"] = scene_path;
+	}
+	
+	r_error_result["scene_root_name"] = String(scene_root->get_name());
+	return true;
+}
+
+// CRITICAL FIX: Parameter normalization to resolve API inconsistencies
+Dictionary EditorTools::_normalize_parameters(const Dictionary &p_args) {
+	Dictionary normalized = p_args.duplicate();
+	
+	// CRITICAL: Standardize node path parameters
+	// Canonical form: "path" for node paths, "scene_path" for scene file paths
+	if (p_args.has("node_path") && !p_args.has("path")) {
+		normalized["path"] = p_args["node_path"];
+		print_line("PARAM_NORMALIZE: Mapped node_path -> path: " + String(p_args["node_path"]));
+	}
+	
+	// Handle parent parameter variations
+	if (p_args.has("parent_node") && !p_args.has("parent")) {
+		normalized["parent"] = p_args["parent_node"];
+		print_line("PARAM_NORMALIZE: Mapped parent_node -> parent: " + String(p_args["parent_node"]));
+	}
+	
+	// Handle resource parameter variations
+	if (p_args.has("props") && !p_args.has("properties")) {
+		normalized["properties"] = p_args["props"];
+		print_line("PARAM_NORMALIZE: Mapped props -> properties");
+	}
+	
+	// Handle operation parameter variations
+	if (p_args.has("operation") && !p_args.has("op")) {
+		normalized["op"] = p_args["operation"];
+		print_line("PARAM_NORMALIZE: Mapped operation -> op: " + String(p_args["operation"]));
+	}
+	
+	// Handle file path variations
+	if (p_args.has("file_path") && !p_args.has("path")) {
+		normalized["path"] = p_args["file_path"];
+		print_line("PARAM_NORMALIZE: Mapped file_path -> path: " + String(p_args["file_path"]));
+	}
+	
+	// Handle target variations
+	if (p_args.has("target") && !p_args.has("path") && !normalized.has("path")) {
+		normalized["path"] = p_args["target"];
+		print_line("PARAM_NORMALIZE: Mapped target -> path: " + String(p_args["target"]));
+	}
+	
+	return normalized;
+}
+
+// CRITICAL FIX: Enhanced error message generator with context awareness
+Dictionary EditorTools::_create_enhanced_error(const String &p_error_code, const String &p_base_message, const Dictionary &p_context) {
+	Dictionary error_result;
+	error_result["success"] = false;
+	error_result["error_code"] = p_error_code;
+	
+	String enhanced_message = p_base_message;
+	
+	// Add context-specific guidance based on error type
+	if (p_error_code == "MISSING_PARAMETERS") {
+		enhanced_message += "\n\nParameter Guide:";
+		enhanced_message += "\n• Use 'path' for node paths (e.g., 'Player/Weapon')";
+		enhanced_message += "\n• Use 'scene_path' for scene file paths (e.g., 'res://scenes/main.tscn')";
+		enhanced_message += "\n• Use 'parent' for parent node paths in creation operations";
+		
+		// Add scene context info if available
+		if (p_context.has("scene_saved") && p_context["scene_saved"]) {
+			enhanced_message += "\n• Current scene: " + String(p_context.get("scene_path", ""));
+		} else {
+			enhanced_message += "\n• Current scene: (unsaved)";
+		}
+		
+		if (p_context.has("scene_root_name")) {
+			enhanced_message += "\n• Scene root: " + String(p_context["scene_root_name"]);
+		}
+	}
+	
+	if (p_error_code == "NODE_NOT_FOUND") {
+		enhanced_message += "\n\nTroubleshooting:";
+		enhanced_message += "\n• Verify the node exists in the current scene";
+		enhanced_message += "\n• Check if scene tree was modified recently";
+		enhanced_message += "\n• Try using absolute paths from scene root";
+	}
+	
+	if (p_error_code == "NO_SCENE_OPEN") {
+		enhanced_message += "\n\nRequired Action:";
+		enhanced_message += "\n• Open an existing scene file (.tscn)";
+		enhanced_message += "\n• OR create a new scene using scene_manager(op='scene.create')";
+		enhanced_message += "\n• OR use project_manager to create a new project setup";
+	}
+	
+	error_result["message"] = enhanced_message;
+	
+	// Include all context information for debugging
+	if (!p_context.is_empty()) {
+		error_result["context"] = p_context;
+	}
+	
+	return error_result;
 }
 
 Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
@@ -1282,13 +1554,17 @@ Dictionary EditorTools::get_editor_selection(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
+	// CRITICAL FIX: Apply parameter normalization to resolve API inconsistencies
+	Dictionary normalized_args = _normalize_parameters(p_args);
+	
 	Dictionary result;
-	if (!p_args.has("path")) {
-		result["success"] = false;
-		result["message"] = "Missing 'path' argument.";
-		return result;
+	if (!normalized_args.has("path")) {
+		Dictionary context;
+		_validate_scene_context(normalized_args, context);
+		return _create_enhanced_error("MISSING_PARAMETERS", 
+			"Missing required parameter for getting node properties: 'path' (node path) is required.", context);
 	}
-	Node *node = _get_node_from_path(p_args["path"], result);
+	Node *node = _get_node_from_path(normalized_args["path"], result);
 	if (!node) {
 		return result;
 	}
@@ -1299,17 +1575,17 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
     Dictionary props_dict; // name -> value
     Array props_info; // [{name,type,hint,hint_string,class_name,usage}]
 
-    // Filtering & pagination controls
-    Array include_list = p_args.get("include", Array()); // explicit names to include
-    Array ensure_list = p_args.get("ensure", Array()); // always include these, even past limits
-    String prefix_filter = p_args.get("prefix", String()); // include names beginning with
-    int offset = p_args.get("offset", 0); // skip first N matching properties
+    // Filtering & pagination controls (using normalized args)
+    Array include_list = normalized_args.get("include", Array()); // explicit names to include
+    Array ensure_list = normalized_args.get("ensure", Array()); // always include these, even past limits
+    String prefix_filter = normalized_args.get("prefix", String()); // include names beginning with
+    int offset = normalized_args.get("offset", 0); // skip first N matching properties
 
     // PERFORMANCE LIMIT: Prevent UI freezing on nodes with hundreds of properties
     // Default: unlimited for model (-1), limited for UI display only
     int max_properties = -1; // Unlimited by default for AI model debugging
-    if (p_args.has("max_properties")) {
-        max_properties = (int)p_args.get("max_properties", -1);
+    if (normalized_args.has("max_properties")) {
+        max_properties = (int)normalized_args.get("max_properties", -1);
     }
     
     // Note: UI display limits are handled separately in the frontend chat display logic
@@ -1408,7 +1684,7 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
         props_info.push_back(pi);
 
         // Include values for editor-visible props (or all if editor_only=false)
-        bool editor_only = p_args.get("editor_only", true);
+        bool editor_only = normalized_args.get("editor_only", true);
         if (!editor_only || (prop_info.usage & PROPERTY_USAGE_EDITOR)) {
             props_dict[prop_info.name] = node->get(prop_info.name);
         }
@@ -1420,7 +1696,7 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
     }
 
 	// Optionally include script-defined properties (exported vars) from attached script
-	bool include_script_props = p_args.get("include_script_properties", true);
+	bool include_script_props = normalized_args.get("include_script_properties", true);
 	if (include_script_props) {
 		Variant sv = node->get("script");
 		Ref<Script> script = sv;
@@ -1467,7 +1743,7 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 	List<MethodInfo> signal_list;
 	node->get_signal_list(&signal_list);
 	Array signals;
-	int max_signals = p_args.get("max_signals", 30); // Default limit: 30 signals
+	int max_signals = normalized_args.get("max_signals", 30); // Default limit: 30 signals
 	int signals_processed = 0;
 	bool hit_signals_limit = false;
 	
@@ -1557,19 +1833,23 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 
 
 Dictionary EditorTools::create_node(const Dictionary &p_args) {
+	// CRITICAL FIX: Apply parameter normalization to resolve API inconsistencies
+	Dictionary normalized_args = _normalize_parameters(p_args);
+	
 	Dictionary result;
-	if (!p_args.has("type") || !p_args.has("name")) {
-		result["success"] = false;
-		result["message"] = "Missing 'type' or 'name' argument.";
-		return result;
+	if (!normalized_args.has("type") || !normalized_args.has("name")) {
+		Dictionary context;
+		_validate_scene_context(normalized_args, context);
+		return _create_enhanced_error("MISSING_PARAMETERS", 
+			"Missing required parameters for node creation: 'type' and 'name' are required.", context);
 	}
-	String type = p_args["type"];
-	String name = p_args["name"];
+	String type = normalized_args["type"];
+	String name = normalized_args["name"];
 	Node *parent = nullptr;
-    bool unique = p_args.get("unique", false);
+    bool unique = normalized_args.get("unique", false);
 
-	if (p_args.has("parent")) {
-		String parent_path = p_args["parent"];
+	if (normalized_args.has("parent")) {
+		String parent_path = normalized_args["parent"];
 		// Check if parent path is empty or just whitespace - treat as no parent specified
 		if (parent_path.strip_edges().is_empty()) {
 			result["success"] = false;
@@ -1645,6 +1925,9 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 		new_node->set_owner(parent->get_owner() ? parent->get_owner() : parent);
 	}
 
+	// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree after node creation
+	_refresh_scene_tree();
+
 	result["success"] = true;
 	result["node_path"] = new_node->is_inside_tree() ? new_node->get_path() : NodePath();
 	result["message"] = "Node created successfully.";
@@ -1665,13 +1948,17 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::delete_node(const Dictionary &p_args) {
+	// CRITICAL FIX: Apply parameter normalization to resolve API inconsistencies
+	Dictionary normalized_args = _normalize_parameters(p_args);
+	
 	Dictionary result;
-	if (!p_args.has("path")) {
-		result["success"] = false;
-		result["message"] = "Missing 'path' argument.";
-		return result;
+	if (!normalized_args.has("path")) {
+		Dictionary context;
+		_validate_scene_context(normalized_args, context);
+		return _create_enhanced_error("MISSING_PARAMETERS", 
+			"Missing required parameter for node deletion: 'path' (node path) is required.", context);
 	}
-	Node *node = _get_node_from_path(p_args["path"], result);
+	Node *node = _get_node_from_path(normalized_args["path"], result);
 	if (!node) {
 		return result;
 	}
@@ -1698,7 +1985,9 @@ Dictionary EditorTools::delete_node(const Dictionary &p_args) {
 	// Queue for deletion (safer than immediate removal)
 	node->queue_free();
 	
-	// Scene tree will automatically update when the node is actually freed
+	// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree after node deletion
+	// This ensures subsequent operations see the updated scene state
+	_refresh_scene_tree();
 	
 	result["success"] = true;
 	result["message"] = "Node '" + node_name + "' queued for deletion.";
@@ -1730,6 +2019,12 @@ Dictionary EditorTools::delete_nodes_batch(const Dictionary &p_args) {
 		String node_path = node_paths[i];
 		if (node_path.is_empty()) {
 			continue;
+		}
+		
+		// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree every few deletions to prevent stale references
+		if (i > 0 && i % 5 == 0) {
+			_refresh_scene_tree();
+			print_line("BATCH_DELETE: Intermediate scene tree refresh at " + String::num_int64(i) + "/" + String::num_int64(node_paths.size()));
 		}
 		
 		Dictionary temp_result;
@@ -1814,6 +2109,11 @@ Dictionary EditorTools::delete_nodes_batch(const Dictionary &p_args) {
 	result["deleted_nodes"] = deleted_nodes;
 	result["failed_nodes"] = failed_nodes;
 	result["skipped_nodes"] = skipped_nodes;
+	
+	// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree after batch deletion
+	if (deleted_count > 0) {
+		_refresh_scene_tree();
+	}
 	
 	print_line("BATCH_DELETE: Completed - " + String::num_int64(deleted_count) + "/" + String::num_int64(total_requested) + " nodes deleted");
 	
@@ -1925,6 +2225,12 @@ Dictionary EditorTools::create_nodes_batch(const Dictionary &p_args) {
 	Array failed_nodes;
 	
 	for (int i = 0; i < nodes_to_create.size(); i++) {
+		// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree every few creations to prevent stale references
+		if (i > 0 && i % 3 == 0) {
+			_refresh_scene_tree();
+			print_line("BATCH_CREATE: Intermediate scene tree refresh at " + String::num_int64(i) + "/" + String::num_int64(nodes_to_create.size()));
+		}
+		
 		Variant node_spec_var = nodes_to_create[i];
 		if (node_spec_var.get_type() != Variant::DICTIONARY) {
 			Dictionary failed_info;
@@ -2006,6 +2312,11 @@ Dictionary EditorTools::create_nodes_batch(const Dictionary &p_args) {
 	int total_requested = nodes_to_create.size();
 	int created_count = created_nodes.size();
 	int failed_count = failed_nodes.size();
+	
+	// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree after batch creation
+	if (created_count > 0) {
+		_refresh_scene_tree();
+	}
 	
 	result["success"] = true;
 	result["message"] = String("Batch creation completed: ") + 
@@ -2245,15 +2556,54 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
         to_reimport.push_back(save_path);
         EditorFileSystem::get_singleton()->reimport_files(to_reimport);
         
-        // Step 6: Brief wait to ensure filesystem has fully processed
-        OS::get_singleton()->delay_usec(300000); // 300ms wait - increased for reliability
+        // Step 6: CRITICAL FIX - Verify file was actually saved and is loadable
+        bool file_loadable = false;
+        int verification_attempts = 0;
+        const int max_verification_attempts = 10;
+        
+        while (!file_loadable && verification_attempts < max_verification_attempts) {
+            OS::get_singleton()->delay_usec(100000); // 100ms between attempts
+            
+            // Try to load the saved resource to verify it's accessible
+            Ref<Resource> test_load = ResourceLoader::load(save_path);
+            if (test_load.is_valid()) {
+                file_loadable = true;
+                print_line("CREATE_RESOURCE: ✅ Verified resource is loadable after " + String::num_int64(verification_attempts + 1) + " attempts");
+            } else {
+                verification_attempts++;
+                if (verification_attempts < max_verification_attempts) {
+                    print_line("CREATE_RESOURCE: ⏳ Resource not yet loadable, attempt " + String::num_int64(verification_attempts) + "/" + String::num_int64(max_verification_attempts));
+                }
+            }
+        }
+        
+        if (!file_loadable) {
+            result["success"] = false;
+            result["error_code"] = "RESOURCE_NOT_LOADABLE";
+            result["message"] = "Resource was saved to " + save_path + " but cannot be loaded back. File may be corrupted or filesystem is not ready.";
+            result["verification_attempts"] = verification_attempts;
+            return result;
+        }
+        
+        result["verification_attempts"] = verification_attempts + 1;
         print_line("CREATE_RESOURCE: Complete - resource immediately available for loading");
     }
 
     // Provide a lightweight handle back; we cannot send raw pointer, so return a temp path-less id
     result["success"] = true;
     result["resource_type"] = type;
-    result["rid"] = (int64_t)res; // For same-process subsequent calls; not persisted
+    
+    // CRITICAL FIX: Deprecate unsafe RID approach - promote .tres file workflow instead
+    if (save_path.is_empty()) {
+        result["rid"] = (int64_t)res; // For same-process subsequent calls; not persisted
+        result["warning"] = "Resource created in memory only. For reliable assignment, provide save_path to create .tres file";
+        result["recommendation"] = "Use save_path parameter to create persistent .tres resource for reliable assignment";
+    } else {
+        result["saved_to_file"] = true;
+        result["file_path"] = save_path;
+        result["ready_for_assignment"] = true;
+    }
+    
     return result;
 }
 // Assign a resource to a node property. Resource can be provided by path, by RID (from create_resource), or by inline spec.
@@ -2316,23 +2666,175 @@ Dictionary EditorTools::assign_resource_to_node_property(const Dictionary &p_arg
     }
     if (res.is_null()) { result["success"] = false; result["message"] = "Could not resolve resource"; return result; }
     
+    // CRITICAL FIX: Enhanced resource assignment with better validation
+    print_line("ASSIGN_RESOURCE: Attempting to assign " + res->get_class() + " to " + String(node->get_name()) + "." + String(prop));
+    
+    // Verify the property exists on the node before assignment
+    List<PropertyInfo> node_properties;
+    node->get_property_list(&node_properties);
+    bool property_exists = false;
+    PropertyInfo target_property;
+    
+    for (const PropertyInfo &pi : node_properties) {
+        if (String(pi.name) == String(prop)) {
+            property_exists = true;
+            target_property = pi;
+            break;
+        }
+    }
+    
+    if (!property_exists) {
+        result["success"] = false;
+        result["error_code"] = "PROPERTY_NOT_FOUND";
+        result["message"] = "Property '" + String(prop) + "' does not exist on node type " + String(node->get_class());
+        
+        // Show available properties for debugging
+        String available_props = "";
+        int prop_count = 0;
+        for (const PropertyInfo &pi : node_properties) {
+            if (pi.type == Variant::OBJECT && prop_count < 10) { // Only show object properties
+                if (prop_count > 0) available_props += ", ";
+                available_props += "'" + String(pi.name) + "'";
+                prop_count++;
+            }
+        }
+        result["available_object_properties"] = available_props;
+        return result;
+    }
+    
     // CRITICAL FIX (Issue #2): Assign to node BEFORE checking if scene should be marked dirty
     // This ensures the resource is owned and won't be garbage collected
     bool set_valid = false;
     node->set(prop, res, &set_valid);
     if (!set_valid) {
         result["success"] = false;
-        result["message"] = "Failed to set property '" + String(prop) + "' on node (setter may have failed or property doesn't exist)";
+        result["error_code"] = "ASSIGNMENT_FAILED";
+        result["message"] = "Failed to set property '" + String(prop) + "' on node. Property may be read-only or have type restrictions.";
+        result["node_type"] = String(node->get_class());
+        result["resource_type"] = res->get_class();
+        result["target_property"] = String(prop);
+        result["property_type"] = String(target_property.class_name);
+        result["property_usage"] = target_property.usage;
         return result;
     }
-    print_line("ASSIGN_RESOURCE: Successfully assigned " + res->get_class() + " to " + String(node->get_name()) + "." + String(prop));
+    
+    // CRITICAL FIX: Refresh scene tree after successful resource assignment
+    _refresh_scene_tree();
+    
+    // Verify the assignment
+    Variant readback = node->get(prop);
+    Ref<Resource> readback_resource = readback;
+    
+    if (readback_resource.is_valid() && readback_resource.ptr() == res.ptr()) {
+        print_line("ASSIGN_RESOURCE: ✅ Successfully assigned and verified " + res->get_class() + " to " + String(node->get_name()) + "." + String(prop));
+        result["assignment_verified"] = true;
+    } else {
+        print_line("ASSIGN_RESOURCE: ⚠️ Assignment may have failed - readback doesn't match expected resource");
+        result["assignment_verified"] = false;
+    }
     
     Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
     if (root && node->get_owner() == root) {
         // Mark scene dirty by touching owner; editor will handle actual save
         // No-op here; Godot tracks property changes automatically
     }
-    result["success"] = true; result["message"] = "Resource assigned successfully"; return result;
+    result["success"] = true; 
+    result["message"] = "Resource assigned successfully"; 
+    result["resource_type"] = res->get_class();
+    result["node_type"] = String(node->get_class());
+    result["assigned_property"] = String(prop);
+	return result;
+}
+
+// CRITICAL FIX: Robust two-step create-then-assign resource workflow
+Dictionary EditorTools::create_and_assign_resource(const Dictionary &p_args) {
+	Dictionary result;
+	
+	// Validate required parameters
+	if (!p_args.has("resource_type") || !p_args.has("node_path") || !p_args.has("property")) {
+		result["success"] = false;
+		result["error_code"] = "MISSING_PARAMETERS";
+		result["message"] = "Required parameters: resource_type, node_path, property";
+		return result;
+	}
+	
+	String resource_type = p_args["resource_type"];
+	String node_path = p_args["node_path"];
+	String property = p_args["property"];
+	Dictionary properties = p_args.get("properties", Dictionary());
+	String save_path = p_args.get("save_path", "");
+	
+	print_line("CREATE_AND_ASSIGN: Starting two-step workflow for " + resource_type + " -> " + node_path + "." + property);
+	
+	// Step 1: Create resource and save to .tres file for reliability
+	if (save_path.is_empty()) {
+		// Generate a default .tres path in project resources directory
+		String resources_dir = "res://resources/";
+		Ref<DirAccess> da = DirAccess::open(ProjectSettings::get_singleton()->globalize_path(resources_dir));
+		if (da.is_null() || !da->dir_exists(".")) {
+			DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(resources_dir));
+		}
+		
+		String resource_name = resource_type.to_lower() + "_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+		save_path = resources_dir + resource_name + ".tres";
+	}
+	
+	Dictionary create_args;
+	create_args["type"] = resource_type;
+	create_args["properties"] = properties;
+	create_args["save_path"] = save_path;
+	
+	Dictionary create_result = create_resource(create_args);
+	if (!create_result.get("success", false)) {
+		result["success"] = false;
+		result["error_code"] = "RESOURCE_CREATION_FAILED";
+		result["message"] = "Step 1 failed - Could not create " + resource_type + ": " + String(create_result.get("message", "Unknown error"));
+		result["create_result"] = create_result;
+		return result;
+	}
+	
+	print_line("CREATE_AND_ASSIGN: ✅ Step 1 complete - Resource created and saved to " + save_path);
+	
+	// Brief wait to ensure file system registration is complete
+	OS::get_singleton()->delay_usec(100000); // 100ms
+	
+	// Step 2: Load and assign the resource from the saved .tres file
+	Dictionary assign_args;
+	assign_args["resource_path"] = save_path;
+	assign_args["node_path"] = node_path;
+	assign_args["property"] = property;
+	assign_args["validate"] = p_args.get("validate", true);
+	assign_args["await_import"] = p_args.get("await_import", true);
+	assign_args["timeout_ms"] = p_args.get("timeout_ms", 10000);
+	assign_args["save"] = p_args.get("save", true);
+	
+	Dictionary assign_result = load_and_assign_resource(assign_args);
+	if (!assign_result.get("success", false)) {
+		result["success"] = false;
+		result["error_code"] = "RESOURCE_ASSIGNMENT_FAILED";
+		result["message"] = "Step 2 failed - Could not assign resource to " + node_path + "." + property + ": " + String(assign_result.get("message", "Unknown error"));
+		result["create_result"] = create_result;
+		result["assign_result"] = assign_result;
+		result["created_file"] = save_path;
+		return result;
+	}
+	
+	print_line("CREATE_AND_ASSIGN: ✅ Step 2 complete - Resource assigned to node");
+	
+	// CRITICAL FIX: Final scene tree refresh after complete workflow
+	_refresh_scene_tree();
+	
+	result["success"] = true;
+	result["message"] = "Successfully created " + resource_type + " and assigned to " + node_path + "." + property;
+	result["resource_type"] = resource_type;
+	result["created_file"] = save_path;
+	result["node_path"] = node_path;
+	result["assigned_property"] = property;
+	result["create_result"] = create_result;
+	result["assign_result"] = assign_result;
+	result["workflow_completed"] = true;
+	
+	return result;
 }
 
 // Create a new scene with a specific root type and optionally attach current root under it.
@@ -4041,18 +4543,22 @@ Dictionary EditorTools::set_node_type(const Dictionary &p_args) {
     return result;
 }
 Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
+	// CRITICAL FIX: Apply parameter normalization to resolve API inconsistencies
+	Dictionary normalized_args = _normalize_parameters(p_args);
+	
 	Dictionary result;
-	if (!p_args.has("path") || !p_args.has("property") || !p_args.has("value")) {
-		result["success"] = false;
-		result["message"] = "Missing 'path', 'property', or 'value' argument.";
-		return result;
+	if (!normalized_args.has("path") || !normalized_args.has("property") || !normalized_args.has("value")) {
+		Dictionary context;
+		_validate_scene_context(normalized_args, context);
+		return _create_enhanced_error("MISSING_PARAMETERS", 
+			"Missing required parameters for property setting: 'path' (node path), 'property' (property name), and 'value' are required.", context);
 	}
-	Node *node = _get_node_from_path(p_args["path"], result);
+	Node *node = _get_node_from_path(normalized_args["path"], result);
 	if (!node) {
 		return result;
 	}
-    StringName prop = p_args["property"];
-    Variant value = p_args["value"];
+    StringName prop = normalized_args["property"];
+    Variant value = normalized_args["value"];
 	
     // Special handling for Vector2/Vector3 properties from flexible inputs
     if ((prop == StringName("position") || prop == StringName("global_position") || prop == StringName("scale") || 
@@ -4366,10 +4872,10 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
         return result;
     }
 	
-	// Optional auto-save: default OFF; allow explicit control via p_args.save=true
+	// Optional auto-save: default OFF; allow explicit control via normalized_args.save=true
 	String autosave_env = OS::get_singleton()->get_environment("AI_DISABLE_AUTOSAVE_ON_PROPERTY_CHANGE");
 	bool disable_autosave = !autosave_env.is_empty() && (autosave_env.to_lower() == "1" || autosave_env.to_lower() == "true");
-	bool request_save = p_args.get("save", false);
+	bool request_save = normalized_args.get("save", false);
 	if (!disable_autosave && request_save) {
 		String current_scene = EditorNode::get_singleton()->get_edited_scene()->get_scene_file_path();
 		if (!current_scene.is_empty()) {
@@ -4400,24 +4906,81 @@ Dictionary EditorTools::set_node_property(const Dictionary &p_args) {
 }
 
 Dictionary EditorTools::move_node(const Dictionary &p_args) {
+	// CRITICAL FIX: Apply parameter normalization to resolve API inconsistencies
+	Dictionary normalized_args = _normalize_parameters(p_args);
+	
 	Dictionary result;
-	if (!p_args.has("path") || !p_args.has("new_parent")) {
-		result["success"] = false;
-		result["message"] = "Missing 'path' or 'new_parent' argument.";
-		return result;
+	if (!normalized_args.has("path") || !normalized_args.has("new_parent")) {
+		Dictionary context;
+		_validate_scene_context(normalized_args, context);
+		return _create_enhanced_error("MISSING_PARAMETERS", 
+			"Missing required parameters for node move: 'path' (node to move) and 'new_parent' (destination parent) are required.", context);
 	}
-	Node *node = _get_node_from_path(p_args["path"], result);
+	Node *node = _get_node_from_path(normalized_args["path"], result);
 	if (!node) {
 		return result;
 	}
-	Node *new_parent = _get_node_from_path(p_args["new_parent"], result);
+	Node *new_parent = _get_node_from_path(normalized_args["new_parent"], result);
 	if (!new_parent) {
 		return result;
 	}
-	node->get_parent()->remove_child(node);
+	// Store original info for verification
+	String original_parent_name = node->get_parent() ? String(node->get_parent()->get_name()) : "(no parent)";
+	String node_name = String(node->get_name());
+	
+	// CRITICAL FIX: Proper node move with ownership preservation
+	Node *old_parent = node->get_parent();
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	
+	// Store the current owner before move
+	Node *original_owner = node->get_owner();
+	if (!original_owner && scene_root) {
+		original_owner = scene_root; // Default to scene root if no owner
+	}
+	
+	// Perform the move
+	if (old_parent) {
+		old_parent->remove_child(node);
+	}
 	new_parent->add_child(node);
+	
+	// CRITICAL FIX: Restore proper ownership after move
+	if (original_owner) {
+		node->set_owner(original_owner);
+		print_line("MOVE_NODE: Restored owner to: " + String(original_owner->get_name()));
+	}
+	
+	// CRITICAL FIX: Mark scene as modified to ensure changes persist
+	if (scene_root) {
+		EditorNode::get_singleton()->set_edited_scene(scene_root);  // This marks scene as modified
+	}
+	
+	// CRITICAL FIX (ORCA-TOOL-731): Refresh scene tree after node move
+	_refresh_scene_tree();
+	
+	// CRITICAL FIX: Verify the move actually worked
+	Node *verification_node = _get_node_from_path(String(new_parent->get_name()) + "/" + node_name, result);
+	bool move_verified = (verification_node != nullptr && verification_node == node);
+	
+	if (!move_verified) {
+		result["success"] = false;
+		result["error_code"] = "MOVE_VERIFICATION_FAILED";
+		result["message"] = "Node move operation failed verification. Node may not have been properly reparented.";
+		result["original_parent"] = original_parent_name;
+		result["intended_parent"] = String(new_parent->get_name());
+		result["node_name"] = node_name;
+		return result;
+	}
+	
+	print_line("MOVE_NODE: ✅ Successfully moved '" + node_name + "' from '" + original_parent_name + "' to '" + String(new_parent->get_name()) + "'");
+	
 	result["success"] = true;
-	result["message"] = "Node moved successfully.";
+	result["message"] = "Node '" + node_name + "' moved successfully from '" + original_parent_name + "' to '" + String(new_parent->get_name()) + "'.";
+	result["original_parent"] = original_parent_name;
+	result["new_parent"] = String(new_parent->get_name());
+	result["moved_node"] = node_name;
+	result["new_path"] = String(node->get_path());
+	result["move_verified"] = true;
 	
 	// Check for configuration warnings after move
 	PackedStringArray warnings = node->get_configuration_warnings();
@@ -5115,23 +5678,104 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 			}
 			
 			if (!type_compatible) {
-				result["success"] = false;
-				result["ok"] = false;
-				result["error_code"] = "TYPE_MISMATCH";
-				result["error"] = String("Property '") + property + "' expects " + expected_type + ", got " + actual_type;
-				result["actual_resource_type"] = actual_type;
-				result["expected_property_type"] = expected_type;
-				result["debug_allowed_types"] = allowed_types;
-				return result;
+				// CRITICAL FIX: Enhanced type compatibility for common Godot patterns
+				// Allow Material3D for BaseMaterial3D, Mesh for specific mesh types, etc.
+				bool enhanced_compatible = false;
+				
+				// Handle common material compatibility patterns
+				if ((expected_type.contains("Material") && actual_type.contains("Material")) ||
+				    (expected_type == "Resource" && actual_type.ends_with("Material")) ||
+				    (expected_type == "Material" && actual_type.contains("Material"))) {
+					enhanced_compatible = true;
+				}
+				
+				// Handle common mesh compatibility patterns  
+				if ((expected_type.contains("Mesh") && actual_type.contains("Mesh")) ||
+				    (expected_type == "Resource" && actual_type.ends_with("Mesh")) ||
+				    (expected_type == "Mesh" && actual_type.contains("Mesh"))) {
+					enhanced_compatible = true;
+				}
+				
+				// Handle Shape3D/Shape2D compatibility
+				if ((expected_type.contains("Shape") && actual_type.contains("Shape")) ||
+				    (expected_type == "Resource" && actual_type.contains("Shape"))) {
+					enhanced_compatible = true;
+				}
+				
+				if (!enhanced_compatible) {
+					result["success"] = false;
+					result["ok"] = false;
+					result["error_code"] = "TYPE_MISMATCH";
+					result["error"] = String("Property '") + property + "' expects " + expected_type + ", got " + actual_type + ". Enhanced compatibility check failed.";
+					result["actual_resource_type"] = actual_type;
+					result["expected_property_type"] = expected_type;
+					result["debug_allowed_types"] = allowed_types;
+					return result;
+				} else {
+					print_line("LOAD_AND_ASSIGN: Enhanced type compatibility allowed: " + actual_type + " for " + expected_type);
+				}
 			}
 		}
 	}
 
+	// CRITICAL FIX: Enhanced resource assignment with better validation and debugging
+	print_line("LOAD_AND_ASSIGN: Attempting to assign " + actual_type + " resource '" + resource_path + "' to " + node_path + "." + property);
+	
+	// Verify the property exists on the node before assignment
+	List<PropertyInfo> node_properties;
+	node->get_property_list(&node_properties);
+	bool property_exists = false;
+	PropertyInfo target_property;
+	
+	for (const PropertyInfo &pi : node_properties) {
+		if (String(pi.name) == property) {
+			property_exists = true;
+			target_property = pi;
+			break;
+		}
+	}
+	
+	if (!property_exists) {
+		result["success"] = false;
+		result["error_code"] = "PROPERTY_NOT_FOUND";
+		result["message"] = "Property '" + property + "' does not exist on node type " + String(node->get_class());
+		
+		// Show available properties for debugging
+		String available_props = "";
+		int prop_count = 0;
+		for (const PropertyInfo &pi : node_properties) {
+			if (pi.type == Variant::OBJECT && prop_count < 10) { // Only show object properties
+				if (prop_count > 0) available_props += ", ";
+				available_props += "'" + String(pi.name) + "'";
+				prop_count++;
+			}
+		}
+		result["available_object_properties"] = available_props;
+		return result;
+	}
+	
+	print_line("LOAD_AND_ASSIGN: Property '" + property + "' exists on " + String(node->get_class()) + ", expected type: " + String(target_property.class_name));
+	
 	// Set the property
 	bool valid = false;
 	node->set(property, resource, &valid);
 	
     if (valid) {
+		// CRITICAL FIX: Refresh scene tree after successful resource assignment
+		_refresh_scene_tree();
+		
+		// Verify the assignment actually worked by reading back the property
+		Variant readback = node->get(property);
+		Ref<Resource> readback_resource = readback;
+		
+		if (readback_resource.is_valid() && readback_resource.ptr() == resource.ptr()) {
+			print_line("LOAD_AND_ASSIGN: ✅ Resource assignment verified successful");
+			result["assignment_verified"] = true;
+		} else {
+			print_line("LOAD_AND_ASSIGN: ⚠️ Resource assignment may have failed - readback doesn't match");
+			result["assignment_verified"] = false;
+		}
+		
 		result["success"] = true;
 		result["ok"] = true;
 		result["message"] = "Resource loaded and assigned: " + resource_path + " -> " + node_path + "." + property;
@@ -5159,8 +5803,13 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 	} else {
 		result["success"] = false;
 		result["ok"] = false;
-		result["error_code"] = "INVALID_PROPERTY";
-		result["message"] = "Failed to assign resource to property '" + property + "' on node: " + node_path;
+		result["error_code"] = "ASSIGNMENT_FAILED";
+		result["message"] = "Failed to assign " + actual_type + " resource to property '" + property + "' on " + String(node->get_class()) + " node '" + node_path + "'. Property may be read-only or type incompatible.";
+		result["node_type"] = String(node->get_class());
+		result["resource_type"] = actual_type;
+		result["target_property"] = property;
+		result["property_type"] = String(target_property.class_name);
+		result["property_usage"] = target_property.usage;
 	}
 	
 	return result;
@@ -7528,15 +8177,33 @@ Dictionary EditorTools::universal_file_manager(const Dictionary &p_args) {
 	return result;
 }
 Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
+	// CRITICAL FIX: Apply parameter normalization first to resolve API inconsistencies
+	Dictionary normalized_args = _normalize_parameters(p_args);
+	
 	// Support both old "operation" and new "op" parameter names for backward compatibility
-	String operation = p_args.get("op", p_args.get("operation", ""));
+	String operation = normalized_args.get("op", normalized_args.get("operation", ""));
 	
 	if (operation.is_empty()) {
-		Dictionary result;
-		result["success"] = false;
-		result["error"] = "Operation 'op' parameter is required";
-		return result;
+		Dictionary context_result;
+		_validate_scene_context(normalized_args, context_result);
+		return _create_enhanced_error("MISSING_PARAMETERS", 
+			"Operation parameter is required. Use 'op' to specify what scene operation to perform (e.g., 'node.create', 'node.delete', 'groups.add', etc.).", context_result);
 	}
+	
+	// CRITICAL FIX (ORCA-TOOL-001): Add scene context validation for operations that need it
+	Dictionary context_result;
+	if (!_validate_scene_context(normalized_args, context_result)) {
+		return context_result;
+	}
+	
+	// Forward any scene context warnings to help users understand scene state
+	String context_warning = context_result.get("warning", "");
+	if (!context_warning.is_empty()) {
+		print_line("SCENE_MANAGER Warning: " + context_warning);
+	}
+	
+	// Use normalized args for all subsequent operations
+	Dictionary args_to_use = normalized_args;
 	
 	// Legacy operations
 	if (operation == "get_info") return get_scene_info(p_args);
@@ -9218,14 +9885,20 @@ Dictionary EditorTools::editor_introspect(const Dictionary &p_args) {
     }
 
     // Common helpers
+    // CRITICAL FIX (ORCA-TOOL-001): Enhanced path requirement with parameter normalization  
     auto require_path = [&](Dictionary &r) -> Node * {
-        if (!p_args.has("path")) {
-            r["success"] = false;
-            r["message"] = "Missing 'path'";
+        // Apply parameter normalization to handle node_path, file_path, target variations
+        Dictionary normalized_args = _normalize_parameters(p_args);
+        
+        if (!normalized_args.has("path")) {
+            Dictionary context;
+            _validate_scene_context(normalized_args, context);
+            r = _create_enhanced_error("MISSING_PARAMETERS", 
+                "Missing node path parameter. Please provide 'path' (node path) for this operation.", context);
             return nullptr;
         }
         Dictionary err;
-        Node *node = _get_node_from_path(p_args["path"], err);
+        Node *node = _get_node_from_path(normalized_args["path"], err);
         if (!node) {
             r = err;
             return nullptr;
@@ -10816,6 +11489,9 @@ Dictionary EditorTools::resource_manager(const Dictionary &p_args) {
         return refresh_filesystem(p_args);
     } else if (op == "res.load_and_assign") {
         return load_and_assign_resource(p_args);
+    } else if (op == "res.create_and_assign") {
+        // CRITICAL FIX: Robust two-step create-then-assign workflow
+        return create_and_assign_resource(p_args);
     } else if (op == "import.set_options") {
         // Convert new schema parameter names
         Dictionary import_args = p_args;
