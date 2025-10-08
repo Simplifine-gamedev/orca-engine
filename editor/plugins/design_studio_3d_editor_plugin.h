@@ -37,13 +37,16 @@
 class Button;
 class Camera3D;
 class DirectionalLight3D;
+class EditorFileDialog;
 class HTTPRequest;
+class ItemList;
 class Label;
 class LineEdit;
 class MeshInstance3D;
 class OptionButton;
 class SubViewport;
 class SubViewportContainer;
+class TabContainer;
 class TextureRect;
 class Timer;
 class VBoxContainer;
@@ -55,10 +58,33 @@ class DesignStudio3DEditor : public PanelContainer {
 	const String API_URL = "https://gpu-proxy-awdwh5ovsa-uc.a.run.app";
 	
 	// UI Elements - Left Panel
+	TabContainer *mode_tabs = nullptr;
+	
+	// Generate tab
 	LineEdit *prompt_input = nullptr;
 	OptionButton *quality_selector = nullptr;
 	Button *generate_button = nullptr;
 	Label *status_label = nullptr;
+	
+	// Browse tab
+	ItemList *models_list = nullptr;
+	Button *load_selected_button = nullptr;
+	Button *refresh_list_button = nullptr;
+	Label *browse_status_label = nullptr;
+	
+	// Image to 3D tab
+	Button *select_image_button = nullptr;
+	Label *image_path_label = nullptr;
+	TextureRect *image_preview = nullptr;
+	OptionButton *image_quality_selector = nullptr;
+	Button *generate_from_image_button = nullptr;
+	Label *image_status_label = nullptr;
+	
+	// Export button (shared)
+	Button *export_button = nullptr;
+	
+	// File dialog
+	EditorFileDialog *file_dialog = nullptr;
 	
 	// UI Elements - 3D Viewer
 	SubViewportContainer *viewport_container = nullptr;
@@ -71,12 +97,17 @@ class DesignStudio3DEditor : public PanelContainer {
 	HTTPRequest *submit_request = nullptr;
 	HTTPRequest *poll_request = nullptr;
 	HTTPRequest *download_request = nullptr;
+	HTTPRequest *browse_request = nullptr;
 	Timer *poll_timer = nullptr;
 	
 	// State
 	String current_job_id;
-	String current_user_id = "godot_user";
+	String current_user_id; // Generated dynamically from machine ID
 	bool is_generating = false;
+	String current_model_path; // Path to loaded model (if not yet exported)
+	Ref<Mesh> current_loaded_mesh; // Currently loaded mesh in viewer
+	Dictionary current_model_data; // Data of currently loaded model
+	String selected_image_path; // Path to selected image
 	
 	// Download retry logic
 	String download_url_to_retry;
@@ -110,6 +141,18 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_download_retry_timeout();
 	void _start_download_with_headers(const String &p_url);
 	void _load_imported_mesh(const String &p_path);
+	
+	void _on_refresh_models_pressed();
+	void _on_models_list_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_load_selected_pressed();
+	void _on_export_pressed();
+	void _load_model_for_viewing(const Dictionary &p_model_data);
+	
+	void _on_select_image_pressed();
+	void _on_image_file_selected(const String &p_path);
+	void _on_generate_from_image_pressed();
+	String _image_to_base64(const String &p_image_path);
+	String _get_or_create_persistent_user_id();
 
 protected:
 	void _notification(int p_what);

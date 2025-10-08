@@ -1,40 +1,20 @@
-/**************************************************************************/
-/*  design_studio_3d_editor_plugin.cpp                                    */
-/**************************************************************************/
-/*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
-/**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
+/***********************************************************/
+// © 2025 Simplifine Corp. Original backend contribution for this Godot fork.
+// Personal Non‑Commercial License applies. Commercial use requires a separate license from Simplifine.
+// See LICENSES/COMPANY-NONCOMMERCIAL.md.
+/***********************************************************/
+
 
 #include "design_studio_3d_editor_plugin.h"
 
 #include "core/config/project_settings.h"
+#include "core/core_bind.h"
 #include "core/io/json.h"
+#include "core/io/marshalls.h"
 #include "core/io/resource_loader.h"
 #include "editor/editor_main_screen.h"
 #include "editor/editor_node.h"
+#include "editor/settings/editor_settings.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/3d/camera_3d.h"
@@ -44,17 +24,22 @@
 #include "scene/resources/3d/world_3d.h"
 #include "scene/resources/material.h"
 #include "scene/resources/camera_attributes.h"
+#include "scene/resources/image_texture.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/item_list.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
+#include "scene/gui/tab_container.h"
+#include "scene/gui/texture_rect.h"
 #include "scene/main/timer.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/packed_scene.h"
+#include "editor/gui/editor_file_dialog.h"
 
 void DesignStudio3DEditor::_bind_methods() {
 }
@@ -66,9 +51,7 @@ void DesignStudio3DEditor::_notification(int p_what) {
 			_setup_3d_viewer();
 		} break;
 		case NOTIFICATION_THEME_CHANGED: {
-			if (generate_button) {
-				generate_button->set_button_icon(get_editor_theme_icon(SNAME("Add")));
-			}
+			// Theme updated
 		} break;
 	}
 }
@@ -81,65 +64,140 @@ void DesignStudio3DEditor::_setup_ui() {
 	hsplit->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	add_child(hsplit);
 	
-	// Left panel for controls
+	// Left panel with tabs
 	VBoxContainer *left_panel = memnew(VBoxContainer);
-	left_panel->set_custom_minimum_size(Size2(300 * EDSCALE, 0));
+	left_panel->set_custom_minimum_size(Size2(320 * EDSCALE, 0));
 	hsplit->add_child(left_panel);
 	
 	// Title
 	Label *title = memnew(Label);
-	title->set_text("3D Model Generator");
-	title->add_theme_font_size_override("font_size", 18 * EDSCALE);
+	title->set_text("3D Model Studio");
+	title->add_theme_font_size_override("font_size", 16 * EDSCALE);
 	left_panel->add_child(title);
 	
-	left_panel->add_child(memnew(HSeparator));
+	// Tab container for Generate vs Browse
+	mode_tabs = memnew(TabContainer);
+	mode_tabs->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	left_panel->add_child(mode_tabs);
 	
-	// Prompt input
-	Label *prompt_label = memnew(Label);
-	prompt_label->set_text("Prompt:");
-	left_panel->add_child(prompt_label);
+	// === GENERATE TAB ===
+	VBoxContainer *generate_tab = memnew(VBoxContainer);
+	generate_tab->set_name("Generate New");
+	mode_tabs->add_child(generate_tab);
 	
 	prompt_input = memnew(LineEdit);
-	prompt_input->set_placeholder("Describe your 3D model (e.g., 'A cute robot')");
-	prompt_input->set_custom_minimum_size(Size2(0, 32 * EDSCALE));
-	left_panel->add_child(prompt_input);
-	
-	// Quality selector
-	Label *quality_label = memnew(Label);
-	quality_label->set_text("Quality:");
-	left_panel->add_child(quality_label);
+	prompt_input->set_placeholder("Describe model (e.g., 'a robot')");
+	generate_tab->add_child(prompt_input);
 	
 	quality_selector = memnew(OptionButton);
 	quality_selector->add_item("Turbo (~20s)", 0);
-	quality_selector->add_item("Standard (~110s)", 1);
+	quality_selector->add_item("Standard (~2min)", 1);
 	quality_selector->add_item("High (~5min)", 2);
 	quality_selector->select(0);
-	left_panel->add_child(quality_selector);
+	generate_tab->add_child(quality_selector);
 	
-	// Generate button
 	generate_button = memnew(Button);
-	generate_button->set_text("Generate 3D Model");
-	generate_button->set_custom_minimum_size(Size2(0, 40 * EDSCALE));
+	generate_button->set_text("Generate");
 	generate_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_generate_pressed));
-	left_panel->add_child(generate_button);
+	generate_tab->add_child(generate_button);
 	
-	// Status label
 	status_label = memnew(Label);
-	status_label->set_text("Ready");
+	status_label->set_text("Ready to generate");
 	status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	left_panel->add_child(status_label);
+	status_label->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	generate_tab->add_child(status_label);
 	
-	// Spacer
-	Control *spacer = memnew(Control);
-	spacer->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	left_panel->add_child(spacer);
+	// === BROWSE TAB ===
+	VBoxContainer *browse_tab = memnew(VBoxContainer);
+	browse_tab->set_name("My Models");
+	mode_tabs->add_child(browse_tab);
 	
-	// Info label
-	Label *info_label = memnew(Label);
-	info_label->set_text("Generated models appear in the isolated 3D viewer on the right.\n\n3D VIEWER CONTROLS:\n- Left click + drag: Rotate\n- Mouse wheel: Zoom in/out\n\nViewer starts empty until you generate a model.\n\nAPI: " + API_URL);
-	info_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	info_label->add_theme_font_size_override("font_size", 10 * EDSCALE);
-	left_panel->add_child(info_label);
+	refresh_list_button = memnew(Button);
+	refresh_list_button->set_text("Refresh List");
+	refresh_list_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_refresh_models_pressed));
+	browse_tab->add_child(refresh_list_button);
+	
+	models_list = memnew(ItemList);
+	models_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	models_list->set_custom_minimum_size(Size2(0, 200 * EDSCALE));
+	browse_tab->add_child(models_list);
+	
+	load_selected_button = memnew(Button);
+	load_selected_button->set_text("Load Selected");
+	load_selected_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_load_selected_pressed));
+	browse_tab->add_child(load_selected_button);
+	
+	browse_status_label = memnew(Label);
+	browse_status_label->set_text("Click Refresh to load your models");
+	browse_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	browse_tab->add_child(browse_status_label);
+	
+	// === IMAGE TO 3D TAB ===
+	VBoxContainer *image_tab = memnew(VBoxContainer);
+	image_tab->set_name("Image to 3D");
+	mode_tabs->add_child(image_tab);
+	
+	select_image_button = memnew(Button);
+	select_image_button->set_text("Select Image File");
+	select_image_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_select_image_pressed));
+	image_tab->add_child(select_image_button);
+	
+	image_path_label = memnew(Label);
+	image_path_label->set_text("No image selected");
+	image_path_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	image_tab->add_child(image_path_label);
+	
+	image_preview = memnew(TextureRect);
+	image_preview->set_custom_minimum_size(Size2(200 * EDSCALE, 150 * EDSCALE));
+	image_preview->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
+	image_preview->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	image_tab->add_child(image_preview);
+	
+	image_quality_selector = memnew(OptionButton);
+	image_quality_selector->add_item("Turbo (~20s)", 0);
+	image_quality_selector->add_item("Standard (~2min)", 1);
+	image_quality_selector->add_item("High (~5min)", 2);
+	image_quality_selector->select(0);
+	image_tab->add_child(image_quality_selector);
+	
+	generate_from_image_button = memnew(Button);
+	generate_from_image_button->set_text("Generate 3D from Image");
+	generate_from_image_button->set_disabled(true);
+	generate_from_image_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_generate_from_image_pressed));
+	image_tab->add_child(generate_from_image_button);
+	
+	image_status_label = memnew(Label);
+	image_status_label->set_text("Select an image to generate 3D model");
+	image_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	image_status_label->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	image_tab->add_child(image_status_label);
+	
+	// === EXPORT BUTTON (at bottom, shared between tabs) ===
+	left_panel->add_child(memnew(HSeparator));
+	
+	export_button = memnew(Button);
+	export_button->set_text("Export to Workspace");
+	export_button->set_disabled(true);
+	export_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_export_pressed));
+	left_panel->add_child(export_button);
+	
+	Label *export_hint = memnew(Label);
+	export_hint->set_text("View models first, then export to save");
+	export_hint->add_theme_font_size_override("font_size", 9 * EDSCALE);
+	left_panel->add_child(export_hint);
+	
+	// Create file dialog for image selection
+	file_dialog = memnew(EditorFileDialog);
+	file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_OPEN_FILE);
+	file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+	file_dialog->add_filter("*.png", "PNG Images");
+	file_dialog->add_filter("*.jpg", "JPEG Images");
+	file_dialog->add_filter("*.jpeg", "JPEG Images");
+	file_dialog->add_filter("*.bmp", "BMP Images");
+	file_dialog->add_filter("*.tga", "TGA Images");
+	file_dialog->add_filter("*.webp", "WebP Images");
+	file_dialog->connect("file_selected", callable_mp(this, &DesignStudio3DEditor::_on_image_file_selected));
+	add_child(file_dialog);
 }
 
 void DesignStudio3DEditor::_setup_3d_viewer() {
@@ -169,33 +227,40 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	viewer_vbox->add_child(viewport_container);
 	
 	// PROPER ISOLATED 3D VIEWER
-	print_line("Creating properly isolated 3D viewer...");
-	
 	viewport = memnew(SubViewport);
 	viewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
 	
 	// CRITICAL: Create NEW World3D to ensure complete isolation
 	Ref<World3D> new_world = memnew(World3D);
 	viewport->set_world_3d(new_world);
-	print_line("Created isolated World3D: " + itos(new_world->get_scenario().get_id()));
 	
 	viewport_container->add_child(viewport);
 	
-	// Simple camera
+	// Simple camera with proper environment
 	camera = memnew(Camera3D);
 	camera->set_position(Vector3(0, 0, 3));
 	camera->set_fov(45);
-	camera->make_current(); // Make it the active camera in this viewport
+	camera->make_current();
+	
+	// Setup environment with ambient light
+	Ref<Environment> env = memnew(Environment);
+	env->set_background(Environment::BG_COLOR);
+	env->set_bg_color(Color(0.2, 0.2, 0.25)); // Dark blue-gray background
+	env->set_ambient_light_energy(0.4); // Add ambient light to see dark areas
+	camera->set_environment(env);
+	
 	viewport->add_child(camera);
 	
-	// Two lights like MeshEditor
+	// Proper lighting for detail visibility
 	light = memnew(DirectionalLight3D);
 	light->set_transform(Transform3D().looking_at(Vector3(-1, -1, -1), Vector3(0, 1, 0)));
+	light->set_param(Light3D::PARAM_ENERGY, 1.0); // Normal energy
 	viewport->add_child(light);
 	
 	DirectionalLight3D *light2 = memnew(DirectionalLight3D);
 	light2->set_transform(Transform3D().looking_at(Vector3(0, 1, 0), Vector3(0, 0, 1)));
 	light2->set_color(Color(0.7, 0.7, 0.7));
+	light2->set_param(Light3D::PARAM_ENERGY, 0.5); // Fill light
 	viewport->add_child(light2);
 	
 	// Simple mesh instance
@@ -203,15 +268,11 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	preview_mesh->set_name("IsolatedModelViewer");
 	viewport->add_child(preview_mesh);
 	
-	print_line("Isolated 3D viewer created with new World3D");
-	
-	// OVERRIDE gui_input on THIS control for proper mouse handling
+	// Input handling
 	set_process_input(true);
 	viewport_container->set_focus_mode(Control::FOCUS_ALL);
 	viewport_container->connect("gui_input", callable_mp(this, &DesignStudio3DEditor::_on_viewport_input));
 	viewport_container->set_mouse_filter(Control::MOUSE_FILTER_STOP); // STOP events from passing through
-	
-	print_line("Input handling configured");
 	
 	// HTTP Request nodes - separate instances to avoid conflicts
 	submit_request = memnew(HTTPRequest);
@@ -232,7 +293,10 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	download_request->set_download_chunk_size(65536); // 64KB chunks
 	add_child(download_request);
 	
-	print_line("3D Design Studio: HTTP request nodes initialized");
+	browse_request = memnew(HTTPRequest);
+	browse_request->set_name("BrowseRequest");
+	browse_request->set_timeout(30);
+	add_child(browse_request);
 	
 	// Poll timer
 	poll_timer = memnew(Timer);
@@ -265,7 +329,6 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	if (preview_mesh) {
 		preview_mesh->set_mesh(Ref<Mesh>());
 		preview_mesh->set_transform(Transform3D()); // Reset everything
-		print_line("Cleared simple 3D viewer");
 	}
 	
 	// Get quality setting
@@ -298,6 +361,7 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	if (err == OK) {
 		is_generating = true;
 		generate_button->set_disabled(true);
+		generate_from_image_button->set_disabled(true); // Disable image generation too
 		status_label->set_text("[SUBMITTING] Sending job to GPU server...");
 	} else {
 		status_label->set_text("[ERROR] Failed to start request");
@@ -554,41 +618,32 @@ void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const 
 		generate_button->set_disabled(false);
 	}
 	
-	// Reset state
+	// Reset state - enable all generation buttons
 	is_generating = false;
 	generate_button->set_disabled(false);
+	if (generate_from_image_button && !selected_image_path.is_empty()) {
+		generate_from_image_button->set_disabled(false);
+	}
 	current_job_id = "";
 	download_retry_count = 0;
 }
 
 void DesignStudio3DEditor::_load_model_from_data(const PackedByteArray &p_data) {
-	print_line("Loading model from data, size: " + itos(p_data.size()) + " bytes");
 	
-	// Save to project root with timestamp
+	// Save to TEMP directory (NOT workspace yet - user must export)
 	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
-	String filename = "generated_model_" + timestamp + ".obj";
-	String save_path = "res://" + filename;
+	String filename = "temp_model_" + timestamp + ".obj";
+	String temp_path = "user://" + filename;
+	current_model_path = temp_path; // Store for later export
 	
-	// For saving during runtime, use absolute path
-	String project_path = ProjectSettings::get_singleton()->globalize_path(save_path);
-	
-	print_line("Attempting to save to: " + project_path);
-	
-	Ref<FileAccess> file = FileAccess::open(project_path, FileAccess::WRITE);
+	Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
 	if (file.is_valid()) {
 		file->store_buffer(p_data);
 		file->close();
 		
-		print_line("✅ File saved successfully!");
-		
-		// Show preview of first few lines
-		String preview = "[SUCCESS] Model saved successfully!\n\n";
-		preview += "Location: " + filename + "\n";
-		preview += "Size: " + String::humanize_size(p_data.size()) + "\n\n";
-		preview += "To use this model:\n";
-		preview += "1. The file is in your project root\n";
-		preview += "2. Drag it into your scene\n";
-		preview += "3. Godot will auto-import it\n\n";
+		// Show preview info
+		String preview = "[SUCCESS] Model loaded for viewing!\n\n";
+		preview += "Size: " + String::humanize_size(p_data.size()) + "\n";
 		
 		// Parse the entire OBJ file to get accurate statistics
 		String content;
@@ -621,53 +676,45 @@ void DesignStudio3DEditor::_load_model_from_data(const PackedByteArray &p_data) 
 			}
 		}
 		
+		// Parse OBJ directly and load (works without import)
+		Ref<ArrayMesh> mesh = _parse_obj_to_mesh(content);
+		if (mesh.is_valid()) {
+			current_loaded_mesh = mesh;
+			
+			if (preview_mesh) {
+				preview_mesh->set_mesh(mesh);
+				
+				// Add double-sided material to prevent see-through issues
+				Ref<StandardMaterial3D> mat = memnew(StandardMaterial3D);
+				mat->set_cull_mode(BaseMaterial3D::CULL_DISABLED); // DOUBLE-SIDED rendering
+				mat->set_albedo(Color(0.8, 0.8, 0.8)); // Neutral gray
+				mat->set_shading_mode(StandardMaterial3D::SHADING_MODE_PER_VERTEX); // Better shading
+				preview_mesh->set_material_override(mat);
+				
+				_setup_camera_orbit();
+				
+				preview += "\n[3D VIEWER] Model loaded! Use mouse to rotate/zoom.";
+			}
+			
+			// Enable export button
+			export_button->set_disabled(false);
+		}
+		
 		status_label->set_text(preview);
-		
-		// Try to load the imported mesh after a delay
-		print_line("Scheduling 3D viewer update after import...");
-		
-		// Use a timer to wait for import to complete, then try loading
-		Timer *import_wait_timer = memnew(Timer);
-		import_wait_timer->set_wait_time(2.0); // Wait 2 seconds for import
-		import_wait_timer->set_one_shot(true);
-		add_child(import_wait_timer);
-		
-		// Connect lambda to load the imported mesh
-		import_wait_timer->connect("timeout", callable_mp(this, &DesignStudio3DEditor::_load_imported_mesh).bind(save_path));
-		import_wait_timer->start();
-		
-		preview += "\n[3D VIEWER] Waiting for import, then loading...";
-		status_label->set_text(preview);
-		
-		// FORCE IMMEDIATE REIMPORT to fix the "cross" issue
-		print_line("Forcing immediate reimport of generated file...");
-		
-		Vector<String> reimport_files;
-		reimport_files.push_back(save_path);
-		
-		// Force reimport immediately 
-		EditorFileSystem::get_singleton()->reimport_files(reimport_files);
-		
-		// Also trigger general scan for good measure
-		EditorFileSystem::get_singleton()->scan_changes();
-		
-		print_line("Forced reimport completed. File should appear correctly in FileSystem dock.");
 		
 	} else {
-		status_label->set_text("[ERROR] Failed to save model file to: " + project_path + "\n\nCheck write permissions.");
-		print_line("ERROR: Could not open file for writing: " + project_path);
+		status_label->set_text("[ERROR] Failed to save temp file");
 	}
 }
 
 Ref<ArrayMesh> DesignStudio3DEditor::_parse_obj_to_mesh(const String &p_obj_content) {
-	print_line("SIMPLE OBJ parsing...");
-	
 	PackedVector3Array vertices;
+	PackedVector3Array normals;
 	PackedInt32Array indices;
 	
 	PackedStringArray lines = p_obj_content.split("\n");
 	
-	// SIMPLE parsing - just vertices and triangular faces
+	// Parse vertices AND normals
 	for (int i = 0; i < lines.size(); i++) {
 		String line = lines[i].strip_edges();
 		
@@ -680,13 +727,22 @@ Ref<ArrayMesh> DesignStudio3DEditor::_parse_obj_to_mesh(const String &p_obj_cont
 					parts[3].to_float()
 				));
 			}
+		} else if (line.begins_with("vn ")) {
+			// Parse normals too!
+			PackedStringArray parts = line.split(" ");
+			if (parts.size() >= 4) {
+				normals.push_back(Vector3(
+					parts[1].to_float(),
+					parts[2].to_float(),
+					parts[3].to_float()
+				));
+			}
 		} else if (line.begins_with("f ")) {
 			PackedStringArray parts = line.split(" ");
 			if (parts.size() >= 4) {
-				// Only handle triangular faces for simplicity
 				for (int j = 1; j <= 3 && j < parts.size(); j++) {
 					String vertex_def = parts[j];
-					int vertex_index = vertex_def.split("/")[0].to_int() - 1; // OBJ is 1-based
+					int vertex_index = vertex_def.split("/")[0].to_int() - 1;
 					if (vertex_index >= 0 && vertex_index < vertices.size()) {
 						indices.push_back(vertex_index);
 					}
@@ -695,36 +751,33 @@ Ref<ArrayMesh> DesignStudio3DEditor::_parse_obj_to_mesh(const String &p_obj_cont
 		}
 	}
 	
-	print_line("SIMPLE parsed: " + itos(vertices.size()) + " vertices, " + itos(indices.size()) + " indices");
-	
 	if (vertices.size() == 0 || indices.size() == 0) {
 		return Ref<ArrayMesh>();
 	}
 	
-	// Create simplest possible mesh
+	// Create mesh WITH normals for proper shading
 	Ref<ArrayMesh> mesh = memnew(ArrayMesh);
 	Array arrays;
 	arrays.resize(Mesh::ARRAY_MAX);
 	arrays[Mesh::ARRAY_VERTEX] = vertices;
 	arrays[Mesh::ARRAY_INDEX] = indices;
 	
-	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
-	print_line("SIMPLE ArrayMesh created");
+	// Add normals for proper shading detail
+	if (normals.size() == vertices.size()) {
+		arrays[Mesh::ARRAY_NORMAL] = normals;
+	}
 	
+	mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
 	return mesh;
 }
 
 void DesignStudio3DEditor::_setup_camera_orbit() {
-	print_line("Setting up SIMPLE camera for model");
-	
 	if (!preview_mesh || !camera) {
-		print_line("preview_mesh or camera is null!");
 		return;
 	}
 	
 	Ref<Mesh> mesh = preview_mesh->get_mesh();
 	if (!mesh.is_valid()) {
-		print_line("Mesh is not valid!");
 		return;
 	}
 	
@@ -740,15 +793,11 @@ void DesignStudio3DEditor::_setup_camera_orbit() {
 		// Center the model
 		Vector3 center = aabb.get_center();
 		preview_mesh->set_position(-center * scale);
-		
-		print_line("Scaled model by " + String::num(scale) + ", centered at " + (-center * scale).operator String());
 	}
 	
 	// Position camera to see the 1x1x1 scaled model
 	camera->set_position(Vector3(1.5, 1.0, 2.0));
 	camera->look_at(Vector3(0, 0, 0), Vector3(0, 1, 0));
-	
-	print_line("Camera positioned to view scaled model");
 }
 
 void DesignStudio3DEditor::_update_camera_from_orbit() {
@@ -769,7 +818,6 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 		if (mb->get_button_index() == MouseButton::LEFT) {
 			is_rotating = mb->is_pressed();
 			last_mouse_pos = mb->get_position();
-			print_line("Left mouse button: " + String(is_rotating ? "PRESSED" : "RELEASED"));
 			viewport_container->accept_event(); // Consume the event
 		} else if (mb->get_button_index() == MouseButton::WHEEL_UP && mb->is_pressed()) {
 			// Zoom in toward center (origin)
@@ -785,7 +833,6 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 				if (new_pos.length() > 0.3f) {
 					camera->set_position(new_pos);
 					camera->look_at(center, Vector3(0, 1, 0));
-					print_line("Zoom in - distance from center: " + String::num(new_pos.length()));
 				}
 				viewport_container->accept_event();
 			}
@@ -803,7 +850,6 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 				if (new_pos.length() < 15.0f) {
 					camera->set_position(new_pos);
 					camera->look_at(center, Vector3(0, 1, 0));
-					print_line("Zoom out - distance from center: " + String::num(new_pos.length()));
 				}
 				viewport_container->accept_event();
 			}
@@ -827,21 +873,16 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 }
 
 void DesignStudio3DEditor::_start_download_with_headers(const String &p_url) {
-	print_line("Starting download with proper headers: " + p_url);
-	
 	// Connect callback
 	download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded), CONNECT_ONE_SHOT);
 	
 	// Add headers to match curl behavior
 	PackedStringArray headers;
-	headers.push_back("User-Agent: Godot-Editor/4.0"); // Identify as Godot
-	headers.push_back("Accept: */*"); // Accept any content type
-	headers.push_back("Accept-Encoding: identity"); // Don't request compression to avoid issues
-	
-	print_line("Headers: " + String(" | ").join(headers));
+	headers.push_back("User-Agent: Godot-Editor/4.0");
+	headers.push_back("Accept: */*");
+	headers.push_back("Accept-Encoding: identity");
 	
 	Error download_err = download_request->request(p_url, headers, HTTPClient::METHOD_GET, "");
-	print_line("Download request result: " + itos(download_err) + " (0=OK)");
 	
 	if (download_err != OK) {
 		status_label->set_text("[ERROR] Failed to start download request. Error code: " + itos(download_err));
@@ -851,44 +892,176 @@ void DesignStudio3DEditor::_start_download_with_headers(const String &p_url) {
 }
 
 void DesignStudio3DEditor::_on_download_retry_timeout() {
-	print_line("Download retry timeout - attempting retry " + itos(download_retry_count + 1) + "/2");
-	
 	download_retry_count++;
 	status_label->set_text("[RETRYING] Download attempt " + itos(download_retry_count + 1) + "/3");
 	
 	_start_download_with_headers(download_url_to_retry);
 }
 
-void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
-	print_line("======================================");
-	print_line("Attempting to load imported mesh from: " + p_path);
+void DesignStudio3DEditor::_on_refresh_models_pressed() {
+	browse_status_label->set_text("Loading models...");
+	models_list->clear();
 	
-	if (!preview_mesh) {
-		print_line("ERROR: preview_mesh is NULL!");
+	String url = API_URL + "/api/users/" + current_user_id + "/models?status=completed";
+	
+	browse_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_models_list_received), CONNECT_ONE_SHOT);
+	browse_request->request(url);
+}
+
+void DesignStudio3DEditor::_on_models_list_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		browse_status_label->set_text("[ERROR] Failed to load models (HTTP " + itos(p_code) + ")");
 		return;
 	}
 	
-	print_line("preview_mesh parent: " + (preview_mesh->get_parent() ? preview_mesh->get_parent()->get_name() : "NULL"));
-	print_line("preview_mesh is in viewport: " + String(preview_mesh->is_inside_tree() ? "YES" : "NO"));
+	String response_text;
+	if (p_body.size() > 0) {
+		const uint8_t *r = p_body.ptr();
+		response_text = String::utf8((const char *)r, p_body.size());
+	}
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to parse models list");
+		return;
+	}
+	
+	Dictionary response = json.get_data();
+	if (!response.has("models")) {
+		browse_status_label->set_text("[ERROR] Invalid response");
+		return;
+	}
+	
+	Array models = response["models"];
+	int count = response.get("count", 0);
+	
+	models_list->clear();
+	for (int i = 0; i < models.size(); i++) {
+		Dictionary model = models[i];
+		String prompt = model.get("prompt", "Unknown");
+		String id = model.get("id", "");
+		String created = model.get("created_at", "");
+		
+		String display_text = prompt + " (" + created.substr(0, 10) + ")";
+		models_list->add_item(display_text);
+		models_list->set_item_metadata(i, model);
+	}
+	
+	browse_status_label->set_text("Loaded " + itos(count) + " completed models");
+}
+
+void DesignStudio3DEditor::_on_load_selected_pressed() {
+	PackedInt32Array selected = models_list->get_selected_items();
+	if (selected.is_empty()) {
+		browse_status_label->set_text("[ERROR] No model selected");
+		return;
+	}
+	
+	int selected_idx = selected[0];
+	
+	Dictionary model_data = models_list->get_item_metadata(selected_idx);
+	String model_id = model_data.get("id", "");
+	String prompt = model_data.get("prompt", "Unknown");
+	
+	if (model_id.is_empty()) {
+		browse_status_label->set_text("[ERROR] Invalid model data");
+		return;
+	}
+	
+	browse_status_label->set_text("Loading: " + prompt + "...");
+	_load_model_for_viewing(model_data);
+}
+
+void DesignStudio3DEditor::_load_model_for_viewing(const Dictionary &p_model_data) {
+	current_model_data = p_model_data;
+	String model_url = p_model_data.get("output_file_url", "");
+	
+	if (model_url.is_empty()) {
+		browse_status_label->set_text("[ERROR] No URL for this model");
+		return;
+	}
+	
+	browse_status_label->set_text("Downloading...");
+	
+	// Download but DON'T save to workspace yet
+	download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded), CONNECT_ONE_SHOT);
+	download_request->request(model_url);
+}
+
+void DesignStudio3DEditor::_on_export_pressed() {
+	if (current_loaded_mesh.is_null()) {
+		status_label->set_text("[ERROR] No model loaded to export");
+		return;
+	}
+	
+	if (current_model_path.is_empty()) {
+		status_label->set_text("[ERROR] No model data to export");
+		return;
+	}
+	
+	// Save the cached model data to workspace
+	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String filename = "exported_model_" + timestamp + ".obj";
+	String save_path = "res://" + filename;
+	String project_path = ProjectSettings::get_singleton()->globalize_path(save_path);
+	
+	// Read the temp file and save to workspace
+	Ref<FileAccess> source = FileAccess::open(current_model_path, FileAccess::READ);
+	if (source.is_valid()) {
+		PackedByteArray data = source->get_buffer(source->get_length());
+		source->close();
+		
+		Ref<FileAccess> dest = FileAccess::open(project_path, FileAccess::WRITE);
+		if (dest.is_valid()) {
+			dest->store_buffer(data);
+			dest->flush(); // FORCE flush to disk immediately
+			dest->close();
+			
+			// IMMEDIATE scan to detect new file
+			EditorFileSystem::get_singleton()->scan_changes();
+			
+			// Also update the specific file
+			EditorFileSystem::get_singleton()->update_file(save_path);
+			
+			// Call scan again after short delay to ensure it's picked up
+			EditorFileSystem::get_singleton()->call_deferred("scan_changes");
+			
+			status_label->set_text("[SUCCESS] Exported to: " + filename + "\nImporting...");
+			if (browse_status_label) {
+				browse_status_label->set_text("[SUCCESS] Exported and importing!");
+			}
+		} else {
+			status_label->set_text("[ERROR] Failed to write to workspace");
+		}
+	} else {
+		status_label->set_text("[ERROR] Failed to read temp model");
+	}
+}
+
+void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
+	if (!preview_mesh) {
+		return;
+	}
 	
 	// Try loading the resource - Godot should have imported it by now
 	Ref<Resource> resource = ResourceLoader::load(p_path);
 	
 	if (resource.is_valid()) {
-		print_line("Resource loaded successfully, type: " + resource->get_class());
-		
 		// Check if it's a mesh directly
 		Ref<Mesh> mesh = resource;
 		if (mesh.is_valid()) {
-			print_line("Got Mesh resource directly - setting it on isolated preview_mesh");
-			print_line("Mesh has " + itos(mesh->get_surface_count()) + " surfaces");
-			
+			current_loaded_mesh = mesh; // Store for export
 			preview_mesh->set_mesh(mesh);
-			print_line("Mesh set successfully");
 			
 			_setup_camera_orbit();
-			status_label->set_text(status_label->get_text() + "\n[3D VIEWER] Imported mesh loaded!");
-			print_line("======================================");
+			
+			// Update all status labels
+			String success_msg = "[3D VIEWER] Model loaded! Use mouse to rotate/zoom.";
+			if (status_label) status_label->set_text(status_label->get_text() + "\n" + success_msg);
+			if (browse_status_label) browse_status_label->set_text("Model loaded! Export to save.");
+			
+			export_button->set_disabled(false);
 			return;
 		}
 		
@@ -910,9 +1083,17 @@ void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
 				if (mesh_instance && mesh_instance->get_mesh().is_valid()) {
 					print_line("Found MeshInstance3D in scene with valid mesh");
 					Ref<Mesh> scene_mesh = mesh_instance->get_mesh();
+					
+					current_loaded_mesh = scene_mesh; // Store for export
 					preview_mesh->set_mesh(scene_mesh);
 					_setup_camera_orbit();
-					status_label->set_text(status_label->get_text() + "\n[3D VIEWER] Scene mesh loaded!");
+					
+					// Update status labels
+					String success_msg = "[3D VIEWER] Model loaded! Use mouse to rotate/zoom.";
+					if (status_label) status_label->set_text(status_label->get_text() + "\n" + success_msg);
+					if (browse_status_label) browse_status_label->set_text("Model loaded! Export to save.");
+					
+					export_button->set_disabled(false);
 					root->queue_free();
 					return;
 				}
@@ -940,8 +1121,159 @@ void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
 	}
 }
 
+void DesignStudio3DEditor::_on_select_image_pressed() {
+	if (file_dialog) {
+		file_dialog->popup_centered(Size2(800 * EDSCALE, 600 * EDSCALE));
+	}
+}
+
+void DesignStudio3DEditor::_on_image_file_selected(const String &p_path) {
+	selected_image_path = p_path;
+	image_path_label->set_text("Selected: " + p_path.get_file());
+	
+	// Load and display image preview
+	Ref<Image> img = memnew(Image);
+	Error err = img->load(p_path);
+	
+	if (err == OK) {
+		Ref<ImageTexture> texture = ImageTexture::create_from_image(img);
+		image_preview->set_texture(texture);
+		generate_from_image_button->set_disabled(false);
+		image_status_label->set_text("Image loaded! Click Generate to create 3D model.");
+	} else {
+		image_status_label->set_text("[ERROR] Failed to load image");
+		generate_from_image_button->set_disabled(true);
+	}
+}
+
+String DesignStudio3DEditor::_image_to_base64(const String &p_image_path) {
+	Ref<Image> img = memnew(Image);
+	Error err = img->load(p_image_path);
+	
+	if (err != OK) {
+		return "";
+	}
+	
+	// Convert to PNG format in memory
+	PackedByteArray png_data = img->save_png_to_buffer();
+	
+	// Simple base64 encoding
+	static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	String base64_string;
+	
+	const uint8_t *bytes = png_data.ptr();
+	int len = png_data.size();
+	
+	for (int i = 0; i < len; i += 3) {
+		uint32_t b = (bytes[i] << 16);
+		if (i + 1 < len) b |= (bytes[i + 1] << 8);
+		if (i + 2 < len) b |= bytes[i + 2];
+		
+		base64_string += base64_chars[(b >> 18) & 0x3F];
+		base64_string += base64_chars[(b >> 12) & 0x3F];
+		base64_string += (i + 1 < len) ? base64_chars[(b >> 6) & 0x3F] : '=';
+		base64_string += (i + 2 < len) ? base64_chars[b & 0x3F] : '=';
+	}
+	
+	return base64_string;
+}
+
+void DesignStudio3DEditor::_on_generate_from_image_pressed() {
+	if (is_generating) {
+		image_status_label->set_text("[BUSY] Already generating...");
+		return;
+	}
+	
+	if (selected_image_path.is_empty()) {
+		image_status_label->set_text("[ERROR] No image selected");
+		return;
+	}
+	
+	// Convert image to base64
+	String base64_image = _image_to_base64(selected_image_path);
+	if (base64_image.is_empty()) {
+		image_status_label->set_text("[ERROR] Failed to convert image");
+		return;
+	}
+	
+	// Get quality setting
+	String quality = "turbo";
+	switch (image_quality_selector->get_selected_id()) {
+		case 0: quality = "turbo"; break;
+		case 1: quality = "standard"; break;
+		case 2: quality = "high"; break;
+	}
+	
+	// Prepare JSON body for image-to-3D
+	Dictionary body_dict;
+	body_dict["user_id"] = current_user_id;
+	body_dict["image"] = base64_image;
+	body_dict["quality"] = quality;
+	
+	String json_body = JSON::stringify(body_dict);
+	
+	// Setup HTTP request
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	
+	String url = API_URL + "/api/jobs/image-to-3d";
+	
+	// Use submit_request for consistency
+	submit_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_submitted), CONNECT_ONE_SHOT);
+	
+	Error err = submit_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	
+	if (err == OK) {
+		is_generating = true;
+		generate_from_image_button->set_disabled(true);
+		generate_button->set_disabled(true); // Disable text generation too
+		image_status_label->set_text("[SUBMITTING] Sending image to GPU server...");
+		status_label->set_text("[SUBMITTING] Processing image-to-3D...");
+	} else {
+		image_status_label->set_text("[ERROR] Failed to start request");
+	}
+}
+
+String DesignStudio3DEditor::_get_or_create_persistent_user_id() {
+	const String SETTING_KEY = "3d_design_studio/user_id";
+	
+	// Check if we already have a stored user ID
+	if (EditorSettings::get_singleton()->has_setting(SETTING_KEY)) {
+		String stored_id = EditorSettings::get_singleton()->get_setting(SETTING_KEY);
+		if (!stored_id.is_empty()) {
+			return stored_id;
+		}
+	}
+	
+	// Generate new persistent user ID based on machine
+	String machine_id = OS::get_singleton()->get_unique_id();
+	
+	// If machine ID is empty, create from system info
+	if (machine_id.is_empty()) {
+		machine_id = OS::get_singleton()->get_name() + "_" + 
+					 OS::get_singleton()->get_processor_name() + "_" + 
+					 String::num_int64(OS::get_singleton()->get_ticks_usec());
+	}
+	
+	// Create hash for privacy and consistent length
+	uint32_t hash = machine_id.hash();
+	String user_id = "godot_" + String::num_uint64(hash, 16); // Hex format
+	
+	// Store permanently in editor settings
+	EditorSettings::get_singleton()->set_setting(SETTING_KEY, user_id);
+	EditorSettings::get_singleton()->save();
+	
+	return user_id;
+}
+
 DesignStudio3DEditor::DesignStudio3DEditor() {
 	set_name("DesignStudio3D");
+	
+	// Generate persistent user ID on first creation
+	current_user_id = _get_or_create_persistent_user_id();
+	
+	// Confirm user ID is working
+	print_line("3D Design Studio initialized with persistent user ID: " + current_user_id);
 }
 
 // Plugin implementation
