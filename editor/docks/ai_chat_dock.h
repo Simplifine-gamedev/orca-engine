@@ -66,6 +66,7 @@ class ScriptEditor;
 class ScriptTextEditor;
 class HFlowContainer;
 class UserMessageHandler;
+class StreamingIndicator;
 
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
@@ -269,6 +270,7 @@ private:
 	PackedByteArray pending_request_body;
 
 	RichTextLabel *current_assistant_message_label = nullptr;
+	StreamingIndicator *streaming_indicator = nullptr;
 	String response_buffer;
 
 	// Auto-scroll state management
@@ -754,6 +756,6 @@ public:
 	TextEdit *get_input_field() const { return input_field; }
 	void _truncate_conversation_at(int p_message_index);
 	void _update_message_content_at(int p_message_index, const String &p_content);
-	void _rebuild_current_conversation_ui();
+	void _rebuild_current_conversation_ui(bool p_scroll_to_bottom = true);
 	Array _get_messages_as_array() const;
 };

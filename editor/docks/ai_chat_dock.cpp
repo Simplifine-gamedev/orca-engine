@@ -5,6 +5,7 @@
  */
 #include "ai_chat_dock.h"
 #include "ai_chat_input_box.h"
+#include "ai_chat_streaming_indicator.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -238,6 +239,14 @@ void AIChatDock::_handle_thinking_content_delta(const String &p_reasoning_delta)
 		return;
 	}
 	
+	// Check if the thinking label is still valid and in the scene tree
+	if (!current_thinking_label->is_inside_tree()) {
+		print_line("AI Chat: Warning - thinking label was removed from tree, clearing pointer");
+		current_thinking_label = nullptr;
+		current_thinking_section = nullptr;
+		return;
+	}
+	
 	// Accumulate thinking content
 	current_thinking_content += p_reasoning_delta;
 	
@@ -268,6 +277,14 @@ void AIChatDock::_handle_thinking_blocks_delta(const Array &p_thinking_blocks_de
 	
 	if (!current_thinking_label) {
 		print_line("AI Chat: Warning - no thinking label available for thinking blocks");
+		return;
+	}
+	
+	// Check if the thinking label is still valid and in the scene tree
+	if (!current_thinking_label->is_inside_tree()) {
+		print_line("AI Chat: Warning - thinking label was removed from tree, clearing pointer");
+		current_thinking_label = nullptr;
+		current_thinking_section = nullptr;
 		return;
 	}
 	
@@ -508,36 +525,21 @@ void AIChatDock::_notification(int p_notification) {
 			conversation_history_manager->connect("conversation_delete_requested", callable_mp(this, &AIChatDock::_on_conversation_delete_requested));
 			add_child(conversation_history_manager);
 
-			// Keep references for backward compatibility
-			conversation_history_dropdown = conversation_history_manager->get_conversation_dropdown();
-			new_conversation_button = conversation_history_manager->get_new_conversation_button();
+		// Keep references for backward compatibility
+		conversation_history_dropdown = conversation_history_manager->get_conversation_dropdown();
+		new_conversation_button = conversation_history_manager->get_new_conversation_button();
 
-            // Model selection row
-            HBoxContainer *top_container = memnew(HBoxContainer);
-			add_child(top_container);
-
-			Label *model_label = memnew(Label);
-			model_label->set_text("Model:");
-			top_container->add_child(model_label);
-
-            model_dropdown = memnew(OptionButton);
-            // Populate all models dynamically from backend to ensure accuracy
-            _populate_all_models();
-			model_dropdown->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			model_dropdown->connect("item_selected", callable_mp(this, &AIChatDock::_on_model_selected));
-			top_container->add_child(model_dropdown);
-
-            // Index button removed; indexing will be managed automatically
-
-            // Embedding status label (hidden by default)
-            embedding_status_label = memnew(Label);
-            embedding_status_label->set_text("");
-            embedding_status_label->set_modulate(Color(0.8, 0.8, 0.8));
-            embedding_status_label->set_visible(false);
-            top_container->add_child(embedding_status_label);
-			
-			// Setup authentication UI
-			_setup_authentication_ui();
+		// Embedding status label (hidden by default)
+		embedding_status_label = memnew(Label);
+		embedding_status_label->set_text("");
+		embedding_status_label->set_modulate(Color(0.8, 0.8, 0.8));
+		embedding_status_label->set_visible(false);
+		HBoxContainer *embedding_container = memnew(HBoxContainer);
+		embedding_container->add_child(embedding_status_label);
+		add_child(embedding_container);
+		
+		// Setup authentication UI
+		_setup_authentication_ui();
 
 			// Container for attached files (initially hidden) - will be added to bottom panel later
 			attached_files_container = memnew(HFlowContainer);
@@ -777,53 +779,19 @@ void AIChatDock::_notification(int p_notification) {
 			
 			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
-			// Add a container for attachments just above the input field
-			VBoxContainer *bottom_panel = memnew(VBoxContainer);
-			add_child(bottom_panel);
-			
-			// Add attachments container to the bottom panel (positioned above input)
-			bottom_panel->add_child(attached_files_container);
-			
-			// Attach files button row (above input)
-			HBoxContainer *attach_container = memnew(HBoxContainer);
-			bottom_panel->add_child(attach_container);
+		// Add a container for attachments just above the input field
+		VBoxContainer *bottom_panel = memnew(VBoxContainer);
+		add_child(bottom_panel);
+		
+		// Add attachments container to the bottom panel (positioned above input)
+		bottom_panel->add_child(attached_files_container);
 
-			// Add spacer to push button to the right
-			Control *spacer = memnew(Control);
-			spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			attach_container->add_child(spacer);
+		// Input area at the bottom - create using AIChatInputBox component
+		// This now includes model selector and attach button inside
+		AIChatInputBox::create_input_ui(this, bottom_panel);
 
-			// Attach files button
-			attach_button = memnew(MenuButton);
-			attach_button->set_text("Attach");
-			attach_button->set_tooltip_text("Attach project files to your message");
-			attach_button->add_theme_icon_override("icon", get_theme_icon(SNAME("FileList"), SNAME("EditorIcons")));
-			attach_button->set_custom_minimum_size(Size2(80, 32));
-			
-			// Set up the popup menu
-			PopupMenu *popup = attach_button->get_popup();
-			popup->add_item("Files", 0);
-			popup->set_item_icon(0, get_theme_icon(SNAME("FileList"), SNAME("EditorIcons")));
-			popup->add_item("Scene Nodes", 1);
-			popup->set_item_icon(1, get_theme_icon(SNAME("SceneTree"), SNAME("EditorIcons")));
-			popup->add_item("Current Script", 2);
-			popup->set_item_icon(2, get_theme_icon(SNAME("Script"), SNAME("EditorIcons")));
-			popup->add_item("Resources", 3);
-			popup->set_item_icon(3, get_theme_icon(SNAME("ResourcePreloader"), SNAME("EditorIcons")));
-			popup->add_separator();
-			popup->add_item("Re-index Project", 4);
-			popup->set_item_icon(4, get_theme_icon(SNAME("Reload"), SNAME("EditorIcons")));
-			popup->connect("id_pressed", callable_mp(this, &AIChatDock::_on_attachment_menu_item_pressed));
-			
-			attach_container->add_child(attach_button);
-
-			// Add some spacing before input area
-			Control *input_spacer = memnew(Control);
-			input_spacer->set_custom_minimum_size(Size2(0, 4));
-			add_child(input_spacer);
-
-			// Input area at the bottom - create using AIChatInputBox component
-			AIChatInputBox::create_input_ui(this, this);
+		// Populate models AFTER input box is created (model_dropdown now exists)
+		_populate_all_models();
 
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			String selected_model = "claude-4"; // Default to claude-4
@@ -1113,6 +1081,7 @@ void AIChatDock::_on_send_button_pressed() {
 	// This prevents UI freezing by splitting operations across frames
 	is_waiting_for_response = true;
 	_update_ui_state();
+	
 	// Clear input immediately on send and prevent further typing while busy
 	if (input_field && input_field->is_inside_tree()) {
 		input_field->set_text("");
@@ -1230,8 +1199,30 @@ void AIChatDock::_on_send_button_pressed() {
 	_create_message_bubble(msg, chat_history.size() - 1);
 	call_deferred("_scroll_to_bottom");
 	
+	// Start streaming indicator AFTER user message - show AI is thinking
+	print_line("AI Chat: Starting streaming indicator - waiting for AI response");
+	_add_message_to_chat("assistant", "");
+	
+	// CRITICAL: Force the message panel visible so the indicator can be seen
+	if (chat_container != nullptr && chat_container->get_child_count() > 0) {
+		for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+			Node *child = chat_container->get_child(i);
+			PanelContainer *message_panel = Object::cast_to<PanelContainer>(child);
+			if (message_panel && String(message_panel->get_name()).begins_with("message_panel_")) {
+				message_panel->set_visible(true);
+				print_line("AI Chat: Forced message panel visible for streaming indicator");
+				break;
+			}
+		}
+	}
+	
+	// Now start the indicator
+	if (streaming_indicator && streaming_indicator->is_inside_tree()) {
+		streaming_indicator->start_animation();
+	}
+	
 	// Auto-create checkpoint for user message
-	_create_checkpoint(message, chat_history.size() - 1);
+	_create_checkpoint(message, chat_history.size() - 2); // -2 because we added assistant message
 	
 	// Safe conversation access with bounds checking
 	if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
@@ -1260,6 +1251,22 @@ void AIChatDock::_on_send_button_pressed() {
 }
 void AIChatDock::_on_stop_button_pressed() {
 	print_line("AI Chat: Stop button pressed! is_waiting_for_response=" + String(is_waiting_for_response ? "true" : "false") + ", current_request_id='" + current_request_id + "'");
+
+	// Stop ALL streaming indicator animations (search entire tree)
+	if (chat_container) {
+		TypedArray<Node> all_indicators = chat_container->find_children("*", "StreamingIndicator", true, false);
+		for (int i = 0; i < all_indicators.size(); i++) {
+			StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(all_indicators[i]);
+			if (indicator && indicator->is_visible()) {
+				print_line("AI Chat: Stopping streaming indicator [" + String::num_int64(i) + "] on stop button");
+				indicator->stop_animation();
+			}
+		}
+	}
+	// Also stop current pointer if it exists
+	if (streaming_indicator && streaming_indicator->is_visible()) {
+		streaming_indicator->stop_animation();
+	}
 
 	// Always honor stop: cancel backend stream if we have a request_id,
 	// and locally stop any ongoing HTTP streaming and async tool tasks.
@@ -1388,6 +1395,10 @@ void AIChatDock::_on_edit_message_pressed(int p_message_index) {
     PanelContainer *old_panel = Object::cast_to<PanelContainer>(node);
     if (!old_panel) {
         // Fallback to rebuild if we cannot find the targeted panel, but keep proper panel naming and structure.
+        // Clear thinking pointers since we're about to delete all UI elements
+        current_thinking_label = nullptr;
+        current_thinking_section = nullptr;
+        
         for (int i = 0; i < chat_container->get_child_count(); i++) {
             Node *child = chat_container->get_child(i);
             child->queue_free();
@@ -3705,10 +3716,10 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		int original_count = response_data.get("original_count", 0);
 		String message = response_data.get("message", "Condensing conversation...");
 		
-		print_line("AI Chat: 🎯 SUMMARIZING STARTING! " + String::num_int64(original_count) + " messages");
+		print_line("AI Chat: SUMMARIZING STARTING! " + String::num_int64(original_count) + " messages");
 		
 		// Show immediate visual feedback that summarization is happening
-		_show_status_notification("summarization", "⏳ " + message, "⏳", 30.0);
+		_show_status_notification("summarization", message, "", 30.0);
 		
 		// Create inline placeholder
 		if (chat_container) {
@@ -3716,7 +3727,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			if (!existing) {
 				_create_backend_tool_placeholder("summarization", "Conversation summarization");
 			}
-			_update_tool_placeholder_with_description("summarization", "Conversation summarization", "executing", "⏳ Summarizing older messages for AI context...");
+			_update_tool_placeholder_with_description("summarization", "Conversation summarization", "executing", "Summarizing older messages for AI context...");
 		}
 		
 		return; // Don't process further
@@ -3729,7 +3740,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		int new_count = response_data.get("new_count", 0);
 		String action = response_data.get("action", "");
 		
-		print_line("AI Chat: 🎯 SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages");
+		print_line("AI Chat: SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " -> " + String::num_int64(new_count) + " messages");
 		print_line("AI Chat: Action: '" + action + "', has_new_messages: " + String(response_data.has("new_messages") ? "YES" : "NO"));
 		
 		// CORRECT ARCHITECTURE:
@@ -3743,7 +3754,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		Array new_messages = response_data.get("new_messages", Array());
 		
 		if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-			print_line("AI Chat: ✅ ACCEPTING backend summary: " + String::num_int64(original_count) + " → " + String::num_int64(new_messages.size()) + " messages");
+			print_line("AI Chat: ACCEPTING backend summary: " + String::num_int64(original_count) + " -> " + String::num_int64(new_messages.size()) + " messages");
 			
 			// STEP 1: Build preservation maps for tool_results and attached_files
 			HashMap<String, Array> tool_results_map;
@@ -3819,11 +3830,11 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 			_queue_delayed_save();
 			
-			print_line("AI Chat: ✅ Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
+			print_line("AI Chat: Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
 		}
 		
 		// Update notification
-		_show_status_notification("summarization", "✅ Conversation condensed (" + String::num_int64(original_count) + " → " + String::num_int64(new_count) + " messages)", "📊", 4.0);
+		_show_status_notification("summarization", "Conversation condensed (" + String::num_int64(original_count) + " -> " + String::num_int64(new_count) + " messages)", "", 4.0);
 		
 		// Mark inline placeholder as completed and remove it
 		if (chat_container) {
@@ -3876,6 +3887,24 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			// For terminal statuses, ensure waiting state is properly cleared
 			if (is_waiting_for_response && pending_tool_tasks == 0) {
 				print_line("AI Chat: Terminal status '" + status + "' received - clearing waiting state");
+				
+				// CRITICAL: Stop ALL streaming indicators in the chat (search entire tree)
+				if (chat_container) {
+					TypedArray<Node> indicators = chat_container->find_children("*", "StreamingIndicator", true, false);
+					for (int i = 0; i < indicators.size(); i++) {
+						StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(indicators[i]);
+						if (indicator && indicator->is_visible()) {
+							print_line("AI Chat: Found and stopping visible streaming indicator [" + String::num_int64(i) + "] on terminal status");
+							indicator->stop_animation();
+						}
+					}
+				}
+				// Also stop current pointer if it exists
+				if (streaming_indicator && streaming_indicator->is_visible()) {
+					print_line("AI Chat: Stopping current streaming indicator due to terminal status");
+					streaming_indicator->stop_animation();
+				}
+				
 				is_waiting_for_response = false;
 				stop_requested = false;
 				current_request_id = "";
@@ -3970,7 +3999,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
 	if (response_data.has("status") && response_data["status"] == "executing_tools") {
 		uint64_t receive_time = OS::get_singleton()->get_ticks_msec();
-		print_line("AI Chat: ⚡ RECEIVED executing_tools at T+" + String::num_uint64(receive_time) + "ms");
+		print_line("AI Chat: RECEIVED executing_tools at T+" + String::num_uint64(receive_time) + "ms");
 		
 		if (response_data.has("assistant_message")) {
 			Dictionary assistant_message = response_data["assistant_message"];
@@ -4225,11 +4254,19 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		String delta = response_data["content_delta"];
 		print_line("AI Chat: CONTENT_DELTA received (" + String::num_int64(delta.length()) + " chars): " + delta.substr(0, 50) + (delta.length() > 50 ? "..." : ""));
 		
+		// Hide streaming indicator during text streaming (we don't show dots alongside streaming text)
+		if (streaming_indicator && streaming_indicator->is_visible()) {
+			print_line("AI Chat: CONTENT_DELTA - hiding streaming indicator (text is streaming)");
+			streaming_indicator->stop_animation();
+		}
+		
 		// CRITICAL FIX: If last message is not assistant, create a new assistant message first!
 		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 		if (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role != "assistant") {
-			// print_line("AI Chat: CONTENT_DELTA - Last message is " + chat_history[chat_history.size() - 1].role + ", creating new assistant message");
+			print_line("AI Chat: CONTENT_DELTA - Last message is " + chat_history[chat_history.size() - 1].role + ", creating new assistant message");
 			_add_message_to_chat("assistant", "");  // Create empty assistant message
+		} else {
+			print_line("AI Chat: CONTENT_DELTA - Last message is already assistant, reusing it");
 		}
 		
 		RichTextLabel *label = _get_or_create_current_assistant_message_label();
@@ -4260,6 +4297,11 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					// Additional safety check for the converted content
 					if (!bbcode_content.is_empty()) {
 						label->set_text(bbcode_content);
+						// CRITICAL: Make label visible when content arrives (fixes <null> issue)
+						if (!label->is_visible()) {
+							label->set_visible(true);
+							print_line("AI Chat: CONTENT_DELTA - Made content label visible");
+						}
 						// print_line("AI Chat: CONTENT_DELTA - Text set on label (" + String::num_int64(bbcode_content.length()) + " chars BBCode)");
 					} else {
 						// print_line("AI Chat: ERROR - BBCode conversion returned empty!");
@@ -5592,9 +5634,9 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
             String diff_content = content_to_serialize.get("inline_diff", "");
             int diff_length = diff_content.length();
             print_line("AI Chat: FILE_EDIT_RESULT - inline_diff length: " + String::num_int64(diff_length) + " chars" + 
-                       (diff_length > 0 ? " ✅ WILL BE SENT TO AI MODEL" : " ⚠️ EMPTY DIFF"));
+                       (diff_length > 0 ? " WILL BE SENT TO AI MODEL" : " EMPTY DIFF"));
         } else {
-            print_line("AI Chat: FILE_EDIT_RESULT - ⚠️ WARNING: inline_diff field missing from tool result!");
+            print_line("AI Chat: FILE_EDIT_RESULT - WARNING: inline_diff field missing from tool result!");
         }
     }
     
@@ -5919,30 +5961,30 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             }
         } else if (p_tool_name == "runtime_manager") {
             if (actual_op == "game.start") {
-                return "✓ Started game";
+                return "Started game";
             } else if (actual_op == "game.stop") {
-                return "✓ Stopped game";
+                return "Stopped game";
             } else if (actual_op == "errors.summary") {
                 int error_count = p_result.get("total_errors", 0);
-                return "✓ Found " + String::num_int64(error_count) + " runtime errors";
+                return "Found " + String::num_int64(error_count) + " runtime errors";
             } else if (actual_op == "errors.details") {
                 int error_count = p_result.get("total_found", 0);
-                return "✓ Retrieved " + String::num_int64(error_count) + " detailed runtime errors";
+                return "Retrieved " + String::num_int64(error_count) + " detailed runtime errors";
             } else if (actual_op == "errors.test") {
-                return "✓ Added test runtime errors for debugging";
+                return "Added test runtime errors for debugging";
             } else if (actual_op == "errors.debug") {
                 int total_recorded = p_result.get("total_recorded", 0);
-                return "✓ Debug: " + String::num_int64(total_recorded) + " errors currently tracked";
+                return "Debug: " + String::num_int64(total_recorded) + " errors currently tracked";
             } else if (actual_op == "screenshot.take") {
                 bool any_captured = p_result.get("success", false);
                 int count = p_result.get("count", 0);
                 String target = p_args.get("target", "editor");
                 if (any_captured) {
-                    return "✓ Screenshot captured (" + String::num_int64(count) + " viewport(s))";
+                    return "Screenshot captured (" + String::num_int64(count) + " viewport(s))";
                 } else if (target == "game" || target == "both") {
-                    return "ℹ Game screenshots: Use 'Snap to Chat' button in Game View for best results";
+                    return "Game screenshots: Use 'Snap to Chat' button in Game View for best results";
                 } else {
-                    return "⚠ Editor screenshot failed - viewport not ready";
+                    return "Editor screenshot failed - viewport not ready";
                 }
             }
         }
@@ -6063,7 +6105,7 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
         return "Managing runtime...";
     } else {
         // Fallback for unknown tools
-        return "⚡ Executing: " + p_tool_name + "...";
+        return "Executing: " + p_tool_name + "...";
     }
 }
 
@@ -6135,10 +6177,10 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	}
 	PanelContainer *message_panel = memnew(PanelContainer);
 	
-	// Add spacing before each message for cleaner layout
-	if (chat_container->get_child_count() > 0) {
+	// Add minimal spacing before messages (no spacing for assistant messages to keep tight to user messages)
+	if (chat_container->get_child_count() > 0 && p_message.role != "assistant") {
 		Control *spacer = memnew(Control);
-		spacer->set_custom_minimum_size(Size2(0, 4)); // 4px gap between messages - reduced for tighter layout
+		spacer->set_custom_minimum_size(Size2(0, 4)); // 4px gap between user messages
 		chat_container->add_child(spacer);
 	}
 	
@@ -6153,18 +6195,22 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 
 	// --- Modern Message Bubble Styling ---
 	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
-	panel_style->set_content_margin_all(12); // Slightly more padding for modern look
 	panel_style->set_corner_radius_all(8); // Rounded corners for modern appearance
 	Color role_color;
 
 	if (p_message.role == "user") {
 		// User messages: clearer light blue background for better distinction
+		panel_style->set_content_margin_all(12); // Padding for user messages
 		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
 		panel_style->set_border_width_all(1);
 		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
-		// Assistant messages: transparent background so text appears on chat history background
+		// Assistant messages: transparent background with minimal padding
+		panel_style->set_content_margin(SIDE_LEFT, 12);
+		panel_style->set_content_margin(SIDE_RIGHT, 12);
+		panel_style->set_content_margin(SIDE_TOP, 0);    // No top padding - tight to user message
+		panel_style->set_content_margin(SIDE_BOTTOM, 12);
 		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
 		panel_style->set_border_width_all(0); // No border
 		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
@@ -6191,6 +6237,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	content_label->set_selection_enabled(true);
 	content_label->set_use_bbcode(true);
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	content_label->set_text(""); // Ensure empty text by default - prevents <null> from showing
 	
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
@@ -6204,14 +6251,59 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
+		
+		// CRITICAL: Stop ALL existing streaming indicators before creating a new one
+		if (chat_container) {
+			TypedArray<Node> all_indicators = chat_container->find_children("*", "StreamingIndicator", true, false);
+			for (int i = 0; i < all_indicators.size(); i++) {
+				StreamingIndicator *old_indicator = Object::cast_to<StreamingIndicator>(all_indicators[i]);
+				if (old_indicator && old_indicator->is_visible()) {
+					print_line("AI Chat: Stopping OLD streaming indicator [" + String::num_int64(i) + "] before creating new one");
+					old_indicator->stop_animation();
+				}
+			}
+		}
+		
+		// Create streaming indicator container for assistant messages
+		HBoxContainer *indicator_container = memnew(HBoxContainer);
+		indicator_container->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		message_vbox->add_child(indicator_container);
+		print_line("AI Chat: Created streaming indicator_container");
+		
+		// Don't add "Streaming" label - just show dots
+		// Label *streaming_label = memnew(Label);
+		// streaming_label->set_text("Streaming");
+		// streaming_label->set_modulate(Color(0.6, 0.6, 0.6, 1.0));
+		// indicator_container->add_child(streaming_label);
+		print_line("AI Chat: Skipping 'Streaming' label - only showing dots");
+		
+		// Create animated dots indicator
+		streaming_indicator = memnew(StreamingIndicator);
+		streaming_indicator->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		indicator_container->add_child(streaming_indicator);
+		print_line("AI Chat: Created StreamingIndicator and added to container");
+		
+		// Hide container by default
+		indicator_container->set_visible(false);
+		streaming_indicator->set_meta("indicator_container", indicator_container);
+		print_line("AI Chat: Set indicator_container meta and hid container by default");
+		print_line("AI Chat: - streaming_indicator is_inside_tree: " + String(streaming_indicator->is_inside_tree() ? "YES" : "NO"));
 	}
 
-	if (!p_message.content.strip_edges().is_empty()) {
+	// Only show content if it's not empty and not <null>
+	String content_to_check = p_message.content.strip_edges();
+	if (!content_to_check.is_empty() && content_to_check != "<null>" && content_to_check != "null") {
 		String bbcode_content = _markdown_to_bbcode(p_message.content);
-		if (!bbcode_content.is_empty()) {
+		if (!bbcode_content.is_empty() && bbcode_content != "<null>" && bbcode_content != "null") {
 			content_label->set_text(bbcode_content);
+			message_panel->set_visible(true);
 		}
-		message_panel->set_visible(true);
+	}
+	
+	// CRITICAL: If content is empty/null, explicitly hide the label to prevent <null> from showing
+	if (p_message.role == "assistant" && (content_to_check.is_empty() || content_to_check == "<null>" || content_to_check == "null")) {
+		content_label->set_visible(false);
+		print_line("AI Chat: Hiding content_label for assistant message with empty/null content");
 	}
 
 	if (!p_message.tool_calls.is_empty()) {
@@ -6335,18 +6427,22 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 
 	// --- Modern Message Bubble Styling ---
 	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
-	panel_style->set_content_margin_all(12); // Slightly more padding for modern look
 	panel_style->set_corner_radius_all(8); // Rounded corners for modern appearance
 	Color role_color;
 
 	if (p_message.role == "user") {
 		// User messages: clearer light blue background for better distinction
+		panel_style->set_content_margin_all(12); // Padding for user messages
 		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
 		panel_style->set_border_width_all(1);
 		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
-		// Assistant messages: transparent background so text appears on chat history background
+		// Assistant messages: transparent background with minimal padding
+		panel_style->set_content_margin(SIDE_LEFT, 12);
+		panel_style->set_content_margin(SIDE_RIGHT, 12);
+		panel_style->set_content_margin(SIDE_TOP, 0);    // No top padding - tight to user message
+		panel_style->set_content_margin(SIDE_BOTTOM, 12);
 		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
 		panel_style->set_border_width_all(0); // No border
 		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
@@ -6373,6 +6469,7 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	content_label->set_selection_enabled(true);
 	content_label->set_use_bbcode(true);
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	content_label->set_text(""); // Ensure empty text by default - prevents <null> from showing
 	
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
@@ -6386,6 +6483,37 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 
 	if (p_message.role == "assistant") {
 		current_assistant_message_label = content_label;
+		
+		// CRITICAL: Stop any existing streaming indicator before creating a new one
+		if (streaming_indicator && streaming_indicator->is_visible()) {
+			print_line("AI Chat: Stopping OLD streaming indicator before creating new one (saved message)");
+			streaming_indicator->stop_animation();
+		}
+		
+		// Create streaming indicator container for assistant messages
+		HBoxContainer *indicator_container = memnew(HBoxContainer);
+		indicator_container->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		message_vbox->add_child(indicator_container);
+		print_line("AI Chat: Created streaming indicator_container (saved message)");
+		
+		// Don't add "Streaming" label - just show dots
+		// Label *streaming_label = memnew(Label);
+		// streaming_label->set_text("Streaming");
+		// streaming_label->set_modulate(Color(0.6, 0.6, 0.6, 1.0));
+		// indicator_container->add_child(streaming_label);
+		print_line("AI Chat: Skipping 'Streaming' label - only showing dots (saved message)");
+		
+		// Create animated dots indicator
+		streaming_indicator = memnew(StreamingIndicator);
+		streaming_indicator->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
+		indicator_container->add_child(streaming_indicator);
+		print_line("AI Chat: Created StreamingIndicator and added to container (saved message)");
+		
+		// Hide container by default
+		indicator_container->set_visible(false);
+		streaming_indicator->set_meta("indicator_container", indicator_container);
+		print_line("AI Chat: Set indicator_container meta and hid container by default (saved message)");
+		print_line("AI Chat: - streaming_indicator is_inside_tree: " + String(streaming_indicator->is_inside_tree() ? "YES" : "NO"));
 
 		// Create thinking section if this assistant message has reasoning content
 		if (!p_message.reasoning_content.is_empty() || !p_message.thinking_blocks.is_empty()) {
@@ -6393,12 +6521,14 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 		}
 	}
 
-	if (!p_message.content.strip_edges().is_empty()) {
+	// Only show content if it's not empty and not <null>
+	String content_to_check = p_message.content.strip_edges();
+	if (!content_to_check.is_empty() && content_to_check != "<null>" && content_to_check != "null") {
 		String bbcode_content = _markdown_to_bbcode(p_message.content);
-		if (!bbcode_content.is_empty()) {
+		if (!bbcode_content.is_empty() && bbcode_content != "<null>" && bbcode_content != "null") {
 			content_label->set_text(bbcode_content);
+			p_message_panel->set_visible(true);
 		}
-		p_message_panel->set_visible(true);
 	}
 
 	if (!p_message.tool_calls.is_empty()) {
@@ -6532,6 +6662,28 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	}
 	
 	print_line("AI Chat: Successfully found bubble panel and message vbox, creating tool placeholders");
+	
+	// Find and temporarily remove the indicator_container so we can add it at the end
+	HBoxContainer *indicator_container = nullptr;
+	StreamingIndicator *found_indicator = nullptr;
+	for (int i = 0; i < message_vbox->get_child_count(); i++) {
+		Node *child = message_vbox->get_child(i);
+		HBoxContainer *hbox = Object::cast_to<HBoxContainer>(child);
+		if (hbox) {
+			// Check if this HBoxContainer contains a StreamingIndicator
+			for (int j = 0; j < hbox->get_child_count(); j++) {
+				StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(hbox->get_child(j));
+				if (indicator) {
+					indicator_container = hbox;
+					found_indicator = indicator;
+					message_vbox->remove_child(indicator_container);
+					print_line("AI Chat: Temporarily removed indicator_container to reposition at end");
+					break;
+				}
+			}
+			if (indicator_container) break;
+		}
+	}
 
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
@@ -6608,7 +6760,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 
         Label *tool_label = memnew(Label);
         // CRITICAL FIX: Use descriptive status from the start, not generic "[TOOL]"
-        tool_label->set_text("⚡ " + descriptive_status);
+        tool_label->set_text(descriptive_status);
 		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color
 		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		tool_hbox->add_child(tool_label);
@@ -6635,6 +6787,20 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		if (chat_scroll) {
 			chat_scroll->queue_redraw();
 		}
+	}
+	
+	// NOW re-add the indicator_container at the very end (AFTER all tool placeholders are created)
+	// BUT only show it if we're actively waiting for a response (not during conversation loading)
+	if (indicator_container && found_indicator) {
+		message_vbox->add_child(indicator_container);
+		// Only show the indicator if we're actively streaming (not loading a saved conversation)
+		if (is_waiting_for_response && !found_indicator->is_visible()) {
+			print_line("AI Chat: Showing streaming indicator at end (after ALL tool calls created) - more content may be coming");
+			found_indicator->start_animation();
+		} else if (!is_waiting_for_response) {
+			print_line("AI Chat: NOT showing indicator - not waiting for response (loading saved conversation)");
+		}
+		print_line("AI Chat: Moved indicator_container to end (after all tool calls)");
 	}
 	
 	print_line("AI Chat: _create_tool_call_bubbles completed successfully");
@@ -6758,6 +6924,40 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     if (p_tool_message.name == "image_operation" || (result.get("success", false) && result.has("image_data"))) {
         content_panel->set_visible(true);
     }
+    
+    // CRITICAL: After updating tool result, reposition streaming indicator to the END
+    // This ensures the ... always appears after the latest content (text or tool results)
+    // BUT only do this during active streaming, not when loading saved conversations
+    if (is_waiting_for_response && current_assistant_message_label) {
+        Control *bubble_panel = Object::cast_to<Control>(current_assistant_message_label->get_parent()->get_parent());
+        if (bubble_panel) {
+            VBoxContainer *message_vbox = Object::cast_to<VBoxContainer>(bubble_panel->get_child(0));
+            if (message_vbox) {
+                // Find the indicator_container
+                HBoxContainer *indicator_container = nullptr;
+                for (int i = 0; i < message_vbox->get_child_count(); i++) {
+                    Node *child = message_vbox->get_child(i);
+                    HBoxContainer *hbox = Object::cast_to<HBoxContainer>(child);
+                    if (hbox) {
+                        for (int j = 0; j < hbox->get_child_count(); j++) {
+                            if (Object::cast_to<StreamingIndicator>(hbox->get_child(j))) {
+                                indicator_container = hbox;
+                                // Move to end if not already at the end
+                                int current_index = indicator_container->get_index();
+                                int last_index = message_vbox->get_child_count() - 1;
+                                if (current_index != last_index) {
+                                    message_vbox->move_child(indicator_container, last_index);
+                                    print_line("AI Chat: Moved streaming indicator to end after tool result update");
+                                }
+                                break;
+                            }
+                        }
+                        if (indicator_container) break;
+                    }
+                }
+            }
+        }
+    }
 }
 void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
 	Ref<JSON> json;
@@ -6803,7 +7003,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		if (files_truncated) {
 			Label *truncation_warning = memnew(Label);
-			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_files) + " files only (performance optimized)");
+			truncation_warning->set_text("Showing first " + String::num_int64(max_display_files) + " files only (performance optimized)");
 			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			files_vbox->add_child(truncation_warning);
 			
@@ -7002,7 +7202,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		
 		if (ui_truncated) {
 			Label *truncation_warning = memnew(Label);
-			truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " nodes only (performance optimized)");
+			truncation_warning->set_text("Showing first " + String::num_int64(max_display_nodes) + " nodes only (performance optimized)");
 			truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			nodes_vbox->add_child(truncation_warning);
 			
@@ -7104,7 +7304,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			
 			if (ui_truncated) {
 				Label *truncation_warning = memnew(Label);
-				truncation_warning->set_text("⚠ Showing first " + String::num_int64(max_display_nodes) + " results only (performance optimized)");
+				truncation_warning->set_text("Showing first " + String::num_int64(max_display_nodes) + " results only (performance optimized)");
 				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 				search_vbox->add_child(truncation_warning);
 				
@@ -7159,7 +7359,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		Array results = p_result.get("results", Array());
 		
 		Label *count_label = memnew(Label);
-		count_label->set_text("✅ Found " + String::num_int64(results.size()) + " documentation results");
+		count_label->set_text("Found " + String::num_int64(results.size()) + " documentation results");
 		count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		count_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		p_content_vbox->add_child(count_label);
@@ -8215,7 +8415,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int max_results_to_display = MIN(10, similar_files.size());
 			if (similar_files.size() > max_results_to_display) {
 				Label *truncation_warning = memnew(Label);
-				truncation_warning->set_text("⚡ Showing first " + String::num_int64(max_results_to_display) + " results (performance optimized)");
+				truncation_warning->set_text("Showing first " + String::num_int64(max_results_to_display) + " results (performance optimized)");
 				truncation_warning->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 				search_vbox->add_child(truncation_warning);
 			}
@@ -8790,7 +8990,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		String query = p_result.get("query", "");
 		
 		Label *summary_label = memnew(Label);
-		summary_label->set_text("✅ " + search_mode.capitalize() + " search found " + String::num_int64(file_count) + " results for: \"" + query + "\"");
+		summary_label->set_text(search_mode.capitalize() + " search found " + String::num_int64(file_count) + " results for: \"" + query + "\"");
 		summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		p_content_vbox->add_child(summary_label);
@@ -8811,7 +9011,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int filtered_count = p_result.get("filtered_debug_messages", 0);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("✅ Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " debug messages)");
+			summary_label->set_text("Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " debug messages)");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
@@ -8855,7 +9055,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int total_warnings = p_result.get("total_warnings", 0);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("✅ Found " + String::num_int64(unique_errors.size()) + " unique error types (" + 
+			summary_label->set_text("Found " + String::num_int64(unique_errors.size()) + " unique error types (" + 
 									String::num_int64(total_errors) + " errors, " + String::num_int64(total_warnings) + " warnings)");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
@@ -8913,7 +9113,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			int total_found = p_result.get("total_found", errors.size());
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("✅ Retrieved " + String::num_int64(total_found) + " runtime error instances");
+			summary_label->set_text("Retrieved " + String::num_int64(total_found) + " runtime error instances");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
@@ -8956,7 +9156,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			// Other runtime_manager operations - show summary
 			String op_message = p_result.get("message", "Operation completed");
 			Label *op_summary_label = memnew(Label);
-			op_summary_label->set_text("✅ " + op_message);
+			op_summary_label->set_text(op_message);
 			op_summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			op_summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(op_summary_label);
@@ -9640,8 +9840,8 @@ void AIChatDock::_send_chat_request() {
 	
 	// REMOVED: Emergency pruning - backend handles conversation management via intelligent summarization
 	if (total_content_size > 500000) {
-		print_line("⚠️ AI Chat: Large conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
-		print_line("ℹ️ Backend will manage conversation length via intelligent summarization if needed");
+		print_line("WARNING: AI Chat: Large conversation detected (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+		print_line("INFO: Backend will manage conversation length via intelligent summarization if needed");
 	}
 	
 	// For large conversation histories, process in chunks to prevent UI blocking
@@ -9931,8 +10131,8 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 		}
 		
 		if (total_content_size > 400000) {
-			print_line("⚠️ AI Chat: Large conversation in chunked mode (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
-			print_line("ℹ️ Backend will manage conversation length via intelligent summarization if needed");
+			print_line("WARNING: AI Chat: Large conversation in chunked mode (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+			print_line("INFO: Backend will manage conversation length via intelligent summarization if needed");
 		}
 	}
 	
@@ -10659,6 +10859,22 @@ void AIChatDock::_update_ui_state() {
 void AIChatDock::_request_completed() {
 	stream_completed_successfully = true;
 	print_line("AI Chat: Server signaled end of stream");
+	
+	// CRITICAL: Stop ALL streaming indicator animations on completion
+	if (chat_container) {
+		TypedArray<Node> all_indicators = chat_container->find_children("*", "StreamingIndicator", true, false);
+		for (int i = 0; i < all_indicators.size(); i++) {
+			StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(all_indicators[i]);
+			if (indicator && indicator->is_visible()) {
+				print_line("AI Chat: Stopping streaming indicator [" + String::num_int64(i) + "] on request completed");
+				indicator->stop_animation();
+			}
+		}
+	}
+	// Also stop current pointer if it exists
+	if (streaming_indicator && streaming_indicator->is_visible()) {
+		streaming_indicator->stop_animation();
+	}
 
 	// Finalize/save regardless of async state
 	if (current_conversation_index >= 0) {
@@ -13182,16 +13398,16 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 			if (tool_label) {
 				print_line("AI Chat: UPDATE_STATUS - Found Label, updating text");
 			if (p_status == "executing") {
-				tool_label->set_text("⚡ " + p_description);
+				tool_label->set_text(p_description);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
 			} else if (p_status == "starting") {
-				tool_label->set_text("🔄 Starting: " + p_description);
+				tool_label->set_text("Starting: " + p_description);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for starting
 			} else if (p_status == "running") {
-				tool_label->set_text("⏳ " + p_description);
+				tool_label->set_text(p_description);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			} else if (p_status == "completed") {
-				tool_label->set_text("✅ Completed: " + p_tool_name);
+				tool_label->set_text("Completed: " + p_tool_name);
 				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
 			
@@ -16334,8 +16550,8 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     // Rebuild the UI to reflect the restored conversation
     _rebuild_conversation_ui(chat_history);
     
-    // Force scroll to bottom after restore
-    call_deferred("_scroll_to_bottom");
+    // NOTE: Don't auto-scroll - let caller decide if they want to scroll
+    // (restore button keeps position, send button scrolls to bottom)
     
     // Save the modified conversation
     if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
@@ -17091,42 +17307,42 @@ void AIChatDock::_create_truncated_tool_ui(VBoxContainer *p_content_vbox, const 
 String AIChatDock::_generate_tool_result_summary(const String &p_tool_name, const Dictionary &p_result, bool p_success) {
 	if (!p_success) {
 		String error_msg = p_result.get("message", "Tool failed");
-		return "❌ " + p_tool_name + " failed: " + (error_msg.length() > 50 ? error_msg.substr(0, 47) + "..." : error_msg);
+		return p_tool_name + " failed: " + (error_msg.length() > 50 ? error_msg.substr(0, 47) + "..." : error_msg);
 	}
 	
 	// Generate concise summaries for different tool types
 	if (p_tool_name == "get_all_nodes") {
 		Array nodes = p_result.get("nodes", Array());
-		return "✅ Found " + String::num_int64(nodes.size()) + " nodes in scene";
+		return "Found " + String::num_int64(nodes.size()) + " nodes in scene";
 	} else if (p_tool_name == "list_project_files") {
 		Array files = p_result.get("files", Array());
-		return "✅ Listed " + String::num_int64(files.size()) + " project files";
+		return "Listed " + String::num_int64(files.size()) + " project files";
 	} else if (p_tool_name == "search_across_project") {
 		Dictionary results = p_result.get("results", Dictionary());
 		Array similar_files = results.get("similar_files", Array());
-		return "✅ Found " + String::num_int64(similar_files.size()) + " relevant files";
+		return "Found " + String::num_int64(similar_files.size()) + " relevant files";
 	} else if (p_tool_name == "get_project_context") {
 		Dictionary context = p_result.get("context", Dictionary());
 		Array scenes_array = context.get("scenes", Array());
 		Array scripts_array = context.get("scripts", Array());
 		int scenes = scenes_array.size();
 		int scripts = scripts_array.size();
-		return "✅ Project context: " + String::num_int64(scenes) + " scenes, " + String::num_int64(scripts) + " scripts";
+		return "Project context: " + String::num_int64(scenes) + " scenes, " + String::num_int64(scripts) + " scripts";
 	} else if (p_tool_name == "apply_edit" || p_tool_name == "project_manager") {
 		String path = p_result.get("path", "");
 		if (path.is_empty()) {
 			path = p_result.get("file_path", "unknown file");
 		}
-		return "✅ Edited: " + path.get_file();
+		return "Edited: " + path.get_file();
 	} else if (p_tool_name == "create_node") {
 		String name = p_result.get("node_name", "");
 		String type = p_result.get("node_type", "");
-		return "✅ Created " + type + " node: " + name;
+		return "Created " + type + " node: " + name;
 	}
 	
 	// Generic success message
 	String message = p_result.get("message", "Tool completed successfully");
-	return "✅ " + p_tool_name + ": " + (message.length() > 40 ? message.substr(0, 37) + "..." : message);
+	return p_tool_name + ": " + (message.length() > 40 ? message.substr(0, 37) + "..." : message);
 }
 
 void AIChatDock::_expand_truncated_tool_result(Button *p_expand_button, VBoxContainer *p_content_vbox) {
@@ -17511,7 +17727,7 @@ void AIChatDock::_update_message_content_at(int p_message_index, const String &p
 	print_line("AI Chat: Updated message content at index " + String::num_int64(p_message_index));
 }
 
-void AIChatDock::_rebuild_current_conversation_ui() {
+void AIChatDock::_rebuild_current_conversation_ui(bool p_scroll_to_bottom) {
 	Vector<ChatMessage> &chat_history = _get_current_chat_history();
 	
 	// Clear current UI (preserve pending edits banner)
@@ -17528,8 +17744,10 @@ void AIChatDock::_rebuild_current_conversation_ui() {
 	// Rebuild UI
 	_rebuild_conversation_ui(chat_history);
 	
-	// Scroll to bottom
-	call_deferred("_scroll_to_bottom");
+	// Scroll to bottom only if requested
+	if (p_scroll_to_bottom) {
+		call_deferred("_scroll_to_bottom");
+	}
 }
 
 AIChatDock::~AIChatDock() {
