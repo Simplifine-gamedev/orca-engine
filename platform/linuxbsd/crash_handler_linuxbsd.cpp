@@ -57,6 +57,8 @@
 #include <link.h>
 #include <csignal>
 #include <cstdlib>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 static void send_crash_report_to_backend(const String &p_crash_dump) {
 	// Determine endpoint based on environment
