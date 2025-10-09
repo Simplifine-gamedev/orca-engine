@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3 uid="uid://crash_test_scene_001"]
+
+[ext_resource type="Script" path="res://test_crash_godot.gd" id="1_crash"]
+
+[node name="CrashTest" type="Node"]
+script = ExtResource("1_crash")
+
+

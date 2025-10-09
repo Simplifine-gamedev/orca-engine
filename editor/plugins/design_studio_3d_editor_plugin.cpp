@@ -27,6 +27,7 @@
 #include "scene/resources/image_texture.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/button.h"
+#include "scene/gui/check_box.h"
 #include "scene/gui/item_list.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
@@ -80,24 +81,64 @@ void DesignStudio3DEditor::_setup_ui() {
 	mode_tabs->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	left_panel->add_child(mode_tabs);
 	
-	// === GENERATE TAB ===
+	// === GENERATE TAB (Unified Text/Image) ===
 	VBoxContainer *generate_tab = memnew(VBoxContainer);
-	generate_tab->set_name("Generate New");
+	generate_tab->set_name("Generate");
 	mode_tabs->add_child(generate_tab);
 	
+	// Mode selector
+	generation_mode = memnew(OptionButton);
+	generation_mode->add_item("From Text", 0);
+	generation_mode->add_item("From Image", 1);
+	generation_mode->connect("item_selected", callable_mp(this, &DesignStudio3DEditor::_on_generation_mode_changed));
+	generate_tab->add_child(generation_mode);
+	
+	generate_tab->add_child(memnew(HSeparator));
+	
+	// TEXT MODE CONTAINER
+	text_mode_container = memnew(VBoxContainer);
+	generate_tab->add_child(text_mode_container);
+	
 	prompt_input = memnew(LineEdit);
-	prompt_input->set_placeholder("Describe model (e.g., 'a robot')");
-	generate_tab->add_child(prompt_input);
+	prompt_input->set_placeholder("Describe your 3D model...");
+	text_mode_container->add_child(prompt_input);
+	
+	multiview_checkbox = memnew(CheckBox);
+	multiview_checkbox->set_text("Use Multiview (Higher Quality, +1-2min)");
+	text_mode_container->add_child(multiview_checkbox);
+	
+	// IMAGE MODE CONTAINER (initially hidden)
+	image_mode_container = memnew(VBoxContainer);
+	image_mode_container->hide();
+	generate_tab->add_child(image_mode_container);
+	
+	select_image_button = memnew(Button);
+	select_image_button->set_text("Select Image File...");
+	select_image_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_select_image_pressed));
+	image_mode_container->add_child(select_image_button);
+	
+	image_path_label = memnew(Label);
+	image_path_label->set_text("No image selected");
+	image_mode_container->add_child(image_path_label);
+	
+	image_preview = memnew(TextureRect);
+	image_preview->set_custom_minimum_size(Size2(200 * EDSCALE, 150 * EDSCALE));
+	image_preview->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
+	image_preview->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+	image_mode_container->add_child(image_preview);
+	
+	// SHARED CONTROLS
+	generate_tab->add_child(memnew(HSeparator));
 	
 	quality_selector = memnew(OptionButton);
-	quality_selector->add_item("Turbo (~20s)", 0);
-	quality_selector->add_item("Standard (~2min)", 1);
+	quality_selector->add_item("Turbo (~2min)", 0);
+	quality_selector->add_item("Standard (~3min)", 1);
 	quality_selector->add_item("High (~5min)", 2);
 	quality_selector->select(0);
 	generate_tab->add_child(quality_selector);
 	
 	generate_button = memnew(Button);
-	generate_button->set_text("Generate");
+	generate_button->set_text("Generate 3D Model");
 	generate_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_generate_pressed));
 	generate_tab->add_child(generate_button);
 	
@@ -131,46 +172,6 @@ void DesignStudio3DEditor::_setup_ui() {
 	browse_status_label->set_text("Click Refresh to load your models");
 	browse_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	browse_tab->add_child(browse_status_label);
-	
-	// === IMAGE TO 3D TAB ===
-	VBoxContainer *image_tab = memnew(VBoxContainer);
-	image_tab->set_name("Image to 3D");
-	mode_tabs->add_child(image_tab);
-	
-	select_image_button = memnew(Button);
-	select_image_button->set_text("Select Image File");
-	select_image_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_select_image_pressed));
-	image_tab->add_child(select_image_button);
-	
-	image_path_label = memnew(Label);
-	image_path_label->set_text("No image selected");
-	image_path_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	image_tab->add_child(image_path_label);
-	
-	image_preview = memnew(TextureRect);
-	image_preview->set_custom_minimum_size(Size2(200 * EDSCALE, 150 * EDSCALE));
-	image_preview->set_expand_mode(TextureRect::EXPAND_FIT_WIDTH_PROPORTIONAL);
-	image_preview->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
-	image_tab->add_child(image_preview);
-	
-	image_quality_selector = memnew(OptionButton);
-	image_quality_selector->add_item("Turbo (~20s)", 0);
-	image_quality_selector->add_item("Standard (~2min)", 1);
-	image_quality_selector->add_item("High (~5min)", 2);
-	image_quality_selector->select(0);
-	image_tab->add_child(image_quality_selector);
-	
-	generate_from_image_button = memnew(Button);
-	generate_from_image_button->set_text("Generate 3D from Image");
-	generate_from_image_button->set_disabled(true);
-	generate_from_image_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_generate_from_image_pressed));
-	image_tab->add_child(generate_from_image_button);
-	
-	image_status_label = memnew(Label);
-	image_status_label->set_text("Select an image to generate 3D model");
-	image_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	image_status_label->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	image_tab->add_child(image_status_label);
 	
 	// === EXPORT BUTTON (at bottom, shared between tabs) ===
 	left_panel->add_child(memnew(HSeparator));
@@ -319,19 +320,17 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 		return;
 	}
 	
-	String prompt = prompt_input->get_text().strip_edges();
-	if (prompt.is_empty()) {
-		status_label->set_text("[ERROR] Please enter a prompt");
-		return;
-	}
-	
-	// Clear the 3D viewer - SIMPLE
+	// Clear the 3D viewer
 	if (preview_mesh) {
 		preview_mesh->set_mesh(Ref<Mesh>());
-		preview_mesh->set_transform(Transform3D()); // Reset everything
+		preview_mesh->set_transform(Transform3D());
 	}
 	
-	// Get quality setting
+	int mode = generation_mode->get_selected();
+	String url;
+	Dictionary body_dict;
+	
+	// Get quality
 	String quality = "turbo";
 	switch (quality_selector->get_selected_id()) {
 		case 0: quality = "turbo"; break;
@@ -339,21 +338,49 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 		case 2: quality = "high"; break;
 	}
 	
-	// Prepare JSON body
-	Dictionary body_dict;
 	body_dict["user_id"] = current_user_id;
-	body_dict["prompt"] = prompt;
 	body_dict["quality"] = quality;
 	
-	String json_body = JSON::stringify(body_dict);
+	if (mode == 0) {
+		// TEXT MODE
+		String prompt = prompt_input->get_text().strip_edges();
+		if (prompt.is_empty()) {
+			status_label->set_text("[ERROR] Please enter a prompt");
+			return;
+		}
+		
+		body_dict["prompt"] = prompt;
+		
+		// Check if multiview is enabled
+		if (multiview_checkbox->is_pressed()) {
+			url = API_URL + "/api/jobs/text-to-multiview-3d";
+			status_label->set_text("[SUBMITTING] Starting multiview generation...");
+		} else {
+			url = API_URL + "/api/jobs/text-to-3d";
+			status_label->set_text("[SUBMITTING] Starting text-to-3D...");
+		}
+	} else {
+		// IMAGE MODE
+		if (selected_image_path.is_empty()) {
+			status_label->set_text("[ERROR] Please select an image");
+			return;
+		}
+		
+		String base64_image = _image_to_base64(selected_image_path);
+		if (base64_image.is_empty()) {
+			status_label->set_text("[ERROR] Failed to convert image");
+			return;
+		}
+		
+		body_dict["image"] = base64_image;
+		url = API_URL + "/api/jobs/image-to-3d";
+		status_label->set_text("[SUBMITTING] Starting image-to-3D...");
+	}
 	
-	// Setup HTTP request
+	String json_body = JSON::stringify(body_dict);
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
 	
-	String url = API_URL + "/api/jobs/text-to-3d";
-	
-	// Use dedicated submit_request instance
 	submit_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_submitted), CONNECT_ONE_SHOT);
 	
 	Error err = submit_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
@@ -361,8 +388,6 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	if (err == OK) {
 		is_generating = true;
 		generate_button->set_disabled(true);
-		generate_from_image_button->set_disabled(true); // Disable image generation too
-		status_label->set_text("[SUBMITTING] Sending job to GPU server...");
 	} else {
 		status_label->set_text("[ERROR] Failed to start request");
 	}
@@ -476,16 +501,12 @@ void DesignStudio3DEditor::_on_job_status_received(int p_result, int p_code, con
 	} else if (status == "completed") {
 		_stop_polling();
 		
-		// Debug: Print the response to see what we got
-		print_line("Job completed. Full response: " + JSON::stringify(job_data));
-		
-		// OPTIMIZATION: Use direct Supabase URL instead of proxy for faster downloads
+		// Use direct Supabase URL for faster downloads
 		String model_url = "";
 		if (job_data.has("output_file_url")) {
 			Variant url_variant = job_data["output_file_url"];
 			if (url_variant.get_type() == Variant::STRING) {
 				model_url = url_variant;
-				print_line("Using direct Supabase URL for faster download: " + model_url);
 			}
 		}
 		
@@ -504,7 +525,6 @@ void DesignStudio3DEditor::_on_job_status_received(int p_result, int p_code, con
 			}
 			
 			model_url = API_URL + "/api/download/" + record_id + "?user_id=" + current_user_id;
-			print_line("Using proxy download URL: " + model_url);
 		}
 		status_label->set_text("[COMPLETE] Downloading model (fast)...");
 		
@@ -525,17 +545,6 @@ void DesignStudio3DEditor::_on_job_status_received(int p_result, int p_code, con
 }
 
 void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	print_line("========================================");
-	print_line("=== MODEL DOWNLOAD CALLBACK TRIGGERED ===");
-	print_line("========================================");
-	print_line("Result: " + itos(p_result) + " (0=SUCCESS)");
-	print_line("HTTP Code: " + itos(p_code));
-	print_line("Body size: " + itos(p_body.size()) + " bytes (" + String::humanize_size(p_body.size()) + ")");
-	print_line("Headers count: " + itos(p_headers.size()));
-	for (int i = 0; i < p_headers.size(); i++) {
-		print_line("  Header[" + itos(i) + "]: " + p_headers[i]);
-	}
-	print_line("========================================");
 	
 	if (p_result != HTTPRequest::RESULT_SUCCESS) {
 		String error_msg = "Unknown error";
@@ -562,8 +571,7 @@ void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const 
 	if (p_code != 200 && p_code != 302 && p_code != 307) {
 		// Handle retry logic for 404 errors (might be timing issue)
 		if (p_code == 404 && download_retry_count < 2) {
-			print_line("Got 404, scheduling retry " + itos(download_retry_count + 1) + "/2 in 1 second...");
-			status_label->set_text("[404 ERROR] Download failed, retrying in 1 second...\n(Attempt " + itos(download_retry_count + 1) + "/3)");
+			status_label->set_text("[404 ERROR] Retrying in 1 second... (Attempt " + itos(download_retry_count + 1) + "/3)");
 			download_retry_timer->start();
 			return;
 		}
@@ -610,7 +618,6 @@ void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const 
 	}
 	
 	if (p_body.size() > 0) {
-		print_line("Download successful after " + itos(download_retry_count) + " retries");
 		_load_model_from_data(p_body);
 	} else {
 		status_label->set_text("[ERROR] Downloaded file is empty");
@@ -618,12 +625,9 @@ void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const 
 		generate_button->set_disabled(false);
 	}
 	
-	// Reset state - enable all generation buttons
+	// Reset state
 	is_generating = false;
 	generate_button->set_disabled(false);
-	if (generate_from_image_button && !selected_image_path.is_empty()) {
-		generate_from_image_button->set_disabled(false);
-	}
 	current_job_id = "";
 	download_retry_count = 0;
 }
@@ -1121,6 +1125,20 @@ void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
 	}
 }
 
+void DesignStudio3DEditor::_on_generation_mode_changed(int p_index) {
+	if (p_index == 0) {
+		// Text mode
+		text_mode_container->show();
+		image_mode_container->hide();
+		status_label->set_text("Ready to generate from text");
+	} else {
+		// Image mode
+		text_mode_container->hide();
+		image_mode_container->show();
+		status_label->set_text("Select an image to generate");
+	}
+}
+
 void DesignStudio3DEditor::_on_select_image_pressed() {
 	if (file_dialog) {
 		file_dialog->popup_centered(Size2(800 * EDSCALE, 600 * EDSCALE));
@@ -1138,11 +1156,9 @@ void DesignStudio3DEditor::_on_image_file_selected(const String &p_path) {
 	if (err == OK) {
 		Ref<ImageTexture> texture = ImageTexture::create_from_image(img);
 		image_preview->set_texture(texture);
-		generate_from_image_button->set_disabled(false);
-		image_status_label->set_text("Image loaded! Click Generate to create 3D model.");
+		status_label->set_text("Image loaded! Click Generate.");
 	} else {
-		image_status_label->set_text("[ERROR] Failed to load image");
-		generate_from_image_button->set_disabled(true);
+		status_label->set_text("[ERROR] Failed to load image");
 	}
 }
 
@@ -1176,62 +1192,6 @@ String DesignStudio3DEditor::_image_to_base64(const String &p_image_path) {
 	}
 	
 	return base64_string;
-}
-
-void DesignStudio3DEditor::_on_generate_from_image_pressed() {
-	if (is_generating) {
-		image_status_label->set_text("[BUSY] Already generating...");
-		return;
-	}
-	
-	if (selected_image_path.is_empty()) {
-		image_status_label->set_text("[ERROR] No image selected");
-		return;
-	}
-	
-	// Convert image to base64
-	String base64_image = _image_to_base64(selected_image_path);
-	if (base64_image.is_empty()) {
-		image_status_label->set_text("[ERROR] Failed to convert image");
-		return;
-	}
-	
-	// Get quality setting
-	String quality = "turbo";
-	switch (image_quality_selector->get_selected_id()) {
-		case 0: quality = "turbo"; break;
-		case 1: quality = "standard"; break;
-		case 2: quality = "high"; break;
-	}
-	
-	// Prepare JSON body for image-to-3D
-	Dictionary body_dict;
-	body_dict["user_id"] = current_user_id;
-	body_dict["image"] = base64_image;
-	body_dict["quality"] = quality;
-	
-	String json_body = JSON::stringify(body_dict);
-	
-	// Setup HTTP request
-	PackedStringArray headers;
-	headers.push_back("Content-Type: application/json");
-	
-	String url = API_URL + "/api/jobs/image-to-3d";
-	
-	// Use submit_request for consistency
-	submit_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_submitted), CONNECT_ONE_SHOT);
-	
-	Error err = submit_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
-	
-	if (err == OK) {
-		is_generating = true;
-		generate_from_image_button->set_disabled(true);
-		generate_button->set_disabled(true); // Disable text generation too
-		image_status_label->set_text("[SUBMITTING] Sending image to GPU server...");
-		status_label->set_text("[SUBMITTING] Processing image-to-3D...");
-	} else {
-		image_status_label->set_text("[ERROR] Failed to start request");
-	}
 }
 
 String DesignStudio3DEditor::_get_or_create_persistent_user_id() {

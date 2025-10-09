@@ -21,6 +21,7 @@ import time
 import tempfile
 import hashlib
 import logging
+import copy
 from Godot_tools import godot_tools
 try:
     from weaviate_vector_manager import WeaviateVectorManager
@@ -712,6 +713,18 @@ def log_request_info():
         g.request_id = str(uuid.uuid4())
         g.request_started_at = time.time()
         
+        # CRITICAL: Validate tools array hasn't been corrupted (sample every 100th request for performance)
+        if hash(g.request_id) % 100 == 0:
+            try:
+                if not godot_tools or not isinstance(godot_tools, list) or len(godot_tools) == 0:
+                    print(f"🚨 CORRUPTION DETECTED: godot_tools is empty or invalid!")
+                elif "type" not in godot_tools[0]:
+                    print(f"🚨 CORRUPTION DETECTED: godot_tools[0] missing 'type' field! Keys: {list(godot_tools[0].keys())}")
+                elif godot_tools[0].get("type") != "function":
+                    print(f"🚨 CORRUPTION DETECTED: godot_tools[0].type = '{godot_tools[0].get('type')}' (expected 'function')")
+            except Exception as e:
+                print(f"🚨 CORRUPTION DETECTED: Exception validating tools: {e}")
+        
         # Generate conversation ID for logging (STABLE across entire conversation)
         try:
             user_id = request.headers.get('X-User-ID', 'anonymous')
@@ -783,6 +796,17 @@ MODEL_3D_ENABLED = bool(
     MODEL_3D_SECRET_KEY
 )
 print(f"DEBUG RESULT: MODEL_3D_ENABLED={MODEL_3D_ENABLED}")
+
+# Supabase Crash Reporting Integration (matches logging_server.py pattern)
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')  # Use service key for backend writes
+CRASH_REPORTS_TABLE = os.getenv('CRASH_REPORTS_TABLE', 'crash_reports')
+SUPABASE_CRASH_REPORTING_ENABLED = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+
+if SUPABASE_CRASH_REPORTING_ENABLED:
+    print(f"SUPABASE_CRASH_REPORTING: Enabled - storing to '{CRASH_REPORTS_TABLE}' table at {SUPABASE_URL}")
+else:
+    print("SUPABASE_CRASH_REPORTING: Disabled (set SUPABASE_URL and SUPABASE_SERVICE_KEY to enable)")
 _secret_env = os.getenv('FLASK_SECRET_KEY')
 if _secret_env:
     app.secret_key = _secret_env
@@ -3431,10 +3455,14 @@ def chat():
                         # Use preserved friendly name instead of unreliable reverse lookup
                         reasoning_params = _get_reasoning_params(model_friendly_name, model_try)
                         
+                        # CRITICAL FIX: Deep copy tools to prevent LiteLLM from mutating the global
+                        # Cloud Run instances run for hours, and mutations corrupt the tools array
+                        safe_tools = copy.deepcopy(godot_tools)
+                        
                         completion_params = {
                             "model": model_try,
                             "messages": openai_messages,
-                            "tools": godot_tools,
+                            "tools": safe_tools,
                             "tool_choice": "auto", 
                             "stream": True
                         }
@@ -6504,18 +6532,226 @@ def get_available_models():
             "error": str(e)
         }), 500
 
+@app.route('/crash_report/test_supabase', methods=['GET'])
+def test_crash_supabase():
+    """Test Supabase crash reporting connection"""
+    if not SUPABASE_CRASH_REPORTING_ENABLED:
+        return jsonify({
+            "success": False,
+            "enabled": False,
+            "message": "Supabase crash reporting not configured",
+            "instructions": "Add SUPABASE_URL and SUPABASE_SERVICE_KEY to backend/.env"
+        })
+    
+    try:
+        # Test insert a dummy crash report
+        test_data = {
+            'report_id': f'test_{int(time.time())}',
+            'platform': 'test',
+            'engine_version': '4.4.dev (test)',
+            'project_name': 'Connection Test',
+            'user_id': 'test',
+            'machine_id': 'test',
+            'crash_dump': 'Test crash dump for connection verification',
+            'timestamp_reported': int(time.time())
+        }
+        
+        # Use Supabase REST API directly (same as logging_server.py)
+        supabase_rest_url = f"{SUPABASE_URL}/rest/v1/{CRASH_REPORTS_TABLE}"
+        headers = {
+            'apikey': SUPABASE_SERVICE_KEY,
+            'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal'
+        }
+        
+        response = requests.post(supabase_rest_url, json=test_data, headers=headers, timeout=5)
+        
+        if response.status_code == 201:
+            return jsonify({
+                "success": True,
+                "enabled": True,
+                "message": "✅ Supabase connection working! Test crash report stored.",
+                "table": CRASH_REPORTS_TABLE,
+                "test_report_id": test_data['report_id'],
+                "supabase_url": SUPABASE_URL
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "enabled": True,
+                "error": f"HTTP {response.status_code}: {response.text[:500]}",
+                "message": "Supabase connected but insert failed. Check table exists and RLS policies.",
+                "table": CRASH_REPORTS_TABLE
+            }), 500
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "enabled": True,
+            "error": str(e),
+            "message": "Failed to connect to Supabase. Check SUPABASE_URL and SUPABASE_SERVICE_KEY."
+        }), 500
+
+@app.route('/crash_report', methods=['POST'])
+def crash_report():
+    """Receive crash reports from Godot clients for investigation"""
+    try:
+        data = request.get_json() or {}
+        
+        # Extract crash report data
+        crash_dump = data.get('crash_dump', '')
+        platform = data.get('platform', 'unknown')
+        engine_version = data.get('engine_version', 'unknown')
+        user_id = data.get('user_id', 'anonymous')
+        machine_id = data.get('machine_id', 'unknown')
+        project_name = data.get('project_name', 'unknown')
+        timestamp = data.get('timestamp', int(time.time()))
+        
+        if not crash_dump:
+            return jsonify({"success": False, "error": "No crash_dump provided"}), 400
+        
+        # Log the crash report
+        print("=" * 80)
+        print("🚨 CRASH REPORT RECEIVED")
+        print(f"Platform: {platform}")
+        print(f"Engine Version: {engine_version}")
+        print(f"Project: {project_name}")
+        print(f"User: {user_id}")
+        print(f"Machine: {machine_id}")
+        print(f"Timestamp: {timestamp}")
+        print("=" * 80)
+        print(crash_dump)
+        print("=" * 80)
+        
+        # Log to structured logging if enabled
+        log_event('crash_report_received', {
+            'platform': platform,
+            'engine_version': engine_version,
+            'project': project_name,
+            'user_h': _anon(user_id),
+            'machine_h': _anon(machine_id),
+            'crash_dump_size': len(crash_dump)
+        }, 'ERROR')
+        
+        # Generate report ID
+        report_id = f"crash_{timestamp}_{machine_id[:8]}"
+        
+        # Store in Supabase if enabled (use direct REST API like logging_server.py)
+        if SUPABASE_CRASH_REPORTING_ENABLED:
+            try:
+                crash_data = {
+                    'report_id': report_id,
+                    'platform': platform,
+                    'engine_version': engine_version,
+                    'project_name': project_name,
+                    'user_id': user_id,
+                    'machine_id': machine_id,
+                    'crash_dump': crash_dump,
+                    'timestamp_reported': timestamp,
+                    'user_agent': request.headers.get('User-Agent', 'Unknown')
+                }
+                
+                # Use Supabase REST API directly (same as logging_server.py)
+                supabase_rest_url = f"{SUPABASE_URL}/rest/v1/{CRASH_REPORTS_TABLE}"
+                headers = {
+                    'apikey': SUPABASE_SERVICE_KEY,
+                    'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal'
+                }
+                
+                response = requests.post(supabase_rest_url, json=crash_data, headers=headers, timeout=5)
+                
+                if response.status_code == 201:
+                    print(f"SUPABASE_CRASH: ✅ Stored crash report {report_id} to database")
+                    return jsonify({
+                        "success": True,
+                        "message": "Crash report received and stored in database",
+                        "report_id": report_id,
+                        "stored_in_database": True
+                    })
+                else:
+                    print(f"SUPABASE_CRASH: ⚠️ Failed to store (HTTP {response.status_code}): {response.text[:200]}")
+                    return jsonify({
+                        "success": True,
+                        "message": "Crash report received and logged (database insert failed)",
+                        "report_id": report_id,
+                        "stored_in_database": False,
+                        "storage_error": f"HTTP {response.status_code}"
+                    })
+                    
+            except Exception as e:
+                print(f"SUPABASE_CRASH_ERROR: Failed to store crash report: {e}")
+                # Still return success even if DB storage fails (at least we logged it)
+                return jsonify({
+                    "success": True,
+                    "message": "Crash report received and logged (database storage failed)",
+                    "report_id": report_id,
+                    "stored_in_database": False,
+                    "storage_error": str(e)
+                })
+        else:
+            # No database configured, just log it
+            return jsonify({
+                "success": True,
+                "message": "Crash report received and logged",
+                "report_id": report_id,
+                "stored_in_database": False,
+                "note": "Configure SUPABASE_URL and SUPABASE_SERVICE_KEY to enable database storage"
+            })
+        
+    except Exception as e:
+        print(f"CRASH_REPORT_ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for testing"""
     version_info = version_checker.get_version_info()
-    return jsonify({
-        "status": "healthy", 
+    
+    # CRITICAL: Validate tools array integrity to detect corruption
+    tools_valid = True
+    tools_error = None
+    try:
+        if not godot_tools or not isinstance(godot_tools, list):
+            tools_valid = False
+            tools_error = "godot_tools is not a list"
+        elif len(godot_tools) == 0:
+            tools_valid = False
+            tools_error = "godot_tools is empty"
+        else:
+            # Check first tool has required structure
+            first_tool = godot_tools[0]
+            if not isinstance(first_tool, dict):
+                tools_valid = False
+                tools_error = "godot_tools[0] is not a dict"
+            elif "type" not in first_tool:
+                tools_valid = False
+                tools_error = "godot_tools[0] missing 'type' field"
+            elif first_tool.get("type") != "function":
+                tools_valid = False
+                tools_error = f"godot_tools[0].type is '{first_tool.get('type')}' not 'function'"
+    except Exception as e:
+        tools_valid = False
+        tools_error = f"Exception validating tools: {str(e)}"
+    
+    response = {
+        "status": "healthy" if tools_valid else "degraded", 
         "service": "orca-engine-ai-service",
         "providers": ["openai", "anthropic", "google"],
         "available_models": list(MODEL_MAP.keys()),
         "version": auto_update_manager.current_version,
-        "version_info": version_info
-    })
+        "version_info": version_info,
+        "tools_valid": tools_valid,
+        "tools_count": len(godot_tools) if isinstance(godot_tools, list) else 0
+    }
+    
+    if not tools_valid:
+        response["tools_error"] = tools_error
+        print(f"⚠️ HEALTH_CHECK: Tools array corrupted: {tools_error}")
+    
+    return jsonify(response)
 
 @app.route('/version', methods=['GET'])
 def get_version_info():

@@ -1,0 +1,50 @@
+🚨 CRASH REPORTING TEST INSTRUCTIONS
+=====================================
+
+METHOD 1: Quick One-Liner (Fastest)
+------------------------------------
+1. Make sure backend is running: cd backend && python app.py
+2. Open Godot editor
+3. Go to Script Editor
+4. Paste this in the bottom panel (Script > Run):
+   
+   var n = Node.new(); n.free(); n.get_name()
+
+5. Godot will crash immediately
+6. Check backend console for "🚨 CRASH REPORT RECEIVED"
+7. Check your Supabase database crash_reports table
+
+
+METHOD 2: Scene-Based Test (More Realistic)
+-------------------------------------------
+1. Make sure backend is running
+2. Open Godot editor
+3. Open test_crash_scene.tscn (or create a new scene)
+4. Attach test_crash_godot.gd to the root node
+5. Press F5 (Run Current Scene)
+6. Wait 2 seconds - it will print warnings then crash
+7. Check backend logs and Supabase
+
+
+METHOD 3: Force Crash via Debug Menu
+------------------------------------
+If Godot has a debug crash option:
+1. Debug > Crash Handler Test (if available)
+2. Or use OS.crash() if implemented
+
+
+WHAT TO VERIFY:
+---------------
+✅ Backend console shows full crash dump with === separators
+✅ Backend console shows: "CRASH_REPORTER: Crash report sent successfully"
+✅ Supabase crash_reports table has new row
+✅ Check report_id, platform, engine_version, crash_dump fields
+
+TROUBLESHOOTING:
+----------------
+- If no crash report arrives: Check DEV_MODE env var is set
+- If Supabase fails: Check SUPABASE_URL and SUPABASE_ANON_KEY in backend/.env
+- macOS: Crash reports go to ~/Library/Application Support/Godot/...
+- Check backend console for "SUPABASE_CRASH_REPORTING: Enabled" on startup
+
+

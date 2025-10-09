@@ -30,12 +30,16 @@
 
 #include "crash_handler_linuxbsd.h"
 
+#include "core/config/crash_report_config.h"
 #include "core/config/project_settings.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "core/version.h"
 #include "main/main.h"
+
+// For HTTP crash reporting
+#include <curl/curl.h>
 
 #ifndef DEBUG_ENABLED
 #undef CRASH_HANDLER_ENABLED
@@ -48,6 +52,81 @@
 #include <link.h>
 #include <csignal>
 #include <cstdlib>
+
+static void send_crash_report_to_backend(const String &p_crash_dump) {
+	// Determine endpoint based on environment
+	const char *crash_url = CRASH_REPORT_URL;
+	
+	// Check if running in dev mode (DEV_MODE or IS_DEV)
+	const char *dev_mode_env = getenv("DEV_MODE");
+	const char *is_dev_env = getenv("IS_DEV");
+	if ((dev_mode_env && strcmp(dev_mode_env, "true") == 0) || 
+	    (is_dev_env && strcmp(is_dev_env, "true") == 0)) {
+		crash_url = CRASH_REPORT_URL_DEV;
+		fprintf(stderr, "CRASH_REPORTER: Using dev endpoint: %s\n", crash_url);
+	} else {
+		fprintf(stderr, "CRASH_REPORTER: Using production endpoint: %s\n", crash_url);
+	}
+	
+	// Get project name
+	String project_name = "Unknown";
+	if (ProjectSettings::get_singleton()) {
+		project_name = GLOBAL_GET("application/config/name");
+	}
+	
+	String engine_version = GODOT_VERSION_FULL_NAME;
+	if (!String(GODOT_VERSION_HASH).is_empty()) {
+		engine_version = vformat("%s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH);
+	}
+	
+	String machine_id = OS::get_singleton() ? OS::get_singleton()->get_unique_id() : "unknown";
+	if (machine_id.is_empty()) {
+		machine_id = "unknown";
+	}
+	
+	// Build JSON payload (manual construction)
+	String json_payload = "{";
+	json_payload += vformat("\"crash_dump\": \"%s\",", p_crash_dump.c_escape());
+	json_payload += "\"platform\": \"linux\",";
+	json_payload += vformat("\"engine_version\": \"%s\",", engine_version.c_escape());
+	json_payload += vformat("\"project_name\": \"%s\",", project_name.c_escape());
+	json_payload += vformat("\"machine_id\": \"%s\",", machine_id.c_escape());
+	json_payload += "\"user_id\": \"crash_reporter\",";
+	json_payload += vformat("\"timestamp\": %lld", (int64_t)time(nullptr));
+	json_payload += "}";
+	
+	// Send via libcurl (simple synchronous request)
+	CURL *curl = curl_easy_init();
+	if (curl) {
+		struct curl_slist *headers = nullptr;
+		headers = curl_slist_append(headers, "Content-Type: application/json");
+		
+		curl_easy_setopt(curl, CURLOPT_URL, crash_url);
+		curl_easy_setopt(curl, CURLOPT_POST, 1L);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload.utf8().get_data());
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(json_payload.utf8().get_data()));
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+		curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L); // 5 second timeout
+		curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // Thread-safe
+		
+		CURLcode res = curl_easy_perform(curl);
+		
+		if (res == CURLE_OK) {
+			long response_code;
+			curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+			if (response_code == 200) {
+				fprintf(stderr, "CRASH_REPORTER: Crash report sent successfully to %s\n", crash_url);
+			} else {
+				fprintf(stderr, "CRASH_REPORTER: Server returned status %ld\n", response_code);
+			}
+		} else {
+			fprintf(stderr, "CRASH_REPORTER: Failed to send crash report: %s\n", curl_easy_strerror(res));
+		}
+		
+		curl_slist_free_all(headers);
+		curl_easy_cleanup(curl);
+	}
+}
 
 static void handle_crash(int sig) {
 	signal(SIGSEGV, SIG_DFL);
@@ -76,17 +155,28 @@ static void handle_crash(int sig) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
+	// Build crash dump string for backend reporting
+	String crash_dump;
+	crash_dump += "\n================================================================\n";
+	crash_dump += vformat("%s: Program crashed with signal %d\n", __FUNCTION__, sig);
+	
 	// Dump the backtrace to stderr with a message to the user
 	print_error("\n================================================================");
 	print_error(vformat("%s: Program crashed with signal %d", __FUNCTION__, sig));
 
 	// Print the engine version just before, so that people are reminded to include the version in backtrace reports.
+	String version_line;
 	if (String(GODOT_VERSION_HASH).is_empty()) {
-		print_error(vformat("Engine version: %s", GODOT_VERSION_FULL_NAME));
+		version_line = vformat("Engine version: %s", GODOT_VERSION_FULL_NAME);
 	} else {
-		print_error(vformat("Engine version: %s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH));
+		version_line = vformat("Engine version: %s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH);
 	}
-	print_error(vformat("Dumping the backtrace. %s", msg));
+	print_error(version_line);
+	crash_dump += version_line + "\n";
+	
+	String backtrace_header = vformat("Dumping the backtrace. %s", msg);
+	print_error(backtrace_header);
+	crash_dump += backtrace_header + "\n";
 	char **strings = backtrace_symbols(bt_buffer, size);
 	// PIE executable relocation, zero for non-PIE executables
 #ifdef __GLIBC__
@@ -138,21 +228,35 @@ static void handle_crash(int sig) {
 			}
 
 			// Simplify printed file paths to remove redundant `/./` sections (e.g. `/opt/godot/./core` -> `/opt/godot/core`).
-			print_error(vformat("[%d] %s (%s)", (int64_t)i, fname, err == OK ? addr2line_results[i].replace("/./", "/") : ""));
+			String frame_line = vformat("[%d] %s (%s)", (int64_t)i, fname, err == OK ? addr2line_results[i].replace("/./", "/") : "");
+			print_error(frame_line);
+			crash_dump += frame_line + "\n";
 		}
 
 		free(strings);
 	}
 	print_error("-- END OF C++ BACKTRACE --");
+	crash_dump += "-- END OF C++ BACKTRACE --\n";
 	print_error("================================================================");
+	crash_dump += "================================================================\n";
 
 	for (const Ref<ScriptBacktrace> &backtrace : ScriptServer::capture_script_backtraces(false)) {
 		if (!backtrace->is_empty()) {
-			print_error(backtrace->format());
-			print_error(vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper()));
+			String script_trace = backtrace->format();
+			print_error(script_trace);
+			crash_dump += script_trace + "\n";
+			
+			String script_end = vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper());
+			print_error(script_end);
+			crash_dump += script_end + "\n";
+			
 			print_error("================================================================");
+			crash_dump += "================================================================\n";
 		}
 	}
+
+	// Send crash report to backend before aborting
+	send_crash_report_to_backend(crash_dump);
 
 	// Abort to pass the error to the OS
 	abort();

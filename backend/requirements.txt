@@ -23,6 +23,7 @@ pillow  # For image processing
 # Embeddings and search
 numpy  # For embedding operations
 weaviate-client>=4.5.0  # High-performance vector database
+supabase>=2.0.0  # For crash reporting and analytics storage
 
 # Google Cloud dependencies for vector search and Vertex AI
 google-cloud-bigquery  # For BigQuery vector storage

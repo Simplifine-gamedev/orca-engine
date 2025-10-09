@@ -2,7 +2,10 @@
 
 
 # NEW set of tools :)
-godot_tools = [
+# CRITICAL: This array is used by long-running Cloud Run instances
+# Any in-place mutations will corrupt it over time, causing "Missing required parameter: 'tools[0].type'" errors
+# Always deep copy before passing to LiteLLM to prevent provider adapters from mutating the global
+_godot_tools_template = [
     {
         "type": "function",
         "function": {
@@ -683,3 +686,20 @@ godot_tools = [
         }
     }
 ]
+
+# CRITICAL PROTECTION: Create the public godot_tools from a deep copy
+# This prevents any accidental mutations during module initialization
+# At runtime, app.py MUST deepcopy again before passing to LiteLLM
+import copy
+godot_tools = copy.deepcopy(_godot_tools_template)
+
+# Diagnostic: Validate tools structure at module load time
+# This catches any corruption during initialization
+if not godot_tools or not isinstance(godot_tools, list) or len(godot_tools) == 0:
+    raise RuntimeError("CRITICAL: godot_tools is empty or invalid at module load!")
+if "type" not in godot_tools[0] or godot_tools[0]["type"] != "function":
+    raise RuntimeError(f"CRITICAL: godot_tools[0] is malformed at module load: {godot_tools[0]}")
+
+print(f"✅ Godot tools loaded successfully: {len(godot_tools)} tools registered")
+print(f"✅ Tools validation: First tool type='{godot_tools[0].get('type')}', name='{godot_tools[0].get('function', {}).get('name')}'")
+print("⚠️  WARNING: Always deepcopy godot_tools before passing to LiteLLM to prevent corruption!")

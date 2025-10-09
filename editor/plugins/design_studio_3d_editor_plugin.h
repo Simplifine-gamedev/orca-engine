@@ -36,6 +36,7 @@
 
 class Button;
 class Camera3D;
+class CheckBox;
 class DirectionalLight3D;
 class EditorFileDialog;
 class HTTPRequest;
@@ -60,8 +61,21 @@ class DesignStudio3DEditor : public PanelContainer {
 	// UI Elements - Left Panel
 	TabContainer *mode_tabs = nullptr;
 	
-	// Generate tab
+	// Generate tab (unified for text and image)
+	OptionButton *generation_mode = nullptr; // Text or Image
+	
+	// Text mode UI
+	VBoxContainer *text_mode_container = nullptr;
 	LineEdit *prompt_input = nullptr;
+	CheckBox *multiview_checkbox = nullptr;
+	
+	// Image mode UI  
+	VBoxContainer *image_mode_container = nullptr;
+	Button *select_image_button = nullptr;
+	Label *image_path_label = nullptr;
+	TextureRect *image_preview = nullptr;
+	
+	// Shared generate controls
 	OptionButton *quality_selector = nullptr;
 	Button *generate_button = nullptr;
 	Label *status_label = nullptr;
@@ -71,14 +85,6 @@ class DesignStudio3DEditor : public PanelContainer {
 	Button *load_selected_button = nullptr;
 	Button *refresh_list_button = nullptr;
 	Label *browse_status_label = nullptr;
-	
-	// Image to 3D tab
-	Button *select_image_button = nullptr;
-	Label *image_path_label = nullptr;
-	TextureRect *image_preview = nullptr;
-	OptionButton *image_quality_selector = nullptr;
-	Button *generate_from_image_button = nullptr;
-	Label *image_status_label = nullptr;
 	
 	// Export button (shared)
 	Button *export_button = nullptr;
@@ -150,7 +156,7 @@ class DesignStudio3DEditor : public PanelContainer {
 	
 	void _on_select_image_pressed();
 	void _on_image_file_selected(const String &p_path);
-	void _on_generate_from_image_pressed();
+	void _on_generation_mode_changed(int p_index);
 	String _image_to_base64(const String &p_image_path);
 	String _get_or_create_persistent_user_id();
 

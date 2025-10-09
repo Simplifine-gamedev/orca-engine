@@ -30,12 +30,16 @@
 
 #include "crash_handler_windows.h"
 
+#include "core/config/crash_report_config.h"
 #include "core/config/project_settings.h"
 #include "core/object/script_language.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "core/version.h"
 #include "main/main.h"
+
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 
 #ifdef CRASH_HANDLER_EXCEPTION
 
@@ -88,6 +92,105 @@ public:
 		return std::string(&und_name[0], strlen(&und_name[0]));
 	}
 };
+
+static void send_crash_report_to_backend(const String &p_crash_dump) {
+	// Determine endpoint based on environment
+	const char *crash_url = CRASH_REPORT_URL;
+	
+	// Check if running in dev mode (DEV_MODE or IS_DEV)
+	char dev_mode_env[256];
+	char is_dev_env[256];
+	bool is_dev = false;
+	
+	if (GetEnvironmentVariableA("DEV_MODE", dev_mode_env, sizeof(dev_mode_env)) > 0) {
+		is_dev = strcmp(dev_mode_env, "true") == 0;
+	}
+	if (!is_dev && GetEnvironmentVariableA("IS_DEV", is_dev_env, sizeof(is_dev_env)) > 0) {
+		is_dev = strcmp(is_dev_env, "true") == 0;
+	}
+	
+	if (is_dev) {
+		crash_url = CRASH_REPORT_URL_DEV;
+		fprintf(stderr, "CRASH_REPORTER: Using dev endpoint: %s\n", crash_url);
+	} else {
+		fprintf(stderr, "CRASH_REPORTER: Using production endpoint: %s\n", crash_url);
+	}
+	
+	// Get project name
+	String project_name = "Unknown";
+	if (ProjectSettings::get_singleton()) {
+		project_name = GLOBAL_GET("application/config/name");
+	}
+	
+	String engine_version = GODOT_VERSION_FULL_NAME;
+	if (!String(GODOT_VERSION_HASH).is_empty()) {
+		engine_version = vformat("%s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH);
+	}
+	
+	String machine_id = OS::get_singleton() ? OS::get_singleton()->get_unique_id() : "unknown";
+	if (machine_id.is_empty()) {
+		machine_id = "unknown";
+	}
+	
+	// Build JSON payload (manual construction to avoid dependencies in crash handler)
+	String json_payload = "{";
+	json_payload += vformat("\"crash_dump\": \"%s\",", p_crash_dump.c_escape());
+	json_payload += "\"platform\": \"windows\",";
+	json_payload += vformat("\"engine_version\": \"%s\",", engine_version.c_escape());
+	json_payload += vformat("\"project_name\": \"%s\",", project_name.c_escape());
+	json_payload += vformat("\"machine_id\": \"%s\",", machine_id.c_escape());
+	json_payload += "\"user_id\": \"crash_reporter\",";
+	json_payload += vformat("\"timestamp\": %lld", (int64_t)time(nullptr));
+	json_payload += "}";
+	
+	// Parse URL components
+	String url_str(crash_url);
+	bool use_https = url_str.begins_with("https://");
+	String domain = url_str.substr(use_https ? 8 : 7);
+	int path_start = domain.find("/");
+	String path = "/crash_report";
+	if (path_start >= 0) {
+		path = domain.substr(path_start);
+		domain = domain.substr(0, path_start);
+	}
+	
+	// Send via WinHTTP (synchronous, simple, built into Windows)
+	HINTERNET hSession = WinHttpOpen(L"Orca Engine Crash Reporter/1.0",
+		WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+		WINHTTP_NO_PROXY_NAME,
+		WINHTTP_NO_PROXY_BYPASS, 0);
+	
+	if (hSession) {
+		HINTERNET hConnect = WinHttpConnect(hSession,
+			(LPCWSTR)domain.utf16().get_data(),
+			use_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
+		
+		if (hConnect) {
+			HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST",
+				(LPCWSTR)path.utf16().get_data(),
+				nullptr, WINHTTP_NO_REFERER,
+				WINHTTP_DEFAULT_ACCEPT_TYPES,
+				use_https ? WINHTTP_FLAG_SECURE : 0);
+			
+			if (hRequest) {
+				LPCWSTR headers = L"Content-Type: application/json\r\n";
+				const char *data = json_payload.utf8().get_data();
+				DWORD data_len = (DWORD)strlen(data);
+				
+				if (WinHttpSendRequest(hRequest, headers, -1, (LPVOID)data, data_len, data_len, 0) &&
+					WinHttpReceiveResponse(hRequest, nullptr)) {
+					fprintf(stderr, "CRASH_REPORTER: Crash report sent successfully to %s\n", crash_url);
+				} else {
+					fprintf(stderr, "CRASH_REPORTER: Failed to send crash report (error: %lu)\n", GetLastError());
+				}
+				
+				WinHttpCloseHandle(hRequest);
+			}
+			WinHttpCloseHandle(hConnect);
+		}
+		WinHttpCloseHandle(hSession);
+	}
+}
 
 class get_mod_info {
 	HANDLE process;
@@ -143,16 +246,27 @@ DWORD CrashHandlerException(EXCEPTION_POINTERS *ep) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
+	// Build crash dump string for backend reporting
+	String crash_dump;
+	crash_dump += "\n================================================================\n";
+	crash_dump += vformat("%s: Program crashed\n", __FUNCTION__);
+	
 	print_error("\n================================================================");
 	print_error(vformat("%s: Program crashed", __FUNCTION__));
 
 	// Print the engine version just before, so that people are reminded to include the version in backtrace reports.
+	String version_line;
 	if (String(GODOT_VERSION_HASH).is_empty()) {
-		print_error(vformat("Engine version: %s", GODOT_VERSION_FULL_NAME));
+		version_line = vformat("Engine version: %s", GODOT_VERSION_FULL_NAME);
 	} else {
-		print_error(vformat("Engine version: %s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH));
+		version_line = vformat("Engine version: %s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH);
 	}
-	print_error(vformat("Dumping the backtrace. %s", msg));
+	print_error(version_line);
+	crash_dump += version_line + "\n";
+	
+	String backtrace_header = vformat("Dumping the backtrace. %s", msg);
+	print_error(backtrace_header);
+	crash_dump += backtrace_header + "\n";
 
 	// Load the symbols:
 	if (!SymInitialize(process, nullptr, false)) {
@@ -208,13 +322,18 @@ DWORD CrashHandlerException(EXCEPTION_POINTERS *ep) {
 			if (frame.AddrPC.Offset != 0) {
 				std::string fnName = symbol(process, frame.AddrPC.Offset).undecorated_name();
 
+				String frame_line;
 				if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &offset_from_symbol, &line)) {
-					print_error(vformat("[%d] %s (%s:%d)", n, fnName.c_str(), (char *)line.FileName, (int)line.LineNumber));
+					frame_line = vformat("[%d] %s (%s:%d)", n, fnName.c_str(), (char *)line.FileName, (int)line.LineNumber);
 				} else {
-					print_error(vformat("[%d] %s", n, fnName.c_str()));
+					frame_line = vformat("[%d] %s", n, fnName.c_str());
 				}
+				print_error(frame_line);
+				crash_dump += frame_line + "\n";
 			} else {
-				print_error(vformat("[%d] ???", n));
+				String frame_line = vformat("[%d] ???", n);
+				print_error(frame_line);
+				crash_dump += frame_line + "\n";
 			}
 
 			n++;
@@ -226,17 +345,29 @@ DWORD CrashHandlerException(EXCEPTION_POINTERS *ep) {
 	} while (frame.AddrReturn.Offset != 0 && n < 256);
 
 	print_error("-- END OF C++ BACKTRACE --");
+	crash_dump += "-- END OF C++ BACKTRACE --\n";
 	print_error("================================================================");
+	crash_dump += "================================================================\n";
 
 	SymCleanup(process);
 
 	for (const Ref<ScriptBacktrace> &backtrace : ScriptServer::capture_script_backtraces(false)) {
 		if (!backtrace->is_empty()) {
-			print_error(backtrace->format());
-			print_error(vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper()));
+			String script_trace = backtrace->format();
+			print_error(script_trace);
+			crash_dump += script_trace + "\n";
+			
+			String script_end = vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper());
+			print_error(script_end);
+			crash_dump += script_end + "\n";
+			
 			print_error("================================================================");
+			crash_dump += "================================================================\n";
 		}
 	}
+
+	// Send crash report to backend before passing to OS
+	send_crash_report_to_backend(crash_dump);
 
 	// Pass the exception to the OS
 	return EXCEPTION_CONTINUE_SEARCH;
