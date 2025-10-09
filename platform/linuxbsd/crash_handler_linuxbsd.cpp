@@ -38,8 +38,13 @@
 #include "core/version.h"
 #include "main/main.h"
 
-// For HTTP crash reporting
+// For HTTP crash reporting (optional - only if libcurl is available)
+#ifdef __has_include
+#if __has_include(<curl/curl.h>)
 #include <curl/curl.h>
+#define HAS_CURL 1
+#endif
+#endif
 
 #ifndef DEBUG_ENABLED
 #undef CRASH_HANDLER_ENABLED
@@ -95,7 +100,8 @@ static void send_crash_report_to_backend(const String &p_crash_dump) {
 	json_payload += vformat("\"timestamp\": %lld", (int64_t)time(nullptr));
 	json_payload += "}";
 	
-	// Send via libcurl (simple synchronous request)
+	// Send via libcurl if available (optional - file already written to disk)
+#ifdef HAS_CURL
 	CURL *curl = curl_easy_init();
 	if (curl) {
 		struct curl_slist *headers = nullptr;
@@ -126,6 +132,9 @@ static void send_crash_report_to_backend(const String &p_crash_dump) {
 		curl_slist_free_all(headers);
 		curl_easy_cleanup(curl);
 	}
+#else
+	fprintf(stderr, "CRASH_REPORTER: HTTP reporting unavailable (libcurl not installed). Crash saved to local file only.\n");
+#endif
 }
 
 static void handle_crash(int sig) {
@@ -155,10 +164,42 @@ static void handle_crash(int sig) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
+	// REAL-TIME CRASH DUMP FILE: Write to disk immediately in case of force quit
+	String crash_file_path;
+	FILE *crash_file = nullptr;
+	
+	if (OS::get_singleton()) {
+		String user_data_dir = OS::get_singleton()->get_user_data_dir();
+		String crash_dir = user_data_dir.path_join("crashes");
+		
+		// Create directory
+		mkdir(crash_dir.utf8().get_data(), 0755);
+		
+		// Create timestamped crash file
+		time_t now = time(nullptr);
+		crash_file_path = crash_dir.path_join(vformat("crash_%d.txt", (int64_t)now));
+		crash_file = fopen(crash_file_path.utf8().get_data(), "w");
+		
+		if (crash_file) {
+			fprintf(stderr, "CRASH_REPORTER: Writing crash dump to: %s\n", crash_file_path.utf8().get_data());
+		}
+	}
+	
+	auto write_crash_line = [&](const String &line) {
+		if (crash_file) {
+			fprintf(crash_file, "%s\n", line.utf8().get_data());
+			fflush(crash_file);
+		}
+	};
+	
 	// Build crash dump string for backend reporting
 	String crash_dump;
 	crash_dump += "\n================================================================\n";
-	crash_dump += vformat("%s: Program crashed with signal %d\n", __FUNCTION__, sig);
+	write_crash_line("\n================================================================");
+	
+	String crash_header = vformat("%s: Program crashed with signal %d", __FUNCTION__, sig);
+	crash_dump += crash_header + "\n";
+	write_crash_line(crash_header);
 	
 	// Dump the backtrace to stderr with a message to the user
 	print_error("\n================================================================");
@@ -173,10 +214,12 @@ static void handle_crash(int sig) {
 	}
 	print_error(version_line);
 	crash_dump += version_line + "\n";
+	write_crash_line(version_line);
 	
 	String backtrace_header = vformat("Dumping the backtrace. %s", msg);
 	print_error(backtrace_header);
 	crash_dump += backtrace_header + "\n";
+	write_crash_line(backtrace_header);
 	char **strings = backtrace_symbols(bt_buffer, size);
 	// PIE executable relocation, zero for non-PIE executables
 #ifdef __GLIBC__
@@ -231,28 +274,47 @@ static void handle_crash(int sig) {
 			String frame_line = vformat("[%d] %s (%s)", (int64_t)i, fname, err == OK ? addr2line_results[i].replace("/./", "/") : "");
 			print_error(frame_line);
 			crash_dump += frame_line + "\n";
+			write_crash_line(frame_line);
 		}
 
 		free(strings);
 	}
-	print_error("-- END OF C++ BACKTRACE --");
-	crash_dump += "-- END OF C++ BACKTRACE --\n";
-	print_error("================================================================");
-	crash_dump += "================================================================\n";
+	
+	String cpp_end = "-- END OF C++ BACKTRACE --";
+	print_error(cpp_end);
+	crash_dump += cpp_end + "\n";
+	write_crash_line(cpp_end);
+	
+	String separator = "================================================================";
+	print_error(separator);
+	crash_dump += separator + "\n";
+	write_crash_line(separator);
 
 	for (const Ref<ScriptBacktrace> &backtrace : ScriptServer::capture_script_backtraces(false)) {
 		if (!backtrace->is_empty()) {
 			String script_trace = backtrace->format();
 			print_error(script_trace);
 			crash_dump += script_trace + "\n";
+			Vector<String> trace_lines = script_trace.split("\n");
+			for (const String &trace_line : trace_lines) {
+				write_crash_line(trace_line);
+			}
 			
 			String script_end = vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper());
 			print_error(script_end);
 			crash_dump += script_end + "\n";
+			write_crash_line(script_end);
 			
 			print_error("================================================================");
 			crash_dump += "================================================================\n";
+			write_crash_line("================================================================");
 		}
+	}
+
+	// Close crash file before HTTP POST (ensures file is complete)
+	if (crash_file) {
+		fclose(crash_file);
+		fprintf(stderr, "CRASH_REPORTER: Crash dump saved to: %s\n", crash_file_path.utf8().get_data());
 	}
 
 	// Send crash report to backend before aborting

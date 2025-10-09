@@ -178,10 +178,49 @@ static void handle_crash(int sig) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
+	// REAL-TIME CRASH DUMP FILE: Write to disk immediately in case of force quit
+	// Location: user://crashes/crash_TIMESTAMP.txt (survives force quit/power loss)
+	String crash_file_path;
+	FILE *crash_file = nullptr;
+	
+	if (OS::get_singleton()) {
+		// Get user data dir and create crashes subdirectory
+		String user_data_dir = OS::get_singleton()->get_user_data_dir();
+		String crash_dir = user_data_dir.path_join("crashes");
+		
+		// Create directory if it doesn't exist
+		@autoreleasepool {
+			NSString *ns_crash_dir = [NSString stringWithUTF8String:crash_dir.utf8().get_data()];
+			[[NSFileManager defaultManager] createDirectoryAtPath:ns_crash_dir 
+				withIntermediateDirectories:YES attributes:nil error:nil];
+		}
+		
+		// Create timestamped crash file
+		time_t now = time(nullptr);
+		crash_file_path = crash_dir.path_join(vformat("crash_%d.txt", (int64_t)now));
+		crash_file = fopen(crash_file_path.utf8().get_data(), "w");
+		
+		if (crash_file) {
+			fprintf(stderr, "CRASH_REPORTER: Writing crash dump to: %s\n", crash_file_path.utf8().get_data());
+		}
+	}
+	
+	// Helper to write both to string AND file in real-time
+	auto write_crash_line = [&](const String &line) {
+		if (crash_file) {
+			fprintf(crash_file, "%s\n", line.utf8().get_data());
+			fflush(crash_file);  // CRITICAL: Flush immediately for force-quit survival
+		}
+	};
+	
 	// Build crash dump string for backend reporting
 	String crash_dump;
 	crash_dump += "\n================================================================\n";
-	crash_dump += vformat("%s: Program crashed with signal %d\n", __FUNCTION__, sig);
+	write_crash_line("\n================================================================");
+	
+	String crash_header = vformat("%s: Program crashed with signal %d", __FUNCTION__, sig);
+	crash_dump += crash_header + "\n";
+	write_crash_line(crash_header);
 	
 	// Also print to stderr for local debugging
 	print_error("\n================================================================");
@@ -196,10 +235,12 @@ static void handle_crash(int sig) {
 	}
 	print_error(version_line);
 	crash_dump += version_line + "\n";
+	write_crash_line(version_line);
 	
 	String backtrace_header = vformat("Dumping the backtrace. %s", msg);
 	print_error(backtrace_header);
 	crash_dump += backtrace_header + "\n";
+	write_crash_line(backtrace_header);
 	char **strings = backtrace_symbols(bt_buffer, size);
 	if (strings) {
 		void *load_addr = (void *)load_address();
@@ -261,28 +302,48 @@ static void handle_crash(int sig) {
 			String frame_line = vformat("[%d] %s", (int64_t)i, output);
 			print_error(frame_line);
 			crash_dump += frame_line + "\n";
+			write_crash_line(frame_line);
 		}
 
 		free(strings);
 	}
-	print_error("-- END OF C++ BACKTRACE --");
-	crash_dump += "-- END OF C++ BACKTRACE --\n";
-	print_error("================================================================");
-	crash_dump += "================================================================\n";
+	
+	String cpp_end = "-- END OF C++ BACKTRACE --";
+	print_error(cpp_end);
+	crash_dump += cpp_end + "\n";
+	write_crash_line(cpp_end);
+	
+	String separator = "================================================================";
+	print_error(separator);
+	crash_dump += separator + "\n";
+	write_crash_line(separator);
 
 	for (const Ref<ScriptBacktrace> &backtrace : ScriptServer::capture_script_backtraces(false)) {
 		if (!backtrace->is_empty()) {
 			String script_trace = backtrace->format();
 			print_error(script_trace);
 			crash_dump += script_trace + "\n";
+			// Write script trace line by line for real-time persistence
+			Vector<String> trace_lines = script_trace.split("\n");
+			for (const String &trace_line : trace_lines) {
+				write_crash_line(trace_line);
+			}
 			
 			String script_end = vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper());
 			print_error(script_end);
 			crash_dump += script_end + "\n";
+			write_crash_line(script_end);
 			
 			print_error("================================================================");
 			crash_dump += "================================================================\n";
+			write_crash_line("================================================================");
 		}
+	}
+	
+	// Close crash file before HTTP POST (ensures file is complete)
+	if (crash_file) {
+		fclose(crash_file);
+		fprintf(stderr, "CRASH_REPORTER: Crash dump saved to: %s\n", crash_file_path.utf8().get_data());
 	}
 
 	// Send crash report to backend before aborting
