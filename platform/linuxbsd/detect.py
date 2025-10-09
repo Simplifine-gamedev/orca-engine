@@ -520,6 +520,11 @@ def configure(env: "SConsEnvironment"):
 
     if platform.system() == "Linux":
         env.Append(LIBS=["dl"])
+        # Add libcurl for crash reporting if available (optional)
+        if os.system("pkg-config --exists libcurl") == 0:
+            env.ParseConfig("pkg-config libcurl --cflags --libs")
+        else:
+            print_info("libcurl not found. HTTP crash reporting will be disabled.")
 
     if platform.libc_ver()[0] != "glibc":
         if env["execinfo"]:
