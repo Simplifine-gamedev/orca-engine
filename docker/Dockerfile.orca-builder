@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     libspeechd-dev \
     libssl-dev \
     libmbedtls-dev \
+    libcurl4-openssl-dev \
     git \
     python3 \
     python3-pip \

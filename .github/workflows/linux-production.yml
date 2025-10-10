@@ -67,7 +67,8 @@ jobs:
             libspeechd-dev \
             libssl-dev \
             libmbedtls-dev \
-            libwayland-bin
+            libwayland-bin \
+            libcurl4-openssl-dev
 
       - name: Setup Python and SCons
         uses: actions/setup-python@v4
