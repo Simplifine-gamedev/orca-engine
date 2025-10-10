@@ -744,10 +744,14 @@ public:
 	bool _restore_from_checkpoint(int p_message_index);
 	void _safely_reopen_scene_after_checkpoint(const String &p_scene_path);
 	void _verify_scene_reopened(const String &p_expected_scene_path);
-	void _force_editor_refresh_after_checkpoint();
-	void _trigger_external_change_detection();
-	void _final_ui_refresh_after_checkpoint();
-	void _immediate_post_restore_refresh();
+	
+	// Comprehensive editor refresh phases for checkpoint restoration
+	void _force_complete_editor_refresh();
+	void _refresh_phase_resources();
+	void _refresh_phase_scenes();
+	void _refresh_phase_scripts();
+	void _refresh_phase_ui_final();
+	void _refresh_phase_docks();
 
 	// Attach an external file (e.g., screenshot) to the current chat input attachments.
 	void attach_external_file(const String &p_file_path);

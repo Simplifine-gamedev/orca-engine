@@ -536,14 +536,20 @@ void UserMessageHandler::_restore_and_send(int p_message_index, const String &p_
 	
 	print_line("AI Chat: Restoring to message index " + String::num_int64(p_message_index) + " and sending");
 	
-	// Truncate conversation at this point
-	chat_dock->_truncate_conversation_at(p_message_index);
-	
-	// Update the message content
-	chat_dock->_update_message_content_at(p_message_index, p_content);
-	
-	// Rebuild UI
-	chat_dock->_rebuild_current_conversation_ui();
+    // Perform ACTUAL project restore (files + conversation) to the checkpoint for this message.
+    // This was missing in this path and caused restore to be UI-only.
+    bool ok = chat_dock->_restore_from_checkpoint(p_message_index);
+    if (!ok) {
+        // Fallback: at least truncate the conversation so sending proceeds
+        print_line("AI Chat: Restore failed inside _restore_and_send; truncating conversation as fallback");
+        chat_dock->_truncate_conversation_at(p_message_index);
+    }
+    
+    // Ensure the edited content is applied to this message before sending
+    chat_dock->_update_message_content_at(p_message_index, p_content);
+    
+    // Rebuild UI to reflect the updated content
+    chat_dock->_rebuild_current_conversation_ui();
 	
 	// Reset state
 	editing_message_index = -1;
