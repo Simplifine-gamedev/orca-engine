@@ -846,9 +846,6 @@ void AICheckpointManager::_refresh_phase_3_scripts(const Vector<String> &p_scrip
 		se->call("close_all");
 		print_line("AI Checkpoint:   ✅ All scripts closed");
 		
-		// WAIT a moment for close to complete
-		print_line("AI Checkpoint:   - Waiting for script editor to fully close...");
-		
 		// CRITICAL: We can't clear ResourceCache directly (it's private)
 		// Instead, we'll rely on CACHE_MODE_IGNORE when loading resources
 		// and forcibly set source code from disk

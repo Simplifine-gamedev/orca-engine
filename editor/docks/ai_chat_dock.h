@@ -67,6 +67,7 @@ class ScriptTextEditor;
 class HFlowContainer;
 class UserMessageHandler;
 class StreamingIndicator;
+class AIManualSnapshots;
 
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
@@ -88,6 +89,7 @@ private:
 	DiffViewer *diff_viewer;
 	Ref<AIToolServer> tool_server;
 	UserMessageHandler *user_message_handler = nullptr;
+	Ref<AIManualSnapshots> manual_snapshots;
 	// Helper to find RichTextLabel recursively.
 	static RichTextLabel *find_rich_text_label_in_children(Node *p_node) {
 		if (!p_node) {
@@ -205,6 +207,8 @@ private:
 	Button *login_button = nullptr;
 	Button *import_button = nullptr;
 	Button *export_button = nullptr;
+	Button *snapshot_button = nullptr;
+	Button *restore_snapshot_button = nullptr;
 	Label *user_status_label = nullptr;
 	String current_user_id;
 	String current_user_name;
@@ -574,6 +578,14 @@ private:
 	void _on_import_file_selected(const String &p_file_path);
 	void _on_export_button_pressed();
 	void _on_export_file_selected(const String &p_file_path);
+	
+	// Manual Snapshot callbacks
+	void _on_save_snapshot_pressed();
+	void _on_snapshot_save_confirmed();
+	void _on_view_snapshots_pressed();
+	void _on_snapshot_restore_requested(const String &p_snapshot_tag);
+	void _on_snapshot_delete_requested(const String &p_snapshot_tag);
+	
 	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_auth_dialog_action(const StringName &p_action);
 	void _on_auth_provider_selected(int p_id);

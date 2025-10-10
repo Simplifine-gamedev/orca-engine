@@ -7,6 +7,7 @@
 #include "ai_chat_input_box.h"
 #include "ai_chat_streaming_indicator.h"
 #include "ai_checkpoint_manager.h"
+#include "ai_manual_snapshots.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -209,6 +210,13 @@ void AIChatDock::_bind_methods() {
 	// Export functionality
 	ClassDB::bind_method(D_METHOD("_on_export_button_pressed"), &AIChatDock::_on_export_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_export_file_selected", "file_path"), &AIChatDock::_on_export_file_selected);
+	
+	// Manual Snapshot functionality
+	ClassDB::bind_method(D_METHOD("_on_save_snapshot_pressed"), &AIChatDock::_on_save_snapshot_pressed);
+	ClassDB::bind_method(D_METHOD("_on_snapshot_save_confirmed"), &AIChatDock::_on_snapshot_save_confirmed);
+	ClassDB::bind_method(D_METHOD("_on_view_snapshots_pressed"), &AIChatDock::_on_view_snapshots_pressed);
+	ClassDB::bind_method(D_METHOD("_on_snapshot_restore_requested", "snapshot_tag"), &AIChatDock::_on_snapshot_restore_requested);
+	ClassDB::bind_method(D_METHOD("_on_snapshot_delete_requested", "snapshot_tag"), &AIChatDock::_on_snapshot_delete_requested);
 	
 	// Pagination and performance methods (only bind simple callback methods)
 	ClassDB::bind_method(D_METHOD("_on_load_more_pressed"), &AIChatDock::_on_load_more_pressed);
@@ -1770,6 +1778,22 @@ void AIChatDock::_setup_authentication_ui() {
 	export_button->connect("pressed", callable_mp(this, &AIChatDock::_on_export_button_pressed));
 	export_button->set_tooltip_text("Export current conversation to JSON file");
 	auth_container->add_child(export_button);
+	
+	// Manual Snapshot button
+	snapshot_button = memnew(Button);
+	snapshot_button->set_text("Save Snapshot");
+	snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Favorites"), SNAME("EditorIcons")));
+	snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_snapshot_pressed));
+	snapshot_button->set_tooltip_text("Save a named snapshot of your entire project");
+	auth_container->add_child(snapshot_button);
+	
+	// Restore Snapshot button
+	restore_snapshot_button = memnew(Button);
+	restore_snapshot_button->set_text("Snapshots");
+	restore_snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
+	restore_snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_snapshots_pressed));
+	restore_snapshot_button->set_tooltip_text("View and restore manual snapshots");
+	auth_container->add_child(restore_snapshot_button);
 	
 	// Create HTTP request for authentication
 	auth_request = memnew(HTTPRequest);
@@ -12109,6 +12133,11 @@ AIChatDock::AIChatDock() {
 	// Initialize user message handler
 	user_message_handler = memnew(UserMessageHandler);
 	user_message_handler->initialize(this);
+	
+	// Initialize manual snapshots
+	manual_snapshots.instantiate();
+	manual_snapshots->initialize(this);
+	print_line("AI Chat: Manual snapshots system initialized");
 }
 
 
@@ -17518,14 +17547,8 @@ void AIChatDock::_refresh_phase_scripts() {
         
         // CLOSE all scripts completely
         print_line("AI Chat: - CLOSING all script tabs to force fresh reload...");
-        for (int i = open_scripts.size() - 1; i >= 0; i--) {
-            if (open_scripts[i].is_valid()) {
-                // Mark as not edited to avoid save prompts
-                open_scripts[i]->set_edited(false);
-            }
-        }
         
-        // Force script editor to close all tabs
+        // Force script editor to close all tabs (no need to mark edited state)
         se->call("close_all");
         print_line("AI Chat: ✅ All scripts closed");
         
@@ -17565,9 +17588,6 @@ void AIChatDock::_refresh_phase_scripts() {
                 
                 print_line("AI Chat:   ✅ Forcibly loaded from disk: " + script_path);
                 se->edit(script);
-                
-                // Mark as saved (not modified) since it matches disk
-                script->set_edited(false);
             } else {
                 print_line("AI Chat:   ❌ Failed to load resource: " + script_path);
             }
@@ -17643,6 +17663,39 @@ void AIChatDock::_refresh_phase_docks() {
     
     // Show user notification
     _show_status_notification("success", "✅ Checkpoint restored! Files visible in navigator. Scripts/scenes reloaded.", "♻️", 5.0);
+}
+
+// Manual Snapshot callback implementations
+
+void AIChatDock::_on_save_snapshot_pressed() {
+	if (manual_snapshots.is_valid()) {
+		manual_snapshots->show_create_snapshot_dialog();
+	} else {
+		print_line("AI Chat: ERROR - manual_snapshots not initialized");
+	}
+}
+
+void AIChatDock::_on_snapshot_save_confirmed() {
+	// This is handled by the AIManualSnapshots dialog internally
+	print_line("AI Chat: Snapshot save confirmed (handled by AIManualSnapshots)");
+}
+
+void AIChatDock::_on_view_snapshots_pressed() {
+	if (manual_snapshots.is_valid()) {
+		manual_snapshots->show_snapshots_list_dialog();
+	} else {
+		print_line("AI Chat: ERROR - manual_snapshots not initialized");
+	}
+}
+
+void AIChatDock::_on_snapshot_restore_requested(const String &p_snapshot_tag) {
+	print_line("AI Chat: Snapshot restore requested: " + p_snapshot_tag);
+	// The manual_snapshots object handles this internally
+}
+
+void AIChatDock::_on_snapshot_delete_requested(const String &p_snapshot_tag) {
+	print_line("AI Chat: Snapshot delete requested: " + p_snapshot_tag);
+	// The manual_snapshots object handles this internally
 }
 
 AIChatDock::~AIChatDock() {

@@ -723,7 +723,7 @@ void EditorUpdater::_install_and_restart() {
         
         // Give installer/new version time to start before quitting
         print_line("EditorUpdater: Waiting 2 seconds before quitting current instance...");
-        OS::get_singleton()->delay_msec(2000);
+        OS::get_singleton()->delay_usec(2000 * 1000);
         
         print_line("EditorUpdater: Quitting current instance to complete update");
         get_tree()->quit();
