@@ -382,7 +382,7 @@ _godot_tools_template = [
                     "resource_type": {"type": "string", "description": "Resource type for res.create_and_assign (e.g., 'StandardMaterial3D', 'BoxMesh', 'SphereMesh')"},
                     "props": {"type": "object", "description": "Properties to set/modify. For BoxMesh use: {size: {x: 50, y: 0.2, z: 50}}. For SphereMesh: {radius: 1.0, radial_segments: 16, rings: 8}. For materials: {albedo_color: {r: 1, g: 0, b: 0, a: 1}, metallic: 0.5, albedo_texture: {path: 'res://texture.png'}} or {albedo_texture: 'res://texture.png'}"},
                     "properties": {"type": "object", "description": "Properties for res.create_and_assign - same format as props"},
-                    "save_path": {"type": "string"},
+                    "save_path": {"type": "string", "description": "CRITICAL: Path to save resource file (e.g., 'res://resources/my_mesh.tres'). ALWAYS provide this to persist resources to disk. Without save_path, resources are only created in memory and will be lost."},
                     "target": {"type": "string", "description": "Resource target path to inspect/modify"},
                     "path": {"type": "string", "description": "Node path (for res.assign)"},
                     "property": {"type": "string", "description": "Node property to assign to"},

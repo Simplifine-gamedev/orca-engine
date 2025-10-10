@@ -10,7 +10,7 @@
 #include "scene/gui/dialogs.h"
 #include "scene/gui/button.h"
 #include "scene/gui/label.h"
-// #include "scene/gui/progress_bar.h"  // Removed - not using progress bar
+#include "scene/gui/progress_bar.h"  // Re-added for download progress display
 #include "scene/gui/box_container.h"
 #include "scene/main/http_request.h"
 
@@ -18,7 +18,7 @@ class EditorUpdater : public AcceptDialog {
     GDCLASS(EditorUpdater, AcceptDialog);
 
     Label *status_label = nullptr;
-    // ProgressBar *progress = nullptr;  // Removed - using text-only updates
+    ProgressBar *progress = nullptr;  // Re-added for visual download progress
     Button *action_button = nullptr;
     Button *close_button = nullptr;
     HTTPRequest *http = nullptr;
@@ -27,8 +27,14 @@ class EditorUpdater : public AcceptDialog {
     String feed_url;
     String download_url;
     String latest_version;
+    String current_version;  // Current installed version
     String owner_repo;
     String downloaded_file_path;
+    
+    // Manual download tracking for progress
+    Ref<FileAccess> download_file;
+    int64_t total_download_size = 0;
+    int64_t current_download_size = 0;
 
     enum Stage {
         STAGE_IDLE,

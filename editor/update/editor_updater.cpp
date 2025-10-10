@@ -8,6 +8,8 @@
 #include "core/os/os.h"
 #include "core/io/json.h"
 #include "core/string/translation_server.h"
+#include "core/string/ustring.h"  // For TTR translation macro
+#include "core/version.h"  // For VERSION_FULL_CONFIG and VERSION_HASH
 #include "editor/file_system/editor_paths.h"
 #include "editor/editor_node.h"
 #include "editor/themes/editor_scale.h"
@@ -17,27 +19,42 @@ void EditorUpdater::_bind_methods() {
 }
 
 EditorUpdater::EditorUpdater() {
-    set_title(TTR("Update Orca"));
-    set_min_size(Size2(520, 140) * EDSCALE);
+    set_title("Update Orca");
+    set_min_size(Size2(520, 180) * EDSCALE);  // Increased height for progress bar
+    
+    // Get current version from VERSION_FULL_CONFIG or fallback to hash
+    current_version = VERSION_FULL_CONFIG;
+    if (current_version.is_empty()) {
+        current_version = VERSION_HASH;
+    }
 
     VBoxContainer *vb = memnew(VBoxContainer);
     add_child(vb);
 
+    // Version display labels
+    Label *version_info = memnew(Label);
+    version_info->set_text("");
+    version_info->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+    version_info->add_theme_font_size_override("font_size", 11);
+    vb->add_child(version_info);
+    version_info->set_name("version_info_label");  // For easy lookup
+    
     status_label = memnew(Label);
-    status_label->set_text(TTR("Checking for updates..."));
+    status_label->set_text("Checking for updates...");
     vb->add_child(status_label);
 
-    // Remove progress bar - just use text updates
-    // progress = memnew(ProgressBar);
-    // progress->set_min(0);
-    // progress->set_max(100);
-    // progress->set_step(0.1);
-    // progress->set_value(0);
-    // progress->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-    // vb->add_child(progress);
+    // Re-added progress bar for visual download progress
+    progress = memnew(ProgressBar);
+    progress->set_min(0);
+    progress->set_max(100);
+    progress->set_step(0.01);  // Finer granularity for smoother updates
+    progress->set_value(0);
+    progress->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    progress->set_visible(false);  // Hidden until download starts
+    vb->add_child(progress);
 
     action_button = memnew(Button);
-    action_button->set_text(TTR("Install and Restart"));
+    action_button->set_text("Install and Restart");
     action_button->connect("pressed", callable_mp(this, &EditorUpdater::_on_pressed));
     action_button->set_visible(false); // Hide until download is complete
     vb->add_child(action_button);
@@ -45,28 +62,31 @@ EditorUpdater::EditorUpdater() {
     http = memnew(HTTPRequest);
     add_child(http);
     http->connect("request_completed", callable_mp(this, &EditorUpdater::_on_request_completed));
+    
+    // CRITICAL: Set download chunk size to ensure we get frequent progress updates
+    http->set_download_chunk_size(32768);  // 32KB chunks for smooth progress
 
-    set_process(true);
+    set_process(true);  // Enable _process() for progress updates
 }
 
 void EditorUpdater::start_check() {
     stage = STAGE_CHECKING;
-    status_label->set_text(TTR("Checking for updates..."));
+    status_label->set_text("Checking for updates...");
 
     if (feed_url.is_empty()) {
-        status_label->set_text(TTR("No update feed configured."));
+        status_label->set_text("No update feed configured.");
         stage = STAGE_ERROR;
-        action_button->set_text(TTR("Close"));
+        action_button->set_text("Close");
         action_button->set_visible(true);
         return;
     }
 
     Error err = http->request(feed_url);
     if (err != OK) {
-        status_label->set_text(TTR("Failed to request update feed."));
+        status_label->set_text("Failed to request update feed.");
         // Try GitHub releases if configured
         if (!owner_repo.is_empty()) {
-            status_label->set_text(TTR("Checking GitHub releases..."));
+            status_label->set_text("Checking GitHub releases...");
             if (!http_release) {
                 http_release = memnew(HTTPRequest);
                 add_child(http_release);
@@ -77,7 +97,6 @@ void EditorUpdater::start_check() {
             PackedStringArray headers;
             headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
             headers.push_back("Accept: application/vnd.github+json");
-            print_line("EditorUpdater: Requesting all releases from: " + api);
             Error e2 = http_release->request(api, headers);
             if (e2 == OK) {
                 return;
@@ -93,33 +112,32 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
         if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
             // Try GitHub releases if configured
             if (!owner_repo.is_empty()) {
-                status_label->set_text(TTR("Checking GitHub releases..."));
+                status_label->set_text("Checking GitHub releases...");
                 if (!http_release) {
                     http_release = memnew(HTTPRequest);
                     add_child(http_release);
-                    http_release->connect("request_completed", callable_mp(this, &EditorUpdater::_on_release_completed));
-                }
-                // Use /releases instead of /releases/latest to get draft releases too
-                String api = "https://api.github.com/repos/" + owner_repo + "/releases";
-                PackedStringArray headers;
-                headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
-                headers.push_back("Accept: application/vnd.github+json");
-                print_line("EditorUpdater: Requesting all releases from: " + api);
-                Error e2 = http_release->request(api, headers);
+                http_release->connect("request_completed", callable_mp(this, &EditorUpdater::_on_release_completed));
+            }
+            // Use /releases instead of /releases/latest to get draft releases too
+            String api = "https://api.github.com/repos/" + owner_repo + "/releases";
+            PackedStringArray headers;
+            headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
+            headers.push_back("Accept: application/vnd.github+json");
+            Error e2 = http_release->request(api, headers);
                 if (e2 == OK) {
                     return;
                 }
             }
-            status_label->set_text(TTR("Failed to check updates."));
+            status_label->set_text("Failed to check updates.");
             stage = STAGE_ERROR;
-            action_button->set_text(TTR("Close"));
+            action_button->set_text("Close");
             action_button->set_visible(true);
             return;
         }
         Ref<XMLParser> parser;
         parser.instantiate();
         if (parser->open_buffer(p_body) != OK) {
-            status_label->set_text(TTR("Invalid appcast feed."));
+            status_label->set_text("Invalid appcast feed.");
             stage = STAGE_ERROR;
             return;
         }
@@ -142,15 +160,34 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             }
         }
         if (found_url.is_empty()) {
-            status_label->set_text(TTR("No update available."));
+            status_label->set_text("No update available.");
             stage = STAGE_IDLE;
-            action_button->set_text(TTR("Close"));
+            action_button->set_text("Close");
             action_button->set_visible(true);
             return;
         }
         download_url = found_url;
         latest_version = found_version;
-        status_label->set_text(vformat(TTR("Update %s available. Downloading..."), latest_version));
+        
+        // Update version info display (show user what versions we're comparing)
+        Label *version_info_label = Object::cast_to<Label>(find_child("version_info_label", true, false));
+        if (version_info_label) {
+            version_info_label->set_text("Current ver: " + current_version + "  |  New ver: " + latest_version);
+        }
+        
+        // Check if we're already on the latest version
+        if (latest_version == current_version) {
+            status_label->set_text("Already up to date! You have the latest version (" + current_version + ")");
+            stage = STAGE_IDLE;
+            action_button->set_text("Close");
+            action_button->set_visible(true);
+            if (progress) {
+                progress->set_visible(false);
+            }
+            return;
+        }
+        
+        status_label->set_text("Update " + latest_version + " available. Downloading...");
         stage = STAGE_DOWNLOADING;
 
         // Save using the asset's filename so macOS opens it with the right app (zip/dmg)
@@ -163,45 +200,84 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             file_name = "orca_update";
         }
         downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
-        http->set_download_file(downloaded_file_path);
-        http->set_use_threads(true);
         
-        // Start actual download.
-        print_line("EditorUpdater: Starting download from: " + download_url);
-        print_line("EditorUpdater: Saving to: " + downloaded_file_path);
+        // Reset download tracking
+        current_download_size = 0;
+        total_download_size = 0;
+        
+        // DON'T use set_download_file() - we'll write manually for progress
+        // http->set_download_file(downloaded_file_path);  
+        
+        // Use threading for non-blocking download
+        http->set_use_threads(true);
+        http->set_body_size_limit(-1);  // No limit, get full body
+        http->set_timeout(300);  // 5 minutes
+        
+        // Show progress bar
+        if (progress) {
+            progress->set_visible(true);
+            progress->set_value(0);
+        }
+        
+        // Start download - we'll get body in request_completed
         Error download_err = http->request(download_url);
         if (download_err != OK) {
-            print_line("EditorUpdater: Failed to start download, error: " + itos(download_err));
-            status_label->set_text(TTR("Failed to start download."));
+            status_label->set_text("Failed to start download.");
             stage = STAGE_ERROR;
-            action_button->set_text(TTR("Close"));
+            if (progress) {
+                progress->set_visible(false);
+            }
+            action_button->set_text("Close");
             action_button->set_visible(true);
         } else {
-            status_label->set_text(TTR("Starting download..."));
+            status_label->set_text("Connecting...");
+            set_process(true);
         }
         return;
     }
 
     if (stage == STAGE_DOWNLOADING) {
         if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-            status_label->set_text(TTR("Download failed."));
+            status_label->set_text("Download failed. Code: " + itos(p_code));
             stage = STAGE_ERROR;
-            action_button->set_text(TTR("Close"));
+            action_button->set_text("Close");
             action_button->set_visible(true);
             return;
         }
+        
+        // Write downloaded body to file
+        Error write_err;
+        Ref<FileAccess> file = FileAccess::open(downloaded_file_path, FileAccess::WRITE, &write_err);
+        if (write_err != OK || file.is_null()) {
+            status_label->set_text("Failed to save file.");
+            stage = STAGE_ERROR;
+            return;
+        }
+        
+        file->store_buffer(p_body);
+        file->close();
+        
+        int64_t file_size = p_body.size();
+        
         stage = STAGE_DOWNLOADED;
-        status_label->set_text(TTR("Download complete. Ready to install."));
-        action_button->set_text(TTR("Install and Restart"));
+        
+        // Show 100% completion
+        if (progress) {
+            progress->set_value(100);
+            progress->set_visible(true);
+        }
+        
+        status_label->set_text("Download complete! (" + String::humanize_size(file_size) + ") Ready to install.");
+        action_button->set_text("Install and Restart");
         action_button->set_visible(true);
     }
 }
 
 void EditorUpdater::_on_release_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
     if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-        status_label->set_text(TTR("Failed to check GitHub releases."));
+        status_label->set_text("Failed to check GitHub releases.");
         stage = STAGE_ERROR;
-        action_button->set_text(TTR("Close"));
+        action_button->set_text("Close");
         action_button->set_visible(true);
         return;
     }
@@ -216,7 +292,7 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
         print_line("EditorUpdater: Received array of " + itos(releases.size()) + " releases");
         
         if (releases.size() == 0) {
-            status_label->set_text(TTR("No releases found."));
+            status_label->set_text("No releases found.");
             stage = STAGE_ERROR;
             return;
         }
@@ -224,7 +300,7 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
         // Pick the first release (most recent)
         Variant first_release = releases[0];
         if (first_release.get_type() != Variant::DICTIONARY) {
-            status_label->set_text(TTR("Invalid release data."));
+            status_label->set_text("Invalid release data.");
             stage = STAGE_ERROR;
             return;
         }
@@ -235,7 +311,7 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
         print_line("EditorUpdater: Received single release object");
         d = json_v;
     } else {
-        status_label->set_text(TTR("Invalid releases JSON."));
+        status_label->set_text("Invalid releases JSON.");
         stage = STAGE_ERROR;
         return;
     }
@@ -431,14 +507,41 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
         print_line("EditorUpdater: " + error_msg);
         status_label->set_text(error_msg);
         stage = STAGE_ERROR;
-        action_button->set_text(TTR("Close"));
+        action_button->set_text("Close");
         action_button->set_visible(true);
         return;
     }
     download_url = best_url;
     latest_version = tag;
-    status_label->set_text(vformat(TTR("Update %s available. Downloading..."), latest_version));
+    
+    // Update version info display (show user what versions we're comparing)
+    Label *version_info_label = Object::cast_to<Label>(find_child("version_info_label", true, false));
+    if (version_info_label) {
+        version_info_label->set_text("Current ver: " + current_version + "  |  New ver: " + latest_version);
+    }
+    
+    // Check if we're already on the latest version
+    if (latest_version == current_version) {
+        print_line("EditorUpdater: Already up to date! Version: " + current_version);
+        status_label->set_text("Already up to date! You have the latest version (" + current_version + ")");
+        stage = STAGE_IDLE;
+        action_button->set_text("Close");
+        action_button->set_visible(true);
+        if (progress) {
+            progress->set_visible(false);
+        }
+        return;
+    }
+    
+    status_label->set_text("Update " + latest_version + " available. Downloading...");
     stage = STAGE_DOWNLOADING;
+    
+    // Show progress bar for download
+    if (progress) {
+        progress->set_visible(true);
+        progress->set_value(0);
+    }
+    
     // Save using the asset's filename so the OS knows how to open it.
     String file_name = download_url.get_file();
     int qpos = file_name.find("?");
@@ -448,69 +551,113 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
     if (file_name.is_empty()) {
         file_name = "orca_update";
     }
-        downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
-        http->set_download_file(downloaded_file_path);
-        http->set_use_threads(true);
-        status_label->set_text(TTR("Starting download..."));
-        http->request(download_url);
+    downloaded_file_path = EditorPaths::get_singleton()->get_cache_dir().path_join(file_name);
+    
+    // Reset download tracking
+    current_download_size = 0;
+    total_download_size = 0;
+    
+    // DON'T use set_download_file() - we'll write manually for progress
+    // http->set_download_file(downloaded_file_path);
+    
+    // Use threading for non-blocking download
+    http->set_use_threads(true);
+    http->set_body_size_limit(-1);  // No limit
+    http->set_timeout(300);  // 5 minutes
+    
+    // Show progress bar
+    if (progress) {
+        progress->set_visible(true);
+        progress->set_value(0);
+    }
+    
+    // Start download
+    print_line("EditorUpdater: Starting download from GitHub: " + download_url);
+    print_line("EditorUpdater: Will save to: " + downloaded_file_path);
+    Error download_err = http->request(download_url);
+    if (download_err != OK) {
+        print_line("EditorUpdater: Failed to start download, error: " + itos(download_err));
+        status_label->set_text("Failed to start download.");
+        stage = STAGE_ERROR;
+        if (progress) {
+            progress->set_visible(false);
+        }
+        action_button->set_text("Close");
+        action_button->set_visible(true);
+    } else {
+        status_label->set_text("Connecting...");
+        set_process(true);
+    }
 }
 
 void EditorUpdater::_process(double p_delta) {
     if (stage == STAGE_DOWNLOADING) {
-        int downloaded = http->get_downloaded_bytes();
-        int total = http->get_body_size();
+        // Get real-time download progress
+        int64_t downloaded = http->get_downloaded_bytes();
+        int64_t total = http->get_body_size();
         
-        // Debug: Print progress values to track downloads
-        static int debug_counter = 0;
-        static int last_downloaded = 0;
-        debug_counter++;
-        
-        // Print every 30 frames (0.5 sec) OR when download progress changes significantly
-        if (debug_counter % 30 == 0 || (downloaded > 0 && abs(downloaded - last_downloaded) > 1024*1024)) { // Every 1MB change
-            print_line("EditorUpdater: Downloaded: " + String::humanize_size(downloaded) + " (raw: " + itos(downloaded) + " bytes)");
-            print_line("EditorUpdater: Total: " + String::humanize_size(total) + " (raw: " + itos(total) + " bytes)");
-            print_line("EditorUpdater: HTTP Status: " + itos((int)http->get_http_client_status()));
-            last_downloaded = downloaded;
+        // Update our tracking
+        current_download_size = downloaded;
+        if (total > 0 && total_download_size == 0) {
+            total_download_size = total;
+            print_line("EditorUpdater: Total download size: " + String::humanize_size(total));
         }
-
+        
         HTTPClient::Status status = http->get_http_client_status();
         switch (status) {
             case HTTPClient::STATUS_RESOLVING: 
-                status_label->set_text(TTR("Resolving server..."));
+                status_label->set_text("Resolving server...");
                 break;
             case HTTPClient::STATUS_CONNECTING: 
-                status_label->set_text(TTR("Connecting to server..."));
+                status_label->set_text("Connecting to server...");
                 break;
             case HTTPClient::STATUS_REQUESTING: 
-                status_label->set_text(TTR("Requesting download..."));
+                status_label->set_text("Requesting download...");
                 break;
             case HTTPClient::STATUS_CONNECTED: 
-                status_label->set_text(TTR("Connected, starting download..."));
+                status_label->set_text("Connected, starting download...");
                 break;
             case HTTPClient::STATUS_BODY: {
-                // Show download progress in text only
-                if (downloaded > 0) {
-                    if (total > 0) {
-                        // We have both total and downloaded - show with percentage
-                        double percent = (double)downloaded * 100.0 / (double)total;
-                        if (percent < 0.0) percent = 0.0;
-                        if (percent > 100.0) percent = 100.0;
-                        status_label->set_text(TTR("Downloaded ") + String::humanize_size(downloaded) + " of " + String::humanize_size(total) + " (" + String::num(percent, 0) + "%)");
-                    } else {
-                        // No total size - just show downloaded amount
-                        status_label->set_text(TTR("Downloaded ") + String::humanize_size(downloaded) + "...");
+                // Show real-time download progress
+                progress->set_visible(true);
+                
+                if (downloaded > 0 && total > 0) {
+                    // Calculate percentage
+                    double percent = ((double)downloaded / (double)total) * 100.0;
+                    if (percent < 0.0) percent = 0.0;
+                    if (percent > 100.0) percent = 100.0;
+                    
+                    // Update progress bar (use our percentage calculation)
+                    progress->set_value(percent);
+                    
+                    // Show progress text: "X MB / Y MB (Z%)"
+                    String progress_text = String::humanize_size(downloaded) + " / " + String::humanize_size(total) + " (" + String::num(percent, 1) + "%)";
+                    status_label->set_text(progress_text);
+                    
+                    // Log significant progress milestones
+                    static int last_percent_logged = -1;
+                    int current_percent = (int)percent;
+                    if (current_percent % 10 == 0 && current_percent != last_percent_logged) {
+                        print_line("EditorUpdater: Download progress: " + progress_text);
+                        last_percent_logged = current_percent;
                     }
+                } else if (downloaded > 0) {
+                    // Unknown total - show indeterminate progress
+                    progress->set_value(50);
+                    status_label->set_text("Downloaded " + String::humanize_size(downloaded) + "...");
                 } else {
-                    status_label->set_text(TTR("Downloading..."));
+                    // Just started
+                    progress->set_value(5);
+                    status_label->set_text("Downloading...");
                 }
             } break;
             case HTTPClient::STATUS_DISCONNECTED:
                 if (downloaded > 0) {
-                    status_label->set_text(TTR("Download finishing..."));
+                    status_label->set_text("Download finishing...");
                 }
                 break;
             default: 
-                status_label->set_text(TTR("Downloading... (Status: ") + itos((int)status) + ")");
+                status_label->set_text("Downloading... (Status: " + itos((int)status) + ")");
                 break;
         }
     }
@@ -532,12 +679,53 @@ void EditorUpdater::_install_and_restart() {
 
 #ifdef WINDOWS_ENABLED
     {
+        print_line("EditorUpdater: Windows installation starting...");
+        print_line("EditorUpdater: Downloaded file: " + downloaded_file_path);
+        
+        // CRITICAL FIX: The installer should launch the new Godot with --editor flag
+        // to prevent "Couldn't detect whether to run editor" error
         List<String> args;
-        // Try common silent flags; if unsupported, installer will show UI.
-        if (downloaded_file_path.to_lower().ends_with(".exe")) {
-            args.push_back("/S");
+        
+        // Check if this is an installer (.exe with installer signature) or direct executable
+        bool is_installer = downloaded_file_path.to_lower().contains("setup") || 
+                           downloaded_file_path.to_lower().contains("install") ||
+                           downloaded_file_path.to_lower().contains("orca-engine-");
+        
+        if (is_installer) {
+            // For installers: Launch installer and let it handle installation
+            print_line("EditorUpdater: Detected installer executable, launching with silent flag");
+            args.push_back("/S");  // Silent install for NSIS installers
+            args.push_back("/LAUNCH");  // Custom flag to launch after install (if supported)
+            
+            // Launch installer
+            Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, args);
+            if (launch_err != OK) {
+                print_line("EditorUpdater: Failed to launch installer: " + itos(launch_err));
+                status_label->set_text("Failed to launch installer. Please run manually: " + downloaded_file_path);
+                return;
+            }
+            
+            print_line("EditorUpdater: Installer launched successfully");
+        } else {
+            // For direct executables: Launch with --editor flag
+            print_line("EditorUpdater: Detected direct executable, launching with --editor flag");
+            args.push_back("--editor");  // CRITICAL: Ensures editor mode
+            
+            Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, args);
+            if (launch_err != OK) {
+                print_line("EditorUpdater: Failed to launch new version: " + itos(launch_err));
+                status_label->set_text("Failed to launch update. Please run manually: " + downloaded_file_path);
+                return;
+            }
+            
+            print_line("EditorUpdater: New version launched with --editor flag");
         }
-        OS::get_singleton()->create_process(downloaded_file_path, args);
+        
+        // Give installer/new version time to start before quitting
+        print_line("EditorUpdater: Waiting 2 seconds before quitting current instance...");
+        OS::get_singleton()->delay_msec(2000);
+        
+        print_line("EditorUpdater: Quitting current instance to complete update");
         get_tree()->quit();
         return;
     }

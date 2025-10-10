@@ -11,7 +11,7 @@ import json
 import time
 import hashlib
 import threading
-from typing import Dict, Optional, Any, Callable
+from typing import Dict, Optional, Any, Callable, List
 from datetime import datetime, timedelta
 import requests
 from flask import jsonify
@@ -317,38 +317,15 @@ class AutoUpdateManager:
     def _is_newer_version(self, remote_version: str, current_version: str) -> bool:
         """Compare version strings to see if remote is newer"""
         try:
-            # Handle the 0.01.{SHA} format used by GitHub workflows
-            if remote_version.startswith('0.01.') and current_version.startswith('0.01.'):
-                # Extract SHA parts for comparison
-                remote_sha = remote_version.split('0.01.')[1]
-                current_sha = current_version.split('0.01.')[1]
-                
-                # If they're different SHAs, consider remote as newer
-                # (This assumes any new commit is a potential update)
-                return remote_sha != current_sha
+            # SIMPLIFIED: Just check if versions are different
+            # Any version difference means an update is available (user requested this)
+            is_different = remote_version != current_version
             
-            # Try semantic versioning comparison for standard versions
-            try:
-                remote_ver = semver.Version(remote_version)
-                current_ver = semver.Version(current_version)
-                return remote_ver > current_ver
-            except Exception:
-                pass
+            if is_different:
+                print(f"AUTO_UPDATE: Version difference detected - treating as newer version")
+                print(f"AUTO_UPDATE: Remote: {remote_version}, Current: {current_version}")
             
-            # Fallback to simple string comparison
-            try:
-                remote_parts = [int(x) for x in remote_version.split('.')]
-                current_parts = [int(x) for x in current_version.split('.')]
-                
-                # Pad shorter version with zeros
-                max_len = max(len(remote_parts), len(current_parts))
-                remote_parts.extend([0] * (max_len - len(remote_parts)))
-                current_parts.extend([0] * (max_len - len(current_parts)))
-                
-                return remote_parts > current_parts
-            except Exception:
-                # If all else fails, assume different versions mean update available
-                return remote_version != current_version
+            return is_different
                 
         except Exception as e:
             print(f"AUTO_UPDATE: Version comparison error: {e}")
@@ -558,7 +535,17 @@ class AutoUpdateManager:
             return {'success': False, 'error': str(e)}
     
     def _schedule_mac_install(self, download_path: str, restart_app: bool) -> Dict[str, Any]:
-        """Schedule macOS installation"""
+        """Schedule macOS installation
+        
+        NOTE: This backend method runs on GCP Cloud and is only used for documentation.
+        Actual Mac installation happens in the frontend (editor_updater.cpp) which runs
+        on the user's local machine.
+        
+        DATA PRESERVATION: Mac installation only replaces /Applications/Orca.app
+        User data is preserved in:
+        - ~/Library/Application Support/Godot/app_userdata/Orca/ (conversation files)
+        - Project .godot/ folders (project-specific settings)
+        """
         try:
             if download_path.endswith('.dmg'):
                 # Mount DMG and copy app
@@ -599,7 +586,17 @@ class AutoUpdateManager:
             return {'success': False, 'error': str(e)}
     
     def _schedule_windows_install(self, download_path: str, restart_app: bool) -> Dict[str, Any]:
-        """Schedule Windows installation"""
+        """Schedule Windows installation
+        
+        NOTE: This backend method runs on GCP Cloud and is only used for documentation.
+        Actual Windows installation happens in the frontend (editor_updater.cpp) which runs
+        on the user's local machine.
+        
+        DATA PRESERVATION: Windows installers preserve user data in:
+        - %APPDATA%/Godot/app_userdata/Orca/ (conversation files)
+        - Project .godot/ folders (project settings with conversations)
+        Only the executable in Program Files is replaced.
+        """
         try:
             if download_path.endswith('.exe'):
                 # For .exe files, just run them

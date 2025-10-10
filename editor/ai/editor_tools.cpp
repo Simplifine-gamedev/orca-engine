@@ -2518,13 +2518,63 @@ Dictionary EditorTools::create_resource(const Dictionary &p_args) {
         // CRITICAL FIX (Issue #1): Follow fs_write pattern - write, update, sync, scan
         // This ensures immediate availability and prevents race conditions
         
-        // Step 1: Save to disk FIRST
+        // CRITICAL FIX (Issue #GODOT-DEFAULT-OMIT): Workaround for Godot's default value optimization
+        // Godot's ResourceSaver skips properties that equal their defaults (line 1940 resource_format_text.cpp)
+        // This causes user-specified values to disappear from .tres files if they happen to match defaults
+        // Solution: Manually append missing properties to the .tres file after save
+        
+        // Step 1: Save to disk FIRST (this will write non-default properties)
         Error e = ResourceSaver::save(res_ref, save_path);
         if (e != OK) {
             result["success"] = false; result["message"] = "Failed to save resource to " + save_path; return result;
         }
         result["path"] = save_path;
         print_line("CREATE_RESOURCE: Resource saved to disk: " + save_path);
+        
+        // Step 2: Check for properties that were skipped due to matching defaults
+        if (!props.is_empty()) {
+            // Read back the saved file
+            Error read_err;
+            String saved_content = FileAccess::get_file_as_string(save_path, &read_err);
+            if (read_err == OK && !saved_content.is_empty()) {
+                bool file_modified = false;
+                Array prop_keys = props.keys();
+                
+                for (int i = 0; i < prop_keys.size(); i++) {
+                    StringName key = prop_keys[i];
+                    String key_str = String(key);
+                    
+                    // Check if this property is missing from the file
+                    if (saved_content.find(key_str + " = ") == -1) {
+                        Variant value = res->get(key);
+                        print_line("CREATE_RESOURCE: Property '" + key_str + "' missing from file (matched default), manually adding");
+                        
+                        // Manually append the property to the [resource] section
+                        String value_str = value.stringify();
+                        String property_line = key_str + " = " + value_str + "\n";
+                        
+                        // Find the [resource] section and append after it
+                        int resource_section_end = saved_content.find("\n", saved_content.find("[resource]"));
+                        if (resource_section_end != -1) {
+                            saved_content = saved_content.insert(resource_section_end + 1, property_line);
+                            file_modified = true;
+                        }
+                    }
+                }
+                
+                // Write back the modified content if we added properties
+                if (file_modified) {
+                    Ref<FileAccess> file = FileAccess::open(save_path, FileAccess::WRITE);
+                    if (file.is_valid()) {
+                        file->store_string(saved_content);
+                        file->close();
+                        print_line("CREATE_RESOURCE: Manually added missing default-value properties to file");
+                    }
+                }
+            }
+        }
+        
+        print_line("CREATE_RESOURCE: Final resource ready with all user-specified properties");
         
         // Step 2: Force immediate filesystem update to register the file
         if (EditorFileSystem::get_singleton()) {

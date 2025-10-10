@@ -48,15 +48,14 @@ UpdateNotificationPopup::~UpdateNotificationPopup() {
 }
 
 void UpdateNotificationPopup::_setup_ui() {
-    // Create popup panel positioned at bottom-left
+    // Create popup panel positioned at CENTER TOP for maximum visibility
     popup_panel = memnew(PanelContainer);
     popup_panel->set_mouse_filter(Control::MOUSE_FILTER_STOP);
     add_child(popup_panel);
     
-    // Position at bottom-left with some margin
-    popup_panel->set_anchors_and_offsets_preset(Control::PRESET_BOTTOM_LEFT);
-    popup_panel->set_position(Vector2(16 * EDSCALE, -80 * EDSCALE));
-    popup_panel->set_size(Vector2(320 * EDSCALE, 64 * EDSCALE));
+    // Position at TOP CENTER - will be properly positioned when shown
+    popup_panel->set_anchors_and_offsets_preset(Control::PRESET_TOP_LEFT);
+    popup_panel->set_custom_minimum_size(Vector2(500 * EDSCALE, 110 * EDSCALE));  // Bigger size
     
     // Add some styling
     popup_panel->add_theme_style_override("panel", EditorNode::get_singleton()->get_gui_base()->get_theme_stylebox("panel", "PopupPanel"));
@@ -75,25 +74,42 @@ void UpdateNotificationPopup::_setup_ui() {
     VBoxContainer *vbox = memnew(VBoxContainer);
     margin->add_child(vbox);
     
-    // Message label
+    // Title label - bold and prominent
+    Label *title_label = memnew(Label);
+    title_label->set_text("Orca Engine Update Available!");
+    title_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    title_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+    title_label->add_theme_font_size_override("font_size", 16);
+    vbox->add_child(title_label);
+    
+    // Message label (will show version comparison)
     message_label = memnew(Label);
-    message_label->set_text("Update available!");
+    message_label->set_text("A new version is ready to download");
     message_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    message_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+    message_label->add_theme_font_size_override("font_size", 12);
     vbox->add_child(message_label);
     
-    // Button container
+    // Button container - centered
     HBoxContainer *button_container = memnew(HBoxContainer);
+    button_container->set_alignment(BoxContainer::ALIGNMENT_CENTER);
     vbox->add_child(button_container);
     
-    // Update button
+    // Update button - make it prominent
     update_button = memnew(Button);
-    update_button->set_text("Update Now");
+    update_button->set_text("Download & Install Update");
+    update_button->set_custom_minimum_size(Vector2(200 * EDSCALE, 36 * EDSCALE));
     update_button->connect("pressed", callable_mp(this, &UpdateNotificationPopup::_on_update_button_pressed));
     button_container->add_child(update_button);
     
+    // Add spacing
+    Control *spacer = memnew(Control);
+    spacer->set_custom_minimum_size(Vector2(16 * EDSCALE, 0));
+    button_container->add_child(spacer);
+    
     // Dismiss button
     dismiss_button = memnew(Button);
-    dismiss_button->set_text("Later");
+    dismiss_button->set_text("Remind Me Later");
     dismiss_button->set_flat(true);
     dismiss_button->connect("pressed", callable_mp(this, &UpdateNotificationPopup::_on_dismiss_button_pressed));
     button_container->add_child(dismiss_button);
@@ -139,8 +155,6 @@ void UpdateNotificationPopup::_get_current_version() {
             current_version = "0.01." + sha;
         }
     }
-    
-    print_line("UpdateNotificationPopup: Current version: " + current_version);
 }
 
 void UpdateNotificationPopup::trigger_update_check() {
@@ -153,8 +167,6 @@ void UpdateNotificationPopup::trigger_update_check() {
 }
 
 void UpdateNotificationPopup::_check_for_updates() {
-    print_line("UpdateNotificationPopup: Checking for updates...");
-    
     // Use GitHub API to check for latest release
     String api_url = "https://api.github.com/repos/Simplifine-gamedev/orca-engine/releases/latest";
     
@@ -167,7 +179,6 @@ void UpdateNotificationPopup::_check_for_updates() {
 
 void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
     if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-        print_line("UpdateNotificationPopup: Failed to check for updates - " + itos(p_code));
         return;
     }
     
@@ -175,7 +186,6 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
     Variant json_var = JSON::parse_string(response_text);
     
     if (json_var.get_type() != Variant::DICTIONARY) {
-        print_line("UpdateNotificationPopup: Invalid JSON response");
         return;
     }
     
@@ -183,9 +193,7 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
     String tag_name = release_data.get("tag_name", "");
     String version = tag_name.lstrip("v");
     
-    print_line("UpdateNotificationPopup: Latest version: " + version + ", Current: " + current_version);
-    
-    // Check if this is a newer version
+    // Check if this is a different version
     if (version != current_version && !version.is_empty()) {
         // Find appropriate download URL
         Array assets = release_data.get("assets", Array());
@@ -230,7 +238,9 @@ void UpdateNotificationPopup::show_update_notification(const String &p_version, 
         download_url = p_download_url;
     }
     
-    message_label->set_text("Orca Engine " + p_version + " available!");
+    // Show version comparison clearly
+    String message = "Current: " + current_version + "  ->  New: " + p_version;
+    message_label->set_text(message);
     
     _show_popup();
 }
@@ -240,16 +250,31 @@ void UpdateNotificationPopup::_show_popup() {
         return;
     }
     
+    // Calculate center position (NOW we have a valid viewport)
+    if (get_viewport()) {
+        Rect2 viewport_rect = get_viewport()->get_visible_rect();
+        float popup_width = 500 * EDSCALE;
+        float center_x = (viewport_rect.size.x - popup_width) / 2.0f;
+        
+        // Position at center horizontally, animate from above vertically
+        popup_panel->set_position(Vector2(center_x, -120 * EDSCALE));  // Start above screen
+    } else {
+        // Fallback: just position near left if no viewport
+        popup_panel->set_position(Vector2(16 * EDSCALE, -120 * EDSCALE));
+    }
+    
     is_visible_state = true;
     popup_panel->set_visible(true);
     
-    // Animate in from bottom
+    // Animate DOWN from top (slides into view)
     tween = create_tween();
     tween->set_ease(Tween::EASE_OUT);
-    tween->set_trans(Tween::TRANS_BACK);
+    tween->set_trans(Tween::TRANS_CUBIC);
     
-    popup_panel->set_position(Vector2(16 * EDSCALE, 20 * EDSCALE)); // Start below screen
-    tween->tween_property(popup_panel, NodePath("position"), Vector2(16 * EDSCALE, -80 * EDSCALE), 0.5);
+    Vector2 current_pos = popup_panel->get_position();
+    Vector2 target_pos = Vector2(current_pos.x, 16 * EDSCALE);  // 16px from top
+    
+    tween->tween_property(popup_panel, NodePath("position"), target_pos, 0.6);
 }
 
 void UpdateNotificationPopup::_hide_popup() {
@@ -257,12 +282,16 @@ void UpdateNotificationPopup::_hide_popup() {
         return;
     }
     
-    // Animate out to bottom
+    // Animate UP out of view (slides back above screen)
     tween = create_tween();
     tween->set_ease(Tween::EASE_IN);
-    tween->set_trans(Tween::TRANS_BACK);
+    tween->set_trans(Tween::TRANS_CUBIC);
     
-    tween->tween_property(popup_panel, NodePath("position"), Vector2(16 * EDSCALE, 20 * EDSCALE), 0.3);
+    Vector2 current_pos = popup_panel->get_position();
+    Vector2 hide_pos = Vector2(current_pos.x, -120 * EDSCALE);  // Above screen
+    
+    // Animate back up above screen
+    tween->tween_property(popup_panel, NodePath("position"), hide_pos, 0.4);
     tween->tween_callback(callable_mp(this, &UpdateNotificationPopup::_hide_panel_callback));
     
     is_visible_state = false;
@@ -277,8 +306,6 @@ void UpdateNotificationPopup::hide_notification() {
 }
 
 void UpdateNotificationPopup::_on_update_button_pressed() {
-    print_line("UpdateNotificationPopup: User clicked Update Now - launching EditorUpdater");
-    
     // Hide the popup
     _hide_popup();
     
@@ -299,7 +326,6 @@ void UpdateNotificationPopup::_on_update_button_pressed() {
 }
 
 void UpdateNotificationPopup::_on_dismiss_button_pressed() {
-    print_line("UpdateNotificationPopup: User dismissed update notification");
     _hide_popup();
 }
 
