@@ -1474,6 +1474,11 @@ void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_me
 	// Enable word wrapping and disable auto-height expansion
 	edit_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
 	edit_field->set_fit_content_height_enabled(false); // Disable auto-expand to enable scrolling
+	
+	// Enable caret blinking for better responsiveness
+	edit_field->set_caret_blink_enabled(true);
+	edit_field->set_caret_blink_interval(0.5); // Blink every 0.5 seconds
+	
 	message_vbox->add_child(edit_field);
 
 	// Buttons
