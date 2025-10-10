@@ -125,37 +125,43 @@ void AIManualSnapshots::show_snapshots_list_dialog() {
 	if (!snapshots_list_window) {
 		snapshots_list_window = memnew(Window);
 		snapshots_list_window->set_title("Project Snapshots");
-		snapshots_list_window->set_min_size(Size2(700, 500));
-		snapshots_list_window->set_wrap_controls(true);
+    snapshots_list_window->set_min_size(Size2(800, 560));
+    // Disable wrap_controls to avoid children overlapping; we'll manage sizes via size flags
+    snapshots_list_window->set_wrap_controls(false);
 		
 		VBoxContainer *main_vbox = memnew(VBoxContainer);
 		snapshots_list_window->add_child(main_vbox);
 		
 		// Header
-		Label *header_label = memnew(Label);
+    Label *header_label = memnew(Label);
 		header_label->set_text("Your Saved Project Snapshots");
 		header_label->add_theme_font_override("font", chat_dock->get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 		header_label->add_theme_font_size_override("font_size", 16);
+    header_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		main_vbox->add_child(header_label);
 		
 		main_vbox->add_child(memnew(HSeparator));
 		
 		// Snapshots tree
-		snapshots_tree = memnew(Tree);
+    snapshots_tree = memnew(Tree);
 		snapshots_tree->set_columns(3);
 		snapshots_tree->set_column_title(0, "Snapshot Name");
 		snapshots_tree->set_column_title(1, "Created");
 		snapshots_tree->set_column_title(2, "Description");
 		snapshots_tree->set_column_titles_visible(true);
 		snapshots_tree->set_hide_root(true);
-		snapshots_tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+    // Make the tree consume most of the window height and be clearly scrollable
+    snapshots_tree->set_custom_minimum_size(Size2(0, 320));
+    snapshots_tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+    snapshots_tree->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		snapshots_tree->set_select_mode(Tree::SELECT_SINGLE);
 		snapshots_tree->connect("item_selected", callable_mp(this, &AIManualSnapshots::_on_snapshot_item_selected));
 		main_vbox->add_child(snapshots_tree);
 		
 		// Details panel (shows description of selected snapshot)
-		PanelContainer *details_panel = memnew(PanelContainer);
-		details_panel->set_custom_minimum_size(Size2(0, 80));
+    PanelContainer *details_panel = memnew(PanelContainer);
+    // Keep details compact so it doesn't cover the tree
+    details_panel->set_custom_minimum_size(Size2(0, 96));
 		main_vbox->add_child(details_panel);
 		
 		Ref<StyleBoxFlat> details_style = memnew(StyleBoxFlat);
@@ -169,15 +175,16 @@ void AIManualSnapshots::show_snapshots_list_dialog() {
 		snapshot_details_label = memnew(Label);
 		snapshot_details_label->set_text("Select a snapshot to see details");
 		snapshot_details_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-		snapshot_details_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		snapshot_details_label->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+    snapshot_details_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+    // Do not let details expand vertically too much
+    snapshot_details_label->set_v_size_flags(Control::SIZE_FILL);
 		details_scroll->add_child(snapshot_details_label);
 		
 		main_vbox->add_child(memnew(HSeparator));
 		
 		// Action buttons
-		HBoxContainer *buttons_container = memnew(HBoxContainer);
-		buttons_container->set_alignment(BoxContainer::ALIGNMENT_END);
+    HBoxContainer *buttons_container = memnew(HBoxContainer);
+    buttons_container->set_alignment(BoxContainer::ALIGNMENT_END);
 		main_vbox->add_child(buttons_container);
 		
 		// Restore button
