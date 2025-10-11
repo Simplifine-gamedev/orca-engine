@@ -5610,22 +5610,54 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
         print_line("AI Chat: FREEZE_FIX - Removed massive fields, keeping metadata for AI");
     }
     
-    // SMART FIX: For runtime errors, keep FULL details for AI but limit UI display
+    // CRITICAL PERFORMANCE FIX: Strip large error/console arrays to prevent JSON stringify freeze
+    // The AI gets the summary data which is sufficient for analysis
     if (p_name == "runtime_manager" || p_name == "get_runtime_errors_summary" || p_name == "get_runtime_errors_detailed") {
-        // DON'T strip errors from backend context - AI needs full details!
-        // The UI display (in _create_tool_specific_ui) already handles truncation
-        // So we keep the full arrays here for conversation history
-        
-        // Just log what we're keeping (for debugging)
-        if (content_to_serialize.has("errors")) {
-            Array errors = content_to_serialize["errors"];
-            print_line("AI Chat: KEEPING full errors array (" + String::num_int64(errors.size()) + " items) for AI context (UI will show summary)");
-        }
+        // For errors.summary: Keep only the summary data, strip the massive detailed arrays
         if (content_to_serialize.has("unique_errors")) {
             Array unique_errors = content_to_serialize["unique_errors"];
-            print_line("AI Chat: KEEPING full unique_errors array (" + String::num_int64(unique_errors.size()) + " items) for AI context");
+            int original_size = unique_errors.size();
+            
+            // Keep only first 10 unique errors for AI context (enough for analysis)
+            Array truncated_unique_errors;
+            for (int i = 0; i < MIN(10, unique_errors.size()); i++) {
+                truncated_unique_errors.push_back(unique_errors[i]);
+            }
+            content_to_serialize["unique_errors"] = truncated_unique_errors;
+            content_to_serialize["unique_errors_truncated"] = (original_size > 10);
+            content_to_serialize["original_unique_errors_count"] = original_size;
+            print_line("AI Chat: PERFORMANCE - Truncated unique_errors array: " + String::num_int64(original_size) + " -> 10 items");
         }
-        // UI rendering already limits display to prevent freeze (see _create_tool_specific_ui)
+        
+        // For errors.details: Keep only first 10 detailed errors
+        if (content_to_serialize.has("errors")) {
+            Array errors = content_to_serialize["errors"];
+            int original_size = errors.size();
+            
+            Array truncated_errors;
+            for (int i = 0; i < MIN(10, errors.size()); i++) {
+                truncated_errors.push_back(errors[i]);
+            }
+            content_to_serialize["errors"] = truncated_errors;
+            content_to_serialize["errors_truncated"] = (original_size > 10);
+            content_to_serialize["original_errors_count"] = original_size;
+            print_line("AI Chat: PERFORMANCE - Truncated errors array: " + String::num_int64(original_size) + " -> 10 items");
+        }
+        
+        // For console output: Keep only first 10 messages
+        if (content_to_serialize.has("console_output")) {
+            Array console_output = content_to_serialize["console_output"];
+            int original_size = console_output.size();
+            
+            Array truncated_console;
+            for (int i = 0; i < MIN(10, console_output.size()); i++) {
+                truncated_console.push_back(console_output[i]);
+            }
+            content_to_serialize["console_output"] = truncated_console;
+            content_to_serialize["console_output_truncated"] = (original_size > 10);
+            content_to_serialize["original_console_output_count"] = original_size;
+            print_line("AI Chat: PERFORMANCE - Truncated console_output array: " + String::num_int64(original_size) + " -> 10 items");
+        }
     }
     
     // CRITICAL: Strip image data from content that goes to backend to prevent token explosion
@@ -5886,7 +5918,13 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
         // Success messages - make them descriptive and user-friendly
         if (p_tool_name == "project_manager") {
             if (actual_op == "context.get") {
-                return "Project context loaded";
+                // Show summary of what was found
+                Dictionary context = p_result.get("context", Dictionary());
+                Array scenes = context.get("scenes", Array());
+                Array scripts = context.get("scripts", Array());
+                int scene_count = scenes.size();
+                int script_count = scripts.size();
+                return "Project context loaded: " + String::num_int64(scene_count) + " scenes, " + String::num_int64(script_count) + " scripts";
             } else if (actual_op == "fs.list") {
                 String dir = p_args.get("dir", "res://");
                 return "Listed files in: " + _convert_to_godot_path(dir);
@@ -6137,9 +6175,32 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
         return "Managing scripts...";
     } else if (p_tool_name == "settings_manager") {
         return "Managing settings...";
-    } else if (p_tool_name == "runtime_manager") {
-        return "Managing runtime...";
-    } else {
+	} else if (p_tool_name == "runtime_manager") {
+		// Parse to show specific operation
+		Ref<JSON> json_rm;
+		json_rm.instantiate();
+		if (json_rm->parse(p_arguments_str) == OK) {
+			Dictionary rm_args = json_rm->get_data();
+			String rm_op = rm_args.get("op", "");
+			
+			if (rm_op == "errors.summary") {
+				return "Analyzing runtime errors (finding unique error types)...";
+			} else if (rm_op == "errors.details") {
+				return "Retrieving detailed runtime error logs...";
+			} else if (rm_op == "console.get_output") {
+				return "Reading console output (game print statements)...";
+			} else if (rm_op == "game.start") {
+				return "Starting game...";
+			} else if (rm_op == "game.stop") {
+				return "Stopping game...";
+			} else if (rm_op == "screenshot.capture") {
+				return "Capturing screenshot...";
+			} else {
+				return "Runtime operation: " + rm_op + "...";
+			}
+		}
+		return "Managing runtime...";
+	} else {
         // Fallback for unknown tools
         return "Executing: " + p_tool_name + "...";
     }
@@ -6998,6 +7059,76 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result, bool p_success, const Dictionary &p_args) {
 	Ref<JSON> json;
 	json.instantiate();
+	
+	// CRITICAL DEBUG: Log what tool we're rendering
+	print_line("AI Chat: _create_tool_specific_ui called for tool='" + p_tool_name + "', success=" + String(p_success ? "true" : "false"));
+	String op = p_args.get("op", p_args.get("operation", ""));
+	if (!op.is_empty()) {
+		print_line("AI Chat: _create_tool_specific_ui operation='" + op + "'");
+	}
+	
+	// NUCLEAR FIX: Strip ALL massive arrays AT THE TOP before any rendering
+	// This prevents freeze regardless of which code path calls this function
+	Dictionary safe_result = p_result;
+	if (safe_result.has("unique_errors")) {
+		Array arr = safe_result["unique_errors"];
+		print_line("AI Chat: NUCLEAR FIX - Stripping unique_errors array (" + String::num_int64(arr.size()) + " items) from UI rendering");
+		safe_result.erase("unique_errors");
+	}
+	if (safe_result.has("errors")) {
+		Array arr = safe_result["errors"];
+		print_line("AI Chat: NUCLEAR FIX - Stripping errors array (" + String::num_int64(arr.size()) + " items) from UI rendering");
+		safe_result.erase("errors");
+	}
+	if (safe_result.has("console_output")) {
+		Array arr = safe_result["console_output"];
+		print_line("AI Chat: NUCLEAR FIX - Stripping console_output array (" + String::num_int64(arr.size()) + " items) from UI rendering");
+		safe_result.erase("console_output");
+	}
+	if (safe_result.has("context")) {
+		print_line("AI Chat: NUCLEAR FIX - Stripping context dictionary from UI rendering");
+		safe_result.erase("context");
+	}
+	// Use safe_result for ALL rendering below instead of p_result
+	
+	// CRITICAL PERFORMANCE FIX: Lightweight UI for project_manager context.get
+	// This was causing 1+ second freezes by stringifying huge context dictionaries
+	if (p_tool_name == "project_manager" && p_success) {
+		String op = p_args.get("op", p_args.get("operation", ""));
+		if (op == "context.get") {
+			// Show lightweight summary instead of full JSON
+			Dictionary context = p_result.get("context", Dictionary());
+			
+			Label *summary_label = memnew(Label);
+			Array scenes = context.get("scenes", Array());
+			Array scripts = context.get("scripts", Array());
+			Array autoloads = context.get("autoloads", Array());
+			String project_name = context.get("project_name", "Unknown");
+			
+			String summary = "Project: " + project_name + "\n";
+			summary += "Scenes: " + String::num_int64(scenes.size());
+			if (context.get("scenes_truncated", false)) summary += " (truncated)";
+			summary += "\n";
+			summary += "Scripts: " + String::num_int64(scripts.size());
+			if (context.get("scripts_truncated", false)) summary += " (truncated)";
+			summary += "\n";
+			summary += "Autoloads: " + String::num_int64(autoloads.size()) + "\n";
+			
+			summary_label->set_text(summary);
+			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(summary_label);
+			
+			// Note explaining that full data is available to AI
+			Label *note_label = memnew(Label);
+			note_label->set_text("Full context data is available to the AI for analysis.");
+			note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			note_label->add_theme_font_size_override("font_size", 11);
+			p_content_vbox->add_child(note_label);
+			
+			print_line("AI Chat: PERFORMANCE - Used lightweight summary UI for context.get (avoids JSON stringify freeze)");
+			return; // CRITICAL: Exit early to avoid default JSON rendering
+		}
+	}
 	
     // If this is node.props.get OR runtime property inspection, render a lazy placeholder to avoid loading huge property sets until clicked
     if (p_tool_name == "scene_manager") {
@@ -9039,158 +9170,84 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 	} else if (p_tool_name == "runtime_manager" && p_success) {
 		// Special handling for runtime_manager operations to prevent UI freeze
 		String op = p_args.get("op", "");
+		print_line("AI Chat: *** RUNTIME_MANAGER SPECIAL CASE HIT! op='" + op + "'");
 		
 		if (op == "console.get_output") {
-			// Console output - show summary, not massive text dump
-			Array console_output = p_result.get("console_output", Array());
-			int total_messages = p_result.get("total_messages", console_output.size());
-			int filtered_count = p_result.get("filtered_debug_messages", 0);
+			print_line("AI Chat: *** Rendering console.get_output UI");
+
+			// ULTRA-LIGHTWEIGHT: Show only counts, NO array iteration or widget creation
+			int total_messages = safe_result.get("total_messages", 0);
+			int filtered_count = safe_result.get("filtered_debug_messages", 0);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " debug messages)");
+			summary_label->set_text("Retrieved " + String::num_int64(total_messages) + " console messages (filtered " + String::num_int64(filtered_count) + " editor debug messages)");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
 			
-			// Show just the first 10 messages in UI (full content available to AI via chat history)
-			int display_limit = MIN(10, console_output.size());
-			if (display_limit > 0) {
-				Label *preview_header = memnew(Label);
-				preview_header->set_text("Preview (first " + String::num_int64(display_limit) + " messages):");
-				preview_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
-				p_content_vbox->add_child(preview_header);
-				
-				VBoxContainer *messages_container = memnew(VBoxContainer);
-				p_content_vbox->add_child(messages_container);
-				
-				for (int i = 0; i < display_limit; i++) {
-					Dictionary msg = console_output[i];
-					String text = msg.get("text", "");
-					String type = msg.get("type", "stdout");
-					
-					Label *msg_label = memnew(Label);
-					// Truncate individual messages too
-					String display_text = text.length() > 100 ? text.substr(0, 97) + "..." : text;
-					msg_label->set_text("[" + type + "] " + display_text);
-					msg_label->add_theme_font_override("font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
-					msg_label->add_theme_font_size_override("font_size", 11);
-					messages_container->add_child(msg_label);
-				}
-				
-				if (console_output.size() > display_limit) {
-					Label *more_label = memnew(Label);
-					more_label->set_text("... and " + String::num_int64(console_output.size() - display_limit) + " more messages (full output available to AI)");
-					more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
-					p_content_vbox->add_child(more_label);
-				}
-			}
+			// Helpful note instead of showing messages
+			Label *note_label = memnew(Label);
+			note_label->set_text("Console output available to AI. Ask: 'What did the game print?' or 'Show me recent console messages'");
+			note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			note_label->add_theme_font_size_override("font_size", 11);
+			note_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			p_content_vbox->add_child(note_label);
+			
+			print_line("AI Chat: PERFORMANCE - Ultra-lightweight UI for console.get_output (no array loops, instant rendering)");
 		} else if (op == "errors.summary") {
-			// Runtime errors summary - show UNIQUE errors with occurrence counts
-			Array unique_errors = p_result.get("unique_errors", Array());
-			int total_errors = p_result.get("total_errors", 0);
-			int total_warnings = p_result.get("total_warnings", 0);
+			print_line("AI Chat: *** Rendering errors.summary UI (ultra-lightweight mode)");
+			
+			// ULTRA-LIGHTWEIGHT: Show only summary counts, NO array iteration
+			// This prevents freeze even with 100+ unique error types
+			int unique_error_count = safe_result.get("unique_error_types", 0);
+			int total_errors = safe_result.get("total_errors", 0);
+			int total_warnings = safe_result.get("total_warnings", 0);
+			
+			print_line("AI Chat: *** errors.summary counts: unique=" + String::num_int64(unique_error_count) + ", total=" + String::num_int64(total_errors + total_warnings));
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("Found " + String::num_int64(unique_errors.size()) + " unique error types (" + 
+			summary_label->set_text("Found " + String::num_int64(unique_error_count) + " unique error types (" + 
 									String::num_int64(total_errors) + " errors, " + String::num_int64(total_warnings) + " warnings)");
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
 			
-			// Show top 10 unique errors with occurrence counts (NO MASSIVE TEXT!)
-			int display_limit = MIN(10, unique_errors.size());
-			if (display_limit > 0) {
-				Label *preview_header = memnew(Label);
-				preview_header->set_text("Top " + String::num_int64(display_limit) + " most frequent:");
-				preview_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
-				p_content_vbox->add_child(preview_header);
-				
-				VBoxContainer *errors_container = memnew(VBoxContainer);
-				p_content_vbox->add_child(errors_container);
-				
-				for (int i = 0; i < display_limit; i++) {
-					Dictionary error_summary = unique_errors[i];
-					String error_msg = error_summary.get("message", "Unknown error");
-					int count = error_summary.get("count", 1);
-					String file = error_summary.get("file", "");
-					int line = error_summary.get("line", 0);
-					
-					HBoxContainer *error_row = memnew(HBoxContainer);
-					errors_container->add_child(error_row);
-					
-					// Count badge
-					Label *count_label = memnew(Label);
-					count_label->set_text("[" + String::num_int64(count) + "x]");
-					count_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
-					count_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-					count_label->set_custom_minimum_size(Size2(50, 0));
-					error_row->add_child(count_label);
-					
-					// Error message (TRUNCATED for UI)
-					Label *error_label = memnew(Label);
-					String display_msg = error_msg.length() > 80 ? error_msg.substr(0, 77) + "..." : error_msg;
-					String location = file.is_empty() ? "" : " (" + file.get_file() + ":" + String::num_int64(line) + ")";
-					error_label->set_text(display_msg + location);
-					error_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
-					error_row->add_child(error_label);
-				}
-				
-				if (unique_errors.size() > display_limit) {
-					Label *more_label = memnew(Label);
-					more_label->set_text("... and " + String::num_int64(unique_errors.size() - display_limit) + " more error types (full data available to AI)");
-					more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
-					p_content_vbox->add_child(more_label);
-				}
-			}
+			// Helpful note instead of showing massive error list
+			Label *note_label = memnew(Label);
+			note_label->set_text("Error details available to AI. Ask: 'Show me the top 3 errors' or 'What's causing the most errors?'");
+			note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			note_label->add_theme_font_size_override("font_size", 11);
+			note_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			p_content_vbox->add_child(note_label);
+			
+			print_line("AI Chat: PERFORMANCE - Ultra-lightweight UI for errors.summary (no array loops, instant rendering)");
 		} else if (op == "errors.details") {
-			// Runtime errors details - show individual errors with deduplication
-			Array errors = p_result.get("errors", Array());
-			int total_found = p_result.get("total_found", errors.size());
+			print_line("AI Chat: *** Rendering errors.details UI (ultra-lightweight mode)");
+			
+			// ULTRA-LIGHTWEIGHT: Show only counts, NO array iteration
+			int total_found = safe_result.get("total_found", 0);
+			bool grouped = safe_result.get("grouped", false);
 			
 			Label *summary_label = memnew(Label);
-			summary_label->set_text("Retrieved " + String::num_int64(total_found) + " runtime error instances");
+			summary_label->set_text("Retrieved " + String::num_int64(total_found) + " runtime error" + (grouped ? " types" : " instances"));
 			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
 			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			p_content_vbox->add_child(summary_label);
 			
-			// Show only first 10 individual errors (NO MASSIVE TEXT!)
-			int display_limit = MIN(10, errors.size());
-			if (display_limit > 0) {
-				Label *preview_header = memnew(Label);
-				preview_header->set_text("Preview (first " + String::num_int64(display_limit) + " errors):");
-				preview_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
-				p_content_vbox->add_child(preview_header);
-				
-				VBoxContainer *errors_container = memnew(VBoxContainer);
-				p_content_vbox->add_child(errors_container);
-				
-				for (int i = 0; i < display_limit; i++) {
-					Dictionary error = errors[i];
-					String error_msg = error.get("message", "Unknown error");
-					String file = error.get("file", "");
-					int line = error.get("line", 0);
-					
-					Label *error_label = memnew(Label);
-					// TRUNCATE message for UI
-					String display_msg = error_msg.length() > 100 ? error_msg.substr(0, 97) + "..." : error_msg;
-					String location = file.is_empty() ? "" : file.get_file() + ":" + String::num_int64(line) + " - ";
-					error_label->set_text(location + display_msg);
-					error_label->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
-					error_label->add_theme_font_size_override("font_size", 11);
-					errors_container->add_child(error_label);
-				}
-				
-				if (errors.size() > display_limit) {
-					Label *more_label = memnew(Label);
-					more_label->set_text("... and " + String::num_int64(errors.size() - display_limit) + " more errors (full data available to AI)");
-					more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
-					p_content_vbox->add_child(more_label);
-				}
-			}
+			// Helpful note instead of showing massive error list
+			Label *note_label = memnew(Label);
+			note_label->set_text("Error details available to AI. Ask specific questions like: 'What file has the most errors?' or 'Show me errors in player.gd'");
+			note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			note_label->add_theme_font_size_override("font_size", 11);
+			note_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			p_content_vbox->add_child(note_label);
+			
+			print_line("AI Chat: PERFORMANCE - Ultra-lightweight UI for errors.details (no array loops, instant rendering)");
 		} else {
+			print_line("AI Chat: *** Rendering other runtime_manager operation: " + op);
+			
 			// Other runtime_manager operations - show summary
-			String op_message = p_result.get("message", "Operation completed");
+			String op_message = safe_result.get("message", "Operation completed");
 			Label *op_summary_label = memnew(Label);
 			op_summary_label->set_text(op_message);
 			op_summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
@@ -9198,18 +9255,26 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			p_content_vbox->add_child(op_summary_label);
 		}
 		
+		// CRITICAL: Return here to prevent falling through to default JSON case!
+		print_line("AI Chat: *** RETURNING from runtime_manager special case (avoiding default JSON)");
+		return;
+		
 	} else {
+		print_line("AI Chat: DEFAULT CASE REACHED for tool='" + p_tool_name + "'");
+		
 		// Default case - show formatted JSON output with better styling
-		// CRITICAL: Strip large data fields to prevent UI freeze
-		Dictionary safe_result = p_result;
+		// NOTE: safe_result already created at top of function with arrays stripped
+		// Additional stripping for default case
 		safe_result.erase("image_data");
 		safe_result.erase("glb_data");
 		safe_result.erase("asset_data");
 		safe_result.erase("frames");
-		safe_result.erase("results");  // ADDED: Don't show results array in fallback (can be huge)
-		safe_result.erase("console_output");  // ADDED: Console output arrays can be massive (100+ messages)
-		safe_result.erase("errors");  // ADDED: Error arrays can be large too
-		safe_result.erase("unique_errors");  // ADDED: Unique errors array can be large (deduplicated errors)
+		safe_result.erase("results");  // Don't show results array in fallback (can be huge)
+		// NOTE: errors, unique_errors, console_output, context already stripped at top
+		safe_result.erase("nodes");  // Large node arrays
+		safe_result.erase("files");  // Large file arrays  
+		safe_result.erase("scenes");  // Large scene arrays
+		safe_result.erase("scripts");  // Large script arrays
 		
 		// Remove any fields that look like base64 payloads or large arrays
 		Array keys = safe_result.keys();
@@ -9220,22 +9285,63 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
 		
-		VBoxContainer *json_container = memnew(VBoxContainer);
-		p_content_vbox->add_child(json_container);
+		print_line("AI Chat: DEFAULT CASE - After stripping, safe_result has " + String::num_int64(safe_result.keys().size()) + " keys");
 		
-		Label *json_header = memnew(Label);
-		json_header->set_text("Tool Result Data:");
-		json_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-		json_header->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
-		json_container->add_child(json_header);
-		
-		RichTextLabel *content_label = memnew(RichTextLabel);
-		content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
-		content_label->set_text(json->stringify(safe_result, "  "));
-		content_label->set_fit_content(true);
-		content_label->set_selection_enabled(true);
-		content_label->set_custom_minimum_size(Size2(0, 150));
-		json_container->add_child(content_label);
+		// Check if we stripped too much - show a simple message instead of empty JSON
+		if (safe_result.keys().size() <= 2) {
+			print_line("AI Chat: DEFAULT CASE - Too little data after stripping, showing summary instead of JSON");
+			
+			// Very little data left after stripping - just show a summary
+			Label *summary_label = memnew(Label);
+			String message = safe_result.get("message", "Operation completed successfully");
+			summary_label->set_text(message);
+			summary_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(summary_label);
+			
+			Label *note_label = memnew(Label);
+			note_label->set_text("Full data available to AI for analysis (large data hidden from UI for performance).");
+			note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+			note_label->add_theme_font_size_override("font_size", 11);
+			p_content_vbox->add_child(note_label);
+		} else {
+			// Show the stripped JSON
+			print_line("AI Chat: DEFAULT CASE - About to stringify JSON");
+			print_line("AI Chat: DEFAULT CASE - safe_result has " + String::num_int64(safe_result.keys().size()) + " keys");
+			
+			// CRITICAL DEBUG: Show what keys remain
+			Array remaining_keys = safe_result.keys();
+			String keys_str = "";
+			for (int k = 0; k < MIN(10, remaining_keys.size()); k++) {
+				if (k > 0) keys_str += ", ";
+				keys_str += String(remaining_keys[k]);
+			}
+			print_line("AI Chat: DEFAULT CASE - Remaining keys: " + keys_str);
+			
+			VBoxContainer *json_container = memnew(VBoxContainer);
+			p_content_vbox->add_child(json_container);
+			
+			Label *json_header = memnew(Label);
+			json_header->set_text("Tool Result Data:");
+			json_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			json_header->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+			json_container->add_child(json_header);
+			
+			uint64_t stringify_start = OS::get_singleton()->get_ticks_msec();
+			String json_str = json->stringify(safe_result, "  ");
+			uint64_t stringify_elapsed = OS::get_singleton()->get_ticks_msec() - stringify_start;
+			print_line("AI Chat: DEFAULT CASE - JSON stringify took " + String::num_uint64(stringify_elapsed) + "ms, result length=" + String::num_int64(json_str.length()));
+			
+			RichTextLabel *content_label = memnew(RichTextLabel);
+			content_label->add_theme_font_override("normal_font", get_theme_font(SNAME("source"), SNAME("EditorFonts")));
+			content_label->set_text(json_str);
+			content_label->set_fit_content(true);
+			content_label->set_selection_enabled(true);
+			content_label->set_custom_minimum_size(Size2(0, 150));
+			json_container->add_child(content_label);
+			
+			print_line("AI Chat: DEFAULT CASE - RichTextLabel set_text complete");
+		}
 	}
 	
 	// If the tool provided a path_to_save for images, save it now (non-intrusive for other tools)
@@ -10495,6 +10601,7 @@ void AIChatDock::_finalize_chat_request() {
 	// Add comprehensive project structure to context
 	Dictionary context_args;
 	context_args["operation"] = "structure";
+	context_args["max_files"] = 30; // PERFORMANCE: Reduced from default 50 to 30 for faster context gathering
 	Dictionary project_structure = EditorTools::get_project_context(context_args);
 	
 	if (project_structure.has("success") && project_structure["success"] && project_structure.has("context")) {
@@ -10505,11 +10612,11 @@ void AIChatDock::_finalize_chat_request() {
 			context["project_name"] = structure["project_name"];
 		}
 		
-		// Add scenes overview
+		// Add scenes overview (PERFORMANCE: Further reduced limits)
 		if (structure.has("scenes")) {
 			Array scenes = structure["scenes"];
 			Array scene_summary;
-			for (int i = 0; i < MIN(scenes.size(), 15); i++) { // Limit for payload size
+			for (int i = 0; i < MIN(scenes.size(), 10); i++) { // PERFORMANCE: Reduced from 15 to 10 for faster payload
 				Dictionary scene = scenes[i];
 				Dictionary scene_info;
 				scene_info["name"] = scene.get("name", "");
@@ -10518,13 +10625,16 @@ void AIChatDock::_finalize_chat_request() {
 			}
 			context["scenes"] = scene_summary;
 			context["scenes_count"] = scenes.size();
+			if (scenes.size() > 10) {
+				print_line("AI Chat: Truncated scenes in context payload: " + String::num_int64(scenes.size()) + " -> 10");
+			}
 		}
 		
-		// Add scripts overview  
+		// Add scripts overview (PERFORMANCE: Further reduced limits)
 		if (structure.has("scripts")) {
 			Array scripts = structure["scripts"];
 			Array script_summary;
-			for (int i = 0; i < MIN(scripts.size(), 15); i++) { // Limit for payload size
+			for (int i = 0; i < MIN(scripts.size(), 10); i++) { // PERFORMANCE: Reduced from 15 to 10 for faster payload
 				Dictionary script = scripts[i];
 				Dictionary script_info;
 				script_info["name"] = script.get("name", "");
@@ -10533,17 +10643,23 @@ void AIChatDock::_finalize_chat_request() {
 			}
 			context["scripts"] = script_summary;
 			context["scripts_count"] = scripts.size();
+			if (scripts.size() > 10) {
+				print_line("AI Chat: Truncated scripts in context payload: " + String::num_int64(scripts.size()) + " -> 10");
+			}
 		}
 		
-		// Add folder structure
+		// Add folder structure (PERFORMANCE: Further reduced limits)
 		if (structure.has("folders")) {
 			Array folders = structure["folders"];
 			Array folder_summary;
-			for (int i = 0; i < MIN(folders.size(), 20); i++) { // Limit for payload size
+			for (int i = 0; i < MIN(folders.size(), 10); i++) { // PERFORMANCE: Reduced from 20 to 10 for faster payload
 				folder_summary.push_back(folders[i]);
 			}
 			context["folders"] = folder_summary;
 			context["folders_count"] = folders.size();
+			if (folders.size() > 10) {
+				print_line("AI Chat: Truncated folders in context payload: " + String::num_int64(folders.size()) + " -> 10");
+			}
 		}
 		
 		// Add autoloads if available
@@ -13498,7 +13614,13 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 			String dir = args.get("dir", args.get("path", "res://"));
 			return "Listing files in: " + _convert_to_godot_path(dir);
 		} else if (op == "context.get") {
-			return "Analyzing project structure...";
+			// PERFORMANCE: Show what we're scanning to give users context
+			String context_mode = args.get("context_mode", "structure");
+			if (context_mode == "structure") {
+				return "Scanning project structure (scenes, scripts, autoloads)...";
+			} else {
+				return "Analyzing project: " + context_mode + "...";
+			}
 		}
 	} else if (p_tool_name == "scene_manager") {
 		if (op == "node.create") {

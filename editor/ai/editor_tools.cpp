@@ -1274,8 +1274,9 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		Dictionary structure;
 		structure["project_name"] = ProjectSettings::get_singleton()->get_setting("application/config/name");
 		
-		// PERFORMANCE LIMIT: Prevent UI freezing on huge projects
-		int max_files = p_args.get("max_files", 200); // Default limit: 200 files of each type
+		// AGGRESSIVE PERFORMANCE OPTIMIZATION: Much lower limits to prevent freeze
+		// Users can request more with explicit max_files parameter if needed
+		int max_files = p_args.get("max_files", 50); // REDUCED from 200 to 50 for speed
 		print_line("AI Chat: get_project_context starting with max_files limit: " + String::num_int64(max_files));
 		
 		// Get scenes in project (limited)
@@ -1292,7 +1293,7 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		structure["scenes"] = scenes;
 		if (scene_files.size() >= max_files) {
 			structure["scenes_truncated"] = true;
-			print_line("AI Chat: Scene list truncated at " + String::num_int64(max_files) + " files");
+			print_line("AI Chat: Scene list truncated at " + String::num_int64(max_files) + " files (use max_files parameter for more)");
 		}
 		
 		// Get scripts (limited)
@@ -1309,7 +1310,7 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		structure["scripts"] = scripts;
 		if (script_files.size() >= max_files) {
 			structure["scripts_truncated"] = true;
-			print_line("AI Chat: Script list truncated at " + String::num_int64(max_files) + " files");
+			print_line("AI Chat: Script list truncated at " + String::num_int64(max_files) + " files (use max_files parameter for more)");
 		}
 		
 		// Get autoloads
@@ -6242,7 +6243,8 @@ Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 		
 		while (file_name != "") {
 			if (dir->current_is_dir()) {
-				if (file_name != "." && file_name != "..") {
+				// CRITICAL FIX: Skip hidden directories (starting with .)
+				if (file_name != "." && file_name != ".." && !file_name.begins_with(".")) {
 					String dir_relative = relative_path.is_empty() ? file_name : relative_path + "/" + file_name;
 					String dir_full_path = current_path.ends_with("/") ? current_path + file_name : current_path + "/" + file_name;
 					
@@ -6259,6 +6261,17 @@ Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 					}
 				}
 			} else {
+				// CRITICAL FIX: Skip hidden files and Godot metadata files
+				bool is_hidden_file = file_name.begins_with(".");
+				bool is_uid_file = file_name.ends_with(".uid");
+				bool is_import_file = file_name.ends_with(".import");
+				
+				if (is_hidden_file || is_uid_file || is_import_file) {
+					// Skip these files entirely - they're not useful for AI context
+					file_name = dir->get_next();
+					continue;
+				}
+				
 				// Apply filters
 				bool include_file = true;
 				
@@ -7887,6 +7900,17 @@ void EditorTools::_get_all_project_files_limited(const String &p_path, List<Stri
             // Recurse into subdirectories (with remaining limit)
             _get_all_project_files_limited(full_path, r_files, p_extensions, p_max_files);
         } else if (!dir->current_is_dir()) {
+            // CRITICAL FIX: Skip hidden files and Godot metadata files
+            bool is_hidden_file = file_name.begins_with(".");
+            bool is_uid_file = file_name.ends_with(".uid");
+            bool is_import_file = file_name.ends_with(".import");
+            
+            if (is_hidden_file || is_uid_file || is_import_file) {
+                // Skip these files - not useful for AI context
+                file_name = dir->get_next();
+                continue;
+            }
+            
             // Check if file has one of the desired extensions
             String ext = file_name.get_extension().to_lower();
             if (p_extensions.has(ext)) {
@@ -8822,24 +8846,41 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 			print_line("CONSOLE_FILTER_DEBUG [" + String::num_int64(i) + "]: '" + message.substr(0, MIN(80, message.length())) + "'");
 		}
 		
-		// Skip app internal debug messages - be aggressive with filtering
-		if (message.begins_with("AI Chat:") || 
-		    message.begins_with("TOOL_") || 
-		    message.begins_with("RUNTIME_") ||
-		    message.begins_with("FRONTEND_") || 
-		    message.begins_with("BACKEND_") ||
-		    message.begins_with("STREAM_") || 
-		    message.begins_with("CONVERSATION_") ||
-		    message.begins_with("LITELLM_") ||
-		    message.begins_with("MODEL_") ||
-		    message.begins_with("CHAT_") ||
-		    message.begins_with("THINKING_") ||
-		    message.begins_with("RESPONSE_") ||
-		    message.begins_with("CLEANUP:") ||
-		    message.begins_with("HTTP_")) {
+		// CRITICAL FIX: More precise filtering - only filter EDITOR debug messages
+		// Don't filter user's game messages even if they contain similar words
+		// Use exact patterns that match our editor debug output format
+		bool is_editor_debug = false;
+		
+		// Pattern 1: "AI Chat: " (with colon and space) - our exact editor format
+		if (message.begins_with("AI Chat: ")) {
+			is_editor_debug = true;
+		}
+		// Pattern 2: ALL-CAPS prefixes with underscore or colon (our debug format)
+		else if ((message.begins_with("TOOL_") || message.begins_with("RUNTIME_") ||
+		          message.begins_with("FRONTEND_") || message.begins_with("BACKEND_") ||
+		          message.begins_with("STREAM_") || message.begins_with("CONVERSATION_") ||
+		          message.begins_with("LITELLM_") || message.begins_with("MODEL_") ||
+		          message.begins_with("THINKING_") || message.begins_with("RESPONSE_") ||
+		          message.begins_with("HTTP_") || message.begins_with("TOKEN_") ||
+		          message.begins_with("SEARCH_") || message.begins_with("EMBEDDING_")) &&
+		         (message.find(": ") < 50 || message.find("_") < 50)) {
+			// Only filter if it has our debug format (ALL_CAPS_PREFIX: or ALL_CAPS_PREFIX_TEXT)
+			is_editor_debug = true;
+		}
+		// Pattern 3: "CLEANUP:" - exact match
+		else if (message.begins_with("CLEANUP:")) {
+			is_editor_debug = true;
+		}
+		// Pattern 4: EditorNode and Godot editor internal messages
+		else if (message.begins_with("EditorNode:") || message.begins_with("EditorPlugin:") ||
+		         message.begins_with("ResourceLoader:") || message.begins_with("SceneTree:")) {
+			is_editor_debug = true;
+		}
+		
+		if (is_editor_debug) {
 			filtered_count++;
 			if (i < 5) {
-				print_line("  -> FILTERED (app debug)");
+				print_line("  -> FILTERED (editor debug)");
 			}
 			continue;
 		}
