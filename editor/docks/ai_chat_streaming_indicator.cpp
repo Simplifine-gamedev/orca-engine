@@ -30,17 +30,20 @@ StreamingIndicator::StreamingIndicator() {
 }
 
 StreamingIndicator::~StreamingIndicator() {
-	if (animation_timer && animation_timer->is_inside_tree()) {
-		animation_timer->queue_free();
+	// CRITICAL FIX: Safe cleanup - only use cast check to avoid accessing destroyed objects
+	Timer *timer = Object::cast_to<Timer>(animation_timer);
+	if (timer && timer->is_inside_tree()) {
+		timer->queue_free();
 	}
 }
 
 void StreamingIndicator::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_READY: {
-			// Ensure timer is setup correctly
-			if (animation_timer && !animation_timer->is_inside_tree()) {
-				add_child(animation_timer);
+			// Ensure timer is setup correctly with validity checks
+			Timer *timer = Object::cast_to<Timer>(animation_timer);
+			if (timer && !timer->is_inside_tree()) {
+				add_child(timer);
 			}
 		} break;
 		case NOTIFICATION_EXIT_TREE: {
@@ -80,11 +83,12 @@ void StreamingIndicator::start_animation() {
 		print_line("AI Chat: - WARNING: No indicator_container meta found!");
 	}
 	
-	if (animation_timer) {
-		animation_timer->start();
-		print_line("AI Chat: - Animation timer started, active: " + String(animation_timer->is_stopped() ? "NO" : "YES"));
+	Timer *timer = Object::cast_to<Timer>(animation_timer);
+	if (timer) {
+		timer->start();
+		print_line("AI Chat: - Animation timer started, active: " + String(timer->is_stopped() ? "NO" : "YES"));
 	} else {
-		print_line("AI Chat: - ERROR: No animation_timer!");
+		print_line("AI Chat: - ERROR: No valid animation_timer!");
 	}
 	
 	print_line("AI Chat: - is_visible (after): " + String(is_visible() ? "YES" : "NO"));
@@ -100,10 +104,15 @@ void StreamingIndicator::stop_animation() {
 	
 	is_animating = false;
 	
-	// Stop timer FIRST before hiding
-	if (animation_timer && !animation_timer->is_stopped()) {
-		animation_timer->stop();
+	// CRITICAL FIX: Stop timer FIRST before hiding - with safe object validation
+	Timer *timer = Object::cast_to<Timer>(animation_timer);
+	if (timer && !timer->is_stopped()) {
+		timer->stop();
 		print_line("AI Chat: - Stopped animation timer");
+	} else if (animation_timer && !timer) {
+		// Timer became invalid - null the pointer to prevent future crashes
+		print_line("AI Chat: Animation timer became invalid during stop - clearing reference");
+		animation_timer = nullptr;
 	}
 	
 	set_visible(false);
@@ -123,11 +132,16 @@ void StreamingIndicator::stop_animation() {
 }
 
 void StreamingIndicator::_on_animation_timer_timeout() {
-	// Safety check: verify animation should still be running
-	if (!is_animating || !animation_timer || animation_timer->is_stopped()) {
+	// CRITICAL FIX: Safety check with proper validity checks to prevent crashes
+	Timer *timer = Object::cast_to<Timer>(animation_timer);
+	if (!is_animating || !timer || timer->is_stopped()) {
 		print_line("AI Chat: StreamingIndicator tick but not animating - stopping timer");
-		if (animation_timer && !animation_timer->is_stopped()) {
-			animation_timer->stop();
+		if (timer && !timer->is_stopped()) {
+			timer->stop();
+		} else if (animation_timer && !timer) {
+			// Timer became invalid - null the pointer to prevent future crashes
+			print_line("AI Chat: Animation timer became invalid - clearing reference");
+			animation_timer = nullptr;
 		}
 		return;
 	}

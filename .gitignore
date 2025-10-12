@@ -13,6 +13,7 @@ orca-installer.iss
 Orca*.exe
 distribution/
 production_downloads/
+backend/dashboard/
 #
 # Aims to encompass the most commonly found files that we don't want committed
 # to Git, such as compilation output, IDE specific files, etc.
