@@ -30,8 +30,11 @@ jobs:
         id: version
         run: |
           SHORT_SHA=$(git rev-parse --short=8 HEAD)
-          echo "RELEASE_VERSION=0.01.$SHORT_SHA" >> $GITHUB_ENV
-          echo "release_version=0.01.$SHORT_SHA" >> $GITHUB_OUTPUT
+          VERSION="0.01.$SHORT_SHA"
+          echo "RELEASE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "ORCA_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "release_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ Version for build: $VERSION (will be embedded in binary)"
 
       - name: Free disk space on runner
         run: |
@@ -83,7 +86,10 @@ jobs:
       - name: Build Orca Engine
         run: |
           echo "🔨 Building Orca Engine for Linux..."
+          echo "🏷️ Building with embedded version: $ORCA_VERSION"
           scons platform=linuxbsd target=editor dev_build=no arch=x86_64 vulkan=no -j$(nproc)
+        env:
+          ORCA_VERSION: ${{ env.ORCA_VERSION }}
 
       - name: Verify Build
         run: |

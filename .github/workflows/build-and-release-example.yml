@@ -1,0 +1,106 @@
+name: Build and Release Orca Engine
+
+# Trigger on version tags
+on:
+  push:
+    tags:
+      - 'v*'  # Matches v0.01.abc123, v1.0.0, etc.
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Need full history for git describe
+      
+      - name: Set Orca Version
+        run: |
+          # Get version from tag
+          if [ -n "$GITHUB_REF_NAME" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"  # Remove v prefix
+            echo "ORCA_VERSION=$VERSION" >> $GITHUB_ENV
+            echo "Building Orca Engine version: $VERSION"
+          else
+            # Fallback to git SHA
+            VERSION="0.01.$(git rev-parse --short=8 HEAD)"
+            echo "ORCA_VERSION=$VERSION" >> $GITHUB_ENV
+            echo "Building development version: $VERSION"
+          fi
+      
+      - name: Setup Build Environment
+        run: |
+          brew install scons
+          # Add other dependencies
+      
+      - name: Build Orca Engine
+        run: |
+          # CRITICAL: ORCA_VERSION env var is read by SCons
+          # It gets embedded into core/orca_version.gen.cpp during build
+          scons platform=macos target=editor arch=arm64 -j8
+        env:
+          ORCA_VERSION: ${{ env.ORCA_VERSION }}
+      
+      - name: Package for Distribution
+        run: |
+          # Create .dmg or .zip
+          # The binary now has version $ORCA_VERSION baked in
+          ./create_dmg.sh
+      
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            Orca.Mac.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Set Orca Version
+        run: |
+          # PowerShell version
+          if ($env:GITHUB_REF_NAME) {
+            $VERSION = $env:GITHUB_REF_NAME -replace '^v',''
+            echo "ORCA_VERSION=$VERSION" >> $env:GITHUB_ENV
+            echo "Building Orca Engine version: $VERSION"
+          } else {
+            $SHA = git rev-parse --short=8 HEAD
+            $VERSION = "0.01.$SHA"
+            echo "ORCA_VERSION=$VERSION" >> $env:GITHUB_ENV
+            echo "Building development version: $VERSION"
+          }
+        shell: pwsh
+      
+      - name: Build Orca Engine
+        run: |
+          scons platform=windows target=editor -j8
+        env:
+          ORCA_VERSION: ${{ env.ORCA_VERSION }}
+      
+      - name: Sign and Package
+        run: |
+          # Sign the .exe
+          # Create installer
+          ./build_installer.sh
+      
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            Orca-Windows-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# The key is: ORCA_VERSION env var is set BEFORE scons build
+# SCons reads it and embeds it into the binary
+# Users download the binary → Version is already inside
+# No git/backend needed for version detection!
+

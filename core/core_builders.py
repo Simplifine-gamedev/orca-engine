@@ -46,6 +46,74 @@ const uint64_t GODOT_VERSION_TIMESTAMP = {git_timestamp};
         )
 
 
+def orca_version_builder(target, source, env):
+    """Build Orca version file with GitHub release tag or git commit"""
+    import subprocess
+    import os
+    
+    print("ORCA VERSION BUILDER: Starting version detection...")
+    
+    # Debug: Show all environment variables that might contain version info
+    for key in os.environ:
+        if 'VERSION' in key or 'REF' in key:
+            print(f"ORCA VERSION DEBUG: {key}={os.environ[key]}")
+    
+    # Get version from multiple sources
+    version = "1.0.0-dev"
+    
+    # Priority 1: ORCA_VERSION environment variable (explicit override)
+    orca_version_env = os.environ.get('ORCA_VERSION', '').strip()
+    if orca_version_env:
+        version = orca_version_env
+        print(f"ORCA VERSION: ✅ From ORCA_VERSION env: {version}")
+    
+    # Priority 2: GitHub Actions tag (for release builds)
+    elif os.environ.get('GITHUB_REF', '').startswith('refs/tags/'):
+        github_ref = os.environ.get('GITHUB_REF', '')
+        version = github_ref.replace('refs/tags/', '').lstrip('v')
+        print(f"ORCA VERSION: ✅ From GitHub tag: {version}")
+    
+    # Priority 3: Git tag (local tagged builds)
+    else:
+        try:
+            result = subprocess.run(
+                ['git', 'describe', '--exact-match', '--tags', 'HEAD'],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip().lstrip('v')
+                print(f"ORCA VERSION: ✅ From git tag: {version}")
+            else:
+                # Priority 4: Git SHA for development builds
+                git_info = source[0].read()
+                git_hash = git_info.get('git_hash', 'unknown')
+                if git_hash and git_hash != 'unknown':
+                    version = f"0.01.{git_hash[:8]}"
+                    print(f"ORCA VERSION: ⚠️ Development build from SHA: {version}")
+                else:
+                    print(f"ORCA VERSION: ❌ Using fallback: {version}")
+        except Exception as e:
+            print(f"ORCA VERSION: Error in git detection: {e}")
+    
+    print(f"ORCA VERSION: Final version for build: {version}")
+    
+    with methods.generated_wrapper(str(target[0])) as file:
+        file.write(
+            f"""\
+#include "core/orca_version.h"
+
+// Orca Engine version embedded at build time
+// This is used by the update system to compare with GitHub releases
+const char *const ORCA_VERSION_STRING = "{version}";
+const char *const ORCA_VERSION_FULL = "Orca Engine v{version}";
+
+const char *get_orca_version() {{
+    return ORCA_VERSION_STRING;
+}}
+"""
+        )
+
+
 def encryption_key_builder(target, source, env):
     src = source[0].read() or "0" * 64
     try:

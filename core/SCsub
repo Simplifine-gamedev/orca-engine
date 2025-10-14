@@ -184,6 +184,12 @@ gen_hash = env.CommandNoCache(
 )
 env.add_source_files(env.core_sources, gen_hash)
 
+# Generate Orca version (for update system)
+gen_orca_version = env.CommandNoCache(
+    "orca_version.gen.cpp", env.Value(methods.get_git_info()), env.Run(core_builders.orca_version_builder)
+)
+env.add_source_files(env.core_sources, gen_orca_version)
+
 # Generate AES256 script encryption key
 encryption_key = os.environ.get("SCRIPT_AES256_ENCRYPTION_KEY")
 if encryption_key:

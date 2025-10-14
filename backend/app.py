@@ -6865,6 +6865,11 @@ def download_update():
         # Download the update
         result = auto_update_manager.download_update(update_info, download_path)
         
+        # CRITICAL FIX: Mark version as installed when download completes successfully
+        if result.get('success', False):
+            auto_update_manager.mark_version_installed(update_info.version)
+            print(f"UPDATE_DOWNLOAD: Marked version {update_info.version} as installed after successful download")
+        
         return jsonify(result)
         
     except Exception as e:
@@ -6881,6 +6886,7 @@ def install_update():
         data = request.get_json() or {}
         download_path = data.get('download_path')
         restart_app = data.get('restart_app', True)
+        version = data.get('version')  # Version being installed
         
         if not download_path or not os.path.exists(download_path):
             return jsonify({
@@ -6891,10 +6897,67 @@ def install_update():
         # Schedule installation
         result = auto_update_manager.schedule_install(download_path, restart_app)
         
+        # CRITICAL FIX: Mark version as installed when installation starts
+        if result.get('success', False) and version:
+            auto_update_manager.mark_version_installed(version)
+            print(f"UPDATE_INSTALL: Marked version {version} as installed")
+        
         return jsonify(result)
         
     except Exception as e:
         print(f"UPDATE_INSTALL_ERROR: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/mark_installed', methods=['POST'])
+def mark_version_installed():
+    """Manually mark a version as installed (useful for manual updates)"""
+    try:
+        data = request.get_json() or {}
+        version = data.get('version')
+        
+        if not version:
+            return jsonify({
+                'success': False,
+                'error': 'Version is required'
+            }), 400
+        
+        auto_update_manager.mark_version_installed(version)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Version {version} marked as installed',
+            'version': version
+        })
+        
+    except Exception as e:
+        print(f"UPDATE_MARK_ERROR: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/update/refresh_version', methods=['POST'])
+def refresh_version():
+    """Refresh current version detection (for testing)"""
+    try:
+        global auto_update_manager
+        
+        old_version = auto_update_manager.current_version
+        new_version = auto_update_manager._get_current_version()
+        auto_update_manager.current_version = new_version
+        
+        return jsonify({
+            'success': True,
+            'old_version': old_version,
+            'new_version': new_version,
+            'message': f'Version refreshed: {old_version} -> {new_version}'
+        })
+        
+    except Exception as e:
+        print(f"VERSION_REFRESH_ERROR: {e}")
         return jsonify({
             'success': False,
             'error': str(e)

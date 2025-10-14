@@ -6,6 +6,7 @@
 
 #include "core/io/json.h"
 #include "core/os/os.h"
+#include "core/orca_version.h"  // Orca version embedded at build time
 #include "editor/editor_node.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/themes/editor_scale.h"
@@ -137,23 +138,17 @@ void UpdateNotificationPopup::_notification(int p_what) {
 }
 
 void UpdateNotificationPopup::_get_current_version() {
-    // Try to get version from git or version file
-    current_version = "0.01.unknown";
+    // PRODUCTION: Use version baked into binary at build time by SCons
+    // This comes from core/orca_version.gen.cpp (auto-generated before compilation)
+    current_version = String(ORCA_VERSION_STRING);
     
-    // Try git first
-    List<String> args;
-    args.push_back("rev-parse");
-    args.push_back("--short=8");
-    args.push_back("HEAD");
+    print_line("UpdateNotificationPopup: ✅ Version from compiled binary: " + current_version);
     
-    String output;
-    int exit_code;
-    Error err = OS::get_singleton()->execute("git", args, &output, &exit_code, true);
-    if (err == OK && exit_code == 0) {
-        String sha = output.strip_edges();
-        if (!sha.is_empty()) {
-            current_version = "0.01." + sha;
-        }
+    // Allow environment override for testing
+    String env_version = OS::get_singleton()->get_environment("ORCA_VERSION");
+    if (!env_version.is_empty()) {
+        current_version = env_version;
+        print_line("UpdateNotificationPopup: 🧪 Version overridden for testing: " + current_version);
     }
 }
 
@@ -179,6 +174,7 @@ void UpdateNotificationPopup::_check_for_updates() {
 
 void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
     if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+        print_line("UpdateNotificationPopup: Update check failed - Result: " + itos(p_result) + ", Code: " + itos(p_code));
         return;
     }
     
@@ -186,45 +182,61 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
     Variant json_var = JSON::parse_string(response_text);
     
     if (json_var.get_type() != Variant::DICTIONARY) {
+        print_line("UpdateNotificationPopup: Invalid JSON response from GitHub");
         return;
     }
     
     Dictionary release_data = json_var;
     String tag_name = release_data.get("tag_name", "");
-    String version = tag_name.lstrip("v");
+    String remote_version = tag_name.lstrip("v");
     
-    // Check if this is a different version
-    if (version != current_version && !version.is_empty()) {
-        // Find appropriate download URL
-        Array assets = release_data.get("assets", Array());
-        String platform_download_url;
+    print_line("UpdateNotificationPopup: Comparing versions - Current: '" + current_version + "' vs Remote: '" + remote_version + "'");
+    
+    // SIMPLE RULE: Only show update if versions are DIFFERENT
+    if (remote_version == current_version) {
+        print_line("UpdateNotificationPopup: ✅ Versions match - no update notification");
+        return;
+    }
+    
+    if (remote_version.is_empty()) {
+        print_line("UpdateNotificationPopup: ⚠️ Remote version is empty");
+        return;
+    }
+    
+    print_line("UpdateNotificationPopup: 🔔 Version mismatch detected - showing update notification");
+    
+    // Find appropriate download URL for user's platform
+    Array assets = release_data.get("assets", Array());
+    String platform_download_url;
+    
+    for (int i = 0; i < assets.size(); i++) {
+        Dictionary asset = assets[i];
+        String asset_name = String(asset.get("name", "")).to_lower();
+        String asset_url = asset.get("browser_download_url", "");
         
-        for (int i = 0; i < assets.size(); i++) {
-            Dictionary asset = assets[i];
-            String asset_name = String(asset.get("name", "")).to_lower();
-            String asset_url = asset.get("browser_download_url", "");
-            
-            // Platform-specific asset selection
-            bool matches = false;
-            if (OS::get_singleton()->has_feature("macos")) {
-                matches = asset_name.ends_with(".dmg");
-            } else if (OS::get_singleton()->has_feature("windows")) {
-                matches = asset_name.ends_with(".exe");
-            } else if (OS::get_singleton()->has_feature("linux")) {
-                matches = asset_name.ends_with(".tar.gz") || asset_name.contains("linux");
-            }
-            
-            if (matches) {
-                platform_download_url = asset_url;
-                break;
-            }
+        // Platform-specific asset selection
+        bool matches = false;
+        if (OS::get_singleton()->has_feature("macos")) {
+            matches = asset_name.ends_with(".dmg") || asset_name.contains("mac");
+        } else if (OS::get_singleton()->has_feature("windows")) {
+            matches = asset_name.ends_with(".exe") || asset_name.contains("windows");
+        } else if (OS::get_singleton()->has_feature("linux")) {
+            matches = asset_name.ends_with(".tar.gz") || asset_name.contains("linux") || asset_name.contains("appimage");
         }
         
-        if (!platform_download_url.is_empty()) {
-            latest_version = version;
-            download_url = platform_download_url;
-            show_update_notification(version, platform_download_url);
+        if (matches) {
+            platform_download_url = asset_url;
+            print_line("UpdateNotificationPopup: Found platform asset: " + asset_name);
+            break;
         }
+    }
+    
+    if (!platform_download_url.is_empty()) {
+        latest_version = remote_version;
+        download_url = platform_download_url;
+        show_update_notification(remote_version, platform_download_url);
+    } else {
+        print_line("UpdateNotificationPopup: ⚠️ No compatible download found for platform");
     }
 }
 

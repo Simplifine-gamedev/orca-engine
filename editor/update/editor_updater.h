@@ -51,6 +51,8 @@ class EditorUpdater : public AcceptDialog {
     void _install_and_restart();
     void _start_github_check();
     void _process(double p_delta);
+    void _get_current_version();
+    void _notify_backend_update_installed();
 
 protected:
     static void _bind_methods();

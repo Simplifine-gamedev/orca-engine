@@ -54,32 +54,30 @@ class AutoUpdateManager:
         print(f"AUTO_UPDATE: Initialized for Orca Engine v{self.current_version}")
     
     def _get_current_version(self) -> str:
-        """Get current version matching the GitHub workflow format (0.01.{SHA})"""
-        import subprocess
-        
+        """
+        PRODUCTION VERSION DETECTION for distributed Orca Engine binaries
+        For users who download releases from GitHub - no git dependency
+        """
+        # Method 1: PRODUCTION - Built-in version file (created at build time)
         try:
-            # Method 1: Environment variable (for deployments) - highest priority
-            env_version = os.getenv('ORCA_VERSION')
-            if env_version:
-                print(f"AUTO_UPDATE: Version from environment: {env_version}")
-                return env_version
-            
-            # Method 2: Generate version matching GitHub workflow format
-            # This matches the format used in workflows: 0.01.{SHORT_SHA}
-            result = subprocess.run([
-                'git', 'rev-parse', '--short=8', 'HEAD'
-            ], capture_output=True, text=True, cwd=self._get_repo_root())
-            
-            if result.returncode == 0:
-                short_sha = result.stdout.strip()
-                version = f"0.01.{short_sha}"
-                print(f"AUTO_UPDATE: Version from git SHA (matching workflow): {version}")
-                return version
-                        
+            # Look for build-time version file that should be created by GitHub Actions
+            build_version_file = os.path.join(os.path.dirname(__file__), '..', 'ORCA_VERSION.txt')
+            if os.path.exists(build_version_file):
+                with open(build_version_file, 'r') as f:
+                    build_version = f.read().strip()
+                if build_version and build_version != '0.01.unknown':
+                    print(f"AUTO_UPDATE: Version from build file (PRODUCTION): {build_version}")
+                    return build_version
         except Exception as e:
-            print(f"AUTO_UPDATE: Git version detection failed: {e}")
+            print(f"AUTO_UPDATE: Error reading build version file: {e}")
         
-        # Method 3: Read from version.py as fallback
+        # Method 2: Environment variable (for cloud deployments)
+        env_version = os.getenv('ORCA_VERSION')
+        if env_version:
+            print(f"AUTO_UPDATE: Version from environment (CLOUD): {env_version}")
+            return env_version
+        
+        # Method 3: Check version.py (should match GitHub release tag)
         try:
             version_file = os.path.join(os.path.dirname(__file__), '..', 'version.py')
             if os.path.exists(version_file):
@@ -89,14 +87,46 @@ class AutoUpdateManager:
                     for line in content.split('\n'):
                         if line.strip().startswith('version') and '=' in line:
                             version = line.split('=')[1].strip().strip('"\'')
-                            print(f"AUTO_UPDATE: Version from version.py: {version}")
-                            return version
+                            # Only use if it's a real version, not placeholder
+                            if version and version not in ['1.0.0', '0.01.unknown']:
+                                print(f"AUTO_UPDATE: Version from version.py (RELEASE): {version}")
+                                return version
         except Exception as e:
             print(f"AUTO_UPDATE: Error reading version.py: {e}")
+        
+        # Method 4: LOCAL DEV ONLY - Git detection (not for production users)
+        try:
+            import subprocess
             
-        # Final fallback
-        print("AUTO_UPDATE: Using fallback version 0.01.unknown")
-        return '0.01.unknown'
+            # Check if we're exactly on a GitHub release tag
+            result = subprocess.run([
+                'git', 'describe', '--exact-match', '--tags', 'HEAD'
+            ], capture_output=True, text=True, cwd=self._get_repo_root())
+            
+            if result.returncode == 0:
+                tag = result.stdout.strip()
+                if tag.startswith('v'):
+                    tag = tag[1:]  # Remove 'v' prefix
+                print(f"AUTO_UPDATE: Version from git tag (DEV): {tag}")
+                return tag
+            
+            # Development build with SHA
+            result = subprocess.run([
+                'git', 'rev-parse', '--short=8', 'HEAD'
+            ], capture_output=True, text=True, cwd=self._get_repo_root())
+            
+            if result.returncode == 0:
+                short_sha = result.stdout.strip()
+                version = f"0.01.{short_sha}"
+                print(f"AUTO_UPDATE: Version from git SHA (DEV): {version}")
+                return version
+                        
+        except Exception as e:
+            print(f"AUTO_UPDATE: Git detection not available (normal for production): {e}")
+        
+        # Final fallback for production
+        print("AUTO_UPDATE: Using production fallback version")
+        return '1.0.0'
     
     def _get_repo_root(self) -> str:
         """Find the git repository root directory"""
@@ -315,21 +345,121 @@ class AutoUpdateManager:
             return None
     
     def _is_newer_version(self, remote_version: str, current_version: str) -> bool:
-        """Compare version strings to see if remote is newer"""
+        """
+        PRODUCTION VERSION COMPARISON for distributed Orca Engine
+        Simple and reliable: only update if versions are different
+        """
         try:
-            # SIMPLIFIED: Just check if versions are different
-            # Any version difference means an update is available (user requested this)
-            is_different = remote_version != current_version
+            # Normalize versions for comparison (remove v prefix)
+            remote_clean = remote_version.lstrip('v')
+            current_clean = current_version.lstrip('v')
             
-            if is_different:
-                print(f"AUTO_UPDATE: Version difference detected - treating as newer version")
-                print(f"AUTO_UPDATE: Remote: {remote_version}, Current: {current_version}")
+            print(f"AUTO_UPDATE: Comparing versions - Remote: '{remote_clean}' vs Current: '{current_clean}'")
             
-            return is_different
+            # SIMPLE RULE: If they're different, update is available
+            # This works for GitHub release tags like v0.01.9b45879b vs v0.01.fc3a12ee
+            if remote_clean == current_clean:
+                print(f"AUTO_UPDATE: ✅ Versions match - no update needed")
+                return False
+            
+            print(f"AUTO_UPDATE: 🔄 Versions differ - update available")
+            return True
                 
         except Exception as e:
             print(f"AUTO_UPDATE: Version comparison error: {e}")
             return False
+    
+    def _is_version_already_installed(self, version: str) -> bool:
+        """Check if a version has already been installed (prevents repeated notifications)"""
+        try:
+            # Check if version file exists and contains this version
+            version_history_path = os.path.join(os.path.dirname(__file__), '.installed_versions.json')
+            
+            if os.path.exists(version_history_path):
+                with open(version_history_path, 'r') as f:
+                    installed_versions = json.load(f)
+                    
+                # Check if this exact version was already installed
+                if version in installed_versions.get('versions', []):
+                    return True
+                    
+                # Also check if the current detected version matches the remote
+                current_detected = installed_versions.get('current_version', '')
+                if current_detected == version:
+                    return True
+                    
+        except Exception as e:
+            print(f"AUTO_UPDATE: Error checking version history: {e}")
+        
+        return False
+    
+    def _compare_mixed_versions(self, remote_version: str, current_version: str) -> bool:
+        """Compare versions with different formats - be conservative"""
+        # If we can't reliably compare, only update if user forces or it's been a while
+        try:
+            # Check when we last notified about this version
+            last_notification_path = os.path.join(os.path.dirname(__file__), '.last_update_check.json')
+            
+            if os.path.exists(last_notification_path):
+                with open(last_notification_path, 'r') as f:
+                    check_data = json.load(f)
+                    
+                last_remote_version = check_data.get('last_remote_version', '')
+                last_check_time = check_data.get('timestamp', 0)
+                
+                # If we already checked this exact version recently, don't spam
+                if last_remote_version == remote_version:
+                    time_since_check = time.time() - last_check_time
+                    if time_since_check < 86400:  # 24 hours
+                        print(f"AUTO_UPDATE: Already checked {remote_version} recently, skipping spam notification")
+                        return False
+            
+            # Record this check
+            check_data = {
+                'last_remote_version': remote_version,
+                'timestamp': time.time(),
+                'current_version': current_version
+            }
+            
+            with open(last_notification_path, 'w') as f:
+                json.dump(check_data, f)
+                
+            return True  # Allow the update notification
+            
+        except Exception as e:
+            print(f"AUTO_UPDATE: Error in mixed version comparison: {e}")
+            return False
+    
+    def mark_version_installed(self, version: str) -> None:
+        """Mark a version as installed to prevent duplicate notifications"""
+        try:
+            version_history_path = os.path.join(os.path.dirname(__file__), '.installed_versions.json')
+            
+            installed_versions = {'versions': [], 'current_version': version}
+            if os.path.exists(version_history_path):
+                try:
+                    with open(version_history_path, 'r') as f:
+                        installed_versions = json.load(f)
+                except Exception:
+                    pass
+            
+            # Add this version to the list if not already present
+            if version not in installed_versions.get('versions', []):
+                installed_versions['versions'] = installed_versions.get('versions', [])
+                installed_versions['versions'].append(version)
+                installed_versions['current_version'] = version
+                installed_versions['timestamp'] = time.time()
+                
+                # Keep only last 10 versions to prevent file bloat
+                installed_versions['versions'] = installed_versions['versions'][-10:]
+            
+            with open(version_history_path, 'w') as f:
+                json.dump(installed_versions, f, indent=2)
+                
+            print(f"AUTO_UPDATE: Marked version {version} as installed")
+            
+        except Exception as e:
+            print(f"AUTO_UPDATE: Error marking version as installed: {e}")
     
     def _is_critical_update(self, release_notes: str) -> bool:
         """Determine if an update is critical based on release notes"""

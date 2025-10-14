@@ -10,6 +10,7 @@
 #include "core/string/translation_server.h"
 #include "core/string/ustring.h"  // For TTR translation macro
 #include "core/version.h"  // For VERSION_FULL_CONFIG and VERSION_HASH
+#include "core/orca_version.h"  // Orca version embedded at build time
 #include "editor/file_system/editor_paths.h"
 #include "editor/editor_node.h"
 #include "editor/themes/editor_scale.h"
@@ -22,11 +23,8 @@ EditorUpdater::EditorUpdater() {
     set_title("Update Orca");
     set_min_size(Size2(520, 180) * EDSCALE);  // Increased height for progress bar
     
-    // Get current version from VERSION_FULL_CONFIG or fallback to hash
-    current_version = VERSION_FULL_CONFIG;
-    if (current_version.is_empty()) {
-        current_version = VERSION_HASH;
-    }
+    // Get current version using improved detection (consistent with backend)
+    _get_current_version();
 
     VBoxContainer *vb = memnew(VBoxContainer);
     add_child(vb);
@@ -67,6 +65,60 @@ EditorUpdater::EditorUpdater() {
     http->set_download_chunk_size(32768);  // 32KB chunks for smooth progress
 
     set_process(true);  // Enable _process() for progress updates
+}
+
+void EditorUpdater::_get_current_version() {
+    // PRODUCTION: Use version baked into binary at build time by SCons
+    // This comes from core/orca_version.gen.cpp (auto-generated during compilation)
+    current_version = String(ORCA_VERSION_STRING);
+    
+    print_line("EditorUpdater: ✅ Version from compiled binary: " + current_version);
+    
+    // Allow environment override for testing
+    String env_version = OS::get_singleton()->get_environment("ORCA_VERSION");
+    if (!env_version.is_empty()) {
+        current_version = env_version;
+        print_line("EditorUpdater: 🧪 Version overridden for testing: " + current_version);
+    }
+}
+
+void EditorUpdater::_notify_backend_update_installed() {
+    // PRODUCTION: Update notifications work without backend server
+    // This function is kept for future local development integration
+    
+    // Only try to notify backend in development mode (when AI backend might be running)
+    String dev_mode = OS::get_singleton()->get_environment("IS_DEV");
+    if (dev_mode.to_lower() != "true") {
+        print_line("EditorUpdater: Skipping backend notification (production mode - not needed)");
+        return;
+    }
+    
+    print_line("EditorUpdater: Development mode - attempting backend notification");
+    
+    // Try to notify local backend that this version was installed (dev only)
+    HTTPRequest *notify_http = memnew(HTTPRequest);
+    add_child(notify_http);
+    
+    // Create JSON payload
+    Dictionary payload;
+    payload["version"] = latest_version.is_empty() ? "unknown" : latest_version;
+    
+    Ref<JSON> json;
+    json.instantiate();
+    String json_string = json->stringify(payload);
+    
+    // Try local backend only
+    PackedStringArray headers;
+    headers.push_back("Content-Type: application/json");
+    
+    String backend_url = "http://localhost:8080/update/mark_installed";
+    Error notify_err = notify_http->request(backend_url, headers, HTTPClient::METHOD_POST, json_string);
+    
+    if (notify_err == OK) {
+        print_line("EditorUpdater: Notified local backend that version " + latest_version + " was installed");
+    } else {
+        print_line("EditorUpdater: Local backend notification failed (expected in production): " + itos(notify_err));
+    }
 }
 
 void EditorUpdater::start_check() {
@@ -686,40 +738,100 @@ void EditorUpdater::_install_and_restart() {
         // to prevent "Couldn't detect whether to run editor" error
         List<String> args;
         
-        // Check if this is an installer (.exe with installer signature) or direct executable
-        bool is_installer = downloaded_file_path.to_lower().contains("setup") || 
-                           downloaded_file_path.to_lower().contains("install") ||
-                           downloaded_file_path.to_lower().contains("orca-engine-");
+        String file_lower = downloaded_file_path.to_lower();
+        String file_name = downloaded_file_path.get_file().to_lower();
+        
+        // Improved installer/executable detection
+        bool is_installer = file_lower.contains("setup") || 
+                           file_lower.contains("install") ||
+                           file_name.begins_with("orca-engine-") ||
+                           file_name.contains("installer");
+        
+        // Check file size - installers are typically larger than 50MB
+        Error size_err;
+        Ref<FileAccess> size_check = FileAccess::open(downloaded_file_path, FileAccess::READ, &size_err);
+        bool likely_installer = false;
+        if (size_err == OK && size_check.is_valid()) {
+            int64_t file_size = size_check->get_length();
+            likely_installer = (file_size > 50 * 1024 * 1024);  // > 50MB
+            size_check->close();
+            print_line("EditorUpdater: File size: " + String::humanize_size(file_size) + (likely_installer ? " (likely installer)" : " (likely executable)"));
+        }
+        
+        is_installer = is_installer || likely_installer;
         
         if (is_installer) {
             // For installers: Launch installer and let it handle installation
-            print_line("EditorUpdater: Detected installer executable, launching with silent flag");
-            args.push_back("/S");  // Silent install for NSIS installers
-            args.push_back("/LAUNCH");  // Custom flag to launch after install (if supported)
+            print_line("EditorUpdater: Detected installer, launching with appropriate flags");
             
-            // Launch installer
-            Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, args);
-            if (launch_err != OK) {
-                print_line("EditorUpdater: Failed to launch installer: " + itos(launch_err));
+            // Try different installer flags in order of preference
+            List<String> installer_flags[] = {
+                {"/S", "/LAUNCH_EDITOR"},     // NSIS with custom editor launch flag
+                {"/S", "/EDITOR"},            // NSIS with editor flag
+                {"/S"},                       // Standard silent install
+                {"/VERYSILENT", "/NORESTART", "/TASKS=desktopicon"}, // Inno Setup
+                {}                            // No flags as last resort
+            };
+            
+            bool launch_success = false;
+            for (auto& flag_set : installer_flags) {
+                List<String> current_args;
+                for (const String& flag : flag_set) {
+                    current_args.push_back(flag);
+                }
+                
+                Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, current_args);
+                if (launch_err == OK) {
+                    launch_success = true;
+                    print_line("EditorUpdater: Installer launched with flags: " + String(", ").join(PackedStringArray()));
+                    break;
+                }
+            }
+            
+            if (!launch_success) {
+                print_line("EditorUpdater: All installer launch attempts failed");
                 status_label->set_text("Failed to launch installer. Please run manually: " + downloaded_file_path);
                 return;
             }
-            
-            print_line("EditorUpdater: Installer launched successfully");
         } else {
-            // For direct executables: Launch with --editor flag
-            print_line("EditorUpdater: Detected direct executable, launching with --editor flag");
-            args.push_back("--editor");  // CRITICAL: Ensures editor mode
+            // For direct executables: CRITICAL FIX for Windows editor launch
+            print_line("EditorUpdater: Detected direct executable, launching with enhanced editor mode flags");
+            
+            // MULTIPLE FLAGS to ensure editor mode (redundancy prevents game launch)
+            args.push_back("--editor");           // Primary editor flag
+            args.push_back("--no-window");        // Prevent game window opening  
+            args.push_back("--verbose");          // Help with debugging if it fails
+            
+            // Try to pass project path to ensure it opens in editor mode
+            String project_path = ProjectSettings::get_singleton()->get_resource_path();
+            if (!project_path.is_empty()) {
+                args.push_back("--path");
+                args.push_back(project_path);
+                print_line("EditorUpdater: Adding project path: " + project_path);
+            }
             
             Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, args);
             if (launch_err != OK) {
                 print_line("EditorUpdater: Failed to launch new version: " + itos(launch_err));
-                status_label->set_text("Failed to launch update. Please run manually: " + downloaded_file_path);
-                return;
+                
+                // Fallback: Try with just --editor flag
+                List<String> fallback_args;
+                fallback_args.push_back("--editor");
+                Error fallback_err = OS::get_singleton()->create_process(downloaded_file_path, fallback_args);
+                
+                if (fallback_err != OK) {
+                    status_label->set_text("Failed to launch update. Please run manually with --editor flag: " + downloaded_file_path);
+                    return;
+                }
+                
+                print_line("EditorUpdater: Fallback launch with --editor succeeded");
+            } else {
+                print_line("EditorUpdater: New version launched with enhanced editor flags");
             }
-            
-            print_line("EditorUpdater: New version launched with --editor flag");
         }
+        
+        // CRITICAL FIX: Notify backend that update was installed before quitting
+        _notify_backend_update_installed();
         
         // Give installer/new version time to start before quitting
         print_line("EditorUpdater: Waiting 2 seconds before quitting current instance...");
@@ -737,6 +849,9 @@ void EditorUpdater::_install_and_restart() {
         String lower = downloaded_file_path.to_lower();
 
         auto open_app_and_quit = [&](const String &app_path) {
+            // CRITICAL FIX: Notify backend before quitting on macOS too
+            _notify_backend_update_installed();
+            
             List<String> open_args;
             open_args.push_back("-a");
             open_args.push_back(app_path);
@@ -789,6 +904,7 @@ void EditorUpdater::_install_and_restart() {
                 return;
             }
             // Fallback: just open the DMG so user can drag-drop.
+            _notify_backend_update_installed();
             OS::get_singleton()->shell_open("file://" + downloaded_file_path);
             get_tree()->quit();
             return;
@@ -824,6 +940,7 @@ void EditorUpdater::_install_and_restart() {
                 return;
             }
             // Fallback: open the zip location.
+            _notify_backend_update_installed();
             OS::get_singleton()->shell_open("file://" + downloaded_file_path);
             get_tree()->quit();
             return;
@@ -837,6 +954,7 @@ void EditorUpdater::_install_and_restart() {
         }
 
         // Unknown type: open file location as fallback.
+        _notify_backend_update_installed();
         OS::get_singleton()->shell_open("file://" + downloaded_file_path);
         get_tree()->quit();
         return;

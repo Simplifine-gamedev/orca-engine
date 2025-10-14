@@ -30,8 +30,11 @@ jobs:
         id: version
         run: |
           $SHORT_SHA = (git rev-parse --short=8 HEAD)
-          echo "RELEASE_VERSION=0.01.$SHORT_SHA" >> $env:GITHUB_ENV
-          echo "release_version=0.01.$SHORT_SHA" >> $env:GITHUB_OUTPUT
+          $VERSION = "0.01.$SHORT_SHA"
+          echo "RELEASE_VERSION=$VERSION" >> $env:GITHUB_ENV
+          echo "ORCA_VERSION=$VERSION" >> $env:GITHUB_ENV
+          echo "release_version=$VERSION" >> $env:GITHUB_OUTPUT
+          echo "✅ Version for build: $VERSION (will be embedded in binary)"
 
       - name: Remove any submodule references
         shell: bash
@@ -65,12 +68,15 @@ jobs:
       - name: Build Orca Engine
         run: |
           echo "🔨 Starting Windows build - this may take 40-50 minutes..."
+          echo "🏷️ Building with embedded version: $env:ORCA_VERSION"
           echo "💾 Available disk space:"
           Get-WmiObject -Class Win32_LogicalDisk | Select-Object DeviceID, @{Name="Size(GB)";Expression={[math]::Round($_.Size/1GB,2)}}, @{Name="FreeSpace(GB)";Expression={[math]::Round($_.FreeSpace/1GB,2)}}
           echo "🧠 Available memory:"
           Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
           echo "⚡ Starting SCons build..."
           scons platform=windows target=editor dev_build=no arch=x86_64 -j4 verbose=yes
+        env:
+          ORCA_VERSION: ${{ env.ORCA_VERSION }}
 
       - name: Verify Build
         shell: cmd
