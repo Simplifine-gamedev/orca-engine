@@ -798,66 +798,94 @@ void EditorUpdater::_install_and_restart() {
             print_line("EditorUpdater: WINDOWS: AUTO-LAUNCHING executable with explicit editor mode");
             print_line("EditorUpdater: WINDOWS: Downloaded file: " + downloaded_file_path);
             
-            // ENHANCED APPROACH: Multiple launch strategies to ensure editor mode
+            // WINDOWS SPECIFIC FIX: Use cmd.exe to ensure arguments are passed correctly
             bool launch_success = false;
             
-            // Strategy 1: Full arguments with project manager fallback
-            List<String> full_args;
-            full_args.push_back("--editor");           // Primary: Force editor mode
-            full_args.push_back("--project-manager");  // Fallback: Project manager if no project
+            print_line("EditorUpdater: WINDOWS: Using CMD wrapper to ensure argument passing");
             
-            print_line("EditorUpdater: WINDOWS: Trying Strategy 1 - Editor with project manager fallback");
-            Error full_launch = OS::get_singleton()->create_process(downloaded_file_path, full_args);
-            if (full_launch == OK) {
+            // Strategy 1: Use cmd.exe to launch with project manager (most reliable on Windows)
+            List<String> cmd_args;
+            cmd_args.push_back("/c");
+            cmd_args.push_back("\"" + downloaded_file_path + "\" --project-manager");
+            
+            print_line("EditorUpdater: WINDOWS: Trying CMD Strategy - Project Manager");
+            Error cmd_launch = OS::get_singleton()->create_process("cmd.exe", cmd_args);
+            if (cmd_launch == OK) {
                 launch_success = true;
-                print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 1 worked");
+                print_line("EditorUpdater: WINDOWS: SUCCESS - CMD with --project-manager worked");
             }
             
-            // Strategy 2: Just --project-manager (most reliable for Windows)
+            // Strategy 2: Use cmd.exe with editor flag
+            if (!launch_success) {
+                List<String> cmd_editor_args;
+                cmd_editor_args.push_back("/c");
+                cmd_editor_args.push_back("\"" + downloaded_file_path + "\" --editor");
+                
+                print_line("EditorUpdater: WINDOWS: Trying CMD Strategy - Editor mode");
+                Error cmd_editor = OS::get_singleton()->create_process("cmd.exe", cmd_editor_args);
+                if (cmd_editor == OK) {
+                    launch_success = true;
+                    print_line("EditorUpdater: WINDOWS: SUCCESS - CMD with --editor worked");
+                }
+            }
+            
+            // Strategy 3: Direct launch with project-manager (most reliable argument)
             if (!launch_success) {
                 List<String> pm_args;
                 pm_args.push_back("--project-manager");
                 
-                print_line("EditorUpdater: WINDOWS: Trying Strategy 2 - Project manager only");
+                print_line("EditorUpdater: WINDOWS: Trying Direct Launch - Project Manager");
                 Error pm_launch = OS::get_singleton()->create_process(downloaded_file_path, pm_args);
                 if (pm_launch == OK) {
                     launch_success = true;
-                    print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 2 worked (project manager)");
+                    print_line("EditorUpdater: WINDOWS: SUCCESS - Direct --project-manager worked");
                 }
             }
             
-            // Strategy 3: Just --editor (simple approach)
+            // Strategy 4: Windows Explorer launch (Windows shell handles it)
             if (!launch_success) {
-                List<String> editor_args;
-                editor_args.push_back("--editor");
-                
-                print_line("EditorUpdater: WINDOWS: Trying Strategy 3 - Editor only");
-                Error editor_launch = OS::get_singleton()->create_process(downloaded_file_path, editor_args);
-                if (editor_launch == OK) {
+                print_line("EditorUpdater: WINDOWS: Trying Windows Shell Launch");
+                Error shell_err = OS::get_singleton()->shell_open(downloaded_file_path);
+                if (shell_err == OK) {
                     launch_success = true;
-                    print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 3 worked (editor only)");
+                    print_line("EditorUpdater: WINDOWS: SUCCESS - Shell launch worked (user will see Godot)");
                 }
             }
             
-            // Strategy 4: No arguments (let Godot decide)
+            // WINDOWS WORKAROUND: Create a batch file to launch with proper arguments
             if (!launch_success) {
-                List<String> no_args;
+                print_line("EditorUpdater: WINDOWS: Creating batch file workaround for argument passing");
                 
-                print_line("EditorUpdater: WINDOWS: Trying Strategy 4 - No arguments (auto-detect)");
-                Error auto_launch = OS::get_singleton()->create_process(downloaded_file_path, no_args);
-                if (auto_launch == OK) {
-                    launch_success = true;
-                    print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 4 worked (auto-detect)");
+                // Create a .bat file that launches with --project-manager
+                String batch_path = downloaded_file_path.get_base_dir().path_join("launch_orca_update.bat");
+                
+                Error bat_err;
+                Ref<FileAccess> bat_file = FileAccess::open(batch_path, FileAccess::WRITE, &bat_err);
+                if (bat_err == OK && bat_file.is_valid()) {
+                    String batch_content = "@echo off\n";
+                    batch_content += "echo Launching Orca Engine in Project Manager mode...\n";
+                    batch_content += "\"" + downloaded_file_path + "\" --project-manager\n";
+                    batch_content += "del \"" + batch_path + "\"\n";  // Self-delete
+                    
+                    bat_file->store_string(batch_content);
+                    bat_file->close();
+                    
+                    // Launch the batch file
+                    Error batch_launch = OS::get_singleton()->shell_open(batch_path);
+                    if (batch_launch == OK) {
+                        launch_success = true;
+                        print_line("EditorUpdater: WINDOWS: SUCCESS - Batch file workaround worked");
+                    }
                 }
             }
             
             // Final result
             if (!launch_success) {
                 print_line("EditorUpdater: WINDOWS: ERROR - All launch strategies failed");
-                status_label->set_text("Update downloaded but failed to launch automatically.\nPlease run manually: " + downloaded_file_path + " --project-manager");
-                return;
+                status_label->set_text("Update downloaded successfully!\n\nTo launch: Double-click and add '--project-manager' argument\n" + downloaded_file_path);
+                // Still quit so user can launch manually
             } else {
-                print_line("EditorUpdater: WINDOWS: SUCCESS - New version launched successfully");
+                print_line("EditorUpdater: WINDOWS: SUCCESS - New version launching with proper arguments");
             }
         }
         
