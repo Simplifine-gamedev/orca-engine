@@ -65,13 +65,13 @@ def orca_version_builder(target, source, env):
     orca_version_env = os.environ.get('ORCA_VERSION', '').strip()
     if orca_version_env:
         version = orca_version_env
-        print(f"ORCA VERSION: ✅ From ORCA_VERSION env: {version}")
+        print(f"ORCA VERSION: From ORCA_VERSION env: {version}")
     
     # Priority 2: GitHub Actions tag (for release builds)
     elif os.environ.get('GITHUB_REF', '').startswith('refs/tags/'):
         github_ref = os.environ.get('GITHUB_REF', '')
         version = github_ref.replace('refs/tags/', '').lstrip('v')
-        print(f"ORCA VERSION: ✅ From GitHub tag: {version}")
+        print(f"ORCA VERSION: From GitHub tag: {version}")
     
     # Priority 3: Git tag (local tagged builds)
     else:
@@ -82,16 +82,16 @@ def orca_version_builder(target, source, env):
             )
             if result.returncode == 0:
                 version = result.stdout.strip().lstrip('v')
-                print(f"ORCA VERSION: ✅ From git tag: {version}")
+                print(f"ORCA VERSION: From git tag: {version}")
             else:
                 # Priority 4: Git SHA for development builds
                 git_info = source[0].read()
                 git_hash = git_info.get('git_hash', 'unknown')
                 if git_hash and git_hash != 'unknown':
                     version = f"0.01.{git_hash[:8]}"
-                    print(f"ORCA VERSION: ⚠️ Development build from SHA: {version}")
+                    print(f"ORCA VERSION: Development build from SHA: {version}")
                 else:
-                    print(f"ORCA VERSION: ❌ Using fallback: {version}")
+                    print(f"ORCA VERSION: Using fallback: {version}")
         except Exception as e:
             print(f"ORCA VERSION: Error in git detection: {e}")
     
