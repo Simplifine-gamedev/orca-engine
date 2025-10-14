@@ -802,13 +802,8 @@ void EditorUpdater::_install_and_restart() {
             args.push_back("--no-window");        // Prevent game window opening  
             args.push_back("--verbose");          // Help with debugging if it fails
             
-            // Try to pass project path to ensure it opens in editor mode
-            String project_path = ProjectSettings::get_singleton()->get_resource_path();
-            if (!project_path.is_empty()) {
-                args.push_back("--path");
-                args.push_back(project_path);
-                print_line("EditorUpdater: Adding project path: " + project_path);
-            }
+            // NOTE: Project path not passed to avoid Windows build issues
+            // The --editor and --no-window flags are sufficient to ensure editor mode
             
             Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, args);
             if (launch_err != OK) {
