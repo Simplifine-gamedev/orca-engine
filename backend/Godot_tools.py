@@ -419,6 +419,7 @@ _godot_tools_template = [
                     "image_id": {"type": "string", "description": "ID of the image from conversation (e.g., 'generated_abc123', 'edited_def456')"},
                     "path": {"type": "string", "description": "Path where to save the image in the project (e.g., 'res://textures/floor_texture.png')"},
                     "format": {"type": "string", "enum": ["png", "jpg", "jpeg"], "default": "png"},
+                    "target_resolution": {"type": "integer", "description": "Target resolution for saved image (e.g., 8, 16, 32, 64, 128, 256, 512, 1024, 2048). Use -1 or omit for original size. Maintains aspect ratio when resizing."},
 
                     # Spritesheet slicing
                     "sheet_base64": {"type": "string"},

@@ -4863,16 +4863,10 @@ def chat():
                                 time.sleep(0.1)
                             rm_result = _tool_result_holder["result"] or {"success": False, "error": "resource_manager returned no result"}
                             
-                            # Debug: Log the result to see what we got
-                            print(f"RESOURCE_MANAGER_DEBUG: Got result: success={rm_result.get('success')}, keys={list(rm_result.keys()) if isinstance(rm_result, dict) else 'not_dict'}")
-                            
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
                                 yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
                                 return
-                            
-                            # Debug: About to send tool_completed
-                            print(f"RESOURCE_MANAGER_DEBUG: Sending tool_completed for {tool_id}")
                             
                             yield json.dumps({
                                 "tool_executed": "resource_manager",
@@ -4880,8 +4874,6 @@ def chat():
                                 "tool_call_id": tool_id,
                                 "status": "tool_completed"
                             }) + '\n'
-                            
-                            print(f"RESOURCE_MANAGER_DEBUG: tool_completed sent for {tool_id}")
                             
                             # Log tool result for debugging
                             log_tool_result("resource_manager", tool_id, rm_result, duration_ms=0)

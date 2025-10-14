@@ -11383,6 +11383,7 @@ Dictionary EditorTools::save_image_to_path(const Dictionary &p_args) {
     String image_id = p_args.get("image_id", "");
     String path = p_args.get("path", "");
     String format = String(p_args.get("format", "png")).to_lower();
+    int target_resolution = p_args.get("target_resolution", -1); // -1 = original size
     
     if (image_id.is_empty()) {
         result["success"] = false;
@@ -11458,6 +11459,29 @@ Dictionary EditorTools::save_image_to_path(const Dictionary &p_args) {
         result["success"] = false;
         result["message"] = "Failed to load image from " + format.to_upper() + " data";
         return result;
+    }
+    
+    Vector2i original_size = Vector2i(image->get_width(), image->get_height());
+    
+    // Resize if target_resolution is specified
+    if (target_resolution > 0) {
+        float aspect_ratio = (float)original_size.x / (float)original_size.y;
+        Vector2i new_size;
+        
+        if (aspect_ratio > 1.0f) {
+            // Landscape - fit to width
+            new_size.x = target_resolution;
+            new_size.y = (int)(target_resolution / aspect_ratio);
+        } else {
+            // Portrait or square - fit to height
+            new_size.y = target_resolution;
+            new_size.x = (int)(target_resolution * aspect_ratio);
+        }
+        
+        print_line("SAVE_IMAGE: Resizing from " + String(original_size) + " to " + String(new_size) + " (target_resolution=" + String::num_int64(target_resolution) + ")");
+        image->resize(new_size.x, new_size.y, Image::INTERPOLATE_LANCZOS);
+    } else {
+        print_line("SAVE_IMAGE: Saving at original size: " + String(original_size));
     }
     
     // Ensure directory exists

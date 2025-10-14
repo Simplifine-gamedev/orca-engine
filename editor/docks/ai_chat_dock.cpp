@@ -4208,6 +4208,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
         String tool_executed = response_data.get("tool_executed", "");
         Dictionary tool_result = response_data.get("tool_result", Dictionary());
         String tool_call_id = response_data.get("tool_call_id", "");
+        
         print_line("AI Chat: Tool completed: " + tool_executed + " (ID: " + tool_call_id + ") (success: " + String(tool_result.get("success", false) ? "true" : "false") + ")");
 
         // Check if we already have an assistant message with this tool_call_id
@@ -4267,7 +4268,36 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 
         // Unified tool UI handling (updates placeholder and records in history)
         if (!tool_call_id.is_empty()) {
-            Dictionary args; // Optionally populate with inputs
+            // Extract original tool call arguments from the assistant message
+            Dictionary args;
+            Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
+            
+            // Find the assistant message with this tool_call_id
+            for (int i = history.size() - 1; i >= 0; i--) {
+                const ChatMessage &msg = history[i];
+                if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+                    for (int j = 0; j < msg.tool_calls.size(); j++) {
+                        Dictionary tool_call = msg.tool_calls[j];
+                        String existing_id = tool_call.get("id", "");
+                        if (existing_id == tool_call_id) {
+                            // Found the matching tool call, extract arguments
+                            Dictionary function_dict = tool_call.get("function", Dictionary());
+                            String arguments_str = function_dict.get("arguments", "{}");
+                            
+                            // Parse the arguments JSON
+                            Ref<JSON> json;
+                            json.instantiate();
+                            if (json->parse(arguments_str) == OK) {
+                                args = json->get_data();
+                                print_line("AI Chat: Extracted original tool arguments for " + tool_executed + ": op=" + String(args.get("op", "none")));
+                            }
+                            break;
+                        }
+                    }
+                    if (!args.is_empty()) break;
+                }
+            }
+            
             _add_tool_response_to_chat(tool_call_id, tool_executed, args, tool_result);
             print_line("AI Chat: DEBUG - tool_completed processed, continuing to listen for final response");
         } else {
@@ -5397,8 +5427,9 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	msg.role = "tool";
 	msg.tool_call_id = p_tool_call_id;
 	msg.name = p_name;
-    // Prepare a content payload we can enrich with metadata like image_name
-    Dictionary result_for_content = p_result;
+    // CRITICAL FIX: Create a DEEP COPY to avoid modifying the original p_result
+    // Godot Dictionary assignments are references, not copies!
+    Dictionary result_for_content = p_result.duplicate(true); // true = deep copy
 	msg.timestamp = _get_timestamp();
 	
 	if (add_response_start > 0) {
@@ -5406,8 +5437,9 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	}
 	
 	// Store the original tool arguments for proper UI recreation
+	// CRITICAL: Store the FULL result with image_data for UI rendering
 	msg.tool_results.clear();
-	msg.tool_results.push_back(p_result);
+	msg.tool_results.push_back(p_result); // Keep FULL result including image_data for UI
 	msg.tool_results.push_back(p_args); // Store args as second element
 
 	// If this is an image generation/edit result OR screenshot, attach the image to the message so
@@ -5453,7 +5485,8 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	}
 
     // AGGRESSIVE PERFORMANCE FIX: Provide model with smart summary and cap UI data processing
-    Dictionary content_to_serialize = result_for_content;
+    // CRITICAL: Create another deep copy for serialization to avoid modifying result_for_content
+    Dictionary content_to_serialize = result_for_content.duplicate(true);
     
     // Check for large arrays that could freeze JSON.stringify() and UI creation
     if (content_to_serialize.has("nodes")) {
@@ -6481,7 +6514,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		current_displayed_images = displayed_generated_images;
 	}
 	
-	// Display tool results (like generated images) if any, but avoid duplication
+	// Display tool results (like generated images) if any
 	if (!p_message.tool_results.is_empty()) {
 		message_panel->set_visible(true);
 		
@@ -6493,17 +6526,30 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 				String image_data = tool_result.get("image_data", "");
 				String prompt = tool_result.get("prompt", "Generated Image");
 				
-				// Only display if not already displayed in attached_files section
-				if (!image_data.is_empty() && !current_displayed_images.has(image_data)) {
-					print_line("AI Chat: Displaying saved image from tool result: " + prompt + " (" + String::num(image_data.length()) + " chars base64)");
+				// Always display images in tool results section for better UX
+				if (!image_data.is_empty()) {
+					print_line("AI Chat: Displaying image from tool result: " + prompt + " (" + String::num(image_data.length()) + " chars base64)");
 					
-					// Create metadata for unified display
-					Dictionary img_metadata;
-					img_metadata["prompt"] = prompt;
-					img_metadata["model"] = tool_result.get("model", "DALL-E");
-					img_metadata["path"] = "generated://tool_result";
+					// Create a dedicated tool result container
+					VBoxContainer *tool_result_container = memnew(VBoxContainer);
+					message_vbox->add_child(tool_result_container);
 					
-					_display_image_unified(message_vbox, image_data, img_metadata);
+					// Add tool result header
+					HBoxContainer *header_container = memnew(HBoxContainer);
+					tool_result_container->add_child(header_container);
+					
+					Label *tool_icon = memnew(Label);
+					tool_icon->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
+					header_container->add_child(tool_icon);
+					
+					Label *tool_header = memnew(Label);
+					tool_header->set_text("Image Generation Result");
+					tool_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+					tool_header->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+					header_container->add_child(tool_header);
+					
+					// Display the image within the tool result
+					_display_generated_image_in_tool_result(tool_result_container, image_data, tool_result);
 				}
 			}
 		}
@@ -6701,7 +6747,7 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 		current_displayed_images = displayed_generated_images;
 	}
 	
-	// Display tool results (like generated images) if any, but avoid duplication
+	// Display tool results (like generated images) if any  
 	if (!p_message.tool_results.is_empty()) {
 		p_message_panel->set_visible(true);
 		
@@ -6713,17 +6759,41 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 				String image_data = tool_result.get("image_data", "");
 				String prompt = tool_result.get("prompt", "Generated Image");
 				
-				// Only display if not already displayed in attached_files section
-				if (!image_data.is_empty() && !current_displayed_images.has(image_data)) {
-					print_line("AI Chat: Displaying saved image from tool result: " + prompt + " (" + String::num(image_data.length()) + " chars base64)");
+				// Always display images in tool results section for better UX
+				if (!image_data.is_empty()) {
+					print_line("AI Chat: Displaying image from tool result: " + prompt + " (" + String::num(image_data.length()) + " chars base64)");
 					
-					// Create metadata for unified display
-					Dictionary img_metadata;
-					img_metadata["prompt"] = prompt;
-					img_metadata["model"] = tool_result.get("model", "DALL-E");
-					img_metadata["path"] = "generated://tool_result";
+					// Create a dedicated tool result container (use p_message_panel-based container)
+					VBoxContainer *tool_result_container = memnew(VBoxContainer);
+					// Find the appropriate parent container in p_message_panel
+					VBoxContainer *message_content = nullptr;
+					for (int j = 0; j < p_message_panel->get_child_count(); j++) {
+						Node *child = p_message_panel->get_child(j);
+						message_content = Object::cast_to<VBoxContainer>(child);
+						if (message_content) break;
+					}
+					if (message_content) {
+						message_content->add_child(tool_result_container);
+					} else {
+						p_message_panel->add_child(tool_result_container);
+					}
 					
-					_display_image_unified(message_vbox, image_data, img_metadata);
+					// Add tool result header
+					HBoxContainer *header_container = memnew(HBoxContainer);
+					tool_result_container->add_child(header_container);
+					
+					Label *tool_icon = memnew(Label);
+					tool_icon->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
+					header_container->add_child(tool_icon);
+					
+					Label *tool_header = memnew(Label);
+					tool_header->set_text("Image Generation Result");
+					tool_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+					tool_header->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+					header_container->add_child(tool_header);
+					
+					// Display the image within the tool result
+					_display_generated_image_in_tool_result(tool_result_container, image_data, tool_result);
 				}
 			}
 		}
@@ -6924,19 +6994,22 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 		child->queue_free();
 	}
 
-	// Parse the tool result from JSON content with better error handling
-	Ref<JSON> json;
-	json.instantiate();
-	Error err = json->parse(p_tool_message.content);
+	// CRITICAL FIX: Use tool_results[0] which has the FULL data including image_data
+	// The msg.content has image_data stripped for backend efficiency, but tool_results preserves it for UI
 	Dictionary result;
-	if (err == OK) {
-		result = json->get_data();
+	if (!p_tool_message.tool_results.is_empty()) {
+		result = p_tool_message.tool_results[0]; // First element is the FULL result with image_data
+		print_line("AI Chat: Using tool_results[0] for UI (has full data including images)");
 	} else {
-		// If parsing fails, check if tool_results array has the data
-		if (!p_tool_message.tool_results.is_empty()) {
-			result = p_tool_message.tool_results[0]; // First element is the result
+		// Fallback: parse from JSON content if tool_results is empty
+		Ref<JSON> json;
+		json.instantiate();
+		Error err = json->parse(p_tool_message.content);
+		if (err == OK) {
+			result = json->get_data();
+			print_line("AI Chat: WARNING - Using msg.content for UI (may be missing image_data)");
 		} else {
-			// Fallback if both JSON parsing and tool_results fail
+			// Final fallback if both fail
 			result["success"] = false;
 			result["message"] = "Failed to parse tool result: " + p_tool_message.content;
 		}
@@ -8385,35 +8458,58 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 	} else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager" || p_tool_name == "runtime_manager" || p_tool_name == "runtime_inspector") && p_success) {
 		// Special handling for image generation results (image_operation, resource_manager with image ops, and screenshot captures)
 		String base64_data = p_result.get("image_data", "");
+		String op = p_args.get("op", p_args.get("operation", ""));
 		
 		if (!base64_data.is_empty()) {
-			// LAZY LOADING: Only decode and display when user clicks "Show Image"
-			Dictionary img_metadata;
-			String image_type = p_result.get("image_type", "");
+			// Use lazy loading for ALL image operations to improve performance
+			// Images only decode/display when user expands the tool result
+			bool is_image_generation = (op == "image.generate_or_edit" || p_tool_name == "image_operation");
 			
-			if (image_type == "screenshot") {
-				// Special handling for screenshots
-				String target = p_result.get("target", "viewport");
-				img_metadata["prompt"] = "Runtime Screenshot (" + target + ")";
-				img_metadata["model"] = "Viewport Capture";
-				img_metadata["path"] = "screenshot://runtime";
-				img_metadata["image_type"] = "screenshot";
-			} else {
-				// Regular image generation
+			if (is_image_generation) {
+				// Use lazy loader for image generation too - only load when expanded
+				print_line("AI Chat: Using lazy loader for " + p_tool_name + " operation: " + op + " (performance optimization)");
+				Dictionary img_metadata;
 				img_metadata["prompt"] = p_result.get("prompt", "Generated Image");
 				img_metadata["model"] = p_result.get("model", "DALL-E");
 				img_metadata["path"] = "generated://tool_operation";
+				
+				// Include backend-provided image_id in metadata
+				String image_id = p_result.get("image_id", "");
+				if (!image_id.is_empty()) {
+					img_metadata["image_id"] = image_id;
+					img_metadata["name"] = image_id;
+				}
+				
+				AIImageLazyLoader::create_lazy_image_placeholder(base64_data, img_metadata, p_content_vbox);
+			} else {
+				// LAZY LOADING for screenshots and other image operations
+				Dictionary img_metadata;
+				String image_type = p_result.get("image_type", "");
+				
+				if (image_type == "screenshot") {
+					// Special handling for screenshots
+					String target = p_result.get("target", "viewport");
+					img_metadata["prompt"] = "Runtime Screenshot (" + target + ")";
+					img_metadata["model"] = "Viewport Capture";
+					img_metadata["path"] = "screenshot://runtime";
+					img_metadata["image_type"] = "screenshot";
+				} else {
+					// Regular image generation
+					img_metadata["prompt"] = p_result.get("prompt", "Generated Image");
+					img_metadata["model"] = p_result.get("model", "DALL-E");
+					img_metadata["path"] = "generated://tool_operation";
+				}
+				
+				// Include backend-provided image_id in metadata
+				String image_id = p_result.get("image_id", "");
+				if (!image_id.is_empty()) {
+					img_metadata["image_id"] = image_id;
+					img_metadata["name"] = image_id;
+				}
+				
+				// Use lazy loader to avoid memory waste - image only loaded when clicked
+				AIImageLazyLoader::create_lazy_image_placeholder(base64_data, img_metadata, p_content_vbox);
 			}
-			
-			// Include backend-provided image_id in metadata
-			String image_id = p_result.get("image_id", "");
-			if (!image_id.is_empty()) {
-				img_metadata["image_id"] = image_id;
-				img_metadata["name"] = image_id;
-			}
-			
-			// Use lazy loader to avoid memory waste - image only loaded when clicked
-			AIImageLazyLoader::create_lazy_image_placeholder(base64_data, img_metadata, p_content_vbox);
 		} else {
 			// Fallback to text display if no image data - but strip any large data fields to prevent freeze
 			Dictionary safe_result = p_result;
@@ -9805,17 +9901,25 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 		child->queue_free();
 	}
 
-	// Parse the tool result from JSON content
-	Ref<JSON> json;
-	json.instantiate();
-	Error err = json->parse(p_content);
+	// CRITICAL FIX: Use tool_results which has the FULL data including image_data
+	// The p_content has image_data stripped for backend efficiency
 	Dictionary result;
-	if (err == OK) {
-		result = json->get_data();
+	if (p_tool_results.size() > 0) {
+		result = p_tool_results[0]; // First element is the FULL result with image_data
+		print_line("AI Chat: Using p_tool_results[0] for deferred UI (has full data including images)");
 	} else {
-		// Fallback if JSON parsing fails
-		result["success"] = false;
-		result["message"] = "Failed to parse tool result: " + p_content;
+		// Fallback: parse from JSON content if tool_results is empty
+		Ref<JSON> json;
+		json.instantiate();
+		Error err = json->parse(p_content);
+		if (err == OK) {
+			result = json->get_data();
+			print_line("AI Chat: WARNING - Using p_content for deferred UI (may be missing image_data)");
+		} else {
+			// Final fallback if both fail
+			result["success"] = false;
+			result["message"] = "Failed to parse tool result: " + p_content;
+		}
 	}
 
 	// Extract arguments if they were stored
