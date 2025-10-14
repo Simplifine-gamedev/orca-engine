@@ -794,32 +794,70 @@ void EditorUpdater::_install_and_restart() {
                 return;
             }
         } else {
-            // WINDOWS AUTOMATED UPDATE: One-click installation for users
-            print_line("EditorUpdater: 🚀 AUTO-LAUNCHING Windows executable");
+            // WINDOWS AUTOMATED UPDATE: Enhanced launch for users
+            print_line("EditorUpdater: WINDOWS: AUTO-LAUNCHING executable with explicit editor mode");
+            print_line("EditorUpdater: WINDOWS: Downloaded file: " + downloaded_file_path);
             
-            // PRODUCTION-READY: Launch with --editor to ensure editor mode
-            args.push_back("--editor");      // CRITICAL: Editor mode
-            args.push_back("--no-window");   // Prevent game window
+            // ENHANCED APPROACH: Multiple launch strategies to ensure editor mode
+            bool launch_success = false;
             
-            print_line("EditorUpdater: 🎯 Launching new version with user-friendly settings");
+            // Strategy 1: Full arguments with project manager fallback
+            List<String> full_args;
+            full_args.push_back("--editor");           // Primary: Force editor mode
+            full_args.push_back("--project-manager");  // Fallback: Project manager if no project
             
-            Error launch_err = OS::get_singleton()->create_process(downloaded_file_path, args);
-            if (launch_err != OK) {
-                print_line("EditorUpdater: First launch attempt failed, trying simpler approach");
+            print_line("EditorUpdater: WINDOWS: Trying Strategy 1 - Editor with project manager fallback");
+            Error full_launch = OS::get_singleton()->create_process(downloaded_file_path, full_args);
+            if (full_launch == OK) {
+                launch_success = true;
+                print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 1 worked");
+            }
+            
+            // Strategy 2: Just --project-manager (most reliable for Windows)
+            if (!launch_success) {
+                List<String> pm_args;
+                pm_args.push_back("--project-manager");
                 
-                // Fallback: Just --editor flag (most reliable)
-                List<String> simple_args;
-                simple_args.push_back("--editor");
-                Error simple_err = OS::get_singleton()->create_process(downloaded_file_path, simple_args);
-                
-                if (simple_err != OK) {
-                    print_line("EditorUpdater: ❌ All launch attempts failed");
-                    status_label->set_text("Update downloaded but failed to launch. Please run: " + downloaded_file_path + " --editor");
-                    return;
+                print_line("EditorUpdater: WINDOWS: Trying Strategy 2 - Project manager only");
+                Error pm_launch = OS::get_singleton()->create_process(downloaded_file_path, pm_args);
+                if (pm_launch == OK) {
+                    launch_success = true;
+                    print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 2 worked (project manager)");
                 }
-                print_line("EditorUpdater: ✅ Simple launch successful");
+            }
+            
+            // Strategy 3: Just --editor (simple approach)
+            if (!launch_success) {
+                List<String> editor_args;
+                editor_args.push_back("--editor");
+                
+                print_line("EditorUpdater: WINDOWS: Trying Strategy 3 - Editor only");
+                Error editor_launch = OS::get_singleton()->create_process(downloaded_file_path, editor_args);
+                if (editor_launch == OK) {
+                    launch_success = true;
+                    print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 3 worked (editor only)");
+                }
+            }
+            
+            // Strategy 4: No arguments (let Godot decide)
+            if (!launch_success) {
+                List<String> no_args;
+                
+                print_line("EditorUpdater: WINDOWS: Trying Strategy 4 - No arguments (auto-detect)");
+                Error auto_launch = OS::get_singleton()->create_process(downloaded_file_path, no_args);
+                if (auto_launch == OK) {
+                    launch_success = true;
+                    print_line("EditorUpdater: WINDOWS: SUCCESS - Strategy 4 worked (auto-detect)");
+                }
+            }
+            
+            // Final result
+            if (!launch_success) {
+                print_line("EditorUpdater: WINDOWS: ERROR - All launch strategies failed");
+                status_label->set_text("Update downloaded but failed to launch automatically.\nPlease run manually: " + downloaded_file_path + " --project-manager");
+                return;
             } else {
-                print_line("EditorUpdater: ✅ Full launch successful with project preservation");
+                print_line("EditorUpdater: WINDOWS: SUCCESS - New version launched successfully");
             }
         }
         
