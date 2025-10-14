@@ -1,5 +1,6 @@
 // Orca Engine version information
 // Version is embedded at build time from GitHub releases
+// Updated for automated update testing
 
 #pragma once
 
