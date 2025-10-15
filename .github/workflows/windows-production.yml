@@ -92,10 +92,7 @@ jobs:
           echo "🧠 Available memory:"
           Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
           echo "⚡ Starting SCons build..."
-          scons platform=windows target=editor dev_build=no arch=x86_64 \
-            cache_path=.scons-cache cache_limit=15 \
-            c_compiler_launcher=sccache cpp_compiler_launcher=sccache \
-            -j4 verbose=yes
+          scons platform=windows target=editor dev_build=no arch=x86_64 cache_path=.scons-cache cache_limit=15 c_compiler_launcher=sccache cpp_compiler_launcher=sccache -j $env:NUMBER_OF_PROCESSORS verbose=yes
         env:
           ORCA_VERSION: ${{ env.ORCA_VERSION }}
 
