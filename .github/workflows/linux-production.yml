@@ -50,6 +50,7 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             scons \
+            ccache \
             pkg-config \
             libx11-dev \
             libxcursor-dev \
@@ -82,12 +83,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install scons
+          pip install ninja
+
+      - name: Restore compiler and SCons caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+            .scons-cache
+          key: ${{ runner.os }}-cache-${{ hashFiles('SConstruct', 'core/**', 'editor/**', 'servers/**', 'scene/**', 'drivers/**', 'modules/**', 'platform/**') }}
+          restore-keys: |
+            ${{ runner.os }}-cache-
 
       - name: Build Orca Engine
         run: |
           echo "🔨 Building Orca Engine for Linux..."
           echo "🏷️ Building with embedded version: $ORCA_VERSION"
-          scons platform=linuxbsd target=editor dev_build=no arch=x86_64 vulkan=no -j$(nproc)
+          echo "Using ccache: $(ccache --version | head -n 1)"
+          ccache -s || true
+          scons platform=linuxbsd target=editor dev_build=no arch=x86_64 vulkan=no \
+            cache_path=.scons-cache cache_limit=15 \
+            c_compiler_launcher=ccache cpp_compiler_launcher=ccache \
+            ninja=yes -j$(nproc)
+          ccache -s || true
         env:
           ORCA_VERSION: ${{ env.ORCA_VERSION }}
 

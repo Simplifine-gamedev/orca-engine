@@ -51,6 +51,23 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install scons
+          pip install ninja
+
+      - name: Install sccache (MSVC compiler cache)
+        shell: powershell
+        run: |
+          choco install -y sccache || echo "sccache already installed"
+          sccache --version
+
+      - name: Restore compiler and SCons caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\\Users\\runneradmin\\AppData\\Local\\Mozilla\\sccache\\cache
+            .scons-cache
+          key: ${{ runner.os }}-cache-${{ hashFiles('SConstruct', 'core/**', 'editor/**', 'servers/**', 'scene/**', 'drivers/**', 'modules/**', 'platform/**') }}
+          restore-keys: |
+            ${{ runner.os }}-cache-
 
       - name: Setup MSVC
         uses: microsoft/setup-msbuild@v1.1
@@ -74,7 +91,10 @@ jobs:
           echo "🧠 Available memory:"
           Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
           echo "⚡ Starting SCons build..."
-          scons platform=windows target=editor dev_build=no arch=x86_64 -j4 verbose=yes
+          scons platform=windows target=editor dev_build=no arch=x86_64 \
+            ninja=yes cache_path=.scons-cache cache_limit=15 \
+            c_compiler_launcher=sccache cpp_compiler_launcher=sccache \
+            -j4 verbose=yes
         env:
           ORCA_VERSION: ${{ env.ORCA_VERSION }}
 

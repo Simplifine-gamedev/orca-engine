@@ -297,14 +297,24 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             return;
         }
         
-        // PRODUCTION FIX: Save update next to current executable for easy replacement
-        // This ensures users know where their updated version is located
+        // PRODUCTION FIX: Save update next to current executable with proper extension
         String current_exe_path = OS::get_singleton()->get_executable_path();
         String current_exe_dir = current_exe_path.get_base_dir();
         String update_filename = downloaded_file_path.get_file();
         
-        // Save update in same directory as current executable
-        String local_update_path = current_exe_dir.path_join(update_filename + ".update");
+        // CRITICAL FIX: Preserve file extensions for proper OS handling
+        String local_update_path;
+        
+        if (update_filename.get_extension().to_lower() == "dmg") {
+            // Mac DMG - keep .dmg extension so macOS can open it
+            local_update_path = current_exe_dir.path_join("Orca_Update.dmg");
+        } else if (update_filename.get_extension().to_lower() == "exe") {
+            // Windows EXE - keep .exe extension  
+            local_update_path = current_exe_dir.path_join("Orca_Update.exe");
+        } else {
+            // Other formats (Linux tar.gz, etc.)
+            local_update_path = current_exe_dir.path_join("Orca_Update." + update_filename.get_extension());
+        }
         
         print_line("EditorUpdater: Saving update to: " + local_update_path);
         print_line("EditorUpdater: Will replace: " + current_exe_path);
@@ -340,7 +350,20 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             progress->set_visible(true);
         }
         
-        status_label->set_text("Download complete! (" + String::humanize_size(file_size) + ") Ready to install.");
+        // Show user exactly where the update will be installed
+        String install_message = "Download complete! (" + String::humanize_size(file_size) + ")\n\n";
+        
+        #ifdef WINDOWS_ENABLED
+        install_message += "Update will replace: " + current_exe_path + "\n";
+        install_message += "New version will be at the SAME LOCATION.";
+        #elif defined(MACOS_ENABLED)
+        install_message += "Update will replace: /Applications/Orca.app\n";  
+        install_message += "New version will be in Applications folder.";
+        #else
+        install_message += "Update will replace current executable.";
+        #endif
+        
+        status_label->set_text(install_message);
         action_button->set_text("Install and Restart");
         action_button->set_visible(true);
     }
@@ -841,30 +864,58 @@ void EditorUpdater::_install_and_restart() {
                 return;
             }
             
-            // Batch script that:
-            // 1. Waits for current exe to quit
-            // 2. Backs up current exe
-            // 3. Copies new exe to current location
-            // 4. Launches new exe with project-manager
-            // 5. Deletes itself
+            // ENHANCED Windows batch script for reliable in-place update
             String batch_content = "@echo off\n";
-            batch_content += "echo Orca Engine Update: Installing new version...\n";
-            batch_content += "timeout /t 2 /nobreak > nul\n";  // Wait for current exe to quit
-            batch_content += "echo Backing up current version...\n";
-            batch_content += "move /Y \"" + current_exe + "\" \"" + current_backup + "\" > nul 2>&1\n";
-            batch_content += "echo Copying new version...\n";
-            batch_content += "copy /Y \"" + downloaded_file_path + "\" \"" + current_exe + "\" > nul\n";
+            batch_content += "title Orca Engine Update\n";
+            batch_content += "echo.\n";
+            batch_content += "echo ==========================================\n";
+            batch_content += "echo  ORCA ENGINE UPDATE IN PROGRESS\n";  
+            batch_content += "echo ==========================================\n";
+            batch_content += "echo.\n";
+            batch_content += "echo Current version: " + current_exe + "\n";
+            batch_content += "echo New version: " + downloaded_file_path + "\n";
+            batch_content += "echo.\n";
+            batch_content += "echo Waiting for Orca to close...\n";
+            batch_content += "timeout /t 3 /nobreak > nul\n";
+            batch_content += "echo.\n";
+            batch_content += "echo Step 1: Backing up current version...\n";
+            batch_content += "if exist \"" + current_exe + "\" (\n";
+            batch_content += "    move /Y \"" + current_exe + "\" \"" + current_backup + "\"\n";
+            batch_content += "    if errorlevel 1 (\n";
+            batch_content += "        echo ERROR: Failed to backup current version\n";
+            batch_content += "        pause\n";
+            batch_content += "        exit /b 1\n";
+            batch_content += "    )\n";
+            batch_content += "    echo   SUCCESS: Current version backed up\n";
+            batch_content += ") else (\n";
+            batch_content += "    echo   WARNING: Current version not found, proceeding anyway\n";
+            batch_content += ")\n";
+            batch_content += "echo.\n";
+            batch_content += "echo Step 2: Installing new version...\n";
+            batch_content += "copy /Y \"" + downloaded_file_path + "\" \"" + current_exe + "\"\n";
             batch_content += "if errorlevel 1 (\n";
-            batch_content += "    echo ERROR: Failed to copy new version, restoring backup...\n";
+            batch_content += "    echo ERROR: Failed to install new version\n";
+            batch_content += "    echo Restoring backup...\n";
             batch_content += "    move /Y \"" + current_backup + "\" \"" + current_exe + "\" > nul\n";
             batch_content += "    pause\n";
             batch_content += "    exit /b 1\n";
             batch_content += ")\n";
-            batch_content += "echo Update successful! Launching Orca Engine...\n";
-            batch_content += "start \"\" \"" + current_exe + "\" --project-manager\n";
+            batch_content += "echo   SUCCESS: New version installed at: " + current_exe + "\n";
+            batch_content += "echo.\n";
+            batch_content += "echo Step 3: Cleaning up...\n";
             batch_content += "del \"" + downloaded_file_path + "\" > nul 2>&1\n";
             batch_content += "del \"" + current_backup + "\" > nul 2>&1\n";
-            batch_content += "del \"%~f0\" > nul 2>&1\n";  // Self-delete
+            batch_content += "echo   SUCCESS: Cleanup complete\n";
+            batch_content += "echo.\n";
+            batch_content += "echo ==========================================\n";
+            batch_content += "echo  UPDATE COMPLETE! LAUNCHING ORCA ENGINE\n";
+            batch_content += "echo ==========================================\n";
+            batch_content += "echo.\n";
+            batch_content += "echo Updated version location: " + current_exe + "\n";
+            batch_content += "echo.\n";
+            batch_content += "start \"Orca Engine\" \"" + current_exe + "\" --project-manager\n";
+            batch_content += "timeout /t 2 /nobreak > nul\n";
+            batch_content += "del \"%~f0\" > nul 2>&1\n";
             
             bat_file->store_string(batch_content);
             bat_file->close();
