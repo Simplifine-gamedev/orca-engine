@@ -1623,6 +1623,54 @@ def generate_3d_model_internal(arguments: dict) -> dict:
 
 # --- Note: Script generation now handled by dedicated /generate_script endpoint ---
 
+# --- AI Mode Configuration ---
+# Define read-only tools that are allowed in "ask" mode
+READ_ONLY_TOOLS = {
+    "get_scene_info",
+    "get_all_nodes", 
+    "search_nodes_by_type",
+    "get_editor_selection",
+    "get_node_properties",
+    "get_available_classes",
+    "get_node_script",
+    "list_project_files",
+    "read_file",
+    "check_compilation_errors",
+    "search_across_project",
+    "search_across_godot_docs",
+    "search_godot_assets",
+}
+
+# Define read-only operations for editor_introspect
+READ_ONLY_INTROSPECT_OPS = {
+    "list_node_signals",
+    "list_signal_connections",
+    "list_incoming_connections",
+    "validate_signal_connection",
+    "get_trace_events",
+}
+
+def filter_tools_by_mode(tools: list, mode: str = "agent") -> list:
+    """
+    Filter tools based on AI mode.
+    - "ask" mode: Only read-only tools (no modifications)
+    - "agent" mode: All tools (default)
+    """
+    if mode == "agent":
+        return tools
+    
+    if mode == "ask":
+        # Filter to only read-only tools
+        filtered = []
+        for tool in tools:
+            tool_name = tool.get("function", {}).get("name", "")
+            if tool_name in READ_ONLY_TOOLS:
+                filtered.append(tool)
+        return filtered
+    
+    # Unknown mode defaults to agent mode
+    return tools
+
 # --- Tool Execution Function ---
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
@@ -2755,6 +2803,13 @@ def chat():
     messages = data.get('messages', [])
     requested_model = data.get('model')
     model = get_validated_chat_model(requested_model)  # Restrict to allowed models
+    
+    # Get AI mode (ask or agent) - defaults to agent
+    ai_mode = data.get('mode', 'agent').lower()
+    if ai_mode not in ['ask', 'agent']:
+        ai_mode = 'agent'  # Default to agent mode for unknown values
+    
+    print(f"CHAT_MODE: Using AI mode '{ai_mode}'")
 
     if not messages:
         # Return a minimal NDJSON-friendly error envelope so the frontend doesn't try to parse HTML.
@@ -2947,13 +3002,17 @@ def chat():
                 providers_tried = set()
                 model_try = model
                 
+                # Filter tools based on AI mode
+                filtered_tools = filter_tools_by_mode(godot_tools, ai_mode)
+                print(f"CHAT_MODE: Filtered tools - {len(filtered_tools)}/{len(godot_tools)} tools available in '{ai_mode}' mode")
+                
                 # We need to retry the ENTIRE streaming process, not just the initial call
                 while True:
                     try:
                         response = completion(
                             model=model_try,
                             messages=openai_messages,
-                            tools=godot_tools,
+                            tools=filtered_tools,
                             tool_choice="auto",
                             stream=True
                         )
