@@ -68,6 +68,12 @@ class HFlowContainer;
 class UserMessageHandler;
 class StreamingIndicator;
 class AIManualSnapshots;
+// Missing forward declarations for types referenced as pointers
+class Timer;
+class Thread;
+class Mutex;
+class Label;
+class PanelContainer;
 
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
