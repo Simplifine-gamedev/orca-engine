@@ -275,15 +275,65 @@ void AIChatDock::_notification(int p_notification) {
 		// --- At-Mention Popup ---
 		at_mention_popup = memnew(PopupPanel);
 		at_mention_popup->set_name("at_mention_popup");
-		at_mention_popup->set_size(Size2i(300, 400));
+		at_mention_popup->set_size(Size2i(450, 400));
+		
+		// Add modern styling to the popup
+		Ref<StyleBoxFlat> popup_style = memnew(StyleBoxFlat);
+		popup_style->set_bg_color(get_theme_color(SNAME("base_color"), SNAME("Editor")));
+		popup_style->set_border_width_all(1);
+		popup_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
+		popup_style->set_corner_radius_all(6);
+		popup_style->set_shadow_size(4);
+		popup_style->set_shadow_color(Color(0, 0, 0, 0.3));
+		at_mention_popup->add_theme_style_override("panel", popup_style);
 		
 		VBoxContainer *at_mention_vbox = memnew(VBoxContainer);
+		at_mention_vbox->set_anchors_preset(Control::PRESET_FULL_RECT);
 		at_mention_popup->add_child(at_mention_vbox);
 		
+		// Add header label
+		Label *at_mention_header = memnew(Label);
+		at_mention_header->set_text("Attach Files");
+		at_mention_header->add_theme_font_size_override("font_size", 12);
+		at_mention_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.8, 0.8, 0.8));
+		at_mention_header->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		
+		// Header style
+		Ref<StyleBoxFlat> header_style = memnew(StyleBoxFlat);
+		header_style->set_bg_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+		header_style->set_content_margin_all(6);
+		header_style->set_corner_radius_all(4);
+		at_mention_header->add_theme_style_override("normal", header_style);
+		
+		at_mention_vbox->add_child(at_mention_header);
+		
+		// Add a small spacer
+		Control *spacer = memnew(Control);
+		spacer->set_custom_minimum_size(Size2(0, 4));
+		at_mention_vbox->add_child(spacer);
+		
+		// Tree for file list
 		at_mention_tree = memnew(Tree);
 		at_mention_tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		at_mention_tree->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		at_mention_tree->set_hide_folding(true);
+		at_mention_tree->set_select_mode(Tree::SELECT_ROW);
 		at_mention_tree->connect("item_activated", callable_mp(this, &AIChatDock::_on_at_mention_item_selected));
 		at_mention_vbox->add_child(at_mention_tree);
+		
+		// Add hint label at bottom
+		Label *hint_label = memnew(Label);
+		hint_label->set_text("↑↓ Navigate  ↵ Select  Esc Close");
+		hint_label->add_theme_font_size_override("font_size", 10);
+		hint_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.6, 0.6, 0.6));
+		hint_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+		
+		Ref<StyleBoxFlat> hint_style = memnew(StyleBoxFlat);
+		hint_style->set_bg_color(get_theme_color(SNAME("dark_color_3"), SNAME("Editor")));
+		hint_style->set_content_margin_all(4);
+		hint_label->add_theme_style_override("normal", hint_style);
+		
+		at_mention_vbox->add_child(hint_label);
 		
 		add_child(at_mention_popup);
 
@@ -2016,9 +2066,10 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 
 void AIChatDock::_on_input_text_changed() {
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || is_waiting_for_response);
+	_update_at_mention_popup();
 }
+
 // --- At-Mention Implementation ---
-// This is actually not working rn! :/ 
 
 void AIChatDock::_update_at_mention_popup() {
 	String text = input_field->get_text();
@@ -2041,9 +2092,34 @@ void AIChatDock::_update_at_mention_popup() {
 	// Populate and show the popup
 	_populate_at_mention_tree(query);
 	
-	Point2i popup_pos = input_field->get_screen_position() + Point2i(0, -at_mention_popup->get_size().y);
+	// If no items, hide the popup
+	TreeItem *root = at_mention_tree->get_root();
+	if (!root || !root->get_first_child()) {
+		at_mention_popup->hide();
+		return;
+	}
+	
+	// Calculate better positioning - show above the input field
+	Point2i input_screen_pos = input_field->get_screen_position();
+	Size2i input_size = input_field->get_size();
+	Size2i popup_size = at_mention_popup->get_size();
+	
+	// Position above the input field with some padding
+	Point2i popup_pos = input_screen_pos + Point2i(0, -popup_size.y - 5);
+	
+	// Check if there's enough space above, otherwise show below
+	if (popup_pos.y < 0) {
+		popup_pos = input_screen_pos + Point2i(0, input_size.y + 5);
+	}
+	
 	at_mention_popup->set_position(popup_pos);
 	at_mention_popup->popup();
+	
+	// Auto-select first item for better UX
+	TreeItem *first_child = root->get_first_child();
+	if (first_child) {
+		first_child->select(0);
+	}
 }
 
 void AIChatDock::_populate_at_mention_tree(const String &p_filter) {
@@ -2053,64 +2129,182 @@ void AIChatDock::_populate_at_mention_tree(const String &p_filter) {
 	
 	// Use EditorFileSystem to get project files
 	EditorFileSystem *fs = EditorFileSystem::get_singleton();
+	if (!fs) {
+		return;
+	}
 	
-	// Recursive function to populate the tree
+	// Call the recursive helper that was already defined
 	_populate_tree_recursive(fs->get_filesystem(), root, p_filter);
 }
 
 void AIChatDock::_populate_tree_recursive(EditorFileSystemDirectory *p_dir, TreeItem *p_parent, const String &p_filter) {
-	for (int i = 0; i < p_dir->get_subdir_count(); i++) {
-		TreeItem *dir_item = at_mention_tree->create_item(p_parent);
-		dir_item->set_text(0, p_dir->get_subdir(i)->get_name());
-		dir_item->set_icon(0, get_theme_icon(SNAME("Folder"), SNAME("EditorIcons")));
-		_populate_tree_recursive(p_dir->get_subdir(i), dir_item, p_filter);
+	if (!p_dir) {
+		return;
 	}
 	
+	// Recursively process subdirectories first
+	for (int i = 0; i < p_dir->get_subdir_count(); i++) {
+		_populate_tree_recursive(p_dir->get_subdir(i), p_parent, p_filter);
+	}
+	
+	// Process files in current directory
 	for (int i = 0; i < p_dir->get_file_count(); i++) {
 		String file_name = p_dir->get_file(i);
-		if (p_filter.is_empty() || file_name.findn(p_filter) != -1) {
-			// Exclude image files
-			String ext = file_name.get_extension().to_lower();
-			if (ext != "png" && ext != "jpg" && ext != "jpeg" && ext != "gif" && ext != "bmp" && ext != "webp" && ext != "svg") {
-				TreeItem *file_item = at_mention_tree->create_item(p_parent);
-				file_item->set_text(0, file_name);
-				file_item->set_metadata(0, p_dir->get_file_path(i));
-				file_item->set_icon(0, get_theme_icon(SNAME("File"), SNAME("EditorIcons")));
+		String file_path = p_dir->get_file_path(i);
+		
+		// Exclude image files
+		String ext = file_name.get_extension().to_lower();
+		if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" || 
+		    ext == "bmp" || ext == "webp" || ext == "svg") {
+			continue;
+		}
+		
+		// Filter based on query
+		String filename_lower = file_name.to_lower();
+		String filter_lower = p_filter.to_lower();
+		
+		bool matches = false;
+		if (p_filter.is_empty()) {
+			matches = true;
+		} else if (filename_lower.begins_with(filter_lower)) {
+			matches = true;
+		} else if (filename_lower.find(filter_lower) != -1) {
+			matches = true;
+		} else {
+			// Fuzzy match - check if all characters of filter appear in order
+			int filter_idx = 0;
+			for (int j = 0; j < filename_lower.length() && filter_idx < filter_lower.length(); j++) {
+				if (filename_lower[j] == filter_lower[filter_idx]) {
+					filter_idx++;
+				}
 			}
+			matches = (filter_idx == filter_lower.length());
+		}
+		
+		if (matches) {
+			TreeItem *file_item = at_mention_tree->create_item(p_parent);
+			
+			// Show path context
+			String display_text = file_name;
+			String dir_path = file_path.get_base_dir();
+			if (!dir_path.is_empty() && dir_path != "res://") {
+				dir_path = dir_path.replace("res://", "");
+				display_text = file_name + "  [" + dir_path + "]";
+			}
+			
+			file_item->set_text(0, display_text);
+			file_item->set_metadata(0, file_path);
+			
+			// Set icon based on file type
+			String icon_name = "File";
+			String file_ext = file_name.get_extension();
+			if (file_ext == "gd") {
+				icon_name = "GDScript";
+			} else if (file_ext == "tscn") {
+				icon_name = "PackedScene";
+			} else if (file_ext == "tres") {
+				icon_name = "Resource";
+			} else if (file_ext == "shader") {
+				icon_name = "Shader";
+			} else if (file_ext == "cs") {
+				icon_name = "CSharpScript";
+			}
+			
+			file_item->set_icon(0, get_theme_icon(SNAME(icon_name), SNAME("EditorIcons")));
 		}
 	}
 }
 void AIChatDock::_on_at_mention_item_selected() {
 	TreeItem *selected = at_mention_tree->get_selected();
 	if (!selected || selected->get_metadata(0).is_null()) {
-		return; // It's a directory
+		return; // No valid file selected
 	}
 	
 	String file_path = selected->get_metadata(0);
-	String file_name = selected->get_text(0);
+	String file_name = file_path.get_file(); // Get just the filename from full path
 	
 	// Add the file to attachments
 	Vector<String> files_to_add;
 	files_to_add.push_back(file_path);
 	_on_files_selected(files_to_add);
 	
-	// Replace the @mention with the file name
+	// Replace the @mention with just an indication that file was attached
 	String text = input_field->get_text();
 	int cursor_pos = input_field->get_caret_column();
 	int at_pos = text.rfind("@", cursor_pos);
 	
-	String before = text.substr(0, at_pos);
-	String after = text.substr(cursor_pos);
-	
-	input_field->set_text(before + file_name + " " + after);
-	input_field->set_caret_column(at_pos + file_name.length() + 1);
+	if (at_pos != -1) {
+		String before = text.substr(0, at_pos);
+		String after = text.substr(cursor_pos);
+		
+		// Remove the @ and query text, replace with nothing (attachment is shown separately)
+		String new_text = before + after;
+		
+		// Trim any extra spaces
+		new_text = new_text.strip_edges();
+		
+		input_field->set_text(new_text);
+		input_field->set_caret_column(at_pos);
+	}
 	
 	at_mention_popup->hide();
+	input_field->grab_focus();
 }
 
 void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventKey> key_event = p_event;
 	if (key_event.is_valid() && key_event->is_pressed() && !key_event->is_echo()) {
+		// Handle @ mention popup navigation
+		if (at_mention_popup && at_mention_popup->is_visible()) {
+			if (key_event->get_keycode() == Key::ESCAPE) {
+				at_mention_popup->hide();
+				get_viewport()->set_input_as_handled();
+				return;
+			}
+			
+			if (key_event->get_keycode() == Key::DOWN) {
+				TreeItem *selected = at_mention_tree->get_selected();
+				if (!selected) {
+					selected = at_mention_tree->get_root();
+					if (selected) {
+						selected = selected->get_first_child();
+					}
+				} else {
+					TreeItem *next = selected->get_next_visible();
+					if (next) {
+						selected = next;
+					}
+				}
+				if (selected) {
+					selected->select(0);
+					at_mention_tree->ensure_cursor_is_visible();
+				}
+				get_viewport()->set_input_as_handled();
+				return;
+			}
+			
+			if (key_event->get_keycode() == Key::UP) {
+				TreeItem *selected = at_mention_tree->get_selected();
+				if (selected) {
+					TreeItem *prev = selected->get_prev_visible();
+					if (prev && prev != at_mention_tree->get_root()) {
+						selected = prev;
+						selected->select(0);
+						at_mention_tree->ensure_cursor_is_visible();
+					}
+				}
+				get_viewport()->set_input_as_handled();
+				return;
+			}
+			
+			if (key_event->get_keycode() == Key::ENTER || key_event->get_keycode() == Key::KP_ENTER) {
+				_on_at_mention_item_selected();
+				get_viewport()->set_input_as_handled();
+				return;
+			}
+		}
+		
+		// Handle regular Enter key to send message (only if popup not visible)
 		if (key_event->get_keycode() == Key::ENTER && !key_event->is_shift_pressed()) {
 			_on_send_button_pressed();
 			get_viewport()->set_input_as_handled(); // Consume the event to prevent the default newline behavior
