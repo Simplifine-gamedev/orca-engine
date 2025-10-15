@@ -10,6 +10,7 @@
 #include "core/string/translation_server.h"
 #include "core/string/ustring.h"  // For TTR translation macro
 #include "core/version.h"  // For VERSION_FULL_CONFIG and VERSION_HASH
+#include "core/config/project_settings.h"
 #include "core/orca_version.h"  // Orca version embedded at build time
 #include "editor/file_system/editor_paths.h"
 #include "editor/editor_node.h"
@@ -301,20 +302,33 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
         String current_exe_path = OS::get_singleton()->get_executable_path();
         String current_exe_dir = current_exe_path.get_base_dir();
         String update_filename = downloaded_file_path.get_file();
-        
-        // CRITICAL FIX: Preserve file extensions for proper OS handling
-        String local_update_path;
-        
-        if (update_filename.get_extension().to_lower() == "dmg") {
-            // Mac DMG - keep .dmg extension so macOS can open it
-            local_update_path = current_exe_dir.path_join("Orca_Update.dmg");
-        } else if (update_filename.get_extension().to_lower() == "exe") {
-            // Windows EXE - keep .exe extension  
-            local_update_path = current_exe_dir.path_join("Orca_Update.exe");
+        String url_lower = download_url.to_lower();
+
+        // Robust extension detection (handles query URLs and missing extensions)
+        String chosen_ext;
+        if (url_lower.find(".exe") != -1) {
+            chosen_ext = ".exe";
+        } else if (url_lower.find(".dmg") != -1) {
+            chosen_ext = ".dmg";
+        } else if (url_lower.find(".zip") != -1) {
+            chosen_ext = ".zip";
         } else {
-            // Other formats (Linux tar.gz, etc.)
-            local_update_path = current_exe_dir.path_join("Orca_Update." + update_filename.get_extension());
+            String ext = update_filename.get_extension().to_lower();
+            if (!ext.is_empty()) {
+                chosen_ext = "." + ext;
+            } else {
+                #ifdef WINDOWS_ENABLED
+                chosen_ext = ".exe"; // Avoid trailing dot → "orca_update" on NTFS
+                #elif defined(MACOS_ENABLED)
+                chosen_ext = ".dmg";
+                #else
+                chosen_ext = "";
+                #endif
+            }
         }
+
+        // Local destination next to the current executable
+        String local_update_path = current_exe_dir.path_join("Orca_Update" + chosen_ext);
         
         print_line("EditorUpdater: Saving update to: " + local_update_path);
         print_line("EditorUpdater: Will replace: " + current_exe_path);
@@ -960,24 +974,10 @@ void EditorUpdater::_install_and_restart() {
             print_line("EditorUpdater: 🚀 AUTO-LAUNCHING new Orca Engine version");
             print_line("EditorUpdater: New app path: " + app_path);
             
-            // SAVE current project path from engine globals for preservation
+            // Preserve the currently open project using ProjectSettings
             String current_project_path;
-            
-            // Get currently loaded project path from EditorNode if available
-            if (EditorNode::get_singleton()) {
-                // Try to get current project root - this should work reliably
-                String project_root = OS::get_singleton()->get_executable_path().get_base_dir();
-                
-                // Navigate up to find project.godot
-                String search_path = project_root;
-                for (int i = 0; i < 5; i++) {  // Search up to 5 levels
-                    String project_file = search_path.path_join("project.godot");
-                    if (FileAccess::exists(project_file)) {
-                        current_project_path = search_path;
-                        break;
-                    }
-                    search_path = search_path.get_base_dir();
-                }
+            if (ProjectSettings::get_singleton()) {
+                current_project_path = ProjectSettings::get_singleton()->globalize_path("res://");
             }
             
             // AUTOMATED LAUNCH: Use macOS 'open' command with arguments
