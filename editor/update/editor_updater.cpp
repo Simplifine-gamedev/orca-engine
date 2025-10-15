@@ -2,7 +2,7 @@
 /*  editor_updater.cpp                                                     */
 /**************************************************************************/
 
-// comment for udpate test
+// comment for udpate test v2
 
 #include "editor_updater.h"
 
