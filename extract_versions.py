@@ -4,6 +4,8 @@ Simple script to extract version constants from version.py for build system.
 Outputs C++ preprocessor defines that can be used during compilation.
 """
 
+# final test comment for update and replace test
+
 import sys
 import os
 
