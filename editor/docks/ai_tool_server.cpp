@@ -3,6 +3,7 @@
  * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
  * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from the Project Owner.
  */
+// windows build test comment
 #include "ai_tool_server.h"
 #include "editor/ai/editor_tools.h"
 #include "core/io/json.h"
