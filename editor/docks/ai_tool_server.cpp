@@ -4,6 +4,7 @@
  * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from the Project Owner.
  */
 // windows build test comment
+// windows isntall location test
 #include "ai_tool_server.h"
 #include "editor/ai/editor_tools.h"
 #include "core/io/json.h"
