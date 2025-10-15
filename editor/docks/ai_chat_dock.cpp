@@ -95,7 +95,7 @@ void AIChatDock::_on_tool_result_retry_timeout(const String &p_tool_call_id, con
 #include "diff_viewer.h"
 #include "ai_image_lazy_loader.h"
 #include "ai_chat_dock_user_messages.h"
-#include "core/version_generated.h"
+#include "core/version_generated.gen.h"
 
 void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_send_button_pressed"), &AIChatDock::_on_send_button_pressed);

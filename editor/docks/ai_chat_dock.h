@@ -71,9 +71,10 @@ class AIManualSnapshots;
 // Missing forward declarations for types referenced as pointers
 class Timer;
 class Thread;
-class Mutex;
 class Label;
 class PanelContainer;
+// Use engine's Mutex alias definition instead of forward-decl to avoid conflict
+#include "core/os/mutex.h"
 
 class AIChatDock : public VBoxContainer {
 	GDCLASS(AIChatDock, VBoxContainer);
