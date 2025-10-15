@@ -395,14 +395,19 @@ void AIChatDock::_notification(int p_notification) {
 			pending_edits_details_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_banner_clicked));
 			banner_content->add_child(pending_edits_details_btn);
 			
-			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
+		chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
-			// Add a container for attachments just above the input field
-			VBoxContainer *bottom_panel = memnew(VBoxContainer);
-			add_child(bottom_panel);
-			
-			// Add attachments container to the bottom panel (positioned above input)
-			bottom_panel->add_child(attached_files_container);
+		// Add a container for attachments just above the input field
+		bottom_panel = memnew(VBoxContainer);
+		add_child(bottom_panel);
+		
+		// Enable drag and drop on the bottom panel (input area)
+		bottom_panel->set_drag_forwarding(Callable(), callable_mp(this, &AIChatDock::can_drop_data_fw), callable_mp(this, &AIChatDock::drop_data_fw));
+		// Ensure bottom panel can receive mouse events for drag and drop
+		bottom_panel->set_mouse_filter(Control::MOUSE_FILTER_PASS);
+		
+		// Add attachments container to the bottom panel (positioned above input)
+		bottom_panel->add_child(attached_files_container);
 			
 			// Attach files button row (above input)
 			HBoxContainer *attach_container = memnew(HBoxContainer);
@@ -470,13 +475,15 @@ void AIChatDock::_notification(int p_notification) {
 			input_focus_style->set_content_margin_all(8);
 			input_field->add_theme_style_override("focus", input_focus_style);
 			
-			input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
-			input_field->set_placeholder("Ask me anything about Orca...");
-			input_field->set_custom_minimum_size(Size2(0, 100)); // Minimum height for the input box
-			input_field->connect("text_changed", callable_mp(this, &AIChatDock::_on_input_text_changed));
-			input_field->connect("gui_input", callable_mp(this, &AIChatDock::_on_input_field_gui_input));
-			input_container->add_child(input_field);
+		input_field->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		input_field->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+		input_field->set_placeholder("Ask me anything about Orca...");
+		input_field->set_custom_minimum_size(Size2(0, 100)); // Minimum height for the input box
+		input_field->connect("text_changed", callable_mp(this, &AIChatDock::_on_input_text_changed));
+		input_field->connect("gui_input", callable_mp(this, &AIChatDock::_on_input_field_gui_input));
+		// Enable drag and drop directly on the input field
+		input_field->set_drag_forwarding(Callable(), callable_mp(this, &AIChatDock::can_drop_data_fw), callable_mp(this, &AIChatDock::drop_data_fw));
+		input_container->add_child(input_field);
 
 			send_button = memnew(Button);
 			send_button->set_text("Send");

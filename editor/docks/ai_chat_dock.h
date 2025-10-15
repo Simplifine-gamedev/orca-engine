@@ -152,6 +152,7 @@ private:
 	Button *stop_button = nullptr;
 	MenuButton *attach_button = nullptr;
 	HFlowContainer *attached_files_container = nullptr;
+	VBoxContainer *bottom_panel = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 	EditorFileDialog *save_image_dialog = nullptr;
 	EditorFileDialog *save_3d_model_dialog = nullptr;
