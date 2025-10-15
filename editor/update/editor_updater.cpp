@@ -147,8 +147,8 @@ void EditorUpdater::start_check() {
                 add_child(http_release);
                 http_release->connect("request_completed", callable_mp(this, &EditorUpdater::_on_release_completed));
             }
-            // Use /releases instead of /releases/latest to get draft releases too
-            String api = "https://api.github.com/repos/" + owner_repo + "/releases";
+            // Use /releases/latest to match notification popup (consistent versioning)
+            String api = "https://api.github.com/repos/" + owner_repo + "/releases/latest";
             PackedStringArray headers;
             headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
             headers.push_back("Accept: application/vnd.github+json");
@@ -173,8 +173,8 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
                     add_child(http_release);
                 http_release->connect("request_completed", callable_mp(this, &EditorUpdater::_on_release_completed));
             }
-            // Use /releases instead of /releases/latest to get draft releases too
-            String api = "https://api.github.com/repos/" + owner_repo + "/releases";
+            // Use /releases/latest to match notification popup (consistent versioning)
+            String api = "https://api.github.com/repos/" + owner_repo + "/releases/latest";
             PackedStringArray headers;
             headers.push_back("User-Agent: OrcaEditorUpdater/1.0");
             headers.push_back("Accept: application/vnd.github+json");
@@ -398,10 +398,21 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
     
     Dictionary d;
     
-    if (json_v.get_type() == Variant::ARRAY) {
-        // We got an array of releases (from /releases endpoint)
+    if (json_v.get_type() == Variant::DICTIONARY) {
+        // We got a single release (from /releases/latest endpoint) - this is now the standard
+        print_line("EditorUpdater: Received single release object from /releases/latest");
+        d = json_v;
+        
+        String tag = d.get("tag_name", String());
+        bool is_draft = d.get("draft", false);
+        bool is_prerelease = d.get("prerelease", false);
+        
+        print_line("EditorUpdater: Release " + tag + " (draft: " + (is_draft ? "yes" : "no") + ", prerelease: " + (is_prerelease ? "yes" : "no") + ")");
+        
+    } else if (json_v.get_type() == Variant::ARRAY) {
+        // Fallback: handle array response (shouldn't happen with /releases/latest)
         Array releases = json_v;
-        print_line("EditorUpdater: Received array of " + itos(releases.size()) + " releases");
+        print_line("EditorUpdater: Unexpectedly received array from /releases/latest, using first release");
         
         if (releases.size() == 0) {
             status_label->set_text("No releases found.");
@@ -409,43 +420,14 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
             return;
         }
         
-        // Find the latest non-draft, non-prerelease (or latest draft if no published releases)
-        Dictionary latest_published;
-        Dictionary latest_draft;
-        
-        for (int i = 0; i < releases.size(); i++) {
-            Variant release_var = releases[i];
-            if (release_var.get_type() != Variant::DICTIONARY) continue;
-            
-            Dictionary release = release_var;
-            bool is_draft = release.get("draft", false);
-            bool is_prerelease = release.get("prerelease", false);
-            
-            if (!is_draft && !is_prerelease && latest_published.is_empty()) {
-                latest_published = release;
-                break; // First published release is the latest
-            } else if (is_draft && latest_draft.is_empty()) {
-                latest_draft = release; // Keep track of latest draft as fallback
-            }
-        }
-        
-        // Prefer published over draft, but use draft if no published releases
-        if (!latest_published.is_empty()) {
-            d = latest_published;
-            print_line("EditorUpdater: Using latest published release: " + String(d.get("tag_name", "")));
-        } else if (!latest_draft.is_empty()) {
-            d = latest_draft;
-            print_line("EditorUpdater: Using latest draft release: " + String(d.get("tag_name", "")));
-        } else {
-            status_label->set_text("No suitable releases found.");
+        Variant first_release = releases[0];
+        if (first_release.get_type() != Variant::DICTIONARY) {
+            status_label->set_text("Invalid release data.");
             stage = STAGE_ERROR;
             return;
         }
+        d = first_release;
         
-    } else if (json_v.get_type() == Variant::DICTIONARY) {
-        // We got a single release (from /releases/latest endpoint)
-        print_line("EditorUpdater: Received single release object");
-        d = json_v;
     } else {
         status_label->set_text("Invalid releases JSON.");
         stage = STAGE_ERROR;
