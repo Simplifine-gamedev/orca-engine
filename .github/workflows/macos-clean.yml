@@ -40,7 +40,6 @@ jobs:
           brew update
           brew install scons
           brew install ccache
-          brew install ninja
 
       - name: Restore compiler and SCons caches
         uses: actions/cache@v4
@@ -60,7 +59,7 @@ jobs:
           scons platform=macos target=editor dev_build=no arch=arm64 vulkan=no \
             cache_path=.scons-cache cache_limit=15 \
             c_compiler_launcher=ccache cpp_compiler_launcher=ccache \
-            ninja=yes -j$(sysctl -n hw.ncpu)
+            -j$(sysctl -n hw.ncpu)
           ccache -s || true
         env:
           ORCA_VERSION: ${{ env.ORCA_VERSION }}

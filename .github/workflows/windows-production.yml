@@ -56,7 +56,8 @@ jobs:
       - name: Install sccache (MSVC compiler cache)
         shell: powershell
         run: |
-          choco install -y sccache || echo "sccache already installed"
+          choco install -y sccache
+          if ($LASTEXITCODE -ne 0) { Write-Host "sccache may already be installed" }
           sccache --version
 
       - name: Restore compiler and SCons caches
@@ -92,7 +93,7 @@ jobs:
           Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
           echo "⚡ Starting SCons build..."
           scons platform=windows target=editor dev_build=no arch=x86_64 \
-            ninja=yes cache_path=.scons-cache cache_limit=15 \
+            cache_path=.scons-cache cache_limit=15 \
             c_compiler_launcher=sccache cpp_compiler_launcher=sccache \
             -j4 verbose=yes
         env:
