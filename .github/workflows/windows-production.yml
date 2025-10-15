@@ -323,24 +323,24 @@ jobs:
           echo "=============================="
 
       - name: Build Stats
-        shell: powershell
+        shell: cmd
         run: |
-          echo "Build Status: Success"
-          echo "Signing Status: ${{ steps.sign_binary.outcome }}"
+          echo Build Status: Success
+          echo Signing Status: ${{ steps.sign_binary.outcome }}
           
           if exist "Orca (Windows).exe" (
-            for %%A in ("Orca (Windows).exe") do echo "Distribution Binary: %%~zA bytes"
+            for %%A in ("Orca (Windows).exe") do echo Distribution Binary: %%~zA bytes
           ) else (
-            echo "Distribution Binary: NOT FOUND"
+            echo Distribution Binary: NOT FOUND
           )
           
           if exist "bin\signed\orca-windows-production.exe" (
-            for %%A in (bin\signed\orca-windows-production.exe) do echo "Signed Binary: %%~zA bytes"
+            for %%A in (bin\signed\orca-windows-production.exe) do echo Signed Binary: %%~zA bytes
           ) else (
-            echo "Signed Binary: NOT FOUND"
+            echo Signed Binary: NOT FOUND
           )
           
-          echo "=============================="
+          echo ==============================
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
