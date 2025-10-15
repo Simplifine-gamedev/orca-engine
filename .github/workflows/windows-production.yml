@@ -53,18 +53,10 @@ jobs:
           pip install scons
           pip install ninja
 
-      - name: Install sccache (MSVC compiler cache)
-        shell: powershell
-        run: |
-          choco install -y sccache
-          if ($LASTEXITCODE -ne 0) { Write-Host "sccache may already be installed" }
-          sccache --version
-
-      - name: Restore compiler and SCons caches
+      - name: Restore SCons cache
         uses: actions/cache@v4
         with:
           path: |
-            C:\\Users\\runneradmin\\AppData\\Local\\Mozilla\\sccache\\cache
             .scons-cache
           key: ${{ runner.os }}-cache-${{ hashFiles('SConstruct', 'core/**', 'editor/**', 'servers/**', 'scene/**', 'drivers/**', 'modules/**', 'platform/**') }}
           restore-keys: |
@@ -92,7 +84,7 @@ jobs:
           echo "🧠 Available memory:"
           Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
           echo "⚡ Starting SCons build..."
-          scons platform=windows target=editor dev_build=no arch=x86_64 cache_path=.scons-cache cache_limit=15 c_compiler_launcher=sccache cpp_compiler_launcher=sccache -j $env:NUMBER_OF_PROCESSORS verbose=yes
+          scons platform=windows target=editor dev_build=no arch=x86_64 cache_path=.scons-cache cache_limit=15 lto=none fast_unsafe=yes vulkan=no scu_build=yes scu_limit=64 -j $env:NUMBER_OF_PROCESSORS verbose=yes
         env:
           ORCA_VERSION: ${{ env.ORCA_VERSION }}
 
@@ -329,6 +321,10 @@ jobs:
         run: |
           echo "📄 Windows Build Summary:"
           echo "=============================="
+
+      - name: Build Stats
+        shell: powershell
+        run: |
           echo "Build Status: Success"
           echo "Signing Status: ${{ steps.sign_binary.outcome }}"
           
