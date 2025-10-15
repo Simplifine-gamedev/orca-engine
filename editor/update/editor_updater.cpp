@@ -297,17 +297,38 @@ void EditorUpdater::_on_request_completed(int p_result, int p_code, const Packed
             return;
         }
         
+        // PRODUCTION FIX: Save update next to current executable for easy replacement
+        // This ensures users know where their updated version is located
+        String current_exe_path = OS::get_singleton()->get_executable_path();
+        String current_exe_dir = current_exe_path.get_base_dir();
+        String update_filename = downloaded_file_path.get_file();
+        
+        // Save update in same directory as current executable
+        String local_update_path = current_exe_dir.path_join(update_filename + ".update");
+        
+        print_line("EditorUpdater: Saving update to: " + local_update_path);
+        print_line("EditorUpdater: Will replace: " + current_exe_path);
+        
         // Write downloaded body to file
         Error write_err;
-        Ref<FileAccess> file = FileAccess::open(downloaded_file_path, FileAccess::WRITE, &write_err);
+        Ref<FileAccess> file = FileAccess::open(local_update_path, FileAccess::WRITE, &write_err);
         if (write_err != OK || file.is_null()) {
-            status_label->set_text("Failed to save file.");
-            stage = STAGE_ERROR;
-            return;
+            // Fallback to cache dir if writing next to exe fails (permissions issue)
+            file = FileAccess::open(downloaded_file_path, FileAccess::WRITE, &write_err);
+            local_update_path = downloaded_file_path;
+            
+            if (write_err != OK || file.is_null()) {
+                status_label->set_text("Failed to save file.");
+                stage = STAGE_ERROR;
+                return;
+            }
         }
         
         file->store_buffer(p_body);
         file->close();
+        
+        // Store the local path for installation
+        downloaded_file_path = local_update_path;
         
         int64_t file_size = p_body.size();
         
@@ -734,6 +755,15 @@ void EditorUpdater::_install_and_restart() {
         print_line("EditorUpdater: Windows installation starting...");
         print_line("EditorUpdater: Downloaded file: " + downloaded_file_path);
         
+        // PRODUCTION UX: Replace current executable in-place
+        String current_exe = OS::get_singleton()->get_executable_path();
+        String current_backup = current_exe + ".old";
+        String new_exe_final = current_exe;
+        
+        print_line("EditorUpdater: WINDOWS: Replacing current executable in-place");
+        print_line("EditorUpdater: WINDOWS: Current: " + current_exe);
+        print_line("EditorUpdater: WINDOWS: Downloaded: " + downloaded_file_path);
+        
         // CRITICAL FIX: The installer should launch the new Godot with --editor flag
         // to prevent "Couldn't detect whether to run editor" error
         List<String> args;
@@ -794,99 +824,64 @@ void EditorUpdater::_install_and_restart() {
                 return;
             }
         } else {
-            // WINDOWS AUTOMATED UPDATE: Enhanced launch for users
-            print_line("EditorUpdater: WINDOWS: AUTO-LAUNCHING executable with explicit editor mode");
-            print_line("EditorUpdater: WINDOWS: Downloaded file: " + downloaded_file_path);
+            // WINDOWS IN-PLACE UPDATE: Replace current exe with new version
+            print_line("EditorUpdater: WINDOWS: PRODUCTION UPDATE - Replacing current executable");
+            print_line("EditorUpdater: WINDOWS: Current executable: " + current_exe);
+            print_line("EditorUpdater: WINDOWS: New version: " + downloaded_file_path);
             
-            // WINDOWS SPECIFIC FIX: Use cmd.exe to ensure arguments are passed correctly
-            bool launch_success = false;
+            // Create batch file to replace executable after quit
+            // Windows can't replace a running .exe, so we use a batch script
+            String batch_update_path = current_exe + ".update.bat";
             
-            print_line("EditorUpdater: WINDOWS: Using CMD wrapper to ensure argument passing");
-            
-            // Strategy 1: Use cmd.exe to launch with project manager (most reliable on Windows)
-            List<String> cmd_args;
-            cmd_args.push_back("/c");
-            cmd_args.push_back("\"" + downloaded_file_path + "\" --project-manager");
-            
-            print_line("EditorUpdater: WINDOWS: Trying CMD Strategy - Project Manager");
-            Error cmd_launch = OS::get_singleton()->create_process("cmd.exe", cmd_args);
-            if (cmd_launch == OK) {
-                launch_success = true;
-                print_line("EditorUpdater: WINDOWS: SUCCESS - CMD with --project-manager worked");
+            Error bat_err;
+            Ref<FileAccess> bat_file = FileAccess::open(batch_update_path, FileAccess::WRITE, &bat_err);
+            if (bat_err != OK || bat_file.is_null()) {
+                print_line("EditorUpdater: WINDOWS: ERROR - Failed to create update batch file");
+                status_label->set_text("Update downloaded but installation failed.\nPlease copy manually:\n" + downloaded_file_path + "\nto replace:\n" + current_exe);
+                return;
             }
             
-            // Strategy 2: Use cmd.exe with editor flag
-            if (!launch_success) {
-                List<String> cmd_editor_args;
-                cmd_editor_args.push_back("/c");
-                cmd_editor_args.push_back("\"" + downloaded_file_path + "\" --editor");
-                
-                print_line("EditorUpdater: WINDOWS: Trying CMD Strategy - Editor mode");
-                Error cmd_editor = OS::get_singleton()->create_process("cmd.exe", cmd_editor_args);
-                if (cmd_editor == OK) {
-                    launch_success = true;
-                    print_line("EditorUpdater: WINDOWS: SUCCESS - CMD with --editor worked");
-                }
+            // Batch script that:
+            // 1. Waits for current exe to quit
+            // 2. Backs up current exe
+            // 3. Copies new exe to current location
+            // 4. Launches new exe with project-manager
+            // 5. Deletes itself
+            String batch_content = "@echo off\n";
+            batch_content += "echo Orca Engine Update: Installing new version...\n";
+            batch_content += "timeout /t 2 /nobreak > nul\n";  // Wait for current exe to quit
+            batch_content += "echo Backing up current version...\n";
+            batch_content += "move /Y \"" + current_exe + "\" \"" + current_backup + "\" > nul 2>&1\n";
+            batch_content += "echo Copying new version...\n";
+            batch_content += "copy /Y \"" + downloaded_file_path + "\" \"" + current_exe + "\" > nul\n";
+            batch_content += "if errorlevel 1 (\n";
+            batch_content += "    echo ERROR: Failed to copy new version, restoring backup...\n";
+            batch_content += "    move /Y \"" + current_backup + "\" \"" + current_exe + "\" > nul\n";
+            batch_content += "    pause\n";
+            batch_content += "    exit /b 1\n";
+            batch_content += ")\n";
+            batch_content += "echo Update successful! Launching Orca Engine...\n";
+            batch_content += "start \"\" \"" + current_exe + "\" --project-manager\n";
+            batch_content += "del \"" + downloaded_file_path + "\" > nul 2>&1\n";
+            batch_content += "del \"" + current_backup + "\" > nul 2>&1\n";
+            batch_content += "del \"%~f0\" > nul 2>&1\n";  // Self-delete
+            
+            bat_file->store_string(batch_content);
+            bat_file->close();
+            
+            print_line("EditorUpdater: WINDOWS: Created update batch script: " + batch_update_path);
+            
+            // Launch the batch file
+            Error batch_launch = OS::get_singleton()->shell_open(batch_update_path);
+            if (batch_launch != OK) {
+                print_line("EditorUpdater: WINDOWS: ERROR - Failed to launch update batch script");
+                status_label->set_text("Update ready but needs manual installation.\n\nNew version at: " + downloaded_file_path + "\n\nReplace: " + current_exe);
+                return;
             }
             
-            // Strategy 3: Direct launch with project-manager (most reliable argument)
-            if (!launch_success) {
-                List<String> pm_args;
-                pm_args.push_back("--project-manager");
-                
-                print_line("EditorUpdater: WINDOWS: Trying Direct Launch - Project Manager");
-                Error pm_launch = OS::get_singleton()->create_process(downloaded_file_path, pm_args);
-                if (pm_launch == OK) {
-                    launch_success = true;
-                    print_line("EditorUpdater: WINDOWS: SUCCESS - Direct --project-manager worked");
-                }
-            }
-            
-            // Strategy 4: Windows Explorer launch (Windows shell handles it)
-            if (!launch_success) {
-                print_line("EditorUpdater: WINDOWS: Trying Windows Shell Launch");
-                Error shell_err = OS::get_singleton()->shell_open(downloaded_file_path);
-                if (shell_err == OK) {
-                    launch_success = true;
-                    print_line("EditorUpdater: WINDOWS: SUCCESS - Shell launch worked (user will see Godot)");
-                }
-            }
-            
-            // WINDOWS WORKAROUND: Create a batch file to launch with proper arguments
-            if (!launch_success) {
-                print_line("EditorUpdater: WINDOWS: Creating batch file workaround for argument passing");
-                
-                // Create a .bat file that launches with --project-manager
-                String batch_path = downloaded_file_path.get_base_dir().path_join("launch_orca_update.bat");
-                
-                Error bat_err;
-                Ref<FileAccess> bat_file = FileAccess::open(batch_path, FileAccess::WRITE, &bat_err);
-                if (bat_err == OK && bat_file.is_valid()) {
-                    String batch_content = "@echo off\n";
-                    batch_content += "echo Launching Orca Engine in Project Manager mode...\n";
-                    batch_content += "\"" + downloaded_file_path + "\" --project-manager\n";
-                    batch_content += "del \"" + batch_path + "\"\n";  // Self-delete
-                    
-                    bat_file->store_string(batch_content);
-                    bat_file->close();
-                    
-                    // Launch the batch file
-                    Error batch_launch = OS::get_singleton()->shell_open(batch_path);
-                    if (batch_launch == OK) {
-                        launch_success = true;
-                        print_line("EditorUpdater: WINDOWS: SUCCESS - Batch file workaround worked");
-                    }
-                }
-            }
-            
-            // Final result
-            if (!launch_success) {
-                print_line("EditorUpdater: WINDOWS: ERROR - All launch strategies failed");
-                status_label->set_text("Update downloaded successfully!\n\nTo launch: Double-click and add '--project-manager' argument\n" + downloaded_file_path);
-                // Still quit so user can launch manually
-            } else {
-                print_line("EditorUpdater: WINDOWS: SUCCESS - New version launching with proper arguments");
-            }
+            print_line("EditorUpdater: WINDOWS: SUCCESS - Update batch script started");
+            print_line("EditorUpdater: WINDOWS: The batch will replace your current exe and launch the new version");
+            print_line("EditorUpdater: WINDOWS: Updated version will be at: " + current_exe);
         }
         
         // CRITICAL FIX: Notify backend that update was installed before quitting
@@ -970,11 +965,37 @@ void EditorUpdater::_install_and_restart() {
         };
 
         auto copy_to_applications = [&](const String &src_app) -> String {
-            String dest_app = "/Applications/" + src_app.get_file();
+            // PRODUCTION: Replace existing Orca.app in-place
+            String current_app_path = OS::get_singleton()->get_executable_path();
+            
+            // Navigate from executable to .app bundle
+            // e.g., /Applications/Orca.app/Contents/MacOS/Orca -> /Applications/Orca.app
+            String dest_app = current_app_path;
+            while (!dest_app.ends_with(".app") && !dest_app.is_empty()) {
+                dest_app = dest_app.get_base_dir();
+            }
+            
+            // If we couldn't find current .app, use standard /Applications location
+            if (!dest_app.ends_with(".app")) {
+                dest_app = "/Applications/" + src_app.get_file();
+                print_line("EditorUpdater: MACOS: Installing to standard location: " + dest_app);
+            } else {
+                print_line("EditorUpdater: MACOS: REPLACING current app in-place: " + dest_app);
+            }
+            
+            // Remove old version first
+            List<String> rm_args;
+            rm_args.push_back("-rf");
+            rm_args.push_back(dest_app);
+            OS::get_singleton()->execute("/bin/rm", rm_args, nullptr, &exit_code, true);
+            
+            // Copy new version  
             List<String> ditto_args;
             ditto_args.push_back(src_app);
             ditto_args.push_back(dest_app);
             OS::get_singleton()->execute("/usr/bin/ditto", ditto_args, nullptr, &exit_code, true);
+            
+            print_line("EditorUpdater: MACOS: Update installed at: " + dest_app);
             return dest_app;
         };
 
