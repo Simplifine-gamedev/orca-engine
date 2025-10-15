@@ -407,14 +407,38 @@ void EditorUpdater::_on_release_completed(int p_result, int p_code, const Packed
             return;
         }
         
-        // Pick the first release (most recent)
-        Variant first_release = releases[0];
-        if (first_release.get_type() != Variant::DICTIONARY) {
-            status_label->set_text("Invalid release data.");
+        // Find the latest non-draft, non-prerelease (or latest draft if no published releases)
+        Dictionary latest_published;
+        Dictionary latest_draft;
+        
+        for (int i = 0; i < releases.size(); i++) {
+            Variant release_var = releases[i];
+            if (release_var.get_type() != Variant::DICTIONARY) continue;
+            
+            Dictionary release = release_var;
+            bool is_draft = release.get("draft", false);
+            bool is_prerelease = release.get("prerelease", false);
+            
+            if (!is_draft && !is_prerelease && latest_published.is_empty()) {
+                latest_published = release;
+                break; // First published release is the latest
+            } else if (is_draft && latest_draft.is_empty()) {
+                latest_draft = release; // Keep track of latest draft as fallback
+            }
+        }
+        
+        // Prefer published over draft, but use draft if no published releases
+        if (!latest_published.is_empty()) {
+            d = latest_published;
+            print_line("EditorUpdater: Using latest published release: " + String(d.get("tag_name", "")));
+        } else if (!latest_draft.is_empty()) {
+            d = latest_draft;
+            print_line("EditorUpdater: Using latest draft release: " + String(d.get("tag_name", "")));
+        } else {
+            status_label->set_text("No suitable releases found.");
             stage = STAGE_ERROR;
             return;
         }
-        d = first_release;
         
     } else if (json_v.get_type() == Variant::DICTIONARY) {
         // We got a single release (from /releases/latest endpoint)
@@ -974,10 +998,44 @@ void EditorUpdater::_install_and_restart() {
             print_line("EditorUpdater: 🚀 AUTO-LAUNCHING new Orca Engine version");
             print_line("EditorUpdater: New app path: " + app_path);
             
-            // Preserve the currently open project using ProjectSettings
+            // Preserve the currently open project - try multiple methods
             String current_project_path;
-            if (ProjectSettings::get_singleton()) {
-                current_project_path = ProjectSettings::get_singleton()->globalize_path("res://");
+            
+            // Method 1: Try EditorNode's current project path
+            if (EditorNode::get_singleton()) {
+                String project_path = ProjectSettings::get_singleton()->get_resource_path();
+                if (!project_path.is_empty() && project_path != "." && project_path != "") {
+                    current_project_path = project_path;
+                    print_line("EditorUpdater: Got project from ProjectSettings resource_path: " + current_project_path);
+                }
+            }
+            
+            // Method 2: Try ProjectSettings globalize if available
+            if (current_project_path.is_empty() && ProjectSettings::get_singleton()) {
+                String res_path = ProjectSettings::get_singleton()->globalize_path("res://");
+                if (!res_path.is_empty() && res_path != "res://" && res_path != "") {
+                    current_project_path = res_path;
+                    print_line("EditorUpdater: Got project from ProjectSettings globalize: " + current_project_path);
+                }
+            }
+            
+            // Method 3: Check for project.godot near executable 
+            if (current_project_path.is_empty()) {
+                String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+                Vector<String> search_paths = {
+                    exe_dir,
+                    exe_dir.get_base_dir(),
+                    exe_dir.get_base_dir().get_base_dir()
+                };
+                
+                for (const String &search_dir : search_paths) {
+                    String project_file = search_dir.path_join("project.godot");
+                    if (FileAccess::exists(project_file)) {
+                        current_project_path = search_dir;
+                        print_line("EditorUpdater: Found project via search: " + current_project_path);
+                        break;
+                    }
+                }
             }
             
             // AUTOMATED LAUNCH: Use macOS 'open' command with arguments
