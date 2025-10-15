@@ -1966,6 +1966,15 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	if (!project_manager && !editor) {
 		// If we didn't find a project, we fall back to the project manager.
 		project_manager = !found_project && !cmdline_tool;
+		
+		// ORCA ENGINE FIX: On Windows, default to project manager if uncertain
+		// This prevents "Couldn't detect whether to run" errors during automated updates
+		#ifdef WINDOWS_ENABLED
+		if (!project_manager && !editor && !cmdline_tool) {
+			print_line("Orca: Windows uncertain startup - defaulting to project manager mode");
+			project_manager = true;
+		}
+		#endif
 	}
 
 	{
