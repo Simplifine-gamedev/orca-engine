@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from 'react'
 import MonacoEditor from '@monaco-editor/react'
 import io from 'socket.io-client'
 import axios from 'axios'
+import AIModeSwitcher, { AIMode, ModeDescription } from './components/AIModeSwitcher'
+import AIChatPanel from './components/AIChatPanel'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -15,6 +17,7 @@ export default function OrcaCloudIDE() {
   const [currentFile, setCurrentFile] = useState('')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
+  const [aiMode, setAiMode] = useState<AIMode>('agent')
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   // Create or load project on mount
@@ -87,6 +90,14 @@ export default function OrcaCloudIDE() {
     }
   }
 
+  const handleModeChange = (mode: AIMode) => {
+    setAiMode(mode)
+    // TODO: Send mode preference to backend
+    if (socket) {
+      socket.emit('ai-mode-change', { mode })
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white">
@@ -125,7 +136,7 @@ export default function OrcaCloudIDE() {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col">
         {/* Toolbar */}
-        <div className="bg-gray-800 border-b border-gray-700 p-2 flex items-center gap-2">
+        <div className="bg-gray-800 border-b border-gray-700 p-3 flex items-center gap-3">
           <img src="/logo-light.png" alt="Orca" className="h-6 w-auto mr-2" />
           <button 
             className="bg-green-600 hover:bg-green-700 px-4 py-1 rounded text-sm"
@@ -139,7 +150,9 @@ export default function OrcaCloudIDE() {
           >
             Build
           </button>
-          <div className="ml-auto text-sm text-gray-400">
+          <div className="flex-1" />
+          <AIModeSwitcher currentMode={aiMode} onModeChange={handleModeChange} />
+          <div className="text-sm text-gray-400">
             {currentFile || 'No file selected'}
           </div>
         </div>
@@ -189,28 +202,9 @@ export default function OrcaCloudIDE() {
         </div>
       </div>
 
-      {/* Right Panel - Inspector */}
-      <div className="w-80 bg-gray-800 border-l border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-4">Inspector</h2>
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-sm font-semibold mb-2">Transform</h3>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span>Position</span>
-                <span className="text-gray-400">0, 0, 0</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Rotation</span>
-                <span className="text-gray-400">0, 0, 0</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Scale</span>
-                <span className="text-gray-400">1, 1, 1</span>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Right Panel - AI Assistant */}
+      <div className="w-96 bg-gray-800 border-l border-gray-700 flex flex-col">
+        <AIChatPanel mode={aiMode} projectId={projectId} />
       </div>
     </div>
   )
