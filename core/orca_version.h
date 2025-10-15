@@ -9,5 +9,6 @@ extern const char *const ORCA_VERSION_STRING;
 extern const char *const ORCA_VERSION_FULL;
 
 // Helper function to get Orca version at runtime
+// final test comment for update and replace test
 const char *get_orca_version();
 
