@@ -10,9 +10,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "project_manager",
-            "description": "Project context, filesystem, asset library, and update checks.",
+            "description": "REQUIRED: Always specify 'op' parameter. Manages project context, filesystem operations, asset library, and updates. Common operations: 'context.get' (analyze project), 'fs.read' (read files), 'fs.list' (list directories), 'assets.search' (find assets).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",
@@ -30,7 +31,7 @@ _godot_tools_template = [
                             # Updates
                             "updates.check"
                         ],
-                        "description": "Operation selector"
+                        "description": "**REQUIRED** operation type. Examples: 'context.get' (get project structure), 'fs.read' (read file), 'fs.list' (list directory), 'fs.write' (write file), 'assets.search' (search assets). NEVER call project_manager without specifying op parameter."
                     },
                     "dry_run": {"type": "boolean", "default": False},
 
@@ -116,9 +117,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "scene_manager",
-            "description": "Scenes, nodes, properties, resources, collisions, signals, groups, selection, and bulk/copy configuration.",
+            "description": "REQUIRED: Always specify 'op' parameter. Manages scenes, nodes, properties, resources, collisions, signals, groups. Common operations: 'scene.open' (open scene), 'node.create' (create node), 'node.props.get' (get properties), 'scene.analyze' (analyze scene).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",
@@ -330,9 +332,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "script_manager",
-            "description": "Scripts and classes: attach/detach/reload, class registry, and compilation checks.",
+            "description": "REQUIRED: Always specify 'op' parameter. Scripts and classes: attach/detach/reload, class registry, and compilation checks. Common operations: 'script.attach' (attach script), 'script.detach' (detach script), 'classes.refresh' (refresh classes).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",
@@ -360,9 +363,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "resource_manager",
-            "description": "Create/inspect/modify/assign resources, load & assign, import options and reimport, image ops, and spritesheet slicing.",
+            "description": "REQUIRED: Always specify 'op' parameter. Create/inspect/modify/assign resources, load & assign, import options and reimport, image ops, and spritesheet slicing. IMPORTANT: If 'image.generate_or_edit' includes 'path_to_save', the image is automatically saved - do NOT call 'image.save' separately. Common operations: 'res.create' (create resource), 'res.inspect' (inspect resource), 'image.generate_or_edit' (generate/edit images).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",
@@ -413,13 +417,13 @@ _godot_tools_template = [
                     "tile_size": {"type": "string"},
                     "grid": {"type": "string"},
                     "resize_filter": {"type": "string", "enum": ["nearest", "bilinear", "bicubic", "lanczos"], "default": "lanczos"},
-                    "path_to_save": {"type": "string"},
+                    "path_to_save": {"type": "string", "description": "OPTIONAL: Path to save the generated/edited image (e.g., 'res://art/texture.png'). If provided, the image will be automatically saved. If not provided, use the separate 'image.save' operation later."},
 
                     # Image save
                     "image_id": {"type": "string", "description": "ID of the image from conversation (e.g., 'generated_abc123', 'edited_def456')"},
                     "path": {"type": "string", "description": "Path where to save the image in the project (e.g., 'res://textures/floor_texture.png')"},
                     "format": {"type": "string", "enum": ["png", "jpg", "jpeg"], "default": "png"},
-                    "target_resolution": {"type": "integer", "description": "Target resolution for saved image (e.g., 8, 16, 32, 64, 128, 256, 512, 1024, 2048). Use -1 or omit for original size. Maintains aspect ratio when resizing."},
+                    "target_resolution": {"type": "integer", "description": "Target resolution for saved image (e.g., 8, 16, 32, 64, 128, 256, 512, 1024, 2048). Use -1 or omit for original size. Maintains aspect ratio when resizing. NOTE: Only use this operation if the image generation did NOT include path_to_save - otherwise the image is already saved automatically."},
 
                     # Spritesheet slicing
                     "sheet_base64": {"type": "string"},
@@ -443,9 +447,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "settings_manager",
-            "description": "ProjectSettings, InputMap actions, Autoloads (singletons), and layer/mask names.",
+            "description": "REQUIRED: Always specify 'op' parameter. ProjectSettings, InputMap actions, Autoloads (singletons), and layer/mask names. Common operations: 'project_settings.get' (get setting), 'project_settings.set' (set setting), 'autoload.add' (add autoload).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",
@@ -494,9 +499,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "animation_manager",
-            "description": "Create and edit animations on AnimationPlayer: animations, tracks, and keyframes.",
+            "description": "REQUIRED: Always specify 'op' parameter. Create and edit animations on AnimationPlayer: animations, tracks, and keyframes. Common operations: 'animation.create' (create animation), 'track.add' (add track), 'key.insert' (insert keyframe).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",
@@ -541,9 +547,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "search_manager",
-            "description": "Search across the project (semantic/keyword/hybrid) and Godot docs.",
+            "description": "REQUIRED: Always specify 'op' parameter. Search across project and Godot docs. Operations: 'project.search' (search project files), 'docs.search' (search Godot documentation). Always include 'query' parameter with search terms.",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {"type": "string", "enum": ["project.search", "docs.search"]},
                     "query": {"type": "string"},
@@ -575,9 +582,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "runtime_manager",
-            "description": "Run/stop/status, error summaries/details, screenshots.",
+            "description": "REQUIRED: Always specify 'op' parameter. Run/stop/status, error summaries/details, screenshots. Common operations: 'game.start' (start game), 'game.stop' (stop game), 'game.status' (get status), 'errors.summary' (get error summary), 'screenshot.capture' (take screenshot).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {"type": "string", "enum": ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "errors.test", "errors.debug", "screenshot.capture", "console.get_output", "input.test_action", "input.test_key"]},
                     "scene_path": {"type": "string"},
@@ -613,9 +621,10 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "runtime_inspector",
-            "description": "Inspect and modify runtime node properties, materials, shaders, environment settings, and mesh data during play. Includes advanced diagnostics for conflict detection and script behavior analysis.",
+            "description": "REQUIRED: Always specify 'op' parameter. Inspect and modify runtime node properties, materials, shaders, environment settings during play. Common operations: 'runtime.node.get_props' (get node properties), 'runtime.node.set_prop' (set property), 'runtime.material.get' (get material).",
             "parameters": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "op": {
                         "type": "string",

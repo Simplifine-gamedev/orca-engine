@@ -1114,13 +1114,8 @@ void AIChatDock::_on_send_button_pressed() {
 	
 	// AUTO-INJECT PROJECT CONTEXT: If this is the first user message in the conversation, 
 	// automatically gather and include project structure context
-	bool is_first_user_message = true;
-	for (int i = 0; i < chat_history.size(); i++) {
-		if (chat_history[i].role == "user") {
-			is_first_user_message = false;
-			break;
-		}
-	}
+	// Auto-inject project context is disabled to prevent conversation bloat
+	// (Previously checked if this was the first user message)
 	
 	if (false) { // DISABLED: Auto project context was causing massive conversations
 		print_line("AI Chat: Auto project context disabled to prevent conversation bloat");
@@ -5017,6 +5012,8 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
             tool_responses++;
         }
     }
+    
+    print_line("AI Chat: Recent conversation stats - " + String::num_int64(assistant_tool_calls) + " assistant tool calls, " + String::num_int64(tool_responses) + " tool responses");
     
     // We've finished with this turn's tool calls. Clear the current label
     // so the next content_delta or assistant_message creates a new bubble
@@ -9852,8 +9849,10 @@ void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages)
 	for (int i = 0; i < messages_to_display.size(); i++) {
 		const ChatMessage &msg = messages_to_display[i];
 		if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
-			// PERFORMANCE: Only show simplified tool results for older messages
-			bool show_full_ui = i >= (messages_to_display.size() - 10); // Only last 10 messages get full UI
+            // PERFORMANCE: Only show simplified tool results for older messages
+            // EXCEPTION: Always show FULL UI for image-related tools so lazy loader + save are available
+            bool is_image_tool = (msg.name == "image_operation" || msg.name == "resource_manager" || msg.name == "runtime_manager" || msg.name == "runtime_inspector");
+            bool show_full_ui = is_image_tool || (i >= (messages_to_display.size() - 10));
 			
 			if (show_full_ui) {
 				// Stagger the tool result applications to avoid race conditions
@@ -10236,21 +10235,8 @@ void AIChatDock::_send_chat_request() {
                         raw = json_tool->get_data();
                     }
                 }
-                // Promote tool images to top-level 'images' so backend edits can find them
-                Array images_data;
-                for (const AttachedFile &file : msg.attached_files) {
-                    if (file.is_image) {
-                        Dictionary image_info;
-                        image_info["name"] = file.name;
-                        image_info["mime_type"] = file.mime_type;
-                        image_info["base64_data"] = file.base64_data;
-                        image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
-                        images_data.push_back(image_info);
-                    }
-                }
-                if (!images_data.is_empty()) {
-                    api_msg["images"] = images_data;
-                }
+                // CRITICAL FIX: DO NOT send images in conversation history - causes massive token bloat
+                // Images will be provided only when AI specifically requests image editing operations
                 raw.erase("image_data");
                 Ref<JSON> json_min;
                 json_min.instantiate();
@@ -10528,21 +10514,8 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 				
 				api_msg["content"] = content_with_images;
 				
-                // For assistant messages with images, include 'images' array so backend image editing has context
-                Array images_data;
-                for (const AttachedFile &file : p_msg.attached_files) {
-                    if (file.is_image) {
-                        Dictionary image_info;
-                        image_info["name"] = file.name;
-                        image_info["mime_type"] = file.mime_type;
-                        image_info["base64_data"] = file.base64_data;
-                        image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
-                        images_data.push_back(image_info);
-                    }
-                }
-                if (!images_data.is_empty()) {
-                    api_msg["images"] = images_data;
-                }
+                // CRITICAL FIX: DO NOT send images in conversation history - causes massive token bloat
+                // Images will be provided only when AI specifically requests image editing operations
 			} else {
 				api_msg["content"] = p_msg.content;
 			}
@@ -10616,24 +10589,7 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
             // For both image_operation and resource_manager, promote images to conversation context
             String image_data_str = raw.get("image_data", "");
             if (raw.has("image_data") && !image_data_str.is_empty()) {
-                // SAFETY: Check if attached_files is valid before iterating
-                if (!p_msg.attached_files.is_empty()) {
-                    // Add images array for backend tool context (like assistant messages)
-                    Array images_data;
-                    for (const AttachedFile &file : p_msg.attached_files) {
-                        if (file.is_image && !file.name.is_empty() && !file.base64_data.is_empty()) {
-                            Dictionary image_info;
-                            image_info["name"] = file.name;
-                            image_info["mime_type"] = file.mime_type;
-                            image_info["base64_data"] = file.base64_data;
-                            image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
-                            images_data.push_back(image_info);
-                        }
-                    }
-                    if (!images_data.is_empty()) {
-                        api_msg["images"] = images_data;
-                    }
-                }
+                // CRITICAL FIX: DO NOT send images in conversation history - causes massive token bloat
             }
             
 			raw.erase("image_data");
@@ -10919,7 +10875,8 @@ void AIChatDock::_finalize_chat_request() {
 		}
 	}
 
-	// Debug logs for OpenAI messages have been quieted to reduce console noise.
+	// CRITICAL FIX: Inject image data into tool calls that need it (cloud-safe approach)
+	_inject_image_data_into_tool_calls(_chunked_messages);
 
 	Ref<JSON> json;
 	json.instantiate();
@@ -11001,6 +10958,117 @@ void AIChatDock::_finalize_chat_request() {
 	
 	// Clear the chunked messages to free memory
 	_chunked_messages.clear();
+}
+
+void AIChatDock::_inject_image_data_into_tool_calls(Array &p_messages) {
+	// CLOUD-SAFE IMAGE INJECTION: Only inject image data when AI specifically requests image editing
+	// This prevents images from being stored in conversation history while still allowing editing
+	
+	print_line("AI Chat: Scanning messages for image editing tool calls...");
+	
+	// Build image lookup from current chat history
+	HashMap<String, AttachedFile> available_images;
+	Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
+	
+	for (const ChatMessage &msg : history) {
+		for (const AttachedFile &file : msg.attached_files) {
+			if (file.is_image && !file.name.is_empty() && !file.base64_data.is_empty()) {
+				available_images[file.name] = file;
+			}
+		}
+	}
+	
+	print_line("AI Chat: Found " + String::num_int64(available_images.size()) + " available images for editing");
+	
+	// Scan messages for image editing tool calls
+	for (int i = 0; i < p_messages.size(); i++) {
+		Dictionary msg = p_messages[i];
+		if (msg.get("role", "") != "assistant" || !msg.has("tool_calls")) {
+			continue;
+		}
+		
+		Array tool_calls = msg.get("tool_calls", Array());
+		bool modified = false;
+		
+		for (int j = 0; j < tool_calls.size(); j++) {
+			Dictionary tool_call = tool_calls[j];
+			Dictionary function_dict = tool_call.get("function", Dictionary());
+			String function_name = function_dict.get("name", "");
+			
+			// Only process image editing tools
+			if (function_name != "image_operation" && function_name != "resource_manager") {
+				continue;
+			}
+			
+			String arguments_str = function_dict.get("arguments", "{}");
+			Ref<JSON> args_json;
+			args_json.instantiate();
+			
+			if (args_json->parse(arguments_str) == OK) {
+				Dictionary args = args_json->get_data();
+				
+				// Check if this is an image editing operation that needs image data
+				bool needs_images = false;
+				Array requested_image_ids;
+				
+				if (function_name == "image_operation" && args.has("images")) {
+					requested_image_ids = args.get("images", Array());
+					needs_images = !requested_image_ids.is_empty();
+				} else if (function_name == "resource_manager") {
+					String op = args.get("op", "");
+					if (op == "image.generate_or_edit" && args.has("images")) {
+						requested_image_ids = args.get("images", Array());
+						needs_images = !requested_image_ids.is_empty();
+					}
+				}
+				
+				if (needs_images && !requested_image_ids.is_empty()) {
+					print_line("AI Chat: Tool " + function_name + " requests " + String::num_int64(requested_image_ids.size()) + " images - injecting data");
+					
+					Array image_data_array;
+					for (int k = 0; k < requested_image_ids.size(); k++) {
+						String image_id = requested_image_ids[k];
+						
+						if (available_images.has(image_id)) {
+							const AttachedFile &file = available_images[image_id];
+							Dictionary image_info;
+							image_info["name"] = file.name;
+							image_info["mime_type"] = file.mime_type;
+							image_info["base64_data"] = file.base64_data;
+							image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
+							image_data_array.push_back(image_info);
+							
+							print_line("AI Chat: Injected image data for " + image_id + " (" + String::num_int64(file.base64_data.length()) + " bytes)");
+						} else {
+							print_line("AI Chat: WARNING - Requested image " + image_id + " not found in history");
+						}
+					}
+					
+					// Inject image data into tool call arguments
+					if (!image_data_array.is_empty()) {
+						args["image_data_for_editing"] = image_data_array;
+						
+						// Update the arguments string in the tool call
+						Ref<JSON> updated_json;
+						updated_json.instantiate();
+						String updated_args = updated_json->stringify(args);
+						function_dict["arguments"] = updated_args;
+						tool_call["function"] = function_dict;
+						tool_calls[j] = tool_call;
+						modified = true;
+						
+						print_line("AI Chat: Updated tool call arguments with " + String::num_int64(image_data_array.size()) + " images");
+					}
+				}
+			}
+		}
+		
+		// Update the message if we modified any tool calls
+		if (modified) {
+			msg["tool_calls"] = tool_calls;
+			p_messages[i] = msg;
+		}
+	}
 }
 
 bool AIChatDock::_is_busy() {
@@ -13033,45 +13101,143 @@ void AIChatDock::_display_image_unified(VBoxContainer *p_container, const String
 }
 
 bool AIChatDock::_save_base64_image_to_path(const String &p_base64_data, const String &p_file_path) {
+	// CRASH PROTECTION: Comprehensive error handling for all potential failure points
+	print_line("AI Chat: SAVE_IMAGE_START - Path: " + p_file_path + ", Data size: " + String::num_int64(p_base64_data.length()));
+	
 	if (p_base64_data.is_empty() || p_file_path.is_empty()) {
+		print_line("AI Chat: SAVE_IMAGE_ERROR - Empty base64 data or file path");
 		return false;
 	}
-	Vector<uint8_t> image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_base64_data);
-	if (image_data.size() == 0) {
+	
+	// CRASH PROTECTION: Validate Marshalls singleton before use
+	if (!CoreBind::Marshalls::get_singleton()) {
+		print_line("AI Chat: SAVE_IMAGE_ERROR - Marshalls singleton is null");
 		return false;
 	}
-	Ref<FileAccess> file = FileAccess::open(p_file_path, FileAccess::WRITE);
+	
+	Vector<uint8_t> image_data;
+	// CRASH PROTECTION: Safe base64 decoding with error handling
+	bool decode_success = false;
+	image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_base64_data);
+	decode_success = (image_data.size() > 0);
+	
+	if (!decode_success || image_data.size() == 0) {
+		print_line("AI Chat: SAVE_IMAGE_ERROR - Failed to decode base64 data (size: " + String::num_int64(image_data.size()) + ")");
+		return false;
+	}
+	
+	// CRASH PROTECTION: Validate file path and create directory safely
+	String abs_path = ProjectSettings::get_singleton()->globalize_path(p_file_path);
+	String dir_path = abs_path.get_base_dir();
+	
+	if (!DirAccess::dir_exists_absolute(dir_path)) {
+		Error dir_err = DirAccess::make_dir_recursive_absolute(dir_path);
+		if (dir_err != OK) {
+			print_line("AI Chat: SAVE_IMAGE_ERROR - Failed to create directory: " + dir_path + " (Error: " + String::num_int64(dir_err) + ")");
+			return false;
+		}
+	}
+	
+	// CRASH PROTECTION: Safe file operations
+	Ref<FileAccess> file = FileAccess::open(abs_path, FileAccess::WRITE);
 	if (file.is_null()) {
+		print_line("AI Chat: SAVE_IMAGE_ERROR - Failed to open file for writing: " + abs_path);
 		return false;
 	}
+	
 	file->store_buffer(image_data);
+	Error close_err = file->get_error();
 	file->close();
+	
+	if (close_err != OK) {
+		print_line("AI Chat: SAVE_IMAGE_ERROR - File write error: " + String::num_int64(close_err));
+		return false;
+	}
+	
+	print_line("AI Chat: SAVE_IMAGE_SUCCESS - Saved " + String::num_int64(image_data.size()) + " bytes to: " + p_file_path);
 
-	// Immediately notify the editor's file system so the resource is imported and discoverable.
-	if (EditorFileSystem::get_singleton()) {
-		EditorFileSystem::get_singleton()->update_file(p_file_path);
-		// Debounce costly/rescanning calls to avoid re-entrancy crashes in SceneTreeDock.
-		// Schedule a single scan shortly after the last write.
-		static uint64_t s_last_scan_request_ms = 0;
-		s_last_scan_request_ms = OS::get_singleton()->get_ticks_msec();
-		uint64_t scheduled_at = s_last_scan_request_ms;
-		Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.4, true);
-		timer->connect("timeout", callable_mp(this, &AIChatDock::_on_filesystem_debounced_scan).bind(scheduled_at));
+	// CRASH PROTECTION: Safely notify editor file system
+	EditorFileSystem *fs = EditorFileSystem::get_singleton();
+	if (fs) {
+		fs->update_file(p_file_path);
 		
-		// Force immediate reimport to generate .import file
+		// CRASH PROTECTION: Safe timer creation for debounced scan
+		SceneTree *tree = get_tree();
+		if (tree) {
+			static uint64_t s_last_scan_request_ms = 0;
+			s_last_scan_request_ms = OS::get_singleton()->get_ticks_msec();
+			uint64_t scheduled_at = s_last_scan_request_ms;
+			
+			Ref<SceneTreeTimer> timer = tree->create_timer(0.4, true);
+			if (timer.is_valid()) {
+				// CRASH PROTECTION: Use deferred call to avoid immediate connection issues
+				call_deferred("_connect_timer_safely", timer, scheduled_at);
+			}
+		}
+		
+		// CRASH PROTECTION: Safe reimport with error handling
 		Vector<String> to_reimport;
 		to_reimport.push_back(p_file_path);
-		EditorFileSystem::get_singleton()->reimport_files(to_reimport);
 		
-		// Clear any cached load failure so the resource can be loaded fresh
-		if (ResourceCache::has(p_file_path)) {
-			Ref<Resource> cached = ResourceCache::get_ref(p_file_path);
+		// Use deferred call to prevent re-entrancy crashes
+		call_deferred("_safe_reimport_files", to_reimport);
+		
+		print_line("AI Chat: SAVE_IMAGE_FILESYSTEM - Notified editor filesystem");
+	} else {
+		print_line("AI Chat: SAVE_IMAGE_WARNING - EditorFileSystem not available, but image was saved successfully");
+	}
+	
+	return true;
+}
+
+void AIChatDock::_connect_timer_safely(Ref<SceneTreeTimer> p_timer, uint64_t p_scheduled_at) {
+	// CRASH PROTECTION: Safe timer connection with validation
+	if (!p_timer.is_valid()) {
+		print_line("AI Chat: TIMER_ERROR - Invalid timer reference");
+		return;
+	}
+	
+	// Only connect if this is the most recent scan request (debouncing)
+	static uint64_t s_last_scan_request_ms = 0;
+	if (p_scheduled_at != s_last_scan_request_ms) {
+		print_line("AI Chat: TIMER_SKIP - Newer scan request scheduled, skipping old timer");
+		return;
+	}
+	
+	Error connect_err = p_timer->connect("timeout", callable_mp(this, &AIChatDock::_on_filesystem_debounced_scan).bind(p_scheduled_at), CONNECT_ONE_SHOT);
+	if (connect_err == OK) {
+		print_line("AI Chat: TIMER_CONNECTED - File system scan scheduled");
+	} else {
+		print_line("AI Chat: TIMER_ERROR - Failed to connect timer (Error: " + String::num_int64(connect_err) + "), but continuing");
+	}
+}
+
+void AIChatDock::_safe_reimport_files(const Vector<String> &p_files) {
+	// CRASH PROTECTION: Safe file reimport with validation
+	if (p_files.is_empty()) {
+		return;
+	}
+	
+	EditorFileSystem *fs = EditorFileSystem::get_singleton();
+	if (!fs) {
+		print_line("AI Chat: REIMPORT_ERROR - EditorFileSystem singleton is null");
+		return;
+	}
+	
+	fs->reimport_files(p_files);
+	print_line("AI Chat: REIMPORT_SUCCESS - Triggered reimport for " + String::num_int64(p_files.size()) + " files");
+	
+	// CRASH PROTECTION: Safe resource cache clearing
+	for (const String &file_path : p_files) {
+		if (ResourceCache::has(file_path)) {
+			Ref<Resource> cached = ResourceCache::get_ref(file_path);
 			if (cached.is_valid()) {
+				// reload_from_file() returns void, not Error
 				cached->reload_from_file();
+				print_line("AI Chat: CACHE_RELOAD - Reloaded cached resource: " + file_path);
 			}
 		}
 	}
-	return true;
 }
 
 void AIChatDock::_on_save_image_pressed(const String &p_base64_data, const String &p_format) {
@@ -17073,7 +17239,23 @@ void AIChatDock::_apply_simplified_tool_result(const String &p_tool_call_id, con
 		}
 	}
 
-	// Create simplified UI - just a status button
+    // If this is an image-related tool, try to expand to full UI immediately using stored tool_results
+    if (p_tool_name == "image_operation" || p_tool_name == "resource_manager" || p_tool_name == "runtime_manager" || p_tool_name == "runtime_inspector") {
+        // Look up the historical tool message to get full tool_results (with image_data)
+        Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+        for (int i = chat_history.size() - 1; i >= 0; i--) {
+            const ChatMessage &m = chat_history[i];
+            if (m.role == "tool" && m.tool_call_id == p_tool_call_id) {
+                // Rebuild full UI using the deferred method with m.tool_results
+                Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.01, true);
+                timer->connect("timeout", callable_mp(this, &AIChatDock::_apply_tool_result_deferred).bind(p_tool_call_id, p_tool_name, p_content, m.tool_results), CONNECT_ONE_SHOT);
+                return;
+            }
+        }
+        // If not found, fall through to simplified UI (user can click to expand)
+    }
+
+    // Create simplified UI - just a status button
 	VBoxContainer *simple_container = memnew(VBoxContainer);
 	placeholder->add_child(simple_container);
 

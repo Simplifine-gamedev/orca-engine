@@ -369,6 +369,8 @@ private:
 	void _on_new_conversation_pressed();
 	void _on_conversation_rename_requested(int p_index, const String &p_new_name);
 	void _on_conversation_delete_requested(int p_index);
+	void _connect_timer_safely(Ref<SceneTreeTimer> p_timer, uint64_t p_scheduled_at);
+	void _safe_reimport_files(const Vector<String> &p_files);
 	void _on_save_image_pressed(const String &p_base64_data, const String &p_format);
 	void _on_save_image_location_selected(const String &p_file_path);
 	void _on_save_3d_model_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path);
@@ -409,6 +411,7 @@ private:
 	void _send_chat_request();
 	void _send_chat_request_chunked(int p_start_index);
 	Dictionary _build_api_message(const ChatMessage &p_msg);
+	void _inject_image_data_into_tool_calls(Array &p_messages);
 	void _finalize_chat_request();
 	void _update_ui_state();
 	bool _is_busy();

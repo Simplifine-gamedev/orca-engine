@@ -1132,9 +1132,67 @@ def check_version_compatibility():
     
     return None
 
-# Image handling will use OpenAI's native ID system - no local registry needed
+# Image handling will use request-scoped image passing - no persistent storage needed
 
 # --- Helper Functions ---
+
+def validate_tool_parameters(tool_name: str, arguments: dict, required_params: list, valid_operations: dict = None) -> tuple[bool, str]:
+    """
+    Centralized parameter validation for tools to provide consistent error messages.
+    
+    Args:
+        tool_name: Name of the tool being validated
+        arguments: Parameters passed to the tool
+        required_params: List of required parameter names
+        valid_operations: Dict mapping operation names to their descriptions (for op parameter)
+    
+    Returns:
+        tuple[bool, str]: (is_valid, error_message)
+    """
+    
+    # Check for missing required parameters
+    missing_params = []
+    for param in required_params:
+        if param not in arguments or arguments[param] == '' or arguments[param] is None:
+            missing_params.append(param)
+    
+    if missing_params:
+        # Special handling for 'op' parameter
+        if 'op' in missing_params and valid_operations:
+            operation_list = list(valid_operations.keys())
+            common_ops = operation_list[:6]  # Show first 6 operations
+            examples = []
+            
+            for op_name, description in list(valid_operations.items())[:3]:  # Show 3 examples
+                examples.append(f"op='{op_name}' {description}")
+            
+            error_msg = (
+                f"Missing required parameter 'op' for {tool_name}. "
+                f"Must specify one of: {', '.join(common_ops)}{'...' if len(operation_list) > 6 else ''}. "
+                f"Examples: {'; '.join(examples)}"
+            )
+        else:
+            # General missing parameter error
+            error_msg = (
+                f"Missing required parameter(s) for {tool_name}: {', '.join(missing_params)}. "
+                f"Please provide all required parameters."
+            )
+        
+        return False, error_msg
+    
+    # Validate 'op' parameter value if provided and valid_operations specified
+    if 'op' in arguments and valid_operations:
+        op_value = arguments['op']
+        if op_value not in valid_operations:
+            valid_ops = list(valid_operations.keys())
+            error_msg = (
+                f"Invalid operation '{op_value}' for {tool_name}. "
+                f"Valid operations: {', '.join(valid_ops[:8])}{'...' if len(valid_ops) > 8 else ''}. "
+                f"Check tool documentation for complete list."
+            )
+            return False, error_msg
+    
+    return True, ""
 
 # --- Asset Processing Function ---
 def process_asset_internal(arguments: dict) -> dict:
@@ -1245,57 +1303,23 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 except Exception:
                     pass
 
-        # Gather available images from prior conversation messages
-        available_images = {}
-        if conversation_messages:
-            debug_print(f"IMAGE_OP DEBUG: conversation_messages count: {len(conversation_messages)}")
-            cm_index = -1
-            for msg in conversation_messages:
-                cm_index += 1
-                if not isinstance(msg, dict):
-                    continue
-                    
-                # Debug: Log all message details
-                role = msg.get('role', 'unknown')
-                print(f"    - msg[{cm_index}] role={role}, has_images={'images' in msg}, keys={list(msg.keys())}")
-                
-                if 'images' in msg and isinstance(msg['images'], list):
-                    print(f"    - msg[{cm_index}] has images: {len(msg['images'])}")
-                    for img in msg['images']:
-                        name = img.get('name')
-                        b64 = img.get('base64_data')
-                        if name and b64:
-                            available_images[name] = img
-                            print(f"      -> cached image '{name}' (base64 len={len(b64)})")
-                
-                # Also log tool/assistant markers present in content
-                content_preview = str(msg.get('content', ''))[:120].replace('\n', ' ')
-                if 'image_name' in content_preview or 'Image ID' in content_preview or 'image_id' in content_preview:
-                    print(f"    - msg[{cm_index}] content mentions image id: '{content_preview}'")
-        else:
-            print("IMAGE_OP DEBUG: No conversation_messages provided or empty")
-
+        # CLOUD-SAFE APPROACH: Images are injected directly by frontend when AI requests editing
+        # This prevents images from bloating conversation history while allowing editing operations
+        direct_images = arguments.get('image_data_for_editing', [])
+        
         selected_images = []
-        for img_id in image_ids:
-            # Accept both exact and numeric-suffixed IDs (e.g., 'generated_123' vs 'generated_123.0')
-            match = None
-            if img_id in available_images:
-                match = available_images[img_id]
-            else:
-                # Try tolerant matching
-                for key in available_images.keys():
-                    if str(key).startswith(str(img_id)):
-                        match = available_images[key]
-                        debug_print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
-                        break
-            if match:
-                selected_images.append(match)
-                print(f"IMAGE_OP: Selected input image '{img_id}'")
-            else:
-                print(f"IMAGE_OP: Warning - requested image '{img_id}' not found in conversation context")
-
-        print(f"IMAGE_OP DEBUG: available_images keys: {list(available_images.keys())}")
-        print(f"IMAGE_OP DEBUG: selected_images count: {len(selected_images)}")
+        if direct_images and isinstance(direct_images, list):
+            print(f"IMAGE_OP: Received {len(direct_images)} images directly in tool arguments")
+            for img in direct_images:
+                if isinstance(img, dict) and img.get('name') in image_ids:
+                    selected_images.append(img)
+                    print(f"IMAGE_OP: Using injected image '{img.get('name')}' ({len(img.get('base64_data', '')) // 1000}KB)")
+        
+        if not selected_images and image_ids:
+            print(f"IMAGE_OP: ERROR - AI requested {len(image_ids)} images but none were injected by frontend!")
+            return {"success": False, "error": f"Requested images {image_ids} not available for editing. Images may have been removed from chat history."}
+            
+        print(f"IMAGE_OP: Selected {len(selected_images)} images for editing")
 
         # Helpers for size parsing and provider compatibility
         def _parse_size_str(val: str | None) -> tuple[int | None, int | None]:
@@ -2370,10 +2394,33 @@ def check_for_app_updates_internal(arguments: dict) -> dict:
 def project_manager_internal(arguments: dict) -> dict:
     """Handle project_manager tool operations"""
     try:
-        op = arguments.get('op', '')
-        if not op:
-            # DEBUG: Show what arguments were actually received when op is missing
-            print("🚨 PROJECT_MANAGER ERROR: Missing 'op' parameter!")
+        # Define valid operations with descriptions
+        valid_operations = {
+            "context.get": "(analyze project structure)",
+            "fs.list": "(list directory contents)",
+            "fs.read": "(read file)",
+            "fs.write": "(write file)",
+            "fs.write_lines": "(write specific lines)",
+            "fs.replace_string": "(replace text in file)",
+            "fs.copy": "(copy file/directory)",
+            "fs.move": "(move file/directory)",
+            "fs.delete": "(delete file/directory)",
+            "fs.mkdir": "(create directory)",
+            "fs.symlink": "(create symlink)",
+            "fs.refresh": "(refresh filesystem)",
+            "project.analyze_dir": "(analyze project directory)",
+            "project.copy_dir": "(copy project directory)",
+            "project.update_refs": "(update project references)",
+            "assets.search": "(search asset library)",
+            "assets.install": "(install asset)",
+            "updates.check": "(check for updates)"
+        }
+        
+        # Validate parameters using centralized function
+        is_valid, error_msg = validate_tool_parameters("project_manager", arguments, ["op"], valid_operations)
+        if not is_valid:
+            # DEBUG: Show what arguments were actually received for debugging
+            print("🚨 PROJECT_MANAGER ERROR: Parameter validation failed!")
             print("📋 RECEIVED ARGUMENTS:")
             for key, value in arguments.items():
                 if isinstance(value, str) and len(value) > 200:
@@ -2381,8 +2428,9 @@ def project_manager_internal(arguments: dict) -> dict:
                 else:
                     display_value = value
                 print(f"   {key}: {display_value}")
-            print("❌ Tool execution failed due to missing 'op' parameter")
-            return {"success": False, "error": "Operation 'op' parameter is required"}
+            return {"success": False, "error": error_msg}
+        
+        op = arguments["op"]  # Safe to access now after validation
         
         if op == "assets.search":
             # Route to existing asset search function
@@ -2480,10 +2528,18 @@ def project_manager_internal(arguments: dict) -> dict:
 def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
     """Handle search_manager tool operations"""
     try:
-        op = arguments.get('op', '')
-        if not op:
-            # DEBUG: Show what arguments were actually received when op is missing
-            print("🚨 SEARCH_MANAGER ERROR: Missing 'op' parameter!")
+        # Define valid operations for search_manager
+        valid_operations = {
+            "project.search": "(search project files - requires 'query' parameter)",
+            "docs.search": "(search Godot documentation - requires 'query' parameter)"
+        }
+        
+        # Validate parameters using centralized function
+        required_params = ["op", "query"]  # Both op and query are required for search operations
+        is_valid, error_msg = validate_tool_parameters("search_manager", arguments, required_params, valid_operations)
+        if not is_valid:
+            # DEBUG: Show what arguments were actually received for debugging
+            print("🚨 SEARCH_MANAGER ERROR: Parameter validation failed!")
             print("📋 RECEIVED ARGUMENTS:")
             for key, value in arguments.items():
                 if isinstance(value, str) and len(value) > 200:
@@ -2491,8 +2547,9 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
                 else:
                     display_value = value
                 print(f"   {key}: {display_value}")
-            print("❌ Tool execution failed due to missing 'op' parameter")
-            return {"success": False, "error": "Operation 'op' parameter is required"}
+            return {"success": False, "error": error_msg}
+        
+        op = arguments["op"]  # Safe to access now after validation
             
         if op == "project.search":
             # Route to existing project search function
@@ -2543,7 +2600,22 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
                     display_value = value
                 print(f"   {key}: {display_value}")
             print("❌ Tool execution failed due to missing 'op' parameter")
-            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+            common_operations = [
+                "res.create", "res.inspect", "res.modify", "res.assign", "res.load_and_assign",
+                "import.set_options", "import.reimport", "image.generate_or_edit", "image.save"
+            ]
+            examples = [
+                "op='res.create' with type='StandardMaterial3D' (create material)",
+                "op='image.generate_or_edit' with description='fantasy sword' (generate image)",
+                "op='res.inspect' with target='res://materials/floor.tres' (inspect resource)"
+            ]
+            
+            error_msg = (
+                f"Missing required parameter 'op'. Must specify one of: {', '.join(common_operations[:6])}... "
+                f"Examples: {'; '.join(examples[:2])}"
+            )
+            return {"success": False, "error": error_msg}
             
         # Backend-processed image operations
         if op == "image.generate_or_edit":
@@ -2638,7 +2710,13 @@ def runtime_manager_internal(arguments: dict) -> dict:
     try:
         op = arguments.get('op', '')
         if not op:
-            return {"success": False, "error": "Operation 'op' parameter is required"}
+            error_msg = (
+                "Missing required parameter 'op'. Must specify one of: game.start, game.stop, game.status, "
+                "errors.summary, errors.details, screenshot.capture, console.get_output. "
+                "Examples: op='game.start' (start game); op='screenshot.capture' (take screenshot); "
+                "op='errors.summary' (get error summary)"
+            )
+            return {"success": False, "error": error_msg}
             
         if op in ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "screenshot.capture", "console.get_output", "input.test_action", "input.test_key"]:
             # These are frontend-only operations
@@ -2662,7 +2740,13 @@ def runtime_inspector_internal(arguments: dict) -> dict:
     try:
         op = arguments.get('op', '')
         if not op:
-            return {"success": False, "error": "Operation 'op' parameter is required"}
+            error_msg = (
+                "Missing required parameter 'op'. Must specify one of: runtime.node.get_props, runtime.node.set_prop, "
+                "runtime.material.get, runtime.node.get_tree, runtime.environment.get, runtime.debug.info. "
+                "Examples: op='runtime.node.get_props' with node_path='/Player' (get node properties); "
+                "op='runtime.material.get' with node_path='/Floor' (get material info)"
+            )
+            return {"success": False, "error": error_msg}
             
         # All runtime inspector operations are frontend-only but we add metadata
         # to help the frontend know what to do
