@@ -23,7 +23,8 @@
 #include "editor/editor_string_names.h"
 
 void UserMessageHandler::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("_on_restore_send_option", "restore"), &UserMessageHandler::_on_restore_send_option);
+	ClassDB::bind_method(D_METHOD("_on_dialog_option", "option"), &UserMessageHandler::_on_dialog_option);
+	ClassDB::bind_method(D_METHOD("_on_dialog_custom_action", "action"), &UserMessageHandler::_on_dialog_custom_action);
 	ClassDB::bind_method(D_METHOD("_on_bubble_gui_input", "event", "message_index"), &UserMessageHandler::_on_bubble_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_chat_container_gui_input", "event", "editing_message_index"), &UserMessageHandler::_on_chat_container_gui_input);
 	ClassDB::bind_method(D_METHOD("_on_edit_send_pressed", "edit_field", "message_index"), &UserMessageHandler::_on_edit_send_pressed);
@@ -34,15 +35,19 @@ void UserMessageHandler::_bind_methods() {
 UserMessageHandler::UserMessageHandler() {
 	restore_send_dialog = memnew(ConfirmationDialog);
 	restore_send_dialog->set_title("Send Edited Message");
-	restore_send_dialog->set_text("You've edited a previous message.\n\nWould you like to:");
+	restore_send_dialog->set_text("This will remove newer messages.\n\nChoose an option:");
 	
-	// Add custom buttons
+	// Use standard dialog buttons at bottom
 	restore_send_dialog->get_ok_button()->set_text("Restore & Send");
-	restore_send_dialog->add_cancel_button("Send Without Restoring");
+	restore_send_dialog->get_cancel_button()->set_text("Cancel");
 	
-	// The OK button (Restore & Send) will trigger confirmed signal
-	restore_send_dialog->connect("confirmed", callable_mp(this, &UserMessageHandler::_on_restore_send_option).bind(true));
-	restore_send_dialog->connect("canceled", callable_mp(this, &UserMessageHandler::_on_restore_send_option).bind(false));
+	// Add custom "Send Without Restoring" button 
+	restore_send_dialog->add_button("Send Without Restoring", false, "send_safe");
+	
+	// Connect signals
+	restore_send_dialog->connect("confirmed", callable_mp(this, &UserMessageHandler::_on_dialog_option).bind(0));
+	restore_send_dialog->connect("canceled", callable_mp(this, &UserMessageHandler::_on_dialog_option).bind(2)); 
+	restore_send_dialog->connect("custom_action", callable_mp(this, &UserMessageHandler::_on_dialog_custom_action));
 }
 
 UserMessageHandler::~UserMessageHandler() {
@@ -296,6 +301,12 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	restore_button->connect("pressed", callable_mp(this, &UserMessageHandler::_on_restore_only_pressed).bind(p_message_index));
 	button_container->add_child(restore_button);
 	
+	Button *cancel_button = memnew(Button);
+	cancel_button->set_text("Cancel");
+	cancel_button->add_theme_icon_override("icon", chat_dock->get_theme_icon(SNAME("Close"), SNAME("EditorIcons")));
+	cancel_button->connect("pressed", callable_mp(this, &UserMessageHandler::_on_edit_cancel_pressed).bind(p_message_index));
+	button_container->add_child(cancel_button);
+	
 	print_line("AI Chat: Added buttons");
 	
 	// Enable click-outside detection on the chat scroll container
@@ -366,14 +377,7 @@ void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_mes
 	restore_send_dialog->set_meta("edited_content", new_content);
 	restore_send_dialog->set_meta("content_changed", content_changed);
 	
-	// Update button labels based on whether content changed
-	if (content_changed) {
-		restore_send_dialog->get_ok_button()->set_text("Restore & Send");
-		// Cancel button text is "Send Without Restoring" by default
-	} else {
-		restore_send_dialog->get_ok_button()->set_text("Restore & Send");
-		restore_send_dialog->get_cancel_button()->set_text("Cancel");
-	}
+	// Dialog already has custom buttons configured in constructor
 	
 	print_line("AI Chat: Showing confirmation dialog...");
 	restore_send_dialog->popup_centered(Size2(500, 300));
@@ -498,37 +502,52 @@ void UserMessageHandler::_replace_edit_field_with_bubble(int p_message_index, bo
 	}
 }
 
-void UserMessageHandler::_on_restore_send_option(bool p_restore) {
+void UserMessageHandler::_on_dialog_option(int p_option) {
 	if (!chat_dock || !restore_send_dialog) return;
 	
 	String edited_content = restore_send_dialog->get_meta("edited_content", "");
-	bool content_changed = restore_send_dialog->get_meta("content_changed", false);
 	
 	// Disconnect click-outside handler if connected
 	if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
 		chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
 	}
 	
-	if (p_restore) {
-		// Restore to message and send
-		print_line("AI Chat: User chose to restore & send");
-		_restore_and_send(editing_message_index, edited_content);
-	} else {
-		// User clicked cancel/second option
-		if (content_changed) {
-			// Content was changed - "Send Without Restoring" was clicked
-			print_line("AI Chat: User chose to send without restoring");
-			_send_without_restoring(editing_message_index, edited_content);
-		} else {
-			// Content unchanged - "Cancel" was clicked, just close the edit field
-			print_line("AI Chat: User cancelled the restore operation");
-			_replace_edit_field_with_bubble(editing_message_index, false);
-		}
+	switch (p_option) {
+		case 0: // Restore & Send
+			print_line("AI Chat: User chose Restore & Send");
+			_restore_and_send(editing_message_index, edited_content);
+			// Reset state
+			editing_message_index = -1;
+			original_message_content = "";
+			break;
+			
+		case 2: // Cancel
+			print_line("AI Chat: User chose to cancel and keep editing");
+			// Don't reset state - user continues editing
+			break;
 	}
-	
-	// Reset state
-	editing_message_index = -1;
-	original_message_content = "";
+}
+
+void UserMessageHandler::_on_dialog_custom_action(const StringName &p_action) {
+	if (p_action == "send_safe") {
+		// Send Without Restoring
+		print_line("AI Chat: User chose Send Without Restoring");
+		
+		String edited_content = restore_send_dialog->get_meta("edited_content", "");
+		
+		// CRITICAL: Close the dialog first!
+		restore_send_dialog->hide();
+		
+		// Disconnect click-outside handler if connected
+		if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
+			chat_dock->chat_scroll->disconnect("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input));
+		}
+		
+		_send_without_restoring(editing_message_index, edited_content);
+		// Reset state
+		editing_message_index = -1;
+		original_message_content = "";
+	}
 }
 
 void UserMessageHandler::_restore_and_send(int p_message_index, const String &p_content) {
@@ -564,21 +583,41 @@ void UserMessageHandler::_restore_and_send(int p_message_index, const String &p_
 void UserMessageHandler::_send_without_restoring(int p_message_index, const String &p_content) {
 	if (!chat_dock) return;
 	
-	print_line("AI Chat: Sending edited message without restoring conversation");
+	print_line("AI Chat: SIMPLE SEND WITHOUT RESTORE - Truncating at message " + String::num_int64(p_message_index) + " and sending");
 	
-	// Replace edit field with normal bubble first (scroll to bottom since adding new message)
-	_replace_edit_field_with_bubble(p_message_index, true);
+	// EXACTLY what you want: 
+	// 1. Delete all messages after the edited message
+	// 2. Update the edited message content  
+	// 3. Send the conversation up to that point
 	
-	// Add the edited content as a new user message
-	chat_dock->call("_add_message_to_chat", "user", p_content, Array());
+	Vector<AIChatDock::ChatMessage> &chat_history = chat_dock->_get_current_chat_history();
+	
+	// Update the message content
+	if (p_message_index >= 0 && p_message_index < chat_history.size()) {
+		chat_history.write[p_message_index].content = p_content;
+		chat_history.write[p_message_index].timestamp = chat_dock->_get_timestamp();
+	}
+	
+	// Truncate conversation - remove everything after this message
+	chat_history.resize(p_message_index + 1);
+	
+	print_line("AI Chat: Conversation truncated to " + String::num_int64(chat_history.size()) + " messages");
+	
+	// Replace edit field with normal bubble
+	_replace_edit_field_with_bubble(p_message_index, false);
 	
 	// Reset state
 	editing_message_index = -1;
 	original_message_content = "";
 	
-	// Trigger send
+	// Rebuild the UI to reflect truncated conversation (use full rebuild since we can't pass Vector through call())
+	chat_dock->call("_rebuild_conversation_ui_full");
+	
+	// Send the truncated conversation
 	chat_dock->is_waiting_for_response = true;
 	chat_dock->call("_update_ui_state");
 	chat_dock->call("_process_send_request_async");
+	
+	print_line("AI Chat: Sending truncated conversation - DONE");
 }
 

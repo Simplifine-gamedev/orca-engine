@@ -3102,6 +3102,17 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
         return result;
     }
     
+    // CRITICAL SAFETY CHECK: Never write empty content - this would delete the file!
+    if (content.is_empty()) {
+        print_line("FS_WRITE_WHOLE: CRITICAL ERROR - Refusing to write empty content to " + path);
+        print_line("FS_WRITE_WHOLE: This would delete the file! Content parameter is missing or empty.");
+        result["success"] = false;
+        result["error"] = "CRITICAL: fs.write called with empty content parameter for " + path + ". This would delete the file! The content parameter is missing, likely due to JSON corruption from large content generation. Please retry with smaller content or use fs.write_lines for incremental edits.";
+        result["path"] = path;
+        result["recovery_needed"] = true;
+        return result;
+    }
+    
     if (!_is_within_project(path)) {
         result["success"] = false;
         result["message"] = "Path must be within project: " + path;

@@ -1,3 +1,4 @@
+/* moved bulk handlers below includes */
 /*
  * © 2025 Simplifine Corp.
  * Personal Non‑Commercial License applies to this file as an original contribution to this Godot fork.
@@ -178,6 +179,27 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_tool_call_reject_pressed", "tool_call_id", "file_path"), &AIChatDock::_on_tool_call_reject_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_result_accept_pressed", "tool_call_id", "file_path", "content", "btns_path", "status_path"), &AIChatDock::_on_tool_result_accept_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_result_reject_pressed", "tool_call_id", "file_path", "btns_path", "status_path"), &AIChatDock::_on_tool_result_reject_pressed);
+
+	// Bulk accept/reject from banner
+	ClassDB::bind_method(D_METHOD("_on_accept_all_pending_edits_pressed"), &AIChatDock::_on_accept_all_pending_edits_pressed);
+	ClassDB::bind_method(D_METHOD("_on_reject_all_pending_edits_pressed"), &AIChatDock::_on_reject_all_pending_edits_pressed);
+	
+	// DEBUG: Test banner visibility
+	ClassDB::bind_method(D_METHOD("_test_banner_visibility"), &AIChatDock::_test_banner_visibility);
+	ClassDB::bind_method(D_METHOD("_clear_test_data"), &AIChatDock::_clear_test_data);
+	
+	// Error recovery for AI
+	ClassDB::bind_method(D_METHOD("_report_empty_content_error_to_ai"), &AIChatDock::_report_empty_content_error_to_ai);
+	
+	// Deferred summarization
+	ClassDB::bind_method(D_METHOD("_apply_deferred_summarization"), &AIChatDock::_apply_deferred_summarization);
+	
+	// Emergency conversation saving
+	ClassDB::bind_method(D_METHOD("_emergency_save_conversations"), &AIChatDock::_emergency_save_conversations);
+	
+	// Safe edit message handling
+	ClassDB::bind_method(D_METHOD("_send_edited_message_safely"), &AIChatDock::_send_edited_message_safely);
+	ClassDB::bind_method(D_METHOD("_on_restore_and_send_pressed"), &AIChatDock::_on_restore_and_send_pressed);
 	
 	// Legacy fallback handlers for tool results without tool_call_id
 	ClassDB::bind_method(D_METHOD("_on_apply_preview_to_editor", "path", "content", "btns_path", "status_label_path"), &AIChatDock::_on_apply_preview_to_editor);
@@ -238,6 +260,245 @@ void AIChatDock::_bind_methods() {
 
 	ADD_SIGNAL(MethodInfo("chat_gui_input", PropertyInfo(Variant::OBJECT, "event", PROPERTY_HINT_RESOURCE_TYPE, "InputEvent")));
 }
+
+void AIChatDock::_on_accept_all_pending_edits_pressed() {
+    print_line("AI Chat: Accept All pressed - processing " + String::num_int64(pending_apply_edits.size()) + " pending edits");
+    
+    // Collect all tool call IDs and file paths (avoid iterator invalidation)
+    Vector<String> tool_call_ids;
+    Vector<String> file_paths;
+    
+    for (const KeyValue<String, String> &E : pending_apply_edits) {
+        tool_call_ids.push_back(E.key);
+        file_paths.push_back(E.value);
+    }
+    
+    // Call the EXACT same function that individual Accept buttons call
+    int processed = 0;
+    int skipped = 0;
+    for (int i = 0; i < tool_call_ids.size(); i++) {
+        const String &tool_call_id = tool_call_ids[i];
+        const String &file_path = file_paths[i];
+        
+        // Safety check: verify this tool call has valid content before accepting
+        bool has_valid_content = false;
+        Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+        for (int j = 0; j < chat_history.size(); j++) {
+            const ChatMessage &msg = chat_history[j];
+            if (msg.role == "tool" && msg.tool_call_id == tool_call_id) {
+                Ref<JSON> json;
+                json.instantiate();
+                Error parse_err = json->parse(msg.content);
+                if (parse_err == OK) {
+                    Variant result = json->get_data();
+                    if (result.get_type() == Variant::DICTIONARY) {
+                        Dictionary data = result;
+                        String content = data.get("edited_content", "");
+                        if (!content.is_empty()) {
+                            has_valid_content = true;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (has_valid_content) {
+            // This is EXACTLY what individual accept buttons do
+            _on_tool_call_accept_pressed(tool_call_id, file_path, "");
+            processed++;
+        } else {
+            print_line("AI Chat: Accept All - SKIPPING " + tool_call_id + " for " + file_path + " (empty content would delete file)");
+            _update_tool_call_button_status(tool_call_id, "Skipped (Empty Content)");
+            _remove_pending_edit(tool_call_id);
+            skipped++;
+        }
+    }
+    
+    print_line("AI Chat: Accept All completed - processed: " + String::num_int64(processed) + ", skipped: " + String::num_int64(skipped) + " (empty content)");
+}
+
+void AIChatDock::_on_reject_all_pending_edits_pressed() {
+    print_line("AI Chat: Reject All pressed - processing " + String::num_int64(pending_apply_edits.size()) + " pending edits");
+    
+    // Collect all tool call IDs and file paths (avoid iterator invalidation)
+    Vector<String> tool_call_ids;
+    Vector<String> file_paths;
+    
+    for (const KeyValue<String, String> &E : pending_apply_edits) {
+        tool_call_ids.push_back(E.key);
+        file_paths.push_back(E.value);
+    }
+    
+    // Call the EXACT same function that individual Reject buttons call
+    for (int i = 0; i < tool_call_ids.size(); i++) {
+        const String &tool_call_id = tool_call_ids[i];
+        const String &file_path = file_paths[i];
+        
+        // This is EXACTLY what individual reject buttons do
+        _on_tool_call_reject_pressed(tool_call_id, file_path);
+    }
+    
+    print_line("AI Chat: Reject All completed - processed " + String::num_int64(tool_call_ids.size()) + " tool calls");
+}
+
+void AIChatDock::_test_banner_visibility() {
+    print_line("AI Chat: _test_banner_visibility called");
+    if (!pending_edits_banner) {
+        print_line("AI Chat: _test_banner_visibility - no banner object!");
+        return;
+    }
+    
+    print_line("AI Chat: _test_banner_visibility - banner exists, testing with fake data");
+    
+    // Add some fake pending edits for testing
+    file_to_tool_ids["res://test_file.gd"] = Array();
+    file_to_tool_ids["res://test_file.gd"].push_back("test_tool_id_1");
+    pending_apply_edits["test_tool_id_1"] = "res://test_file.gd";
+    
+    print_line("AI Chat: _test_banner_visibility - added fake data, calling update");
+    _update_pending_edits_banner();
+    
+    // Clear fake data after 5 seconds
+    get_tree()->create_timer(5.0)->connect("timeout", callable_mp(this, &AIChatDock::_clear_test_data), CONNECT_ONE_SHOT);
+}
+
+void AIChatDock::_clear_test_data() {
+    print_line("AI Chat: _clear_test_data - removing fake data");
+    file_to_tool_ids.erase("res://test_file.gd");
+    pending_apply_edits.erase("test_tool_id_1");
+    _update_pending_edits_banner();
+}
+
+void AIChatDock::_report_empty_content_error_to_ai(const String &p_tool_call_id, const String &p_file_path, const Dictionary &p_args, const Dictionary &p_result) {
+    print_line("AI Chat: Reporting empty content error to AI for tool call: " + p_tool_call_id);
+    
+    // Create a visual error message in the chat for the user
+    RichTextLabel *current_label = _get_or_create_current_assistant_message_label();
+    if (current_label) {
+        String operation = p_args.get("op", "unknown");
+        current_label->add_text("\n\n[color=red][ERROR][/color] Tool result for " + p_file_path.get_file() + " contains empty content and was blocked to prevent file deletion. ");
+        current_label->add_text("This often happens with large content - the AI will automatically retry with smaller chunks.");
+    }
+    
+    // The error flag is already set in the early detection system in _add_tool_response_to_chat
+    // Don't add a separate tool message as that causes "multiple tool_result blocks" errors
+    
+    print_line("AI Chat: Error message displayed to user - AI will see error flag in existing tool result");
+}
+
+void AIChatDock::_apply_deferred_summarization(const Dictionary &p_summary_data) {
+    print_line("AI Chat: Applying deferred summarization");
+    
+    int original_count = p_summary_data.get("original_count", 0);
+    int new_count = p_summary_data.get("new_count", 0);
+    String action = p_summary_data.get("action", "");
+    Array new_messages = p_summary_data.get("new_messages", Array());
+    
+    if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+        print_line("AI Chat: ACCEPTING deferred backend summary: " + String::num_int64(original_count) + " -> " + String::num_int64(new_messages.size()) + " messages");
+        
+        // STEP 1: Build preservation maps for tool_results and attached_files
+        HashMap<String, Array> tool_results_map;
+        HashMap<String, Vector<AttachedFile>> attached_files_map;
+        
+        Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+        
+        for (int i = 0; i < chat_history.size(); i++) {
+            const ChatMessage &msg = chat_history[i];
+            
+            if (msg.role == "tool" && !msg.tool_call_id.is_empty() && !msg.tool_results.is_empty()) {
+                tool_results_map[msg.tool_call_id] = msg.tool_results;
+            }
+            
+            if (!msg.attached_files.is_empty()) {
+                String key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
+                attached_files_map[key] = msg.attached_files;
+            }
+        }
+        
+        print_line("AI Chat: Preserved " + String::num_int64(tool_results_map.size()) + " tool_results, " + String::num_int64(attached_files_map.size()) + " attached_files");
+        
+        // STEP 2: Clear and rebuild from backend's summarized messages
+        chat_history.clear();
+        
+        for (int i = 0; i < new_messages.size(); i++) {
+            Dictionary msg_dict = new_messages[i];
+            AIChatDock::ChatMessage msg;
+            msg.role = msg_dict.get("role", "");
+            msg.content = msg_dict.get("content", "");
+            msg.timestamp = msg_dict.get("timestamp", _get_timestamp());
+            msg.tool_calls = msg_dict.get("tool_calls", Array());
+            msg.tool_call_id = msg_dict.get("tool_call_id", "");
+            msg.name = msg_dict.get("name", "");
+            msg.project_context = msg_dict.get("project_context", "");
+            
+            // STEP 3: Restore tool_results from preservation map
+            if (msg.role == "tool" && !msg.tool_call_id.is_empty() && tool_results_map.has(msg.tool_call_id)) {
+                msg.tool_results = tool_results_map[msg.tool_call_id];
+            }
+            
+            // STEP 4: Restore attached_files from preservation map
+            String attach_key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
+            if (attached_files_map.has(attach_key)) {
+                msg.attached_files = attached_files_map[attach_key];
+            }
+            
+            msg.reasoning_content = msg_dict.get("reasoning_content", "");
+            msg.thinking_blocks = msg_dict.get("thinking_blocks", Array());
+            
+            chat_history.push_back(msg);
+        }
+        
+        // STEP 5: Rebuild UI with summarized conversation
+        if (chat_container) {
+            for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+                Node *child = chat_container->get_child(i);
+                if (child && child != pending_edits_banner) {
+                    child->queue_free();
+                }
+            }
+        }
+        call_deferred("_rebuild_conversation_ui_deferred", current_conversation_index);
+        
+        conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+        _queue_delayed_save();
+        
+        print_line("AI Chat: Conversation REPLACED with deferred summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
+        
+        // Show completion notification
+        _show_status_notification("summarization", "Conversation condensed (" + String::num_int64(original_count) + " -> " + String::num_int64(new_count) + " messages)", "", 4.0);
+    }
+}
+
+void AIChatDock::_emergency_save_conversations() {
+    if (!conversation_persistence) {
+        print_line("AI Chat: Emergency save requested but no persistence manager");
+        return;
+    }
+    
+    print_line("AI Chat: EMERGENCY SAVE - Protecting conversations from loss");
+    
+    // Create emergency backup first
+    conversation_persistence->create_emergency_backup();
+    
+    // Attempt robust save using old system for now (will enhance later)
+    _save_conversations();
+}
+
+
+void AIChatDock::_on_restore_and_send_pressed(int p_message_index, const String &p_content) {
+    print_line("AI Chat: User chose DANGEROUS option - Restore & Send");
+    print_line("AI Chat: WARNING - This may cause crashes due to Git hard reset");
+    
+    // Store the content for after restoration
+    set_meta("pending_edit_content", p_content);
+    set_meta("pending_edit_index", p_message_index);
+    
+    // Trigger the dangerous checkpoint restoration
+    _on_restore_checkpoint_confirmed();
+}
+
 
 
 // Thinking mode implementation
@@ -744,59 +1005,30 @@ void AIChatDock::_notification(int p_notification) {
 			// Connect content size changes to auto-scroll when near bottom
 			// We connect after creating chat_container below
 
+
 			chat_container = memnew(VBoxContainer);
 			chat_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 			chat_scroll->add_child(chat_container);
-			
-			// Create pending edits banner at the top of chat
-			pending_edits_banner = memnew(PanelContainer);
-			pending_edits_banner->set_visible(false); // Hidden by default
-			pending_edits_banner->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			chat_container->add_child(pending_edits_banner);
-			
-			// Style the banner
-			Ref<StyleBoxFlat> banner_style = memnew(StyleBoxFlat);
-			banner_style->set_bg_color(Color(0.2, 0.4, 0.8, 0.15)); // Light blue background
-			banner_style->set_border_width_all(1);
-			banner_style->set_border_color(Color(0.2, 0.4, 0.8, 0.4)); // Blue border
-			banner_style->set_corner_radius_all(6);
-			banner_style->set_content_margin_all(8);
-			pending_edits_banner->add_theme_style_override("panel", banner_style);
-			
-			// Banner content
-			HBoxContainer *banner_content = memnew(HBoxContainer);
-			pending_edits_banner->add_child(banner_content);
-			
-			// Icon
-			TextureRect *banner_icon = memnew(TextureRect);
-			banner_icon->set_texture(get_theme_icon(SNAME("Edit"), SNAME("EditorIcons")));
-			banner_icon->set_custom_minimum_size(Size2(16, 16));
-			banner_content->add_child(banner_icon);
-			
-			// Label
-			pending_edits_label = memnew(Label);
-			pending_edits_label->set_text("0 files pending review");
-			pending_edits_label->add_theme_color_override("font_color", Color(0.2, 0.4, 0.8, 0.9));
-			pending_edits_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			banner_content->add_child(pending_edits_label);
-			
-			// Details button
-			pending_edits_details_btn = memnew(Button);
-			pending_edits_details_btn->set_text("Details");
-			pending_edits_details_btn->set_flat(true);
-			pending_edits_details_btn->add_theme_color_override("font_color", Color(0.2, 0.4, 0.8, 0.9));
-			pending_edits_details_btn->add_theme_icon_override("icon", get_theme_icon(SNAME("GuiVisibilityVisible"), SNAME("EditorIcons")));
-			pending_edits_details_btn->set_custom_minimum_size(Size2(70, 0));
-			pending_edits_details_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_banner_clicked));
-			banner_content->add_child(pending_edits_details_btn);
-			
+
 			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
-		// Add a container for attachments just above the input field
+		// Add a container for banner, attachments and input at the bottom (under chat)
 		VBoxContainer *bottom_panel = memnew(VBoxContainer);
 		add_child(bottom_panel);
+
+		// Pending edits banner: placed at very top of bottom panel (just below chat area)
+		pending_edits_banner = memnew(AIPendingEditsBanner);
+		pending_edits_banner->set_visible(false);
+		bottom_panel->add_child(pending_edits_banner);
+		pending_edits_banner->connect("accept_all", callable_mp(this, &AIChatDock::_on_accept_all_pending_edits_pressed));
+		pending_edits_banner->connect("reject_all", callable_mp(this, &AIChatDock::_on_reject_all_pending_edits_pressed));
+		// Ensure initial state reflects any restored pending edits
+		call_deferred("_update_pending_edits_banner");
 		
-		// Add attachments container to the bottom panel (positioned above input)
+		// DEBUG: Test banner visibility with fake data
+		call_deferred("_test_banner_visibility");
+
+		// Add attachments container below banner and above input
 		bottom_panel->add_child(attached_files_container);
 
 		// Input area at the bottom - create using AIChatInputBox component
@@ -878,6 +1110,10 @@ void AIChatDock::_notification(int p_notification) {
                 conversations_file_path = OS::get_singleton()->get_user_data_dir().path_join("ai_chat_conversations.simplifine");
                 // checkpoints_dir_path removed (using project git directly)
             }
+            // Initialize robust conversation persistence
+            conversation_persistence = memnew(AIConversationPersistence);
+            conversation_persistence->initialize(conversations_file_path);
+            
             _load_conversations();
             _init_checkpoints_repo();
 
@@ -1045,8 +1281,12 @@ void AIChatDock::_notification(int p_notification) {
 					save_thread = nullptr;
 					save_thread_busy = false;
 				}
-				// Always perform a final synchronous save
-				_save_conversations();
+				// Always perform a final synchronous save with robust persistence
+				if (conversation_persistence) {
+					conversation_persistence->create_emergency_backup();
+					print_line("AI Chat: CRITICAL - Creating emergency backup before shutdown");
+				}
+				_save_conversations(); // Use existing robust save system
 
 				// Stop background timers to avoid pending callbacks during shutdown
 				if (embedding_poll_timer) embedding_poll_timer->stop();
@@ -1602,10 +1842,46 @@ void AIChatDock::_on_edit_message_send_pressed(int p_message_index, const String
 		return;
 	}
 	
-	print_line("AI Chat: Sending edited message at index " + String::num(p_message_index) + ": " + trimmed_content);
+	// Check if this would lose newer messages
+	int messages_to_lose = chat_history.size() - 1 - p_message_index;
+	if (messages_to_lose > 0) {
+		print_line("AI Chat: This will restore to message " + String::num_int64(p_message_index) + ", losing " + String::num_int64(messages_to_lose) + " newer messages");
+		
+		// Simple dialog with buttons at bottom
+		ConfirmationDialog *restore_dialog = memnew(ConfirmationDialog);
+		restore_dialog->set_title("Send Edited Message");
+		restore_dialog->set_text("This will remove " + String::num_int64(messages_to_lose) + " newer message" + (messages_to_lose > 1 ? "s" : "") + ".\n\nChoose an option:");
+		
+		// Standard buttons at bottom
+		restore_dialog->get_ok_button()->set_text("Restore & Send");
+		restore_dialog->get_ok_button()->connect("pressed", callable_mp(this, &AIChatDock::_on_restore_and_send_pressed).bind(p_message_index, trimmed_content));
+		
+		restore_dialog->get_cancel_button()->set_text("Cancel");
+		
+		// Custom button for "Send Without Restoring"
+		Button *send_safe = restore_dialog->add_button("Send Without Restoring", false, "send_safe");
+		send_safe->connect("pressed", callable_mp(this, &AIChatDock::_send_edited_message_safely).bind(p_message_index, trimmed_content));
+		send_safe->connect("pressed", Callable(restore_dialog, "hide"));
+		
+		add_child(restore_dialog);
+		restore_dialog->popup_centered();
+		restore_dialog->connect("popup_hide", callable_mp(this, &AIChatDock::_cleanup_popup).bind(restore_dialog));
+		
+		print_line("AI Chat: Showing confirmation dialog...");
+		return;
+	}
+	
+	// No messages to lose, proceed normally
+	_send_edited_message_safely(p_message_index, trimmed_content);
+}
+
+void AIChatDock::_send_edited_message_safely(int p_message_index, const String &p_content) {
+	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+	
+	print_line("AI Chat: Sending edited message at index " + String::num_int64(p_message_index) + ": " + p_content);
 	
 	// Update the message content
-	chat_history.write[p_message_index].content = trimmed_content;
+	chat_history.write[p_message_index].content = p_content;
 	chat_history.write[p_message_index].timestamp = _get_timestamp();
 	
 	// Truncate conversation at this point (remove everything after this message)
@@ -1672,6 +1948,11 @@ void AIChatDock::_on_edit_message_send_pressed(int p_message_index, const String
 	
 	// Queue a delayed save instead of immediate save
 	_queue_delayed_save();
+	
+	// CRITICAL: Emergency save after editing message
+	if (conversation_persistence) {
+		call_deferred("_emergency_save_conversations");
+	}
 	
 	// Send the request as if it's a new message
 	is_waiting_for_response = true;
@@ -3774,6 +4055,25 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		print_line("AI Chat: SUMMARIZING COMPLETED! " + String::num_int64(original_count) + " -> " + String::num_int64(new_count) + " messages");
 		print_line("AI Chat: Action: '" + action + "', has_new_messages: " + String(response_data.has("new_messages") ? "YES" : "NO"));
 		
+		// FIXED: Only defer if there are ACTUAL pending tool tasks
+		// Don't defer just because we're waiting for response (summarization IS the response)
+		if (pending_tool_tasks > 0) {
+			print_line("AI Chat: DEFERRING summarization - pending_tool_tasks: " + String::num_int64(pending_tool_tasks) + " (ignoring waiting state for summarization)");
+			print_line("AI Chat: Summarization will be applied after tool execution completes");
+			
+			// Store the summarization data for later application
+			Dictionary deferred_summary;
+			deferred_summary["original_count"] = original_count;
+			deferred_summary["new_count"] = new_count;
+			deferred_summary["action"] = action;
+			deferred_summary["new_messages"] = response_data.get("new_messages", Array());
+			set_meta("deferred_summarization", deferred_summary);
+			
+			// Show notification but don't apply yet
+			_show_status_notification("summarization", "Summarization ready - will apply after tools complete", "", 3.0);
+			return;
+		}
+		
 		// CORRECT ARCHITECTURE:
 		// Backend summarizes and sends condensed conversation
 		// Frontend ACCEPTS the summary BUT restores tool_results/attached_files (not sent by backend)
@@ -3784,84 +4084,51 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		
 		Array new_messages = response_data.get("new_messages", Array());
 		
-		if (new_messages.size() > 0 && current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
-			print_line("AI Chat: ACCEPTING backend summary: " + String::num_int64(original_count) + " -> " + String::num_int64(new_messages.size()) + " messages");
+		// FIXED: Handle summarization completion even without new_messages
+		// Backend does internal summarization, next request will use summarized conversation automatically
+		if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+			bool has_new_messages = new_messages.size() > 0;
 			
-			// STEP 1: Build preservation maps for tool_results and attached_files
-			HashMap<String, Array> tool_results_map;
-			HashMap<String, Vector<AttachedFile>> attached_files_map;
+		if (has_new_messages) {
+			print_line("AI Chat: 📨 RECEIVED backend summary: " + String::num_int64(original_count) + " -> " + String::num_int64(new_messages.size()) + " messages");
+			print_line("AI Chat: 💾 STORING for future API use (UI unchanged, user sees full conversation)");
 			
-			Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+			// Store the summarized conversation for future API use
+			set_meta("summarized_conversation_for_api", new_messages);
+			set_meta("has_summarized_conversation", true);
 			
-			for (int i = 0; i < chat_history.size(); i++) {
-				const ChatMessage &msg = chat_history[i];
-				
-				if (msg.role == "tool" && !msg.tool_call_id.is_empty() && !msg.tool_results.is_empty()) {
-					tool_results_map[msg.tool_call_id] = msg.tool_results;
-				}
-				
-				if (!msg.attached_files.is_empty()) {
-					String key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
-					attached_files_map[key] = msg.attached_files;
-				}
-			}
+			// CRITICAL: Store how many UI messages this summarization covers
+			// The 'original_count' from backend includes system messages, but we need to track UI messages
+			Vector<ChatMessage> &current_chat = _get_current_chat_history();
+			int current_ui_count = current_chat.size();
 			
-			print_line("AI Chat: Preserved " + String::num_int64(tool_results_map.size()) + " tool_results, " + String::num_int64(attached_files_map.size()) + " attached_files");
+			// CRITICAL DEBUG: Understand the timing and counts 
+			print_line("AI Chat: 🔍 SUMMARIZATION STORAGE DEBUG:");
+			print_line("AI Chat:   - Backend original_count: " + String::num_int64(original_count));
+			print_line("AI Chat:   - Backend new_count: " + String::num_int64(new_count)); 
+			print_line("AI Chat:   - Received new_messages.size(): " + String::num_int64(new_messages.size()));
+			print_line("AI Chat:   - Current UI message count: " + String::num_int64(current_ui_count));
 			
-			// STEP 2: Clear and rebuild from backend's summarized messages
-			chat_history.clear();
+			// Store that this summarization covers UI messages up to BEFORE the AI response
+			// The AI response is being added to UI now, but wasn't part of what was summarized
+			int ui_messages_when_request_started = current_ui_count - 1;
+			set_meta("summarized_ui_message_count", ui_messages_when_request_started);
 			
-			for (int i = 0; i < new_messages.size(); i++) {
-				Dictionary msg_dict = new_messages[i];
-				AIChatDock::ChatMessage msg;
-				msg.role = msg_dict.get("role", "");
-				msg.content = msg_dict.get("content", "");
-				msg.timestamp = msg_dict.get("timestamp", _get_timestamp());
-				msg.tool_calls = msg_dict.get("tool_calls", Array());
-				msg.tool_call_id = msg_dict.get("tool_call_id", "");
-				msg.name = msg_dict.get("name", "");
-				msg.project_context = msg_dict.get("project_context", "");
-				
-				// STEP 3: Restore tool_results from preservation map
-				if (msg.role == "tool" && !msg.tool_call_id.is_empty() && tool_results_map.has(msg.tool_call_id)) {
-					msg.tool_results = tool_results_map[msg.tool_call_id];
-				}
-				
-				// STEP 4: Restore attached_files from preservation map
-				String attach_key = msg.role + "_" + msg.tool_call_id + "_" + String::num_int64(i);
-				if (attached_files_map.has(attach_key)) {
-					msg.attached_files = attached_files_map[attach_key];
-				}
-				
-				// Also try fallback keys
-				for (const KeyValue<String, Vector<AttachedFile>> &kv : attached_files_map) {
-					if (kv.key.begins_with(msg.role + "_") && msg.attached_files.is_empty()) {
-						msg.attached_files = kv.value;
-						break;
-					}
-				}
-				
-				msg.reasoning_content = msg_dict.get("reasoning_content", "");
-				msg.thinking_blocks = msg_dict.get("thinking_blocks", Array());
-				
-				chat_history.push_back(msg);
-			}
+			print_line("AI Chat: ✅ Summary covers UI messages 0 to " + String::num_int64(ui_messages_when_request_started - 1));
+			print_line("AI Chat: ✅ Next request should add UI messages from index " + String::num_int64(ui_messages_when_request_started));
+		} else {
+			// CRITICAL FIX: Still need to store baseline even without new_messages
+			// Backend did summarization, we need to track what UI state this represents
+			print_line("AI Chat: Backend summarization completed without sending messages - tracking baseline");
 			
-			// STEP 5: Rebuild UI with summarized conversation
-			if (chat_container) {
-				for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
-					Node *child = chat_container->get_child(i);
-					if (child && child != pending_edits_banner) {
-						child->queue_free();
-					}
-				}
-			}
-			call_deferred("_rebuild_conversation_ui_deferred", current_conversation_index);
+			Vector<ChatMessage> &current_chat = _get_current_chat_history();
+			int current_ui_count = current_chat.size();
 			
-			conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
-			_queue_delayed_save();
+			// Store that any future summarization should start from current UI state
+			set_meta("summarized_ui_message_count", current_ui_count);
+			set_meta("has_summarized_conversation", false);  // No stored summary to use yet
 			
-			print_line("AI Chat: Conversation REPLACED with summary: " + String::num_int64(chat_history.size()) + " messages (tool_results preserved)");
+			print_line("AI Chat: ✅ Set baseline: future summarization after " + String::num_int64(current_ui_count) + " UI messages");
 		}
 		
 		// Update notification
@@ -3872,15 +4139,25 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			_update_tool_placeholder_status("summarization", "Conversation summarization", "completed");
 			PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_summarization", true, false));
 			if (placeholder) {
-				Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.75, true);
+				print_line("AI Chat: Removing summarization placeholder after completion");
+				Ref<SceneTreeTimer> timer = get_tree()->create_timer(1.0, true);
 				timer->connect("timeout", callable_mp((Node*)placeholder, &Node::queue_free), CONNECT_ONE_SHOT);
+			} else {
+				print_line("AI Chat: No summarization placeholder found to remove");
 			}
 		}
 		
-		// CRITICAL: Maintain waiting state during summarization
-		print_line("AI Chat: Summarization notification shown, maintaining waiting state");
+		// FIXED: Reset waiting state after summarization if no other operations pending
+		if (pending_tool_tasks == 0) {
+			print_line("AI Chat: Summarization completed and no pending tools - resetting waiting state");
+			is_waiting_for_response = false;
+			_update_ui_state();
+		} else {
+			print_line("AI Chat: Summarization completed but " + String::num_int64(pending_tool_tasks) + " tools still pending - maintaining waiting state");
+		}
 		
 		// Continue processing other status updates instead of returning
+		} // End of current_conversation_index check
 	}
 
 	// PRODUCTION-GRADE: Handle any other backend status messages that should maintain waiting state
@@ -4998,6 +5275,19 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 
     print_line("AI Chat: All frontend tools completed, preparing to send conversation back to backend");
     
+    // Check if we have deferred summarization to apply now that tools are done
+    if (has_meta("deferred_summarization")) {
+        Dictionary deferred_summary = get_meta("deferred_summarization");
+        print_line("AI Chat: Applying deferred summarization now that tools are complete");
+        
+        // Apply the summarization that was deferred
+        _apply_deferred_summarization(deferred_summary);
+        remove_meta("deferred_summarization");
+        
+        // Don't send back to backend yet - let summarization complete first
+        return;
+    }
+    
     // CRITICAL FIX: Validate conversation state before sending back to backend
     Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
     int assistant_tool_calls = 0;
@@ -5147,6 +5437,19 @@ void AIChatDock::_execute_file_edit_deferred(const String &p_tool_call_id, const
     // If all tools done, continue to backend
     if (pending_tool_tasks == 0) {
         print_line("AI Chat: All file edit tools completed, sending conversation back to backend");
+        
+        // Check if we have deferred summarization to apply now that tools are done
+        if (has_meta("deferred_summarization")) {
+            Dictionary deferred_summary = get_meta("deferred_summarization");
+            print_line("AI Chat: Applying deferred summarization now that file edit tools are complete");
+            
+            // Apply the summarization that was deferred
+            _apply_deferred_summarization(deferred_summary);
+            remove_meta("deferred_summarization");
+            
+            // Don't send back to backend yet - let summarization complete first
+            return;
+        }
         
         // CRITICAL FIX: Ensure we maintain waiting state across tool completion
         if (!is_waiting_for_response) {
@@ -5366,6 +5669,11 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	chat_history.push_back(msg);
 	_create_message_bubble(msg, chat_history.size() - 1);
+	
+	// CRITICAL: Emergency save after adding user messages (these are irreplaceable!)
+	if (p_role == "user" && conversation_persistence) {
+		call_deferred("_emergency_save_conversations");
+	}
 	// Show tool call placeholders immediately for better UX
 	if (p_role == "assistant" && !p_tool_calls.is_empty()) {
 		_create_tool_call_bubbles(p_tool_calls);
@@ -5431,6 +5739,29 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	
 	if (add_response_start > 0) {
 		print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Created message struct");
+	}
+	
+	// EARLY DETECTION: Check for empty content in file operations and report to AI
+	if ((p_name == "project_manager" || p_name == "apply_edit") && p_result.get("success", false)) {
+		String operation = p_args.get("op", "");
+		String file_path = p_args.get("path", "");
+		String edited_content = p_result.get("edited_content", "");
+		
+		if ((operation == "fs.write" || operation == "fs.replace_string") && !file_path.is_empty() && edited_content.is_empty()) {
+			print_line("AI Chat: EARLY DETECTION - Empty content detected in " + p_name + " result for " + file_path);
+			
+			// Modify the result to include an error flag that the AI will see
+			Dictionary modified_result = p_result.duplicate(true);
+			modified_result["success"] = false;
+			modified_result["error"] = "Tool result contains empty edited_content which would delete the file. Please retry with proper content. This often happens with big sized code snippets. try in smaller steps.";
+			modified_result["recovery_needed"] = true;
+			modified_result["original_file_path"] = file_path;
+			
+			// Use the modified result instead
+			result_for_content = modified_result;
+			
+			print_line("AI Chat: Modified tool result to include error flag for AI recovery");
+		}
 	}
 	
 	// Store the original tool arguments for proper UI recreation
@@ -10071,6 +10402,15 @@ void AIChatDock::_on_tool_output_toggled(Control *p_content) {
 void AIChatDock::_send_chat_request() {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	
+	// CLEANUP: Remove any stale summarization placeholders from previous operations
+	if (chat_container) {
+		PanelContainer *stale_placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_summarization", true, false));
+		if (stale_placeholder) {
+			print_line("AI Chat: Cleaning up stale summarization placeholder before new request");
+			stale_placeholder->queue_free();
+		}
+	}
+	
 	print_line("AI Chat: Sending chat request with " + String::num_int64(chat_history.size()) + " messages");
 	
 	// Calculate total content size for monitoring only (no pruning)
@@ -10351,43 +10691,114 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
 void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 	
+	// FIXED: Use summarized conversation for API if available to prevent repeated summarization
+	Vector<ChatMessage> *messages_to_use = &chat_history;
+	Vector<ChatMessage> summarized_messages;
+	
+	// Check if we have a stored summarized conversation from previous summarization
+	bool has_summary = has_meta("has_summarized_conversation") && get_meta("has_summarized_conversation");
+	
+	if (p_start_index == 0) {
+		print_line("AI Chat: 🔍 CHECKING for stored summarized conversation:");
+		print_line("AI Chat:   - has_meta('has_summarized_conversation'): " + String(has_meta("has_summarized_conversation") ? "YES" : "NO"));
+		if (has_meta("has_summarized_conversation")) {
+			print_line("AI Chat:   - get_meta('has_summarized_conversation'): " + String(get_meta("has_summarized_conversation") ? "TRUE" : "FALSE"));
+		}
+		print_line("AI Chat:   - Will use summary: " + String(has_summary ? "YES" : "NO"));
+	}
+	
+	if (has_summary) {
+		// Convert stored Array back to Vector<ChatMessage>
+		Array stored_array = get_meta("summarized_conversation_for_api");
+		for (int i = 0; i < stored_array.size(); i++) {
+			Dictionary msg_dict = stored_array[i];
+			ChatMessage msg;
+			msg.role = msg_dict.get("role", "");
+			msg.content = msg_dict.get("content", "");
+			msg.timestamp = msg_dict.get("timestamp", _get_timestamp());
+			msg.tool_calls = msg_dict.get("tool_calls", Array());
+			msg.tool_call_id = msg_dict.get("tool_call_id", "");
+			msg.name = msg_dict.get("name", "");
+			msg.project_context = msg_dict.get("project_context", "");
+			msg.reasoning_content = msg_dict.get("reasoning_content", "");
+			msg.thinking_blocks = msg_dict.get("thinking_blocks", Array());
+			summarized_messages.push_back(msg);
+		}
+		
+		// CORRECT FIX: Append any NEW UI messages that weren't part of the original summarization
+		int summarized_ui_count = get_meta("summarized_ui_message_count", 0);
+		int current_ui_count = chat_history.size();
+		
+		if (p_start_index == 0) {
+			print_line("AI Chat: 📊 SUMMARY LOGIC DEBUG:");
+			print_line("AI Chat:   - Loaded summarized messages: " + String::num_int64(summarized_messages.size()));
+			print_line("AI Chat:   - Summarization covered UI messages: 0 to " + String::num_int64(summarized_ui_count - 1));
+			print_line("AI Chat:   - Current UI message count: " + String::num_int64(current_ui_count));
+			print_line("AI Chat:   - New messages to add: " + String::num_int64(MAX(0, current_ui_count - summarized_ui_count)));
+		}
+		
+		if (current_ui_count > summarized_ui_count) {
+			// Add messages that were added to UI since summarization
+			int new_messages_count = current_ui_count - summarized_ui_count;
+			for (int i = summarized_ui_count; i < current_ui_count; i++) {
+				summarized_messages.push_back(chat_history[i]);
+			}
+			
+			if (p_start_index == 0) {
+				print_line("AI Chat: ✅ Appended " + String::num_int64(new_messages_count) + " NEW UI messages (indices " + String::num_int64(summarized_ui_count) + " to " + String::num_int64(current_ui_count - 1) + ")");
+			}
+		} else if (p_start_index == 0) {
+			print_line("AI Chat: No new UI messages since summarization");
+		}
+		
+		messages_to_use = &summarized_messages;
+		
+		if (p_start_index == 0) {
+			print_line("AI Chat: Using SUMMARIZED conversation for API (" + String::num_int64(summarized_messages.size()) + " messages instead of " + String::num_int64(chat_history.size()) + ")");
+		}
+	} else {
+		if (p_start_index == 0) {
+			print_line("AI Chat: Using FULL conversation for API (" + String::num_int64(chat_history.size()) + " messages)");
+		}
+	}
+	
 	// REMOVED: Emergency pruning - backend handles conversation management
 	if (p_start_index == 0) {
 		int total_content_size = 0;
-		for (int i = 0; i < chat_history.size(); i++) {
-			total_content_size += chat_history[i].content.length();
-			for (const AttachedFile &file : chat_history[i].attached_files) {
+		for (int i = 0; i < messages_to_use->size(); i++) {
+			total_content_size += (*messages_to_use)[i].content.length();
+			for (const AttachedFile &file : (*messages_to_use)[i].attached_files) {
 				total_content_size += file.content.length();
 				total_content_size += file.base64_data.length();
 			}
 		}
 		
 		if (total_content_size > 400000) {
-			print_line("WARNING: AI Chat: Large conversation in chunked mode (" + String::num_int64(chat_history.size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
+			print_line("WARNING: AI Chat: Large conversation in chunked mode (" + String::num_int64(messages_to_use->size()) + " messages, " + String::num_int64(total_content_size) + " chars)");
 			print_line("INFO: Backend will manage conversation length via intelligent summarization if needed");
 		}
 	}
 	
 	// Process messages in chunks of 10 to avoid blocking UI
 	const int CHUNK_SIZE = 10;
-	int end_index = MIN(p_start_index + CHUNK_SIZE, chat_history.size());
+	int end_index = MIN(p_start_index + CHUNK_SIZE, messages_to_use->size());
 	
 	// If this is the first chunk, initialize the messages array
 	if (p_start_index == 0) {
 		// Store the work in progress
 		_chunked_messages.clear();
-		_chunked_messages.resize(chat_history.size());
+		_chunked_messages.resize(messages_to_use->size());
 	}
 	
-	// Process this chunk
+	// Process this chunk from selected message source (full or summarized)
 	for (int i = p_start_index; i < end_index; i++) {
-		const ChatMessage &msg = chat_history[i];
+		const ChatMessage &msg = (*messages_to_use)[i];
 		Dictionary api_msg = _build_api_message(msg);
 		_chunked_messages[i] = api_msg;
 	}
 		
 	// If more chunks to process, defer the next chunk
-	if (end_index < chat_history.size()) {
+	if (end_index < messages_to_use->size()) {
 		call_deferred("_send_chat_request_chunked", end_index);
 		return;
 	}
@@ -11829,6 +12240,11 @@ void AIChatDock::_create_new_conversation() {
 	conversations.push_back(new_conv);
 	current_conversation_index = conversations.size() - 1;
 	// Don't save immediately - defer for better UI responsiveness
+	
+	// CRITICAL: Emergency save after creating new conversation
+	if (conversation_persistence) {
+		call_deferred("_emergency_save_conversations");
+	}
 	
 	// Clear pending edits
 	pending_apply_edits.clear();
@@ -15841,6 +16257,15 @@ void AIChatDock::_on_tool_call_accept_pressed(const String &p_tool_call_id, cons
 		}
 	}
 	
+	// CRITICAL SAFETY CHECK: Never accept empty content - this would delete the file!
+	if (content_to_apply.is_empty()) {
+		print_line("AI Chat: ERROR - Refusing to accept empty content for " + p_file_path + " (tool call: " + p_tool_call_id + ")");
+		print_line("AI Chat: This would delete the file! Marking as rejected instead.");
+		_update_tool_call_button_status(p_tool_call_id, "Rejected (Empty Content)");
+		_remove_pending_edit(p_tool_call_id);
+		return;
+	}
+	
 	// Update tool call button status first
 	_update_tool_call_button_status(p_tool_call_id, "Accepted");
 	
@@ -15968,6 +16393,12 @@ void AIChatDock::_update_tool_call_button_status_in_container(VBoxContainer *p_c
 void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_container, const String &p_tool_call_id, const Dictionary &p_args, const Dictionary &p_result) {
 	if (!p_container) return;
 	
+	String file_path = p_args.get("path", "");
+	if (file_path.is_empty()) {
+		file_path = p_args.get("file_path", "");
+	}
+	print_line("AI Chat: _add_apply_edit_buttons_to_tool_container called for tool_call_id: " + p_tool_call_id + ", file: " + file_path);
+	
 	// Create buttons container
 	HBoxContainer *buttons_container = memnew(HBoxContainer);
 	buttons_container->set_name("tool_call_buttons_" + p_tool_call_id);
@@ -15992,12 +16423,23 @@ void AIChatDock::_add_apply_edit_buttons_to_tool_container(VBoxContainer *p_cont
 	reject_btn->set_custom_minimum_size(Size2(80, 28));
 	buttons_container->add_child(reject_btn);
 
-	// Get file path and content
-	String file_path = p_args.get("path", "");
+	// Get file path and content (reuse the one declared above)
 	if (file_path.is_empty()) {
 		file_path = p_args.get("file_path", "");
 	}
 	String edited_content = p_result.get("edited_content", "");
+	
+	// CRITICAL SAFETY CHECK: If edited content is empty, disable Accept button and warn user
+	if (edited_content.is_empty()) {
+		print_line("AI Chat: WARNING - Tool result has empty edited_content for " + file_path + " (tool call: " + p_tool_call_id + ")");
+		accept_btn->set_disabled(true);
+		accept_btn->set_text("Accept (EMPTY!)");
+		accept_btn->set_tooltip_text("This edit would delete the file content! Use Reject instead.");
+		accept_btn->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+		
+		// Report this issue back to the AI so it can recover
+		_report_empty_content_error_to_ai(p_tool_call_id, file_path, p_args, p_result);
+	}
 	
 	// Connect buttons with the content
 	accept_btn->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_call_accept_pressed).bind(p_tool_call_id, file_path, edited_content));
@@ -16054,11 +16496,23 @@ void AIChatDock::_add_pending_edit(const String &p_tool_call_id, const String &p
 	tool_ids.push_back(p_tool_call_id);
 	file_to_tool_ids[p_file_path] = tool_ids;
 	
-    // Only update banner if UI is available and in-tree
-    if (pending_edits_banner && !pending_edits_banner->is_queued_for_deletion()) {
+    // Update banner immediately and also deferred to be safe
+    if (pending_edits_banner && !pending_edits_banner->is_queued_for_deletion() && pending_edits_banner->is_inside_tree()) {
+        print_line("AI Chat: _add_pending_edit - calling immediate banner update for " + p_file_path);
+        _update_pending_edits_banner();
+        // Also call deferred in case the immediate call was too early
+        call_deferred("_update_pending_edits_banner");
+    } else {
+        print_line("AI Chat: _add_pending_edit - banner not available for immediate update, trying deferred");
         call_deferred("_update_pending_edits_banner");
     }
 	_queue_delayed_save(); // Save conversation with updated pending edits
+	
+	// CRITICAL: Emergency save after adding pending edits (these are important!)
+	if (conversation_persistence) {
+		call_deferred("_emergency_save_conversations");
+	}
+	
 	print_line("AI Chat: Added pending edit for " + p_file_path + " (ID: " + p_tool_call_id + ") - consolidated");
 }
 
@@ -16088,7 +16542,7 @@ void AIChatDock::_remove_pending_edit(const String &p_tool_call_id) {
 		}
 	}
 	
-	_update_pending_edits_banner();
+    _update_pending_edits_banner();
 	_queue_delayed_save(); // Save conversation with updated pending edits
 	print_line("AI Chat: Removed pending edit for " + file_path + " (ID: " + p_tool_call_id + ")");
 }
@@ -16119,7 +16573,13 @@ void AIChatDock::_remove_pending_edits_for_file(const String &p_file_path) {
 	_queue_delayed_save();
 }
 void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const String &p_content) {
-	print_line("AI Chat: Unified accept handler for file: " + p_file_path);
+	print_line("AI Chat: Unified accept handler for file: " + p_file_path + " (content length: " + String::num_int64(p_content.length()) + ")");
+	
+	// CRITICAL SAFETY CHECK: Never apply empty content - this would delete the file!
+	if (p_content.is_empty()) {
+		print_line("AI Chat: ERROR - Refusing to apply empty content to " + p_file_path + " - this would delete the file!");
+		return;
+	}
 	
 	// Apply the edit to the file
 	if (!p_file_path.is_empty() && !p_content.is_empty()) {
@@ -16355,96 +16815,33 @@ void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
 }
 
 void AIChatDock::_update_pending_edits_banner() {
-    // Defensive: verify objects are valid and in-tree before touching UI
-    if (!pending_edits_banner || !pending_edits_label) return;
-    if (pending_edits_banner->is_queued_for_deletion() || pending_edits_label->is_queued_for_deletion()) return;
-    if (!pending_edits_banner->is_inside_tree() || !pending_edits_label->is_inside_tree()) return;
-
-    const int unique_files = file_to_tool_ids.size();
-    const int total_edits = pending_apply_edits.size();
-
-    if (unique_files <= 0 || total_edits <= 0) {
-        if (pending_edits_banner->is_visible()) {
-            pending_edits_banner->set_visible(false);
-        }
+    // Defensive: verify object is valid and in-tree before touching UI
+    if (!pending_edits_banner) {
+        print_line("AI Chat: _update_pending_edits_banner - no banner object");
+        return;
+    }
+    if (pending_edits_banner->is_queued_for_deletion()) {
+        print_line("AI Chat: _update_pending_edits_banner - banner queued for deletion");
+        return;
+    }
+    if (!pending_edits_banner->is_inside_tree()) {
+        print_line("AI Chat: _update_pending_edits_banner - banner not in tree");
         return;
     }
 
-    // Build banner text
-    String text;
-    if (unique_files == 1) {
-        text = "1 file pending review";
-    } else {
-        text = String::num_int64(unique_files) + " files pending review";
-    }
-    if (total_edits > unique_files) {
-        text += " (" + String::num_int64(total_edits) + " edits)";
-    }
+    const int unique_files = file_to_tool_ids.size();
+    const int total_edits = pending_apply_edits.size();
+    
+    print_line("AI Chat: _update_pending_edits_banner - unique_files: " + String::num_int64(unique_files) + ", total_edits: " + String::num_int64(total_edits));
 
-    // Apply UI only if there is usable text
-    if (!text.is_empty()) {
-        pending_edits_label->set_text(text);
-        if (!pending_edits_banner->is_visible()) {
-            pending_edits_banner->set_visible(true);
-        }
+    pending_edits_banner->update_counts(unique_files, total_edits);
+    if (unique_files > 0 && total_edits > 0) {
+        pending_edits_banner->update_file_map(file_to_tool_ids);
     }
 }
 
 void AIChatDock::_on_banner_clicked() {
-	if (file_to_tool_ids.is_empty()) return;
-	
-	// Create a simple popup showing pending files
-	AcceptDialog *details_popup = memnew(AcceptDialog);
-	details_popup->set_title("Pending File Edits");
-	details_popup->set_min_size(Size2(400, 300));
-	
-	VBoxContainer *content = memnew(VBoxContainer);
-	details_popup->add_child(content);
-	
-	Label *header = memnew(Label);
-	header->set_text("Files awaiting accept/reject:");
-	header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-	content->add_child(header);
-	
-	content->add_child(memnew(HSeparator));
-	
-	// List each file with its edit count
-	for (const KeyValue<String, Array> &entry : file_to_tool_ids) {
-		String file_path = entry.key;
-		Array tool_ids = entry.value;
-		
-		HBoxContainer *file_row = memnew(HBoxContainer);
-		content->add_child(file_row);
-		
-		// File icon
-		TextureRect *file_icon = memnew(TextureRect);
-		file_icon->set_texture(get_theme_icon(SNAME("GDScript"), SNAME("EditorIcons")));
-		file_icon->set_custom_minimum_size(Size2(16, 16));
-		file_row->add_child(file_icon);
-		
-		// File name
-		Label *file_label = memnew(Label);
-		file_label->set_text(file_path.get_file());
-		file_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-		file_row->add_child(file_label);
-		
-		// Edit count
-		Label *count_label = memnew(Label);
-		if (tool_ids.size() > 1) {
-			count_label->set_text("(" + String::num_int64(tool_ids.size()) + " edits)");
-			count_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
-		} else {
-			count_label->set_text("(1 edit)");
-			count_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
-		}
-		file_row->add_child(count_label);
-	}
-	
-	add_child(details_popup);
-	details_popup->popup_centered();
-	
-	// Auto-cleanup popup after it's closed - use timer for cleanup
-	details_popup->connect("popup_hide", callable_mp(this, &AIChatDock::_cleanup_popup).bind(details_popup));
+	// No-op: replaced by inline expandable banner
 }
 
 void AIChatDock::_cleanup_popup(AcceptDialog *p_popup) {
@@ -18110,6 +18507,12 @@ AIChatDock::~AIChatDock() {
 	// Clean up user message handler
 	if (user_message_handler) {
 		memdelete(user_message_handler);
+	}
+	
+	// Clean up conversation persistence
+	if (conversation_persistence) {
+		memdelete(conversation_persistence);
+		conversation_persistence = nullptr;
 	}
 	
 	// Clear singleton instance

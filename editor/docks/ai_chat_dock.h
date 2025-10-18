@@ -36,6 +36,8 @@
 #include "core/io/http_client.h"
 #include "core/io/image.h"
 #include "diff_viewer.h"
+#include "ai_pending_edits_banner.h"
+#include "ai_conversation_persistence.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/tab_container.h"
@@ -666,6 +668,27 @@ private:
 	// Tool result button handlers that bridge to unified system
 	void _on_tool_result_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content, const NodePath &p_btns_path, const NodePath &p_status_path);
 	void _on_tool_result_reject_pressed(const String &p_tool_call_id, const String &p_file_path, const NodePath &p_btns_path, const NodePath &p_status_path);
+
+	// Bulk accept/reject from pending banner
+	void _on_accept_all_pending_edits_pressed();
+	void _on_reject_all_pending_edits_pressed();
+	
+	// DEBUG: Test banner visibility
+	void _test_banner_visibility();
+	void _clear_test_data();
+	
+	// Error recovery for AI
+	void _report_empty_content_error_to_ai(const String &p_tool_call_id, const String &p_file_path, const Dictionary &p_args, const Dictionary &p_result);
+	
+	// Deferred summarization to avoid corrupting tool execution
+	void _apply_deferred_summarization(const Dictionary &p_summary_data);
+	
+	// Emergency conversation saving
+	void _emergency_save_conversations();
+	
+	// Safe edit message handling
+	void _send_edited_message_safely(int p_message_index, const String &p_content);
+	void _on_restore_and_send_pressed(int p_message_index, const String &p_content);
 	
 	// Windows-compatible helper function (replaces lambda for scene node summarization)
 	Dictionary _summarize_scene_node_for_context(const Dictionary &p_node, int p_max_depth, int p_max_children);
@@ -725,9 +748,7 @@ private:
 	// Tool status updates
 	void _update_tool_placeholder_with_description(const String &p_tool_id, const String &p_tool_name, const String &p_status, const String &p_description);
 	String _get_immediate_tool_status(const String &p_tool_name, const String &p_arguments_str);
-	PanelContainer *pending_edits_banner = nullptr;
-	Label *pending_edits_label = nullptr;
-	Button *pending_edits_details_btn = nullptr;
+    AIPendingEditsBanner *pending_edits_banner = nullptr;
 	HashMap<String, String> pending_apply_edits; // tool_call_id -> file_path
 	
 	// Consolidated pending edits (replaces old system)
@@ -735,6 +756,9 @@ private:
 	
 	// Track actively running apply_edit tools to coordinate diff display
 	HashMap<String, Array> active_edit_tools; // file_path -> [tool_call_ids] of tools currently executing
+	
+	// Robust conversation persistence
+	AIConversationPersistence *conversation_persistence = nullptr;
 
 protected:
 	void _notification(int p_notification);

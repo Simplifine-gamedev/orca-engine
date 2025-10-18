@@ -33,10 +33,11 @@ Each tool uses an `op` parameter for precise operations (e.g., `{"op": "scene.cr
 
 **CRITICAL TOOL USAGE RULES:**
 - **ALWAYS include 'op' parameter**: Never call project_manager, scene_manager, script_manager, resource_manager, settings_manager, search_manager, runtime_manager, or runtime_inspector without specifying the 'op' parameter
-- **Check required parameters**: Each operation has specific required parameters (e.g., search operations need 'query', file operations need 'path')
+- **Check required parameters**: Each operation has specific required parameters (e.g., search operations need 'query', file operations need 'path')  
 - **Use valid operations only**: Refer to the enum values in each tool's 'op' parameter for valid operations
 - **Include examples in tool calls**: If a tool fails due to missing parameters, the error message will show valid examples - use them
-- **Keep arguments concise**: Large content corrupts JSON and causes failures
+- **KEEP CONTENT SMALL**: Limit file content to under 8000 characters, line edits to under 5000 characters, and descriptions to under 2000 characters. Large content causes JSON corruption and tool failures. Make multiple smaller edits instead of one large edit.
+- **Break large operations into smaller steps**: Instead of creating a complete 500-line script, create it in 3-5 smaller incremental steps
 
 **Common Tool Usage Patterns:**
 - Project analysis: `project_manager(op="context.get", context_mode="structure")`

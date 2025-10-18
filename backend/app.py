@@ -394,30 +394,47 @@ def _generate_ai_summary(messages: list, summary_type: str, model: str = "openai
         # Use provided model (claude-4 for quality)
         summary_model = model
         
-        # PRODUCTION-GRADE PROMPT: Focus on actual development work, not metadata
-        summary_prompt = f"""Summarize this Godot development session for an AI assistant. Focus on WHAT WAS BUILT and WHAT CHANGED, not tool usage stats.
+        # COMPREHENSIVE SUMMARIZATION PROMPT: Preserve maximum context for AI continuity
+        summary_prompt = f"""Summarize this Godot development conversation for an AI assistant. This summary must preserve ALL important context for seamless continuation.
 
-You are preserving context for an AI that needs to remember:
-- What code exists and why
-- What problems were encountered and how they were solved  
-- What the user is trying to achieve
-- Current project state
+COMPREHENSIVE COVERAGE REQUIRED - Include ALL of these when present:
 
-INCLUDE (with specifics):
-✅ Code written/modified: Actual function names, property values, logic changes
-✅ Files created/edited: Full paths like res://scripts/Player.gd
-✅ Bugs fixed: Error message → root cause → solution applied
-✅ Scene changes: Nodes added (with types), hierarchy modifications, property settings
-✅ User's goals: What they're building, features being implemented
-✅ Important values: emission_energy=15.0, speed=500, damage=25 etc.
-In gneral, you shuold 
+🎯 **PROJECT CONTEXT & GOALS**:
+- What the user is building/trying to achieve
+- Current project state and progress made
+- Planned features or next steps mentioned
 
-EXCLUDE (useless metadata):
-❌ "project_manager ran 12 times" 
-❌ "Tools used: scene_manager, runtime_inspector"
-❌ Generic descriptions without specifics
+🛠️ **TECHNICAL DETAILS** (be specific):
+- File paths: res://scripts/Player.gd, res://scenes/MainMenu.tscn
+- Function names: _physics_process(), handle_input(), calculate_damage()
+- Node structures: CharacterBody2D > CollisionShape2D > Sprite2D
+- Property values: speed=300, health=100, emission_energy=15
+- Scene hierarchies and component relationships
 
-Think: If the AI picks up this conversation tomorrow, what does it NEED TO KNOW to help effectively?
+🐛 **PROBLEMS & SOLUTIONS**:
+- Error messages encountered (exact text when possible)
+- Root causes identified  
+- Solutions implemented
+- Code changes made (before/after when significant)
+
+💡 **CODE IMPLEMENTATIONS**:
+- Scripts created/modified with key logic
+- Important variable names and their purposes
+- Signal connections and data flows
+- Resource references and dependencies
+
+🎮 **GAME MECHANICS**:
+- Player controls and movement systems
+- Combat/interaction systems
+- UI elements and their functions
+- Audio/visual effects implemented
+
+📝 **USER PREFERENCES & PATTERNS**:
+- Coding style preferences shown
+- Architectural decisions made
+- Tools/approaches they prefer
+
+CRITICAL: Be thorough! This summary replaces {len(messages)} messages - include enough detail for the AI to continue helping effectively without losing context.
 
 Conversation ({len(messages)} messages):
 """
@@ -461,13 +478,13 @@ Conversation ({len(messages)} messages):
         summary_prompt += f"\n\n=== CONVERSATION SAMPLE ({len(conversation_sample)} key messages from {len(messages)} total) ===\n"
         summary_prompt += "\n\n".join(conversation_sample)
         
-        # Call LLM for summarization with VERY generous token budget for detail
+        # Call LLM for summarization with VERY generous token budget for comprehensive detail
         response = completion(
             model=summary_model,
             messages=[{"role": "user", "content": summary_prompt}],
-            max_tokens=2500,  # LARGE budget for comprehensive context (don't skimp!)
+            max_tokens=5000,  # INCREASED: Much larger budget for comprehensive context preservation
             temperature=0.0,  # Maximum precision for code/values
-            timeout=30  # Allow time for thorough analysis
+            timeout=60  # Allow more time for thorough analysis of large conversations
         )
         
         ai_summary = response.choices[0].message.content.strip()
@@ -475,7 +492,7 @@ Conversation ({len(messages)} messages):
         # Format the summary nicely
         formatted_summary = f"[{summary_type}] Conversation history ({len(messages)} messages condensed):\n\n"
         formatted_summary += ai_summary
-        formatted_summary += f"\n\n📌 PRESERVED CONTEXT: Recent {40} messages contain the most current state. This summary provides historical context for continuity."
+        formatted_summary += f"\n\n📌 PRESERVED CONTEXT: Recent messages contain the most current state. This summary provides historical context for continuity."
         
         print(f"✅ AI_SUMMARY: Generated {len(ai_summary)} char summary using {summary_model}")
         return formatted_summary
@@ -486,7 +503,13 @@ Conversation ({len(messages)} messages):
         return f"[{summary_type}] {len(messages)} messages summarized for token efficiency. Key context preserved in recent messages."
 
 def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[list, bool]:
-    """PRODUCTION-GRADE: Incremental summarization using LiteLLM's actual token counting"""
+    """PRODUCTION-GRADE: Incremental summarization using LiteLLM's actual token counting
+    
+    Manages conversation length by creating AI-generated summaries of older messages
+    while preserving recent messages for context. Uses actual token counting for accuracy.
+    
+    Returns: (managed_messages, was_summarized)
+    """
     
     # Get ACTUAL model token limit using LiteLLM
     model_limit = _get_model_token_limit(model)
@@ -502,57 +525,61 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     #   SUMMARIZATION_TEST_KEEP_RECENT_EMERGENCY=8       (default 8)
     #   SUMMARIZATION_TEST_MIN_INITIAL=3                 (default 3)
     #   SUMMARIZATION_TEST_MIN_INCREMENTAL=3             (default 3)
+    
+    # Test-mode override to trigger summarization sooner for local testing
+    # Set SUMMARIZATION_TEST_MODE=true in environment to enable testing with lower barriers
     test_mode = os.getenv('SUMMARIZATION_TEST_MODE', 'false').lower() == 'true'
 
     if test_mode:
         try:
-            trigger_ratio = float(os.getenv('SUMMARIZATION_TEST_TRIGGER_PCT', '0.08'))
+            trigger_ratio = float(os.getenv('SUMMARIZATION_TEST_TRIGGER_PCT', '0.4'))  # 40% instead of 50%
         except Exception:
-            trigger_ratio = 0.08
+            trigger_ratio = 0.4
         try:
-            emergency_ratio = float(os.getenv('SUMMARIZATION_TEST_EMERGENCY_PCT', '0.15'))
+            emergency_ratio = float(os.getenv('SUMMARIZATION_TEST_EMERGENCY_PCT', '0.6'))  # 60% instead of 75%
         except Exception:
-            emergency_ratio = 0.15
+            emergency_ratio = 0.6
         try:
-            message_count_limit = int(os.getenv('SUMMARIZATION_TEST_MESSAGE_COUNT', '8'))
+            message_count_limit = int(os.getenv('SUMMARIZATION_TEST_MESSAGE_COUNT', '60'))  # 60 instead of 100
         except Exception:
-            message_count_limit = 8
+            message_count_limit = 60
         try:
-            keep_recent_normal = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_NORMAL', '12'))
+            keep_recent_normal = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_NORMAL', '25'))  # 25 instead of 40
         except Exception:
-            keep_recent_normal = 12
+            keep_recent_normal = 25
         try:
-            keep_recent_emergency = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_EMERGENCY', '8'))
+            keep_recent_emergency = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_EMERGENCY', '20'))  # 20 instead of 30
         except Exception:
-            keep_recent_emergency = 8
+            keep_recent_emergency = 20
         try:
-            min_initial_needed = int(os.getenv('SUMMARIZATION_TEST_MIN_INITIAL', '3'))
+            min_initial_needed = int(os.getenv('SUMMARIZATION_TEST_MIN_INITIAL', '8'))  # 8 instead of 10
         except Exception:
-            min_initial_needed = 3
+            min_initial_needed = 8
         try:
-            min_incremental_needed = int(os.getenv('SUMMARIZATION_TEST_MIN_INCREMENTAL', '3'))
+            min_incremental_needed = int(os.getenv('SUMMARIZATION_TEST_MIN_INCREMENTAL', '10'))  # 10 instead of 15
         except Exception:
-            min_incremental_needed = 3
+            min_incremental_needed = 10
     else:
-        trigger_ratio = 0.5
-        emergency_ratio = 0.75
-        message_count_limit = 100
-        keep_recent_normal = 40
-        keep_recent_emergency = 30
-        min_initial_needed = 10
-        min_incremental_needed = 15
+        # PRODUCTION SETTINGS: Conservative thresholds for real use
+        trigger_ratio = 0.5          # 50% of token limit
+        emergency_ratio = 0.75       # 75% of token limit
+        message_count_limit = 100    # 100 messages
+        keep_recent_normal = 40      # Keep last 40 messages
+        keep_recent_emergency = 30   # Keep last 30 messages in emergency
+        min_initial_needed = 10      # Need 10+ messages for first summary
+        min_incremental_needed = 15  # Need 15+ messages for incremental summary
 
     # TRIGGER EARLY: Use token threshold OR message count (whichever hits first)
     trigger_threshold = int(model_limit * trigger_ratio)
     # HARD LIMIT: emergency threshold
     emergency_threshold = int(model_limit * emergency_ratio)
 
-    # Model-specific early trigger: Force very low threshold for gpt-4o for testing
-    # Default to 1500 tokens unless overridden by env GPT4O_SUMMARY_TRIGGER_TOKENS
+    # Model-specific early trigger: GPT-4o has smaller context window so trigger earlier
+    # Default to 8000 tokens unless overridden by env GPT4O_SUMMARY_TRIGGER_TOKENS  
     try:
-        gpt4o_fixed = int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '1500'))
+        gpt4o_fixed = int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '8000'))  # Reasonable production default
     except Exception:
-        gpt4o_fixed = 1500
+        gpt4o_fixed = 8000
     if isinstance(model, str) and (model == 'openai/gpt-4o' or model.startswith('openai/gpt-4o@') or model.endswith('/gpt-4o')):
         old_threshold = trigger_threshold
         trigger_threshold = min(trigger_threshold, gpt4o_fixed)
@@ -569,21 +596,21 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     if not message_count_trigger and not token_count_trigger:
         return messages, False  # No management needed yet
     
-    # Check if this is an emergency (already over 75%)
+    # Check if this is an emergency (over emergency threshold)
     is_emergency = total_tokens >= emergency_threshold
     
     if is_emergency:
-        print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds 75% limit ({emergency_threshold})! Forcing aggressive summarization")
+        print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds emergency limit ({emergency_threshold})! Forcing aggressive summarization")
     elif message_count_trigger:
-        print(f"CONVERSATION_MANAGE: {len(messages)} messages exceeds 100-message threshold, starting smart summarization")
+        print(f"CONVERSATION_MANAGE: {len(messages)} messages exceeds {message_count_limit}-message threshold, starting smart summarization")
     else:
-        print(f"CONVERSATION_MANAGE: {total_tokens} tokens exceeds 50% threshold ({trigger_threshold}), starting smart summarization")
+        print(f"CONVERSATION_MANAGE: {total_tokens} tokens exceeds threshold ({trigger_threshold}), starting smart summarization")
     
     # PRODUCTION-GRADE INCREMENTAL SUMMARIZATION
     # Strategy: Keep system message + summaries + recent N messages
     # When summarizing: Create numbered summaries (Summary 1, Summary 2, etc.)
 
-    recent_messages_to_keep = keep_recent_emergency if is_emergency else keep_recent_normal
+    initial_recent_messages_to_keep = keep_recent_emergency if is_emergency else keep_recent_normal
 
     # Force summarization path for gpt-4o (or any model) when token threshold hit even with few messages
     force_summarize_now = False
@@ -593,12 +620,16 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
             print(f"FORCE_SUMMARIZE[gpt-4o]: total_tokens={total_tokens} >= trigger_threshold={trigger_threshold} — overriding guards")
 
     if force_summarize_now:
-        # Ensure there is something to summarize by reducing recent_keep if needed
-        # Keep at least 2 recent messages; try to summarize at least 1
-        recent_messages_to_keep = min(recent_messages_to_keep, max(2, len(messages) - 2))
-        # Lower minimums so we don't block summarization on short threads
-        min_initial_needed = 1
-        min_incremental_needed = 1
+        # Ensure there is something meaningful to summarize
+        # Keep enough recent messages but ensure we can summarize a reasonable amount
+        initial_recent_messages_to_keep = min(initial_recent_messages_to_keep, max(15, len(messages) - min_initial_needed))
+        print(f"GPT4O_ADJUST: Adjusted recent_keep to {initial_recent_messages_to_keep} to ensure meaningful summarization")
+    
+    recent_messages_to_keep = initial_recent_messages_to_keep
+    
+    # In test mode, use relaxed barriers but don't force summarization inappropriately
+    if test_mode:
+        print(f"🧪 TEST_MODE: Using testing barriers (60 messages, 40% tokens)")
     
     if len(messages) <= recent_messages_to_keep + 5 and not force_summarize_now:
         return messages, False  # Too short to summarize (unless forced above)
@@ -623,21 +654,79 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     
     # Calculate how many messages to summarize
     total_conv_messages = len(conversation_messages)
-    recent_start_index = total_conv_messages - recent_messages_to_keep
     
-    # DEBUG: Log the calculation
-    print(f"📊 SUMMARIZATION_CALC: total_conv={total_conv_messages}, recent_keep={recent_messages_to_keep}, recent_start={recent_start_index}, last_summary_idx={last_summary_index}")
+    # DYNAMIC TOKEN-AWARE RECENT MESSAGE CALCULATION
+    # If last k messages are >80% of tokens, reduce k to prevent over-preservation
+    actual_recent_keep = recent_messages_to_keep
+    if total_conv_messages > recent_messages_to_keep:
+        # Calculate tokens for last k messages
+        last_k_messages = conversation_messages[-recent_messages_to_keep:]
+        last_k_tokens = _count_tokens_for_messages(last_k_messages, model)
+        total_tokens_current = _count_tokens_for_messages(conversation_messages, model)
+        
+        if total_tokens_current > 0:
+            last_k_percentage = (last_k_tokens / total_tokens_current) * 100
+            print(f"🔍 TOKEN_BALANCE: Last {recent_messages_to_keep} messages = {last_k_tokens} tokens ({last_k_percentage:.1f}% of total)")
+            
+            # If recent messages are >80% of tokens, reduce them to leave room for meaningful summarization
+            if last_k_percentage > 80 and recent_messages_to_keep > 1:
+                # Reduce recent keep to maximum 70% of total messages or 50% of tokens, whichever is smaller
+                max_by_message_count = max(1, int(total_conv_messages * 0.7))
+                
+                # Binary search to find optimal recent_keep that's ~50% of tokens
+                target_percentage = 50
+                left, right = 1, recent_messages_to_keep
+                best_keep = recent_messages_to_keep
+                
+                for _ in range(10):  # Max 10 iterations
+                    mid = (left + right) // 2
+                    if mid >= total_conv_messages:
+                        right = mid - 1
+                        continue
+                        
+                    test_messages = conversation_messages[-mid:]
+                    test_tokens = _count_tokens_for_messages(test_messages, model)
+                    test_percentage = (test_tokens / total_tokens_current) * 100
+                    
+                    if test_percentage <= target_percentage:
+                        best_keep = mid
+                        left = mid + 1
+                    else:
+                        right = mid - 1
+                
+                actual_recent_keep = min(best_keep, max_by_message_count)
+                print(f"📉 DYNAMIC_ADJUST: Reduced recent_keep from {recent_messages_to_keep} to {actual_recent_keep} (to prevent >80% token concentration)")
+    
+    recent_start_index = total_conv_messages - actual_recent_keep
+    
+    # CORE LOGIC VERIFICATION: 
+    # Given n total messages (0,1,2,...,n-1):
+    # - Messages 0 to (n-k-1) will be SUMMARIZED  → conversation_messages[:recent_start_index] 
+    # - Messages (n-k) to (n-1) will be PRESERVED → conversation_messages[recent_start_index:]
+    print(f"📊 SUMMARIZATION_LOGIC: n={total_conv_messages} messages total")
+    print(f"📊   → Summarize: messages 0 to {recent_start_index-1} ({recent_start_index} messages)")  
+    print(f"📊   → Preserve: messages {recent_start_index} to {total_conv_messages-1} ({actual_recent_keep} messages)")
+    print(f"📊 CALCULATION: total_conv={total_conv_messages}, recent_keep={actual_recent_keep}, recent_start={recent_start_index}, last_summary_idx={last_summary_index}")
     
     if last_summary_index >= 0:
         # We have existing summaries - summarize messages between last summary and recent
         messages_to_summarize = conversation_messages[last_summary_index + 1:recent_start_index]
         
         if len(messages_to_summarize) < min_incremental_needed:  # Not enough to warrant new summary
-            print(f"SUMMARIZATION_SKIP: Only {len(messages_to_summarize)} messages since last summary (need 15+)")
+            print(f"SUMMARIZATION_SKIP: Only {len(messages_to_summarize)} messages since last summary (need {min_incremental_needed}+)")
             # Emergency: just trim older messages more aggressively
             if is_emergency:
-                print(f"EMERGENCY_TRIM: Keeping only existing summaries + last {recent_messages_to_keep} messages")
-                return system_messages + existing_summaries + conversation_messages[-recent_messages_to_keep:], True
+                print(f"EMERGENCY_TRIM: Keeping only existing summaries + last {actual_recent_keep} messages")
+                
+                # Add explanation for emergency trim if we have summaries
+                if existing_summaries:
+                    emergency_explanation = {
+                        "role": "system", 
+                        "content": "Above summaries were generated by an automatic summary generation system. This is only visible to you and the user will be seeing the actual messages that they have sent before, carry on the conversation."
+                    }
+                    return system_messages + existing_summaries + [emergency_explanation] + conversation_messages[-actual_recent_keep:], True
+                else:
+                    return system_messages + conversation_messages[-actual_recent_keep:], True
             print(f"SUMMARIZATION_SKIP: Returning original messages unchanged")
             return messages, False  # Keep as-is
         
@@ -651,8 +740,14 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
         
         new_summary = {"role": "assistant", "content": summary_content}
         
-        # Build result: System + all summaries + new summary + recent messages
-        result_messages = system_messages + existing_summaries + [new_summary] + conversation_messages[recent_start_index:]
+        # Add explanation message for the AI assistant
+        summary_explanation = {
+            "role": "system", 
+            "content": "Above is the summary generated by an automatic summary generation system. This is only visible to you and the user will be seeing the actual messages that they have sent before, carry on the conversation."
+        }
+        
+        # Build result: System + all summaries + new summary + explanation + recent messages
+        result_messages = system_messages + existing_summaries + [new_summary, summary_explanation] + conversation_messages[recent_start_index:]
         
         print(f"✅ CONVERSATION_MANAGE: Created incremental summary #{summary_number}, total summaries: {len(existing_summaries) + 1}")
     else:
@@ -660,7 +755,7 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
         messages_to_summarize = conversation_messages[:recent_start_index]
         
         if len(messages_to_summarize) < min_initial_needed:  # Need at least N messages to summarize
-            print(f"CONVERSATION_MANAGE: Only {len(messages_to_summarize)} messages to summarize, skipping (need 10+)")
+            print(f"CONVERSATION_MANAGE: Only {len(messages_to_summarize)} messages to summarize, skipping (need {min_initial_needed}+)")
             return messages, False
         
         # Use current model if it's OpenAI, otherwise use fast gpt-4o-mini
@@ -672,10 +767,17 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
         
         new_summary = {"role": "assistant", "content": summary_content}
         
-        # Build result: System + new summary + recent messages
-        result_messages = system_messages + [new_summary] + conversation_messages[recent_start_index:]
+        # Add explanation message for the AI assistant
+        summary_explanation = {
+            "role": "system", 
+            "content": "Above is the summary generated by an automatic summary generation system. This is only visible to you and the user will be seeing the actual messages that they have sent before, carry on the conversation."
+        }
+        
+        # Build result: System + new summary + explanation + recent messages  
+        result_messages = system_messages + [new_summary, summary_explanation] + conversation_messages[recent_start_index:]
         
         print(f"✅ CONVERSATION_MANAGE: Created first summary, structure: 1 summary + {len(conversation_messages[recent_start_index:])} recent messages")
+        print(f"✅ LOGIC_VERIFIED: Summarized messages 0-{recent_start_index-1}, preserved messages {recent_start_index}-{total_conv_messages-1}")
     
     # Verify we're under the limit using ACTUAL token counting
     result_tokens = _count_tokens_for_messages(result_messages, model)
@@ -690,7 +792,19 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     # SAFETY CHECK: If still over 85% after summarization, force more aggressive trimming
     if result_tokens > model_limit * 0.85:
         print(f"⚠️ STILL TOO LARGE: {result_tokens} tokens > 85% limit! Force trimming to last 15 messages...")
-        result_messages = system_messages + [m for m in result_messages if m.get('role') == 'assistant' and '[SUMMARY' in str(m.get('content', ''))] + result_messages[-15:]
+        
+        # Extract summaries and add explanation
+        summaries = [m for m in result_messages if m.get('role') == 'assistant' and '[SUMMARY' in str(m.get('content', ''))]
+        force_trim_explanation = {
+            "role": "system", 
+            "content": "Above summaries were generated by an automatic summary generation system. This is only visible to you and the user will be seeing the actual messages that they have sent before, carry on the conversation."
+        }
+        
+        if summaries:
+            result_messages = system_messages + summaries + [force_trim_explanation] + result_messages[-15:]
+        else:
+            result_messages = system_messages + result_messages[-15:]
+            
         result_tokens = _count_tokens_for_messages(result_messages, model)
         print(f"✅ FORCE_TRIM: Now {result_tokens} tokens ({(result_tokens/model_limit*100):.1f}% of limit)")
     
@@ -1132,67 +1246,9 @@ def check_version_compatibility():
     
     return None
 
-# Image handling will use request-scoped image passing - no persistent storage needed
+# Image handling will use OpenAI's native ID system - no local registry needed
 
 # --- Helper Functions ---
-
-def validate_tool_parameters(tool_name: str, arguments: dict, required_params: list, valid_operations: dict = None) -> tuple[bool, str]:
-    """
-    Centralized parameter validation for tools to provide consistent error messages.
-    
-    Args:
-        tool_name: Name of the tool being validated
-        arguments: Parameters passed to the tool
-        required_params: List of required parameter names
-        valid_operations: Dict mapping operation names to their descriptions (for op parameter)
-    
-    Returns:
-        tuple[bool, str]: (is_valid, error_message)
-    """
-    
-    # Check for missing required parameters
-    missing_params = []
-    for param in required_params:
-        if param not in arguments or arguments[param] == '' or arguments[param] is None:
-            missing_params.append(param)
-    
-    if missing_params:
-        # Special handling for 'op' parameter
-        if 'op' in missing_params and valid_operations:
-            operation_list = list(valid_operations.keys())
-            common_ops = operation_list[:6]  # Show first 6 operations
-            examples = []
-            
-            for op_name, description in list(valid_operations.items())[:3]:  # Show 3 examples
-                examples.append(f"op='{op_name}' {description}")
-            
-            error_msg = (
-                f"Missing required parameter 'op' for {tool_name}. "
-                f"Must specify one of: {', '.join(common_ops)}{'...' if len(operation_list) > 6 else ''}. "
-                f"Examples: {'; '.join(examples)}"
-            )
-        else:
-            # General missing parameter error
-            error_msg = (
-                f"Missing required parameter(s) for {tool_name}: {', '.join(missing_params)}. "
-                f"Please provide all required parameters."
-            )
-        
-        return False, error_msg
-    
-    # Validate 'op' parameter value if provided and valid_operations specified
-    if 'op' in arguments and valid_operations:
-        op_value = arguments['op']
-        if op_value not in valid_operations:
-            valid_ops = list(valid_operations.keys())
-            error_msg = (
-                f"Invalid operation '{op_value}' for {tool_name}. "
-                f"Valid operations: {', '.join(valid_ops[:8])}{'...' if len(valid_ops) > 8 else ''}. "
-                f"Check tool documentation for complete list."
-            )
-            return False, error_msg
-    
-    return True, ""
 
 # --- Asset Processing Function ---
 def process_asset_internal(arguments: dict) -> dict:
@@ -1303,23 +1359,57 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 except Exception:
                     pass
 
-        # CLOUD-SAFE APPROACH: Images are injected directly by frontend when AI requests editing
-        # This prevents images from bloating conversation history while allowing editing operations
-        direct_images = arguments.get('image_data_for_editing', [])
-        
+        # Gather available images from prior conversation messages
+        available_images = {}
+        if conversation_messages:
+            debug_print(f"IMAGE_OP DEBUG: conversation_messages count: {len(conversation_messages)}")
+            cm_index = -1
+            for msg in conversation_messages:
+                cm_index += 1
+                if not isinstance(msg, dict):
+                    continue
+                    
+                # Debug: Log all message details
+                role = msg.get('role', 'unknown')
+                print(f"    - msg[{cm_index}] role={role}, has_images={'images' in msg}, keys={list(msg.keys())}")
+                
+                if 'images' in msg and isinstance(msg['images'], list):
+                    print(f"    - msg[{cm_index}] has images: {len(msg['images'])}")
+                    for img in msg['images']:
+                        name = img.get('name')
+                        b64 = img.get('base64_data')
+                        if name and b64:
+                            available_images[name] = img
+                            print(f"      -> cached image '{name}' (base64 len={len(b64)})")
+                
+                # Also log tool/assistant markers present in content
+                content_preview = str(msg.get('content', ''))[:120].replace('\n', ' ')
+                if 'image_name' in content_preview or 'Image ID' in content_preview or 'image_id' in content_preview:
+                    print(f"    - msg[{cm_index}] content mentions image id: '{content_preview}'")
+        else:
+            print("IMAGE_OP DEBUG: No conversation_messages provided or empty")
+
         selected_images = []
-        if direct_images and isinstance(direct_images, list):
-            print(f"IMAGE_OP: Received {len(direct_images)} images directly in tool arguments")
-            for img in direct_images:
-                if isinstance(img, dict) and img.get('name') in image_ids:
-                    selected_images.append(img)
-                    print(f"IMAGE_OP: Using injected image '{img.get('name')}' ({len(img.get('base64_data', '')) // 1000}KB)")
-        
-        if not selected_images and image_ids:
-            print(f"IMAGE_OP: ERROR - AI requested {len(image_ids)} images but none were injected by frontend!")
-            return {"success": False, "error": f"Requested images {image_ids} not available for editing. Images may have been removed from chat history."}
-            
-        print(f"IMAGE_OP: Selected {len(selected_images)} images for editing")
+        for img_id in image_ids:
+            # Accept both exact and numeric-suffixed IDs (e.g., 'generated_123' vs 'generated_123.0')
+            match = None
+            if img_id in available_images:
+                match = available_images[img_id]
+            else:
+                # Try tolerant matching
+                for key in available_images.keys():
+                    if str(key).startswith(str(img_id)):
+                        match = available_images[key]
+                        debug_print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
+                        break
+            if match:
+                selected_images.append(match)
+                print(f"IMAGE_OP: Selected input image '{img_id}'")
+            else:
+                print(f"IMAGE_OP: Warning - requested image '{img_id}' not found in conversation context")
+
+        print(f"IMAGE_OP DEBUG: available_images keys: {list(available_images.keys())}")
+        print(f"IMAGE_OP DEBUG: selected_images count: {len(selected_images)}")
 
         # Helpers for size parsing and provider compatibility
         def _parse_size_str(val: str | None) -> tuple[int | None, int | None]:
@@ -2394,33 +2484,24 @@ def check_for_app_updates_internal(arguments: dict) -> dict:
 def project_manager_internal(arguments: dict) -> dict:
     """Handle project_manager tool operations"""
     try:
-        # Define valid operations with descriptions
-        valid_operations = {
-            "context.get": "(analyze project structure)",
-            "fs.list": "(list directory contents)",
-            "fs.read": "(read file)",
-            "fs.write": "(write file)",
-            "fs.write_lines": "(write specific lines)",
-            "fs.replace_string": "(replace text in file)",
-            "fs.copy": "(copy file/directory)",
-            "fs.move": "(move file/directory)",
-            "fs.delete": "(delete file/directory)",
-            "fs.mkdir": "(create directory)",
-            "fs.symlink": "(create symlink)",
-            "fs.refresh": "(refresh filesystem)",
-            "project.analyze_dir": "(analyze project directory)",
-            "project.copy_dir": "(copy project directory)",
-            "project.update_refs": "(update project references)",
-            "assets.search": "(search asset library)",
-            "assets.install": "(install asset)",
-            "updates.check": "(check for updates)"
-        }
+        # CRITICAL: Check for tool generation failures first
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits. "
+                "Break large operations into multiple smaller steps."
+            )
+            
+            print(f"🚨 TOOL_GEN_FAILURE_DETECTED: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
         
-        # Validate parameters using centralized function
-        is_valid, error_msg = validate_tool_parameters("project_manager", arguments, ["op"], valid_operations)
-        if not is_valid:
-            # DEBUG: Show what arguments were actually received for debugging
-            print("🚨 PROJECT_MANAGER ERROR: Parameter validation failed!")
+        op = arguments.get('op', '')
+        if not op:
+            # DEBUG: Show what arguments were actually received when op is missing
+            print("🚨 PROJECT_MANAGER ERROR: Missing 'op' parameter!")
             print("📋 RECEIVED ARGUMENTS:")
             for key, value in arguments.items():
                 if isinstance(value, str) and len(value) > 200:
@@ -2428,9 +2509,8 @@ def project_manager_internal(arguments: dict) -> dict:
                 else:
                     display_value = value
                 print(f"   {key}: {display_value}")
-            return {"success": False, "error": error_msg}
-        
-        op = arguments["op"]  # Safe to access now after validation
+            print("❌ Tool execution failed due to missing 'op' parameter")
+            return {"success": False, "error": "Operation 'op' parameter is required"}
         
         if op == "assets.search":
             # Route to existing asset search function
@@ -2488,6 +2568,19 @@ def project_manager_internal(arguments: dict) -> dict:
                     "success": False,
                     "error": "Missing required parameter 'path' for fs.write operation"
                 }
+            
+            # CRITICAL: Detect missing content parameter (likely due to JSON corruption)
+            if content == '' or content is None:
+                print(f"🚨 MISSING CONTENT: fs.write called for {file_path} with no content parameter!")
+                print("🚨 This is likely due to JSON corruption from large content generation")
+                return {
+                    "success": False,
+                    "error": (
+                        f"Missing required parameter 'content' for fs.write operation on {file_path}. "
+                        "This is likely because the content was very big, make the content smaller and apply fewer edits. "
+                        "The content parameter was lost during tool call generation."
+                    )
+                }
                 
             try:
                 # Convert to absolute path if relative
@@ -2528,18 +2621,23 @@ def project_manager_internal(arguments: dict) -> dict:
 def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
     """Handle search_manager tool operations"""
     try:
-        # Define valid operations for search_manager
-        valid_operations = {
-            "project.search": "(search project files - requires 'query' parameter)",
-            "docs.search": "(search Godot documentation - requires 'query' parameter)"
-        }
+        # CRITICAL: Check for tool generation failures first
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits."
+            )
+            
+            print(f"🚨 SEARCH_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
         
-        # Validate parameters using centralized function
-        required_params = ["op", "query"]  # Both op and query are required for search operations
-        is_valid, error_msg = validate_tool_parameters("search_manager", arguments, required_params, valid_operations)
-        if not is_valid:
-            # DEBUG: Show what arguments were actually received for debugging
-            print("🚨 SEARCH_MANAGER ERROR: Parameter validation failed!")
+        op = arguments.get('op', '')
+        if not op:
+            # DEBUG: Show what arguments were actually received when op is missing
+            print("🚨 SEARCH_MANAGER ERROR: Missing 'op' parameter!")
             print("📋 RECEIVED ARGUMENTS:")
             for key, value in arguments.items():
                 if isinstance(value, str) and len(value) > 200:
@@ -2547,9 +2645,8 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
                 else:
                     display_value = value
                 print(f"   {key}: {display_value}")
-            return {"success": False, "error": error_msg}
-        
-        op = arguments["op"]  # Safe to access now after validation
+            print("❌ Tool execution failed due to missing 'op' parameter")
+            return {"success": False, "error": "Operation 'op' parameter is required"}
             
         if op == "project.search":
             # Route to existing project search function
@@ -2587,6 +2684,19 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
 def resource_manager_internal(arguments: dict, conversation_messages: list = None) -> dict:
     """Handle resource_manager tool operations"""
     try:
+        # CRITICAL: Check for tool generation failures first
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits."
+            )
+            
+            print(f"🚨 RESOURCE_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
+        
         # Accept both 'op' and legacy 'operation'
         op = arguments.get('op', '') or arguments.get('operation', '')
         if not op:
@@ -2600,22 +2710,7 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
                     display_value = value
                 print(f"   {key}: {display_value}")
             print("❌ Tool execution failed due to missing 'op' parameter")
-            
-            common_operations = [
-                "res.create", "res.inspect", "res.modify", "res.assign", "res.load_and_assign",
-                "import.set_options", "import.reimport", "image.generate_or_edit", "image.save"
-            ]
-            examples = [
-                "op='res.create' with type='StandardMaterial3D' (create material)",
-                "op='image.generate_or_edit' with description='fantasy sword' (generate image)",
-                "op='res.inspect' with target='res://materials/floor.tres' (inspect resource)"
-            ]
-            
-            error_msg = (
-                f"Missing required parameter 'op'. Must specify one of: {', '.join(common_operations[:6])}... "
-                f"Examples: {'; '.join(examples[:2])}"
-            )
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": "Operation 'op' parameter is required"}
             
         # Backend-processed image operations
         if op == "image.generate_or_edit":
@@ -2674,6 +2769,19 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
 
 def scene_manager_internal(arguments: dict) -> dict:
     """Handle scene_manager tool operations - all frontend-only"""
+    # CRITICAL: Check for tool generation failures first
+    if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+        failure_type = arguments.get("_tool_gen_failure")
+        original_size = arguments.get("_original_size", "unknown")
+        
+        error_msg = (
+            f"Tool call failed due to large content ({original_size} characters). "
+            "This is likely because the content was very big, make the content smaller and apply fewer edits."
+        )
+        
+        print(f"🚨 SCENE_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+        return {"success": False, "error": error_msg}
+    
     op = arguments.get('op', '')
     return {
         "success": False,
@@ -2685,6 +2793,19 @@ def scene_manager_internal(arguments: dict) -> dict:
 
 def script_manager_internal(arguments: dict) -> dict:
     """Handle script_manager tool operations - all frontend-only"""
+    # CRITICAL: Check for tool generation failures first
+    if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+        failure_type = arguments.get("_tool_gen_failure")
+        original_size = arguments.get("_original_size", "unknown")
+        
+        error_msg = (
+            f"Tool call failed due to large content ({original_size} characters). "
+            "This is likely because the content was very big, make the content smaller and apply fewer edits."
+        )
+        
+        print(f"🚨 SCRIPT_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+        return {"success": False, "error": error_msg}
+    
     op = arguments.get('op', '')
     return {
         "success": False,
@@ -2696,6 +2817,19 @@ def script_manager_internal(arguments: dict) -> dict:
 
 def settings_manager_internal(arguments: dict) -> dict:
     """Handle settings_manager tool operations - all frontend-only"""
+    # CRITICAL: Check for tool generation failures first
+    if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+        failure_type = arguments.get("_tool_gen_failure")
+        original_size = arguments.get("_original_size", "unknown")
+        
+        error_msg = (
+            f"Tool call failed due to large content ({original_size} characters). "
+            "This is likely because the content was very big, make the content smaller and apply fewer edits."
+        )
+        
+        print(f"🚨 SETTINGS_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+        return {"success": False, "error": error_msg}
+    
     op = arguments.get('op', '')
     return {
         "success": False,
@@ -2708,15 +2842,22 @@ def settings_manager_internal(arguments: dict) -> dict:
 def runtime_manager_internal(arguments: dict) -> dict:
     """Handle runtime_manager tool operations"""
     try:
+        # CRITICAL: Check for tool generation failures first
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits."
+            )
+            
+            print(f"🚨 RUNTIME_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
+        
         op = arguments.get('op', '')
         if not op:
-            error_msg = (
-                "Missing required parameter 'op'. Must specify one of: game.start, game.stop, game.status, "
-                "errors.summary, errors.details, screenshot.capture, console.get_output. "
-                "Examples: op='game.start' (start game); op='screenshot.capture' (take screenshot); "
-                "op='errors.summary' (get error summary)"
-            )
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": "Operation 'op' parameter is required"}
             
         if op in ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "screenshot.capture", "console.get_output", "input.test_action", "input.test_key"]:
             # These are frontend-only operations
@@ -2738,15 +2879,22 @@ def runtime_manager_internal(arguments: dict) -> dict:
 def runtime_inspector_internal(arguments: dict) -> dict:
     """Handle runtime inspection operations for debugging during play"""
     try:
+        # CRITICAL: Check for tool generation failures first
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits."
+            )
+            
+            print(f"🚨 INSPECTOR_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
+        
         op = arguments.get('op', '')
         if not op:
-            error_msg = (
-                "Missing required parameter 'op'. Must specify one of: runtime.node.get_props, runtime.node.set_prop, "
-                "runtime.material.get, runtime.node.get_tree, runtime.environment.get, runtime.debug.info. "
-                "Examples: op='runtime.node.get_props' with node_path='/Player' (get node properties); "
-                "op='runtime.material.get' with node_path='/Floor' (get material info)"
-            )
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": "Operation 'op' parameter is required"}
             
         # All runtime inspector operations are frontend-only but we add metadata
         # to help the frontend know what to do
@@ -3261,6 +3409,71 @@ def chat():
                 except Exception as e:
                     print(f"CONTEXT_ATTACH_WARN: Failed to attach context: {e}")
 
+            # Helper to preserve critical parameters when JSON parsing fails
+            def _try_preserve_critical_params(corrupted_json: str) -> str:
+                """
+                Try to extract critical parameters from corrupted JSON using regex patterns.
+                Focus on preserving 'op', 'query', 'path', and other essential parameters.
+                """
+                import re
+                try:
+                    preserved = {}
+                    
+                    # Try to extract 'op' parameter (most critical for tool routing)
+                    op_match = re.search(r'"op"\s*:\s*"([^"]+)"', corrupted_json, re.IGNORECASE)
+                    if op_match:
+                        preserved["op"] = op_match.group(1)
+                    
+                    # Try to extract 'query' parameter (critical for search tools)
+                    query_match = re.search(r'"query"\s*:\s*"([^"]+)"', corrupted_json, re.IGNORECASE)
+                    if query_match:
+                        preserved["query"] = query_match.group(1)
+                    
+                    # Try to extract 'path' parameter (critical for file operations)
+                    path_match = re.search(r'"path"\s*:\s*"([^"]+)"', corrupted_json, re.IGNORECASE)
+                    if path_match:
+                        preserved["path"] = path_match.group(1)
+                    
+                    # Try to extract other common parameters (but avoid large content fields)
+                    for param in ["scene_path", "node_path", "type", "name", "operation", "description", "asset_query"]:
+                        match = re.search(rf'"{param}"\s*:\s*"([^"]+)"', corrupted_json, re.IGNORECASE)
+                        if match:
+                            value = match.group(1)
+                            # Truncate very long values to prevent re-corruption
+                            if len(value) > 1000:
+                                print(f"PARAM_RECOVERY: Truncating large '{param}' value from {len(value)} to 1000 chars")
+                                value = value[:1000] + "... [truncated due to size]"
+                            preserved[param] = value
+                    
+                    # CRITICAL: If we found an 'op' parameter but no other params, try to infer missing ones
+                    if "op" in preserved and len(preserved) == 1:
+                        op_value = preserved["op"]
+                        
+                        # For filesystem operations, try to extract path from the large content
+                        if op_value.startswith("fs."):
+                            # Look for common path patterns in the corrupted content
+                            path_patterns = [
+                                r'res://[^"\s]+\.(?:gd|tscn|cs|tres|png|jpg|wav)',  # Godot resource paths
+                                r'"(?:res://)?[^"\s]*?\.(?:gd|tscn|cs|tres|png|jpg|wav)"'  # Quoted paths
+                            ]
+                            for pattern in path_patterns:
+                                match = re.search(pattern, corrupted_json)
+                                if match:
+                                    preserved["path"] = match.group(0).strip('"')
+                                    print(f"PARAM_RECOVERY: Inferred path '{preserved['path']}' for {op_value} operation")
+                                    break
+                    
+                    if preserved:
+                        import json as _json
+                        result = _json.dumps(preserved, separators=(",", ":"))
+                        print(f"PARAM_RECOVERY: Successfully preserved {len(preserved)} parameters: {list(preserved.keys())}")
+                        return result
+                    
+                    return "{}"
+                except Exception as e:
+                    print(f"PARAM_RECOVERY_ERROR: Failed to preserve parameters: {e}")
+                    return "{}"
+
             # Helper to ensure tool call arguments are valid JSON strings.
             # Prevents downstream provider adapters (e.g., Gemini) from failing to parse
             # arguments when malformed content leaks into tool calls.
@@ -3297,6 +3510,11 @@ def chat():
                                 return _json.dumps(obj, separators=(",", ":"))
                             except Exception as e2:
                                 print(f"TOOL_ARGS_ERROR: Failed even after comma fix: {e2}")
+                                # CRITICAL: Try to preserve at least the 'op' parameter before complete fallback
+                                preserved_args = _try_preserve_critical_params(s)
+                                if preserved_args != "{}":
+                                    print(f"TOOL_ARGS_RECOVERY: Preserved critical parameters: {preserved_args}")
+                                    return preserved_args
                                 # Last resort: Log the problematic section for debugging
                                 error_context = s[max(0, 110):min(len(s), 150)]
                                 print(f"TOOL_ARGS_DEBUG: Context around error position 116: ...{error_context}...")
@@ -3323,9 +3541,25 @@ def chat():
                         obj = _json.loads(s2)
                         return _json.dumps(obj, separators=(",", ":"))
                     except Exception:
-                        return "{}"
-                except Exception:
-                    return "{}"
+                        # CRITICAL: Try to preserve essential parameters before complete fallback
+                        preserved_args = _try_preserve_critical_params(s)
+                        if preserved_args != "{}":
+                            print(f"TOOL_ARGS_RECOVERY: Preserved parameters from final parsing attempt")
+                            return preserved_args
+                        # Mark this as a large content failure for special error handling
+                        return '{"_tool_gen_failure": "large_content", "_original_size": ' + str(len(s)) + '}'
+                except Exception as e:
+                    print(f"TOOL_ARGS_CRITICAL_ERROR: Complete sanitization failure: {e}")
+                    # Even in complete failure, try to preserve critical params if we have the original string
+                    if isinstance(arguments_value, str) and len(arguments_value) > 0:
+                        preserved_args = _try_preserve_critical_params(arguments_value)
+                        if preserved_args != "{}":
+                            print(f"TOOL_ARGS_RECOVERY: Preserved parameters from exception handler")
+                            return preserved_args
+                        # Mark as tool generation failure
+                        size = len(str(arguments_value))
+                        return f'{{"_tool_gen_failure": "critical_error", "_original_size": {size}}}'
+                    return '{"_tool_gen_failure": "unknown"}'
 
             conversation_turn = 0
             max_conversation_turns = 10  # Prevent infinite loops
@@ -3370,7 +3604,20 @@ def chat():
                 
                 # ALWAYS use fallback for now (it's more reliable and tested)
                 # Track if summarization happened by checking return value
+                original_message_count = len(conversation_messages)
                 conversation_messages, summarization_was_attempted = _manage_conversation_length_fallback(conversation_messages, model)
+                
+                # SEND COMPLETION STATUS AFTER SUMMARIZATION WITH SUMMARIZED MESSAGES
+                if will_summarize and summarization_was_attempted:
+                    yield json.dumps({
+                        "status": "summarizing",
+                        "message": f"Summarization completed: {original_message_count} → {len(conversation_messages)} messages",
+                        "original_count": original_message_count,
+                        "new_count": len(conversation_messages),
+                        "action": "replace_conversation_history", 
+                        "new_messages": conversation_messages  # Always send summarized conversation for frontend storage
+                    }) + '\n'
+                    print(f"📤 SENT: summarizing completed status with {len(conversation_messages)} summarized messages to frontend ({original_message_count} → {len(conversation_messages)} messages)")
                 
                 # SAFETY CHECK: Verify we're under limit using ACTUAL token counting
                 model_limit = _get_model_token_limit(model)
@@ -3392,15 +3639,8 @@ def chat():
                 if summarization_was_attempted:
                     messages_removed = max(0, original_message_count - len(conversation_messages))
                     
-                    # Notify frontend AND send the new summarized structure
-                    yield json.dumps({
-                        "status": "summarizing",
-                        "message": f"Conversation summarized: {messages_removed} older messages condensed, summary created for AI efficiency",
-                        "original_count": original_message_count,
-                        "new_count": len(conversation_messages),
-                        "action": "replace_conversation_history",
-                        "new_messages": conversation_messages  # Send the summarized version back!
-                    }) + '\n'
+                    # REMOVED: Legacy summarization notification (conflicts with new streamlined approach)
+                    # The new approach sends completion status after summarization finishes
                 
                 print(f"CONVERSATION_LOOP: Starting OpenAI call with {len(conversation_messages)} messages")
                 if conversation_messages:
@@ -3685,10 +3925,23 @@ def chat():
                                             current_len = len(tool_call_aggregator[key]["arguments"])
                                             tool_call_aggregator[key]["arguments"] += fn_args
                                             new_len = len(tool_call_aggregator[key]["arguments"])
-                                            if new_len > 5000 and current_len < 5000:
-                                                print(f"TOOL_ARGS_ACCUMULATING: {fn_name} arguments now {new_len} chars (crossed 5KB threshold)")
+                                            
+                                            # CRITICAL: Log size thresholds for monitoring
+                                            if new_len > 50000:  # 50KB - Dangerous size!
+                                                print(f"🚨 TOOL_ARGS_OVERFLOW: {fn_name} arguments reached {new_len} chars - CRITICAL SIZE!")
+                                                print(f"🚨 This may cause empty arguments bug - monitoring for corruption...")
+                                                # Log the structure to help debug
+                                                try:
+                                                    import json as _json_check
+                                                    _json_check.loads(tool_call_aggregator[key]["arguments"])
+                                                    print(f"✅ TOOL_ARGS_VALID: Large arguments still parse as valid JSON")
+                                                except Exception as parse_error:
+                                                    print(f"💥 TOOL_ARGS_CORRUPTED: Large arguments are malformed JSON: {parse_error}")
+                                                    print(f"💥 This will likely cause empty arguments fallback!")
                                             elif new_len > 15000 and current_len < 15000:
                                                 print(f"TOOL_ARGS_ACCUMULATING: {fn_name} arguments now {new_len} chars (getting very large!)")
+                                            elif new_len > 5000 and current_len < 5000:
+                                                print(f"TOOL_ARGS_ACCUMULATING: {fn_name} arguments now {new_len} chars (crossed 5KB threshold)")
                         
                         print(f"RESPONSE_DEBUG: Processed {chunk_count} chunks, text_length: {len(full_text_response)}, tools: {len(tool_call_aggregator)}")
                         try:
@@ -3763,14 +4016,8 @@ def chat():
                             print(f"✅ EMERGENCY_RESULT: Now at {(final_tokens/actual_limit*100):.1f}% of limit - safe to retry")
                             
                             # Notify frontend of completion
-                            yield json.dumps({
-                                "status": "summarizing",
-                                "message": f"Emergency summarization complete: {original_count - len(openai_messages)} messages removed",
-                                "original_count": original_count,
-                                "new_count": len(openai_messages),
-                                "action": "replace_conversation_history",
-                                "new_messages": openai_messages
-                            }) + '\n'
+                            # REMOVED: Legacy emergency summarization notification
+                            # Emergency trimming is handled internally, no need to notify frontend
                             
                             # Retry immediately with trimmed conversation
                             attempts = 0  # Reset attempts for retry
@@ -3901,8 +4148,8 @@ def chat():
                     
                     # Parse arguments to check operation
                     try:
-                        import json
-                        args = json.loads(func_args) if func_args else {}
+                        import json as _json_parse
+                        args = _json_parse.loads(func_args) if func_args else {}
                         op = args.get('op', '')
                         
                         # project_manager: only specific operations need backend
@@ -4018,10 +4265,21 @@ def chat():
                     original_tool_calls_for_history = []
                     for i, func in backend_calls.items():
                         tool_id = tool_ids[i]
+                        
+                        # CRITICAL: Detect tool argument corruption before sanitization
+                        original_args = func["arguments"]
+                        sanitized_args = _sanitize_tool_arguments(original_args)
+                        
+                        # Log corruption detection
+                        if len(original_args) > 1000 and sanitized_args == "{}":
+                            print(f"🚨 TOOL_CORRUPTION_DETECTED: {func['name']} arguments ({len(original_args)} chars) sanitized to empty!")
+                            print(f"🚨 Original args preview: {original_args[:200]}...")
+                            print(f"🚨 This is the ROOT CAUSE of the 'missing op parameter' bug!")
+                        
                         original_tool_calls_for_history.append({
                             "id": tool_id,
                             "type": "function",
-                            "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
+                            "function": {"name": func["name"], "arguments": sanitized_args},
                         })
                     
                     # Send executing_tools to frontend BEFORE executing backend tools
@@ -5066,11 +5324,22 @@ def chat():
                     for i, func in tool_call_aggregator.items():
                         tool_id = tool_ids[i]
                         print(f"FRONTEND_PROCESSING: Processing tool {func['name']} with id {tool_id}")
+                        
+                        # CRITICAL: Detect argument corruption for frontend tools too
+                        original_args = func["arguments"]
+                        sanitized_args = _sanitize_tool_arguments(original_args)
+                        
+                        # Log corruption detection
+                        if len(original_args) > 1000 and sanitized_args == "{}":
+                            print(f"🚨 FRONTEND_TOOL_CORRUPTION: {func['name']} arguments ({len(original_args)} chars) sanitized to empty!")
+                            print(f"🚨 Original args preview: {original_args[:200]}...")
+                            print(f"🚨 This will cause 'missing op parameter' error in frontend tool execution!")
+                        
                         tool_calls_for_frontend.append({
                             "id": tool_id,
                             "function": {
                                 "name": func["name"],
-                                "arguments": _sanitize_tool_arguments(func["arguments"]) 
+                                "arguments": sanitized_args
                             }
                         })
                     

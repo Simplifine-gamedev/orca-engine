@@ -120,7 +120,7 @@ void StreamingIndicator::stop_animation() {
 	is_animating = false;
 	
 	// CRITICAL FIX: Stop timer FIRST before hiding - with null check after predelete cleanup
-	if (animation_timer) {
+	if (animation_timer && ObjectDB::get_instance(animation_timer->get_instance_id())) {
 		Timer *timer = Object::cast_to<Timer>(animation_timer);
 		if (timer && !timer->is_stopped()) {
 			timer->stop();

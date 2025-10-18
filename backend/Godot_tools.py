@@ -56,12 +56,12 @@ _godot_tools_template = [
 
                     # fs.read / fs.write (whole file replacement)
                     "path": {"type": "string", "description": "File path"},
-                    "content": {"type": "string", "description": "New content for fs.write (whole file replacement)"},
+                    "content": {"type": "string", "maxLength": 8000, "description": "New content for fs.write. IMPORTANT: Keep content under 8000 characters to prevent JSON corruption. For large scripts, make smaller incremental edits instead of full file replacements. Break complex features into multiple smaller operations."},
                     
                     # fs.write_lines (line range editing)
                     "start_line": {"type": "integer", "description": "Starting line number for fs.write_lines (1-based)"},
                     "end_line": {"type": "integer", "description": "Ending line number for fs.write_lines (1-based, inclusive)"},
-                    "lines_content": {"type": "string", "description": "New content for the specified line range"},
+                    "lines_content": {"type": "string", "maxLength": 5000, "description": "New content for the specified line range. Keep under 5000 characters. For large changes, break into multiple smaller line-range edits."},
                     
                     # fs.replace_string (precise string replacement)
                     "find_string": {"type": "string", "description": "String to find for fs.replace_string"},
@@ -409,7 +409,7 @@ _godot_tools_template = [
                     "force_recompile_all": {"type": "boolean", "default": False, "description": "Force recompile all shaders in project"},
 
                     # Image generate/edit
-                    "description": {"type": "string", "description": "Text description of the image to generate or edit"},
+                    "description": {"type": "string", "maxLength": 2000, "description": "Text description of the image to generate or edit. Keep descriptions concise (under 2000 chars) for reliable JSON parsing. Focus on key visual elements and style."},
                     "images": {"type": "array", "items": {"type": "string"}, "description": "Array of image IDs to edit (leave empty to generate new image). Use image IDs from previous conversation like 'generated_abc123' or 'edited_def456'"},
                     "style": {"type": "string", "description": "Art style for the image (e.g., 'pixel art', 'photorealistic', '3D render')"},
                     "size": {"type": "string"},
