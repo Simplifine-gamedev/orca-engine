@@ -136,7 +136,17 @@ void DesignStudio3DEditor::_setup_ui() {
 	quality_selector->add_item("High (~5min)", 2);
 	quality_selector->select(0);
 	generate_tab->add_child(quality_selector);
+
+	// Target faces input
+	Label *target_faces_label = memnew(Label);
+	target_faces_label->set_text("Target Faces (optional):");
+	generate_tab->add_child(target_faces_label);
 	
+	target_faces_input = memnew(LineEdit);
+	target_faces_input->set_placeholder("e.g. 20000 (leave empty for default)");
+	target_faces_input->set_custom_minimum_size(Size2(200 * EDSCALE, 0));
+	generate_tab->add_child(target_faces_input);
+
 	generate_button = memnew(Button);
 	generate_button->set_text("Generate 3D Model");
 	generate_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_generate_pressed));
@@ -199,6 +209,9 @@ void DesignStudio3DEditor::_setup_ui() {
 	file_dialog->add_filter("*.webp", "WebP Images");
 	file_dialog->connect("file_selected", callable_mp(this, &DesignStudio3DEditor::_on_image_file_selected));
 	add_child(file_dialog);
+	
+	// Setup Current View tab (initially hidden)
+	_setup_current_view_tab();
 }
 
 void DesignStudio3DEditor::_setup_3d_viewer() {
@@ -312,6 +325,178 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	download_retry_timer->set_one_shot(true);
 	download_retry_timer->connect("timeout", callable_mp(this, &DesignStudio3DEditor::_on_download_retry_timeout));
 	add_child(download_retry_timer);
+	
+	// Texture/Segmentation HTTP Requests
+	texture_request = memnew(HTTPRequest);
+	texture_request->set_name("TextureRequest");
+	texture_request->set_timeout(60); // 60 seconds timeout
+	add_child(texture_request);
+	
+	segment_request = memnew(HTTPRequest);
+	segment_request->set_name("SegmentRequest");
+	segment_request->set_timeout(60); // 60 seconds timeout
+	add_child(segment_request);
+	
+	texture_poll_request = memnew(HTTPRequest);
+	texture_poll_request->set_name("TexturePollRequest");
+	texture_poll_request->set_timeout(30); // 30 seconds timeout
+	add_child(texture_poll_request);
+	
+	texture_download_request = memnew(HTTPRequest);
+	texture_download_request->set_name("TextureDownloadRequest");
+	texture_download_request->set_timeout(180); // 3 minutes timeout for large files
+	texture_download_request->set_body_size_limit(50 * 1024 * 1024); // 50 MB limit
+	texture_download_request->set_use_threads(true);
+	add_child(texture_download_request);
+	
+	// Texture poll timer
+	texture_poll_timer = memnew(Timer);
+	texture_poll_timer->set_wait_time(5.0); // Poll every 5 seconds
+	texture_poll_timer->set_one_shot(false);
+	texture_poll_timer->connect("timeout", callable_mp(this, &DesignStudio3DEditor::_on_texture_poll_timeout));
+	add_child(texture_poll_timer);
+}
+
+void DesignStudio3DEditor::_setup_current_view_tab() {
+	// === CURRENT VIEW TAB (initially hidden, shows after model is loaded) ===
+	current_view_tab = memnew(VBoxContainer);
+	current_view_tab->set_name("Current View");
+	
+	// Model information section
+	Label *info_title = memnew(Label);
+	info_title->set_text("Model Information");
+	info_title->add_theme_font_size_override("font_size", 14 * EDSCALE);
+	current_view_tab->add_child(info_title);
+	
+	model_info_label = memnew(Label);
+	model_info_label->set_text("No model loaded");
+	model_info_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	model_info_label->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	current_view_tab->add_child(model_info_label);
+	
+	current_view_tab->add_child(memnew(HSeparator));
+	
+	// Action buttons section
+	Label *actions_title = memnew(Label);
+	actions_title->set_text("Model Actions");
+	actions_title->add_theme_font_size_override("font_size", 14 * EDSCALE);
+	current_view_tab->add_child(actions_title);
+	
+	add_texture_button = memnew(Button);
+	add_texture_button->set_text("Add Texture (Demo: Red Sports Car)");
+	add_texture_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_add_texture_pressed));
+	current_view_tab->add_child(add_texture_button);
+	
+	segment_button = memnew(Button);
+	segment_button->set_text("Segment Model");
+	segment_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_segment_pressed));
+	current_view_tab->add_child(segment_button);
+	
+	remesh_button = memnew(Button);
+	remesh_button->set_text("Re-mesh");
+	remesh_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_pressed));
+	current_view_tab->add_child(remesh_button);
+	
+	// Cancel button for long-running operations
+	cancel_operation_button = memnew(Button);
+	cancel_operation_button->set_text("Cancel Operation");
+	cancel_operation_button->set_visible(false); // Hidden by default
+	cancel_operation_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_cancel_operation_pressed));
+	current_view_tab->add_child(cancel_operation_button);
+	
+	current_view_tab->add_child(memnew(HSeparator));
+	
+	// Status area for texture/segmentation operations
+	Label *texture_status_title = memnew(Label);
+	texture_status_title->set_text("Operation Status");
+	texture_status_title->add_theme_font_size_override("font_size", 12 * EDSCALE);
+	current_view_tab->add_child(texture_status_title);
+	
+	texture_status_label = memnew(Label);
+	texture_status_label->set_text("Ready for texture/segmentation operations");
+	texture_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	texture_status_label->set_custom_minimum_size(Size2(0, 60 * EDSCALE));
+	current_view_tab->add_child(texture_status_label);
+	
+	// Don't add to mode_tabs yet - will be added when model is loaded
+}
+
+void DesignStudio3DEditor::_show_current_view_tab() {
+	if (current_view_tab && mode_tabs) {
+		// Check if tab is already added
+		bool tab_exists = false;
+		for (int i = 0; i < mode_tabs->get_tab_count(); i++) {
+			if (mode_tabs->get_tab_control(i) == current_view_tab) {
+				tab_exists = true;
+				break;
+			}
+		}
+		
+		if (!tab_exists) {
+			mode_tabs->add_child(current_view_tab);
+		}
+		
+		// Switch to the Current View tab
+		mode_tabs->set_current_tab(mode_tabs->get_tab_idx_from_control(current_view_tab));
+		_update_model_info();
+		
+		// Reset texture operation status when showing the tab
+		if (texture_status_label) {
+			texture_status_label->set_text("Ready for texture/segmentation operations");
+		}
+		
+		// Clear parent job ID so it gets refreshed with current model's job_id
+		current_parent_job_id = "";
+	}
+}
+
+void DesignStudio3DEditor::_hide_current_view_tab() {
+	if (current_view_tab && mode_tabs) {
+		// Check if tab exists and remove it
+		for (int i = 0; i < mode_tabs->get_tab_count(); i++) {
+			if (mode_tabs->get_tab_control(i) == current_view_tab) {
+				mode_tabs->remove_child(current_view_tab);
+				break;
+			}
+		}
+		
+		// Switch back to Generate tab
+		mode_tabs->set_current_tab(0);
+	}
+}
+
+void DesignStudio3DEditor::_update_model_info() {
+	if (!model_info_label) {
+		return;
+	}
+	
+	String info_text = "Model Statistics:\n";
+	info_text += "  Vertices: " + String::num_int64(current_vertex_count) + "\n";
+	info_text += "  Faces: " + String::num_int64(current_face_count) + "\n";
+	info_text += "  Normals: " + String::num_int64(current_normal_count) + "\n";
+	
+	if (current_texture_coord_count > 0) {
+		info_text += "  Texture Coords: " + String::num_int64(current_texture_coord_count) + "\n";
+	}
+	
+	if (current_loaded_mesh.is_valid()) {
+		AABB aabb = current_loaded_mesh->get_aabb();
+		Vector3 size = aabb.size;
+		info_text += "\nBounding Box:\n";
+		info_text += "  Size: " + String::num(size.x, 2) + " x " + String::num(size.y, 2) + " x " + String::num(size.z, 2) + "\n";
+		info_text += "  Volume: " + String::num(size.x * size.y * size.z, 2) + " units^3\n";
+	}
+	
+	if (!current_model_path.is_empty()) {
+		Ref<FileAccess> file = FileAccess::open(current_model_path, FileAccess::READ);
+		if (file.is_valid()) {
+			int64_t file_size = file->get_length();
+			file->close();
+			info_text += "\nFile Size: " + String::humanize_size(file_size);
+		}
+	}
+	
+	model_info_label->set_text(info_text);
 }
 
 void DesignStudio3DEditor::_on_generate_pressed() {
@@ -320,11 +505,29 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 		return;
 	}
 	
-	// Clear the 3D viewer
+	// Clear the 3D viewer and hide Current View tab
 	if (preview_mesh) {
 		preview_mesh->set_mesh(Ref<Mesh>());
 		preview_mesh->set_transform(Transform3D());
 	}
+	
+	// Hide Current View tab since we're generating a new model
+	_hide_current_view_tab();
+	
+	// Clear model statistics
+	current_vertex_count = 0;
+	current_face_count = 0;
+	current_normal_count = 0;
+	current_texture_coord_count = 0;
+	
+	// Clear texture state
+	current_parent_job_id = "";
+	current_texture_job_id = "";
+	is_texturing = false;
+	is_segmenting = false;
+	
+	// Clear job ID so new generation gets fresh parent ID
+	current_job_id = "";
 	
 	int mode = generation_mode->get_selected();
 	String url;
@@ -340,6 +543,16 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	
 	body_dict["user_id"] = current_user_id;
 	body_dict["quality"] = quality;
+	
+	// Add target_faces and use_retopology if specified
+	String target_faces_text = target_faces_input->get_text().strip_edges();
+	if (!target_faces_text.is_empty()) {
+		int target_faces = target_faces_text.to_int();
+		if (target_faces > 0) {
+			body_dict["target_faces"] = target_faces;
+			body_dict["use_retopology"] = true; // Required for target_faces to work
+		}
+	}
 	
 	if (mode == 0) {
 		// TEXT MODE
@@ -378,6 +591,13 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	}
 	
 	String json_body = JSON::stringify(body_dict);
+	
+	// Debug: Print the request body to see what we're sending
+	print_line("=== 3D Generation Request ===");
+	print_line("URL: " + url);
+	print_line("Body: " + json_body);
+	print_line("=============================");
+	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
 	
@@ -540,7 +760,7 @@ void DesignStudio3DEditor::_on_job_status_received(int p_result, int p_code, con
 		is_generating = false;
 		generate_button->set_disabled(false);
 	} else {
-		status_label->set_text("⏳ Status: " + status);
+		status_label->set_text("Status: " + status);
 	}
 }
 
@@ -562,7 +782,7 @@ void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const 
 			case HTTPRequest::RESULT_REDIRECT_LIMIT_REACHED: error_msg = "Redirect limit reached"; break;
 			case HTTPRequest::RESULT_TIMEOUT: error_msg = "Timeout"; break;
 		}
-		status_label->set_text("❌ Download failed: " + error_msg + "\nResult code: " + itos(p_result));
+		status_label->set_text("[ERROR] Download failed: " + error_msg + "\nResult code: " + itos(p_result));
 		is_generating = false;
 		generate_button->set_disabled(false);
 		return;
@@ -626,9 +846,12 @@ void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const 
 	}
 	
 	// Reset state
+	if (is_generating) {
+		// Only clear job ID for newly generated models, not for loaded existing models
+		current_job_id = "";
+	}
 	is_generating = false;
 	generate_button->set_disabled(false);
-	current_job_id = "";
 	download_retry_count = 0;
 }
 
@@ -670,6 +893,12 @@ void DesignStudio3DEditor::_load_model_from_data(const PackedByteArray &p_data) 
 			else if (line.begins_with("f ")) face_count++;
 		}
 		
+		// Store model statistics for Current View tab
+		current_vertex_count = vertex_count;
+		current_face_count = face_count;
+		current_normal_count = normal_count;
+		current_texture_coord_count = texture_count;
+		
 		if (vertex_count > 0 || face_count > 0) {
 			preview += "Model Statistics:\n";
 			preview += "  Vertices: " + String::num_int64(vertex_count) + "\n";
@@ -702,6 +931,9 @@ void DesignStudio3DEditor::_load_model_from_data(const PackedByteArray &p_data) 
 			
 			// Enable export button
 			export_button->set_disabled(false);
+			
+			// Show Current View tab
+			_show_current_view_tab();
 		}
 		
 		status_label->set_text(preview);
@@ -979,6 +1211,17 @@ void DesignStudio3DEditor::_on_load_selected_pressed() {
 
 void DesignStudio3DEditor::_load_model_for_viewing(const Dictionary &p_model_data) {
 	current_model_data = p_model_data;
+	
+	// IMPORTANT: Set current_job_id from the loaded model data
+	String job_id = p_model_data.get("id", "");
+	if (job_id.is_empty()) {
+		job_id = p_model_data.get("job_id", "");
+	}
+	
+	if (!job_id.is_empty()) {
+		current_job_id = job_id;
+	}
+	
 	String model_url = p_model_data.get("output_file_url", "");
 	
 	if (model_url.is_empty()) {
@@ -1066,6 +1309,10 @@ void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
 			if (browse_status_label) browse_status_label->set_text("Model loaded! Export to save.");
 			
 			export_button->set_disabled(false);
+			
+			// Show Current View tab
+			_show_current_view_tab();
+			
 			return;
 		}
 		
@@ -1098,6 +1345,10 @@ void DesignStudio3DEditor::_load_imported_mesh(const String &p_path) {
 					if (browse_status_label) browse_status_label->set_text("Model loaded! Export to save.");
 					
 					export_button->set_disabled(false);
+					
+					// Show Current View tab
+					_show_current_view_tab();
+					
 					root->queue_free();
 					return;
 				}
@@ -1224,6 +1475,569 @@ String DesignStudio3DEditor::_get_or_create_persistent_user_id() {
 	EditorSettings::get_singleton()->save();
 	
 	return user_id;
+}
+
+void DesignStudio3DEditor::_on_add_texture_pressed() {
+	if (is_texturing) {
+		status_label->set_text("[BUSY] Already generating texture...");
+		return;
+	}
+	
+	if (current_loaded_mesh.is_null()) {
+		status_label->set_text("[ERROR] No model loaded for texturing");
+		return;
+	}
+	
+	// Simple prompt for texture description - replace with proper dialog later
+	String prompt = "red sports car"; // TODO: Replace with actual user input dialog
+	if (texture_status_label) {
+		texture_status_label->set_text("[TEXTURE] Starting texture generation with prompt: " + prompt);
+	}
+	
+	_create_parent_job_if_needed();
+	
+	// Check if we have a valid parent job ID
+	if (current_parent_job_id.is_empty()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Cannot generate texture without a valid parent model");
+		}
+		return;
+	}
+	
+	_start_texture_generation(prompt);
+}
+
+void DesignStudio3DEditor::_on_segment_pressed() {
+	if (is_segmenting) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[BUSY] Already segmenting...");
+		}
+		return;
+	}
+	
+	if (current_loaded_mesh.is_null()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] No model loaded for segmentation");
+		}
+		return;
+	}
+	
+	if (texture_status_label) {
+		texture_status_label->set_text("[SEGMENT] Starting model segmentation...");
+	}
+	
+	_create_parent_job_if_needed();
+	
+	// Check if we have a valid parent job ID
+	if (current_parent_job_id.is_empty()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Cannot segment model without a valid parent model");
+		}
+		return;
+	}
+	
+	_start_segmentation();
+}
+
+void DesignStudio3DEditor::_on_remesh_pressed() {
+	// Placeholder for Re-mesh functionality
+	if (status_label) {
+		status_label->set_text("[INFO] Re-mesh feature coming soon!");
+	}
+}
+
+void DesignStudio3DEditor::_on_cancel_operation_pressed() {
+	// Stop any active texture/segmentation operations
+	if (is_texturing || is_segmenting) {
+		texture_poll_timer->stop();
+		
+		// Reset states
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		
+		// Hide cancel button
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+		
+		// Update status
+		if (texture_status_label) {
+			texture_status_label->set_text("[CANCELLED] Operation cancelled by user. Ready for new operations.");
+		}
+		
+		// Clear job ID
+		current_texture_job_id = "";
+	}
+}
+
+void DesignStudio3DEditor::_create_parent_job_if_needed() {
+	// Use current_job_id as parent_job_id if we have one from successful generation
+	if (current_parent_job_id.is_empty()) {
+		if (!current_job_id.is_empty()) {
+			current_parent_job_id = current_job_id;
+			if (texture_status_label) {
+				texture_status_label->set_text("[TEXTURE] Using job ID: " + current_parent_job_id.substr(0, 12) + "... as parent");
+			}
+		} else {
+			// No parent model available - this shouldn't happen if we only show Current View after model loading
+			if (texture_status_label) {
+				texture_status_label->set_text("[ERROR] No parent model available for texture generation");
+			}
+			return;
+		}
+	}
+}
+
+void DesignStudio3DEditor::_start_texture_generation(const String &p_prompt) {
+	// Create multipart form data (NO FILE UPLOAD - backend downloads from storage)
+	String boundary = "----WebKitFormBoundary" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String form_data;
+	
+	// Add user_id
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"user_id\"\r\n\r\n";
+	form_data += current_user_id + "\r\n";
+	
+	// Add parent_job_id
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"parent_job_id\"\r\n\r\n";
+	form_data += current_parent_job_id + "\r\n";
+	
+	// Add mesh_filename (GLB format as expected by server)
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"mesh_filename\"\r\n\r\n";
+	form_data += "model.glb\r\n";
+	
+	// Add text_prompt
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"text_prompt\"\r\n\r\n";
+	form_data += p_prompt + "\r\n";
+	
+	// Close form
+	form_data += "--" + boundary + "--\r\n";
+	
+	PackedByteArray form_bytes = form_data.to_utf8_buffer();
+	PackedStringArray headers;
+	headers.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
+	
+	String url = TEXTURE_API_URL + "/texture/text-to-texture-single";
+	
+	// Disconnect any existing connections first
+	if (texture_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted))) {
+		texture_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted));
+	}
+	
+	texture_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted), CONNECT_ONE_SHOT);
+	
+	Error err = texture_request->request_raw(url, headers, HTTPClient::METHOD_POST, form_bytes);
+	
+	if (err == OK) {
+		is_texturing = true;
+		add_texture_button->set_disabled(true);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(true);
+		}
+		if (texture_status_label) {
+			texture_status_label->set_text("[TEXTURE] Submitting texture generation job...");
+		}
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to start texture request. Error: " + itos(err));
+		}
+	}
+}
+
+void DesignStudio3DEditor::_start_segmentation() {
+	// Create multipart form data (NO FILE UPLOAD - backend downloads from storage)
+	String boundary = "----WebKitFormBoundary" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String form_data;
+	
+	// Add user_id
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"user_id\"\r\n\r\n";
+	form_data += current_user_id + "\r\n";
+	
+	// Add parent_job_id
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"parent_job_id\"\r\n\r\n";
+	form_data += current_parent_job_id + "\r\n";
+	
+	// Add mesh_filename (GLB format as expected by server)
+	form_data += "--" + boundary + "\r\n";
+	form_data += "Content-Disposition: form-data; name=\"mesh_filename\"\r\n\r\n";
+	form_data += "model.glb\r\n";
+	
+	// Close form
+	form_data += "--" + boundary + "--\r\n";
+	
+	PackedByteArray form_bytes = form_data.to_utf8_buffer();
+	PackedStringArray headers;
+	headers.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
+	
+	String url = TEXTURE_API_URL + "/segment";
+	
+	// Disconnect any existing connections first
+	if (segment_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted))) {
+		segment_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted));
+	}
+	
+	segment_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted), CONNECT_ONE_SHOT);
+	
+	Error err = segment_request->request_raw(url, headers, HTTPClient::METHOD_POST, form_bytes);
+	
+	if (err == OK) {
+		is_segmenting = true;
+		segment_button->set_disabled(true);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(true);
+		}
+		if (texture_status_label) {
+			texture_status_label->set_text("[SEGMENT] Submitting segmentation job...");
+		}
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to start segmentation request. Error: " + itos(err));
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_texture_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	String job_type = is_texturing ? "texture" : "segmentation";
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to submit " + job_type + " job (HTTP " + itos(p_code) + ")");
+		}
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+		return;
+	}
+	
+	String response_text;
+	if (p_body.size() > 0) {
+		const uint8_t *r = p_body.ptr();
+		response_text = String::utf8((const char *)r, p_body.size());
+	}
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	
+	if (err != OK) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to parse " + job_type + " response");
+		}
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+		return;
+	}
+	
+	Dictionary response = json.get_data();
+	
+	if (response.has("job_id")) {
+		current_texture_job_id = response["job_id"];
+		String job_type_caps = job_type.capitalize();
+		if (texture_status_label) {
+			texture_status_label->set_text("[SUCCESS] " + job_type_caps + " job submitted! ID: " + current_texture_job_id.substr(0, 8) + "...\n[POLLING] Checking status...");
+		}
+		_start_texture_polling(current_texture_job_id);
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] No job ID in " + job_type + " response");
+		}
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_segment_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to submit segmentation job (HTTP " + itos(p_code) + ")");
+		}
+		is_segmenting = false;
+		segment_button->set_disabled(false);
+		return;
+	}
+	
+	String response_text;
+	if (p_body.size() > 0) {
+		const uint8_t *r = p_body.ptr();
+		response_text = String::utf8((const char *)r, p_body.size());
+	}
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	
+	if (err != OK) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to parse segmentation response");
+		}
+		is_segmenting = false;
+		segment_button->set_disabled(false);
+		return;
+	}
+	
+	Dictionary response = json.get_data();
+	
+	if (response.has("job_id")) {
+		current_texture_job_id = response["job_id"];
+		if (texture_status_label) {
+			texture_status_label->set_text("[SUCCESS] Segmentation job submitted! ID: " + current_texture_job_id.substr(0, 8) + "...\n[POLLING] Checking status...");
+		}
+		_start_texture_polling(current_texture_job_id);
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] No job ID in segmentation response");
+		}
+		is_segmenting = false;
+		segment_button->set_disabled(false);
+	}
+}
+
+void DesignStudio3DEditor::_start_texture_polling(const String &p_job_id) {
+	current_texture_job_id = p_job_id;
+	texture_poll_timer->start();
+	// Immediately poll once
+	_on_texture_poll_timeout();
+}
+
+void DesignStudio3DEditor::_on_texture_poll_timeout() {
+	if (current_texture_job_id.is_empty()) {
+		texture_poll_timer->stop();
+		return;
+	}
+	
+	String url = TEXTURE_API_URL + "/jobs/" + current_texture_job_id;
+	
+	// Disconnect any existing connections first
+	if (texture_poll_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received))) {
+		texture_poll_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received));
+	}
+	
+	texture_poll_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received), CONNECT_ONE_SHOT);
+	texture_poll_request->request(url);
+}
+
+void DesignStudio3DEditor::_on_texture_status_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	String job_type = is_texturing ? "texture" : "segmentation";
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to get " + job_type + " job status (HTTP " + itos(p_code) + ")");
+		}
+		texture_poll_timer->stop();
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+		return;
+	}
+	
+	String response_text;
+	if (p_body.size() > 0) {
+		const uint8_t *r = p_body.ptr();
+		response_text = String::utf8((const char *)r, p_body.size());
+	}
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	
+	if (err != OK) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to parse " + job_type + " status response");
+		}
+		texture_poll_timer->stop();
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+		return;
+	}
+	
+	Dictionary job_data = json.get_data();
+	
+	if (!job_data.has("status")) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Invalid " + job_type + " status response");
+		}
+		texture_poll_timer->stop();
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		return;
+	}
+	
+	String status = job_data["status"];
+	
+	if (status == "queued") {
+		String queue_info = "";
+		if (job_data.has("queue_position")) {
+			int position = job_data["queue_position"];
+			queue_info = " (Position: " + itos(position) + " in queue)";
+		}
+		if (texture_status_label) {
+			texture_status_label->set_text("[QUEUED] " + job_type.capitalize() + " job queued... waiting for GPU" + queue_info);
+		}
+	} else if (status == "processing") {
+		String timing = is_texturing ? "(this may take 60-90 seconds)" : "(this may take 20-30 seconds)";
+		String progress_info = "";
+		if (job_data.has("progress_percent")) {
+			int progress = job_data["progress_percent"];
+			progress_info = " - " + itos(progress) + "% complete";
+		}
+		if (texture_status_label) {
+			texture_status_label->set_text("[PROCESSING] Generating " + job_type + " on GPU... " + timing + progress_info);
+		}
+	} else if (status == "completed") {
+		texture_poll_timer->stop();
+		
+		String file_url = "";
+		if (job_data.has("texture_file_url")) {
+			file_url = job_data["texture_file_url"];
+		} else if (job_data.has("segmented_model_url")) {
+			file_url = job_data["segmented_model_url"];
+		} else if (job_data.has("output_file_url")) {
+			file_url = job_data["output_file_url"];
+		}
+		
+		if (file_url.is_empty()) {
+			if (texture_status_label) {
+				texture_status_label->set_text("[ERROR] No file URL in completed " + job_type + " response");
+			}
+			is_texturing = false;
+			is_segmenting = false;
+			add_texture_button->set_disabled(false);
+			segment_button->set_disabled(false);
+			return;
+		}
+		
+		if (texture_status_label) {
+			texture_status_label->set_text("[COMPLETE] Downloading " + job_type + " result...");
+		}
+		
+		// Disconnect any existing connections first
+		if (texture_download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded))) {
+			texture_download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded));
+		}
+		
+		texture_download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded), CONNECT_ONE_SHOT);
+		texture_download_request->request(file_url);
+	} else if (status == "failed") {
+		texture_poll_timer->stop();
+		String error_msg = job_data.get("error_message", "Unknown error");
+		if (texture_status_label) {
+			texture_status_label->set_text("[FAILED] " + job_type.capitalize() + " generation failed: " + error_msg);
+		}
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+	} else if (status == "initializing" || status == "starting") {
+		if (texture_status_label) {
+			texture_status_label->set_text("[STARTING] Initializing " + job_type + " generation...");
+		}
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text(job_type.capitalize() + " Status: " + status);
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_textured_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	String job_type = is_texturing ? "texture" : "segmentation";
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to download " + job_type + " result. Result: " + itos(p_result));
+		}
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		return;
+	}
+	
+	if (p_code != 200) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to download " + job_type + " result (HTTP " + itos(p_code) + ")");
+		}
+		is_texturing = false;
+		is_segmenting = false;
+		add_texture_button->set_disabled(false);
+		segment_button->set_disabled(false);
+		return;
+	}
+	
+	if (p_body.size() > 0) {
+		// Save result to temp directory
+		String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+		String extension = is_texturing ? ".glb" : ".obj";
+		String filename = job_type + "_model_" + timestamp + extension;
+		String temp_path = "user://" + filename;
+		
+		Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_buffer(p_body);
+			file->close();
+			
+			if (texture_status_label) {
+				texture_status_label->set_text("[SUCCESS] " + job_type.capitalize() + " result downloaded!\nSize: " + String::humanize_size(p_body.size()) + "\nSaved as: " + filename + "\n\n[INFO] " + job_type.capitalize() + " result ready for viewing and export!");
+			}
+			
+			// Update current model path to the processed version
+			current_model_path = temp_path;
+			
+			// Try to load the processed model in viewer
+			// For now, just show success message - GLB/OBJ loading might need additional work
+		} else {
+			if (texture_status_label) {
+				texture_status_label->set_text("[ERROR] Failed to save " + job_type + " result file");
+			}
+		}
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Downloaded " + job_type + " result is empty");
+		}
+	}
+	
+	// Reset state
+	is_texturing = false;
+	is_segmenting = false;
+	add_texture_button->set_disabled(false);
+	segment_button->set_disabled(false);
+	current_texture_job_id = "";
+	
+	// Hide cancel button
+	if (cancel_operation_button) {
+		cancel_operation_button->set_visible(false);
+	}
 }
 
 DesignStudio3DEditor::DesignStudio3DEditor() {

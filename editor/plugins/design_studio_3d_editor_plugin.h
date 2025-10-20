@@ -57,6 +57,7 @@ class DesignStudio3DEditor : public PanelContainer {
 
 	// API Configuration
 	const String API_URL = "https://gpu-proxy-awdwh5ovsa-uc.a.run.app";
+	const String TEXTURE_API_URL = "https://texture-proxy-server-awdwh5ovsa-uc.a.run.app";
 	
 	// UI Elements - Left Panel
 	TabContainer *mode_tabs = nullptr;
@@ -77,6 +78,7 @@ class DesignStudio3DEditor : public PanelContainer {
 	
 	// Shared generate controls
 	OptionButton *quality_selector = nullptr;
+	LineEdit *target_faces_input = nullptr;
 	Button *generate_button = nullptr;
 	Label *status_label = nullptr;
 	
@@ -85,6 +87,15 @@ class DesignStudio3DEditor : public PanelContainer {
 	Button *load_selected_button = nullptr;
 	Button *refresh_list_button = nullptr;
 	Label *browse_status_label = nullptr;
+	
+	// Current View tab (appears after model is loaded)
+	VBoxContainer *current_view_tab = nullptr;
+	Label *model_info_label = nullptr;
+	Label *texture_status_label = nullptr;
+	Button *add_texture_button = nullptr;
+	Button *segment_button = nullptr;
+	Button *remesh_button = nullptr;
+	Button *cancel_operation_button = nullptr;
 	
 	// Export button (shared)
 	Button *export_button = nullptr;
@@ -106,6 +117,13 @@ class DesignStudio3DEditor : public PanelContainer {
 	HTTPRequest *browse_request = nullptr;
 	Timer *poll_timer = nullptr;
 	
+	// Texture/Segmentation HTTP Requests
+	HTTPRequest *texture_request = nullptr;
+	HTTPRequest *texture_poll_request = nullptr;
+	HTTPRequest *texture_download_request = nullptr;
+	HTTPRequest *segment_request = nullptr;
+	Timer *texture_poll_timer = nullptr;
+	
 	// State
 	String current_job_id;
 	String current_user_id; // Generated dynamically from machine ID
@@ -114,6 +132,18 @@ class DesignStudio3DEditor : public PanelContainer {
 	Ref<Mesh> current_loaded_mesh; // Currently loaded mesh in viewer
 	Dictionary current_model_data; // Data of currently loaded model
 	String selected_image_path; // Path to selected image
+	
+	// Texture/Segmentation State
+	String current_parent_job_id; // Parent job ID for texture/segmentation operations
+	String current_texture_job_id; // Current texture generation job ID
+	bool is_texturing = false;
+	bool is_segmenting = false;
+	
+	// Model statistics
+	int current_vertex_count = 0;
+	int current_face_count = 0;
+	int current_normal_count = 0;
+	int current_texture_coord_count = 0;
 	
 	// Download retry logic
 	String download_url_to_retry;
@@ -130,6 +160,10 @@ class DesignStudio3DEditor : public PanelContainer {
 	
 	void _setup_ui();
 	void _setup_3d_viewer();
+	void _setup_current_view_tab();
+	void _show_current_view_tab();
+	void _hide_current_view_tab();
+	void _update_model_info();
 	
 	void _on_generate_pressed();
 	void _on_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -159,6 +193,24 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_generation_mode_changed(int p_index);
 	String _image_to_base64(const String &p_image_path);
 	String _get_or_create_persistent_user_id();
+	
+	// Current View tab callbacks
+	void _on_add_texture_pressed();
+	void _on_segment_pressed();
+	void _on_remesh_pressed();
+	void _on_cancel_operation_pressed();
+	
+	// Texture/Segmentation operations
+	void _start_texture_generation(const String &p_prompt);
+	void _start_segmentation();
+	void _upload_model_for_texturing();
+	void _on_texture_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_segment_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _start_texture_polling(const String &p_job_id);
+	void _on_texture_poll_timeout();
+	void _on_texture_status_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_textured_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _create_parent_job_if_needed();
 
 protected:
 	void _notification(int p_what);
