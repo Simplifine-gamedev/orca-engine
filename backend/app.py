@@ -1138,18 +1138,32 @@ try:
 except Exception as e:
     print(f"CONVERSATION_MEMORY: Failed to initialize: {e}")
 
-# Load system prompt from file (once at startup)
+# Load system prompts from files (once at startup)
 SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
+SYSTEM_PROMPT_ASK_PATH = os.path.join(os.path.dirname(__file__), 'system_prompt_ask_mode.txt')
 SYSTEM_PROMPT = None
+SYSTEM_PROMPT_ASK = None
+
 try:
     with open(SYSTEM_PROMPT_PATH, 'r', encoding='utf-8') as f:
         SYSTEM_PROMPT = f.read().strip()
         if SYSTEM_PROMPT:
-            print(f"SYSTEM_PROMPT: Loaded ({len(SYSTEM_PROMPT)} chars)")
+            print(f"SYSTEM_PROMPT (Agent): Loaded ({len(SYSTEM_PROMPT)} chars)")
         else:
-            print("SYSTEM_PROMPT: File is empty; no system message will be prepended")
+            print("SYSTEM_PROMPT (Agent): File is empty; no system message will be prepended")
 except Exception as e:
-    print(f"SYSTEM_PROMPT: Failed to load: {e}")
+    print(f"SYSTEM_PROMPT (Agent): Failed to load: {e}")
+
+try:
+    with open(SYSTEM_PROMPT_ASK_PATH, 'r', encoding='utf-8') as f:
+        SYSTEM_PROMPT_ASK = f.read().strip()
+        if SYSTEM_PROMPT_ASK:
+            print(f"SYSTEM_PROMPT (Ask): Loaded ({len(SYSTEM_PROMPT_ASK)} chars)")
+        else:
+            print("SYSTEM_PROMPT (Ask): File is empty; will use agent prompt")
+except Exception as e:
+    print(f"SYSTEM_PROMPT (Ask): Failed to load: {e}")
+    SYSTEM_PROMPT_ASK = SYSTEM_PROMPT  # Fallback to agent prompt
 
 def verify_authentication():
     """Verify user authentication from request (with dev mode bypass)"""
@@ -3227,12 +3241,14 @@ def chat():
     messages = data.get('messages', [])
     context = data.get('context') or {}
     requested_model = data.get('model')
+    chat_mode = str((data.get('mode') or 'agent')).lower().strip()
+    print(f"CHAT_MODE_DEBUG: Raw mode from request: {repr(data.get('mode'))}, parsed chat_mode: '{chat_mode}'")
     model = get_validated_chat_model(requested_model)  # Restrict to allowed models
     
     # CRITICAL FIX: Preserve original friendly name for thinking mode detection
     # instead of doing unreliable reverse lookup
     model_friendly_name = requested_model if requested_model in ALLOWED_CHAT_MODELS else DEFAULT_MODEL
-    print(f"MODEL_SELECTION: Frontend requested '{requested_model}' -> using friendly_name '{model_friendly_name}', thinking_mode: {_is_thinking_mode(model_friendly_name)}")
+    print(f"MODEL_SELECTION: Frontend requested '{requested_model}' -> using friendly_name '{model_friendly_name}', thinking_mode: {_is_thinking_mode(model_friendly_name)}; chat_mode={chat_mode}")
 
     if not messages:
         # Return a minimal NDJSON-friendly error envelope so the frontend doesn't try to parse HTML.
@@ -3744,9 +3760,17 @@ def chat():
                     
                     openai_messages.append(clean_msg)
 
-                # Prepend system prompt if available
-                if SYSTEM_PROMPT:
+                # Prepend appropriate system prompt based on mode
+                if chat_mode == 'ask' and SYSTEM_PROMPT_ASK:
+                    system_msg = {"role": "system", "content": SYSTEM_PROMPT_ASK}
+                    print(f"SYSTEM_PROMPT: Using ASK mode prompt ({len(SYSTEM_PROMPT_ASK)} chars)")
+                elif SYSTEM_PROMPT:
                     system_msg = {"role": "system", "content": SYSTEM_PROMPT}
+                    print(f"SYSTEM_PROMPT: Using AGENT mode prompt ({len(SYSTEM_PROMPT)} chars)")
+                else:
+                    system_msg = None
+                
+                if system_msg:
                     openai_messages = [system_msg] + openai_messages
                 
                 # Debug: Check total token usage with ACTUAL LiteLLM counting
@@ -3779,9 +3803,60 @@ def chat():
                         # Use preserved friendly name instead of unreliable reverse lookup
                         reasoning_params = _get_reasoning_params(model_friendly_name, model_try)
                         
-                        # CRITICAL FIX: Deep copy tools to prevent LiteLLM from mutating the global
-                        # Cloud Run instances run for hours, and mutations corrupt the tools array
-                        safe_tools = copy.deepcopy(godot_tools)
+                        # SIMPLE APPROACH: Different tools array for ask vs agent mode
+                        if chat_mode == 'ask':
+                            # ASK MODE: Ultra-minimal read-only tools only
+                            safe_tools = [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "project_manager", 
+                                        "description": "Read-only project operations: analyze structure, list directories, read files, search assets",
+                                        "parameters": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "op": {
+                                                    "type": "string",
+                                                    "enum": ["context.get", "fs.list", "fs.read", "assets.search", "project.analyze_dir"],
+                                                    "description": "Read-only operations only"
+                                                },
+                                                "path": {"type": "string"},
+                                                "dir": {"type": "string"}, 
+                                                "project_root": {"type": "string"},
+                                                "context_mode": {"type": "string", "enum": ["structure", "hierarchy", "find_scenes", "patterns"]},
+                                                "pattern": {"type": "string"},
+                                                "asset_query": {"type": "string"},
+                                                "max_results": {"type": "integer", "default": 10}
+                                            },
+                                            "required": ["op"]
+                                        }
+                                    }
+                                },
+                                {
+                                    "type": "function", 
+                                    "function": {
+                                        "name": "search_manager",
+                                        "description": "Search project files and Godot documentation",
+                                        "parameters": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "op": {"type": "string", "enum": ["project.search", "docs.search"]},
+                                                "query": {"type": "string"},
+                                                "max_results": {"type": "integer", "default": 5},
+                                                "search_mode": {"type": "string", "enum": ["semantic", "keyword", "grep"], "default": "semantic"}
+                                            },
+                                            "required": ["op", "query"]
+                                        }
+                                    }
+                                }
+                            ]
+                            print(f"ASK_MODE_TOOLS: Using minimal read-only toolset with {len(safe_tools)} tools")
+                        else:
+                            # AGENT MODE: Full tools
+                            safe_tools = copy.deepcopy(godot_tools)
+                            print(f"AGENT_MODE_TOOLS: Using full toolset with {len(safe_tools)} tools")
                         
                         completion_params = {
                             "model": model_try,

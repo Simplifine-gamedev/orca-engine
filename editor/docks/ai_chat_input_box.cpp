@@ -7,6 +7,7 @@
 #include "ai_chat_input_box.h"
 
 #include "ai_chat_dock.h"
+#include "ai_chat_mode_selector.h"
 #include "core/io/image.h"
 #include "scene/gui/button.h"
 #include "scene/gui/margin_container.h"
@@ -131,42 +132,46 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	bottom_toolbar->add_theme_constant_override("separation", 8);
 	bottom_toolbar_margin->add_child(bottom_toolbar);
 
-	// Model dropdown (left side) - styled as text, not button
-	p_chat_dock->model_dropdown = memnew(OptionButton);
-	p_chat_dock->model_dropdown->set_flat(true); // Remove button appearance
-	p_chat_dock->model_dropdown->set_clip_text(false); // Don't clip text
-	p_chat_dock->model_dropdown->set_custom_minimum_size(Size2(0, 28)); // Let text size determine width
-	p_chat_dock->model_dropdown->connect("item_selected", callable_mp(p_chat_dock, &AIChatDock::_on_model_selected));
-	
-	// Style as text, not button
-	Ref<StyleBoxEmpty> empty_style = memnew(StyleBoxEmpty);
-	p_chat_dock->model_dropdown->add_theme_style_override("normal", empty_style);
-	p_chat_dock->model_dropdown->add_theme_style_override("hover", empty_style);
-	p_chat_dock->model_dropdown->add_theme_style_override("pressed", empty_style);
-	p_chat_dock->model_dropdown->add_theme_style_override("focus", empty_style);
-	
-	// HIDE THE ARROW completely
-	p_chat_dock->model_dropdown->add_theme_constant_override("arrow_margin", 0);
-	p_chat_dock->model_dropdown->add_theme_constant_override("modulate_arrow", 1); // Keep at 1 but use transparent icon
-	p_chat_dock->model_dropdown->add_theme_constant_override("h_separation", 0); // No space for arrow
-	// Set transparent arrow icon
-	Ref<ImageTexture> transparent_icon = memnew(ImageTexture);
-	p_chat_dock->model_dropdown->add_theme_icon_override("arrow", transparent_icon);
-	
-	// Text colors - gray by default, white on hover
-	Color text_color = p_chat_dock->get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6); // Gray
-	Color hover_color = p_chat_dock->get_theme_color(SNAME("font_color"), SNAME("Editor")); // White
-	p_chat_dock->model_dropdown->add_theme_color_override("font_color", text_color);
-	p_chat_dock->model_dropdown->add_theme_color_override("font_hover_color", hover_color);
-	p_chat_dock->model_dropdown->add_theme_color_override("font_pressed_color", hover_color);
-	
-	// Larger font size - 22px to compensate for any editor scaling
-	p_chat_dock->model_dropdown->add_theme_font_size_override("font_size", 22);
-	
-	// Set fit to longest item to match text width
-	p_chat_dock->model_dropdown->set_fit_to_longest_item(false);
-	
-	bottom_toolbar->add_child(p_chat_dock->model_dropdown);
+    // Inline container to hold model selector and mode selector side-by-side
+    HBoxContainer *model_mode_box = memnew(HBoxContainer);
+    model_mode_box->add_theme_constant_override("separation", 10);
+
+    // Model dropdown (styled as text)
+    p_chat_dock->model_dropdown = memnew(OptionButton);
+    p_chat_dock->model_dropdown->set_flat(true);
+    p_chat_dock->model_dropdown->set_clip_text(false);
+    p_chat_dock->model_dropdown->set_custom_minimum_size(Size2(0, 28));
+    p_chat_dock->model_dropdown->connect("item_selected", callable_mp(p_chat_dock, &AIChatDock::_on_model_selected));
+
+    Ref<StyleBoxEmpty> empty_style = memnew(StyleBoxEmpty);
+    p_chat_dock->model_dropdown->add_theme_style_override("normal", empty_style);
+    p_chat_dock->model_dropdown->add_theme_style_override("hover", empty_style);
+    p_chat_dock->model_dropdown->add_theme_style_override("pressed", empty_style);
+    p_chat_dock->model_dropdown->add_theme_style_override("focus", empty_style);
+
+    p_chat_dock->model_dropdown->add_theme_constant_override("arrow_margin", 0);
+    p_chat_dock->model_dropdown->add_theme_constant_override("modulate_arrow", 1);
+    p_chat_dock->model_dropdown->add_theme_constant_override("h_separation", 0);
+    Ref<ImageTexture> transparent_icon = memnew(ImageTexture);
+    p_chat_dock->model_dropdown->add_theme_icon_override("arrow", transparent_icon);
+
+    Color text_color = p_chat_dock->get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6);
+    Color hover_color = p_chat_dock->get_theme_color(SNAME("font_color"), SNAME("Editor"));
+    p_chat_dock->model_dropdown->add_theme_color_override("font_color", text_color);
+    p_chat_dock->model_dropdown->add_theme_color_override("font_hover_color", hover_color);
+    p_chat_dock->model_dropdown->add_theme_color_override("font_pressed_color", hover_color);
+    p_chat_dock->model_dropdown->add_theme_font_size_override("font_size", 22);
+    p_chat_dock->model_dropdown->set_fit_to_longest_item(false);
+
+    model_mode_box->add_child(p_chat_dock->model_dropdown);
+
+    // Mode selector (Ask/Agent)
+    AIChatModeSelector *mode_selector = memnew(AIChatModeSelector);
+    mode_selector->setup(p_chat_dock);
+    mode_selector->connect("mode_changed", callable_mp(p_chat_dock, &AIChatDock::_on_mode_changed));
+    model_mode_box->add_child(mode_selector);
+
+    bottom_toolbar->add_child(model_mode_box);
 
 	// Spacer to push send button to right
 	Control *bottom_spacer = memnew(Control);

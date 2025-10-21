@@ -130,6 +130,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_input_field_gui_input"), &AIChatDock::_on_input_field_gui_input);
 	ClassDB::bind_method(D_METHOD("_handle_clipboard_paste"), &AIChatDock::_handle_clipboard_paste);
 	ClassDB::bind_method(D_METHOD("_on_model_selected"), &AIChatDock::_on_model_selected);
+	ClassDB::bind_method(D_METHOD("_on_mode_changed", "mode"), &AIChatDock::_on_mode_changed);
 	ClassDB::bind_method(D_METHOD("_populate_all_models"), &AIChatDock::_populate_all_models);
 	ClassDB::bind_method(D_METHOD("_on_models_request_completed"), &AIChatDock::_on_models_request_completed);
 	ClassDB::bind_method(D_METHOD("_on_index_button_pressed"), &AIChatDock::_on_index_button_pressed);
@@ -1038,6 +1039,13 @@ void AIChatDock::_notification(int p_notification) {
 		// Populate models AFTER input box is created (model_dropdown now exists)
 		_populate_all_models();
 
+		// Restore saved chat mode (default to agent)
+		if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/mode")) {
+			chat_mode = EditorSettings::get_singleton()->get_setting("ai_chat/mode");
+		} else {
+			chat_mode = "agent";
+		}
+
 			// Load saved model from settings, now that UI is ready. Restrict to allowed models.
 			String selected_model = "claude-4"; // Default to claude-4
 			
@@ -1068,6 +1076,27 @@ void AIChatDock::_notification(int p_notification) {
 				if (dropdown_text == selected_model) {
 					model_dropdown->select(i);
 					break;
+				}
+			}
+
+			// Ensure the mode selector reflects saved chat_mode
+			// Find mode selector among children of the bottom toolbar
+			// We don't keep a direct pointer to avoid tight coupling; find by type
+			List<Node *> stack;
+			stack.push_back(this);
+			while (!stack.is_empty()) {
+				Node *n = stack.front()->get();
+				stack.pop_front();
+				for (int i = 0; i < n->get_child_count(); i++) {
+					Node *c = n->get_child(i);
+					if (c->get_class_name() == "AIChatModeSelector") {
+						Object *obj = Object::cast_to<Object>(c);
+						if (obj) {
+							obj->call("set_mode_by_string", chat_mode);
+						}
+						break;
+					}
+					stack.push_back(c);
 				}
 			}
 			
@@ -2991,6 +3020,14 @@ void AIChatDock::_on_model_selected(int p_index) {
 			EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
 		}
 	}
+}
+
+void AIChatDock::_on_mode_changed(const String &p_mode) {
+	chat_mode = p_mode;
+	if (EditorSettings::get_singleton()) {
+		EditorSettings::get_singleton()->set_setting("ai_chat/mode", chat_mode);
+	}
+	print_line("AI Chat: Mode changed to: " + chat_mode);
 }
 void AIChatDock::_on_attachment_menu_item_pressed(int p_id) {
 	switch (p_id) {
@@ -11062,7 +11099,9 @@ void AIChatDock::_finalize_chat_request() {
 	Dictionary request_data;
 	request_data["messages"] = _chunked_messages;
 	request_data["model"] = model;
+	request_data["mode"] = chat_mode; // "ask" or "agent"
 	print_line("AI Chat: Sending model to backend: '" + model + "' (thinking mode: " + String(model.find("(thinking)") != -1 ? "YES" : "NO") + ")");
+	print_line("AI Chat: Mode=\"" + chat_mode + "\"");
 
 	// Build comprehensive editor context pack with project structure
 	Dictionary context;
