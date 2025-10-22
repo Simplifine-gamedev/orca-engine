@@ -6058,27 +6058,54 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
         }
     }
     
-    // CRITICAL: Strip image data from content that goes to backend to prevent token explosion
-    // BUT preserve important debugging fields like inline_diff, original_content, edited_content
-    content_to_serialize.erase("image_data");
-    content_to_serialize.erase("base64");
-    content_to_serialize.erase("data_uri");
-    content_to_serialize.erase("glb_data");
-    content_to_serialize.erase("asset_data");
-    content_to_serialize.erase("frames");
-    
-    // Remove any other fields that look like base64 data, but preserve diff fields
-    Array content_keys = content_to_serialize.keys();
-    for (int k = 0; k < content_keys.size(); k++) {
-        String key = content_keys[k];
-        // CRITICAL: Don't strip diff-related fields - AI model needs these!
-        if (key == "inline_diff" || key == "diff" || key == "original_content" || key == "edited_content") {
-            continue; // Keep these fields for AI model
+    // CRITICAL: Recursively strip image/base64/data_uri fields to prevent token explosion
+    // Preserve only essential debugging fields like inline_diff, original_content, edited_content
+    std::function<Variant(const Variant &)> strip_heavy_recursive = [&](const Variant &v) -> Variant {
+        switch (v.get_type()) {
+            case Variant::DICTIONARY: {
+                Dictionary d = v;
+                Array keys = d.keys();
+                for (int i = 0; i < keys.size(); i++) {
+                    String key = keys[i];
+                    // Preserve diff/content fields
+                    if (key == "inline_diff" || key == "diff" || key == "original_content" || key == "edited_content") {
+                        d[key] = strip_heavy_recursive(d[key]);
+                        continue;
+                    }
+                    String lk = key.to_lower();
+                    if (lk == "image_data" || lk == "base64" || lk == "data_uri" ||
+                        lk.ends_with("_data") || lk.ends_with("_bytes") || lk.findn("base64") != -1 || lk.ends_with("_b64")) {
+                        d.erase(key);
+                        continue;
+                    }
+                    d[key] = strip_heavy_recursive(d[key]);
+                }
+                return d;
+            }
+            case Variant::ARRAY: {
+                Array a = v;
+                for (int i = 0; i < a.size(); i++) {
+                    a[i] = strip_heavy_recursive(a[i]);
+                }
+                return a;
+            }
+            case Variant::STRING: {
+                String s = v;
+                if (s.begins_with("data:image/") && s.find(";base64,") != -1) {
+                    return String("[DATA_URI_STRIPPED]");
+                }
+                if (s.length() > 100000) {
+                    // Heuristic: treat very long strings as heavy data
+                    return String("[LARGE_DATA_STRIPPED]");
+                }
+                return s;
+            }
+            default:
+                return v;
         }
-        if (key.findn("base64") != -1 || key.ends_with("_data") || key.ends_with("_bytes")) {
-            content_to_serialize.erase(key);
-        }
-    }
+    };
+
+    content_to_serialize = strip_heavy_recursive(content_to_serialize);
     
     if (add_response_start > 0) {
         print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - About to stringify (keys: " + String::num_int64(content_to_serialize.size()) + ")");
@@ -6113,10 +6140,30 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
     }
 
 	Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
-	chat_history.push_back(msg);
 	
-	if (add_response_start > 0) {
-		print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Added to chat history");
+	// CRITICAL FIX: Prevent duplicate tool results with same tool_call_id
+	// This happens after summarization or when resuming stopped conversations
+	bool duplicate_found = false;
+	for (int i = 0; i < chat_history.size(); i++) {
+		const ChatMessage &existing = chat_history[i];
+		if (existing.role == "tool" && existing.tool_call_id == p_tool_call_id) {
+			duplicate_found = true;
+			print_line("AI Chat: DUPLICATE PREVENTED - tool result for ID " + p_tool_call_id + " already exists at index " + String::num_int64(i));
+			break;
+		}
+	}
+	
+	if (!duplicate_found) {
+		chat_history.push_back(msg);
+		
+		if (add_response_start > 0) {
+			print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Added to chat history");
+		}
+	} else {
+		print_line("AI Chat: Skipping duplicate tool result to prevent API error");
+		if (add_response_start > 0) {
+			print_line("AI Chat: ADD_RESPONSE [T+" + String::num_uint64(OS::get_singleton()->get_ticks_msec() - add_response_start) + "ms] - Skipped duplicate");
+		}
 	}
 
 	// Find the placeholder for this tool and replace its content.
@@ -8820,12 +8867,36 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				compile_vbox->add_child(more_label);
 			}
 		}
-	} else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager" || p_tool_name == "runtime_manager" || p_tool_name == "runtime_inspector") && p_success) {
-		// Special handling for image generation results (image_operation, resource_manager with image ops, and screenshot captures)
-		String base64_data = p_result.get("image_data", "");
-		String op = p_args.get("op", p_args.get("operation", ""));
+    } else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager" || p_tool_name == "runtime_manager" || p_tool_name == "runtime_inspector") && p_success) {
+        // Special handling for image generation results (image_operation, resource_manager with image ops, and screenshot captures)
+        String base64_data = p_result.get("image_data", "");
+        String op = p_args.get("op", p_args.get("operation", ""));
 		
-		if (!base64_data.is_empty()) {
+        // If top-level image_data missing, try nested screenshots array (screenshot.capture returns array)
+        if (base64_data.is_empty() && p_result.has("screenshots")) {
+            Variant shots_v = p_result["screenshots"];
+            if (shots_v.get_type() == Variant::ARRAY) {
+                Array shots = shots_v;
+                if (shots.size() > 0 && shots[0].get_type() == Variant::DICTIONARY) {
+                    Dictionary first = shots[0];
+                    base64_data = first.get("image_data", first.get("base64", ""));
+                    if (base64_data.is_empty()) {
+                        // No usable image in first result; leave empty to hit fallback
+                    } else {
+                        // Carry over fields so metadata below can label correctly
+                        if (!p_result.has("image_type") && first.has("image_type")) {
+                            // Inject for downstream logic
+                            const_cast<Dictionary&>(p_result)["image_type"] = first["image_type"]; // safe as we don't persist p_result
+                        }
+                        if (!p_result.has("target") && first.has("source")) {
+                            const_cast<Dictionary&>(p_result)["target"] = first["source"]; // label as source
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!base64_data.is_empty()) {
 			// Use lazy loading for ALL image operations to improve performance
 			// Images only decode/display when user expands the tool result
 			bool is_image_generation = (op == "image.generate_or_edit" || p_tool_name == "image_operation");
@@ -8859,10 +8930,10 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 					img_metadata["path"] = "screenshot://runtime";
 					img_metadata["image_type"] = "screenshot";
 				} else {
-					// Regular image generation
-					img_metadata["prompt"] = p_result.get("prompt", "Generated Image");
-					img_metadata["model"] = p_result.get("model", "DALL-E");
-					img_metadata["path"] = "generated://tool_operation";
+                // Regular image generation or generic image
+                img_metadata["prompt"] = p_result.get("prompt", "Generated Image");
+                img_metadata["model"] = p_result.get("model", "DALL-E");
+                img_metadata["path"] = "generated://tool_operation";
 				}
 				
 				// Include backend-provided image_id in metadata
@@ -8875,10 +8946,13 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				// Use lazy loader to avoid memory waste - image only loaded when clicked
 				AIImageLazyLoader::create_lazy_image_placeholder(base64_data, img_metadata, p_content_vbox);
 			}
-		} else {
+        } else {
 			// Fallback to text display if no image data - but strip any large data fields to prevent freeze
 			Dictionary safe_result = p_result;
 			safe_result.erase("image_data");
+            safe_result.erase("base64");
+            safe_result.erase("data_uri");
+            safe_result.erase("screenshots");
 			safe_result.erase("glb_data");
 			safe_result.erase("asset_data");
 			safe_result.erase("frames");
@@ -11704,8 +11778,12 @@ void AIChatDock::_request_completed() {
 
 String AIChatDock::_get_timestamp() {
 	Dictionary time_dict = Time::get_singleton()->get_datetime_dict_from_system();
-	return String::num_int64(time_dict["hour"]).pad_zeros(2) + ":" +
-		   String::num_int64(time_dict["minute"]).pad_zeros(2);
+	return String::num_int64(time_dict["year"]) + "-" +
+		   String::num_int64(time_dict["month"]).pad_zeros(2) + "-" +
+		   String::num_int64(time_dict["day"]).pad_zeros(2) + " " +
+		   String::num_int64(time_dict["hour"]).pad_zeros(2) + ":" +
+		   String::num_int64(time_dict["minute"]).pad_zeros(2) + ":" +
+		   String::num_int64(time_dict["second"]).pad_zeros(2);
 }
 String AIChatDock::_process_inline_markdown(String p_line) {
 	String line = p_line;

@@ -38,6 +38,7 @@ class Button;
 class Camera3D;
 class CheckBox;
 class DirectionalLight3D;
+class AcceptDialog;
 class EditorFileDialog;
 class HTTPRequest;
 class ItemList;
@@ -58,6 +59,7 @@ class DesignStudio3DEditor : public PanelContainer {
 	// API Configuration
 	const String API_URL = "https://gpu-proxy-awdwh5ovsa-uc.a.run.app";
 	const String TEXTURE_API_URL = "https://texture-proxy-server-awdwh5ovsa-uc.a.run.app";
+	const String REMESH_API_URL = "https://remesh.orcaengine.ai";
 	
 	// UI Elements - Left Panel
 	TabContainer *mode_tabs = nullptr;
@@ -123,6 +125,11 @@ class DesignStudio3DEditor : public PanelContainer {
 	HTTPRequest *texture_download_request = nullptr;
 	HTTPRequest *segment_request = nullptr;
 	Timer *texture_poll_timer = nullptr;
+
+	// Remeshing
+	HTTPRequest *remesh_request = nullptr;
+	AcceptDialog *remesh_dialog = nullptr;
+	LineEdit *remesh_faces_input = nullptr;
 	
 	// State
 	String current_job_id;
@@ -199,6 +206,11 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_segment_pressed();
 	void _on_remesh_pressed();
 	void _on_cancel_operation_pressed();
+
+	// Remeshing operations
+	void _on_remesh_dialog_confirmed();
+	void _start_remeshing(int p_target_faces);
+	void _on_remesh_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	
 	// Texture/Segmentation operations
 	void _start_texture_generation(const String &p_prompt);

@@ -505,6 +505,9 @@ Conversation ({len(messages)} messages):
 def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[list, bool]:
     """PRODUCTION-GRADE: Incremental summarization using LiteLLM's actual token counting
     
+    TOKEN-ONLY TRIGGERING: Summarization is triggered purely based on token count,
+    not message count. This prevents premature summarization of short conversations.
+    
     Manages conversation length by creating AI-generated summaries of older messages
     while preserving recent messages for context. Uses actual token counting for accuracy.
     
@@ -539,10 +542,7 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
             emergency_ratio = float(os.getenv('SUMMARIZATION_TEST_EMERGENCY_PCT', '0.6'))  # 60% instead of 75%
         except Exception:
             emergency_ratio = 0.6
-        try:
-            message_count_limit = int(os.getenv('SUMMARIZATION_TEST_MESSAGE_COUNT', '60'))  # 60 instead of 100
-        except Exception:
-            message_count_limit = 60
+        # Message count limit removed - using token-only triggering
         try:
             keep_recent_normal = int(os.getenv('SUMMARIZATION_TEST_KEEP_RECENT_NORMAL', '25'))  # 25 instead of 40
         except Exception:
@@ -563,7 +563,7 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
         # PRODUCTION SETTINGS: Conservative thresholds for real use
         trigger_ratio = 0.5          # 50% of token limit
         emergency_ratio = 0.75       # 75% of token limit
-        message_count_limit = 100    # 100 messages
+        # Message count limit removed - using token-only triggering
         keep_recent_normal = 40      # Keep last 40 messages
         keep_recent_emergency = 30   # Keep last 30 messages in emergency
         min_initial_needed = 10      # Need 10+ messages for first summary
@@ -589,11 +589,10 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     total_tokens = _count_tokens_for_messages(messages, model)
     print(f"TOKEN_COUNT: Conversation using {total_tokens} tokens ({(total_tokens/model_limit*100):.1f}% of {model_limit} limit)")
     
-    # SMART TRIGGER: Use BOTH message count and token count
-    message_count_trigger = len(messages) >= message_count_limit
+    # TOKEN-ONLY TRIGGER: Use only token count, ignore message count
     token_count_trigger = total_tokens > trigger_threshold
     
-    if not message_count_trigger and not token_count_trigger:
+    if not token_count_trigger:
         return messages, False  # No management needed yet
     
     # Check if this is an emergency (over emergency threshold)
@@ -601,8 +600,6 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     
     if is_emergency:
         print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds emergency limit ({emergency_threshold})! Forcing aggressive summarization")
-    elif message_count_trigger:
-        print(f"CONVERSATION_MANAGE: {len(messages)} messages exceeds {message_count_limit}-message threshold, starting smart summarization")
     else:
         print(f"CONVERSATION_MANAGE: {total_tokens} tokens exceeds threshold ({trigger_threshold}), starting smart summarization")
     
@@ -3607,7 +3604,7 @@ def chat():
                 if model.startswith('openai/gpt-4o'):
                     trigger_threshold = min(trigger_threshold, int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '1500')))
                 
-                will_summarize = total_tokens > trigger_threshold or len(conversation_messages) >= 100
+                will_summarize = total_tokens > trigger_threshold
                 
                 if will_summarize:
                     # SEND STATUS BEFORE SUMMARIZATION STARTS
@@ -3658,7 +3655,130 @@ def chat():
                     # REMOVED: Legacy summarization notification (conflicts with new streamlined approach)
                     # The new approach sends completion status after summarization finishes
                 
-                print(f"CONVERSATION_LOOP: Starting OpenAI call with {len(conversation_messages)} messages")
+                # Define recursive stripper function once for both counting and sending
+                def _strip_heavy_fields_recursive(value):
+                    try:
+                        import re as _re
+                        preserve_keys = {"inline_diff", "diff", "original_content", "edited_content"}
+                        if isinstance(value, dict):
+                            for k in list(value.keys()):
+                                if isinstance(k, str):
+                                    lk = k.lower()
+                                    if k not in preserve_keys and (
+                                        lk == "image_data" or lk == "base64" or lk == "data_uri" or
+                                        "base64" in lk or lk.endswith("_data") or lk.endswith("_bytes") or lk.endswith("_b64")
+                                    ):
+                                        # Try to downscale image data instead of removing completely
+                                        field_value = value[k]
+                                        if isinstance(field_value, str) and len(field_value) > 50000:
+                                            # Looks like large base64 image data
+                                            try:
+                                                import base64
+                                                from PIL import Image
+                                                import io
+                                                
+                                                # Try to decode as base64 image
+                                                img_bytes = base64.b64decode(field_value)
+                                                img = Image.open(io.BytesIO(img_bytes))
+                                                
+                                                # Downscale to max 256px for AI  
+                                                MAX_AI_SIZE = 256
+                                                if img.width > MAX_AI_SIZE or img.height > MAX_AI_SIZE:
+                                                    aspect = img.width / img.height
+                                                    if img.width > img.height:
+                                                        new_size = (MAX_AI_SIZE, int(MAX_AI_SIZE / aspect))
+                                                    else:
+                                                        new_size = (int(MAX_AI_SIZE * aspect), MAX_AI_SIZE)
+                                                    
+                                                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                                                    
+                                                    # Re-encode to base64
+                                                    buffer = io.BytesIO()
+                                                    img.save(buffer, format='PNG')
+                                                    small_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                                    
+                                                    print(f"AI_FIELD_DOWNSCALE: {k} {len(field_value)} -> {len(small_b64)} chars ({img.width}x{img.height})")
+                                                    value[k] = small_b64
+                                                    continue
+                                                    
+                                                # Keep original if already small enough
+                                                continue
+                                            except Exception:
+                                                # Not valid image data, remove the field
+                                                value.pop(k, None)
+                                                continue
+                                        else:
+                                            # Remove non-image or small data fields
+                                            value.pop(k, None)
+                                            continue
+                                value[k] = _strip_heavy_fields_recursive(value[k])
+                            return value
+                        elif isinstance(value, list):
+                            for i in range(len(value)):
+                                value[i] = _strip_heavy_fields_recursive(value[i])
+                            return value
+                        elif isinstance(value, str):
+                            s = value
+                            if s.startswith("data:image/") and ";base64," in s:
+                                # For AI backend: downscale large images instead of stripping completely
+                                try:
+                                    # Extract base64 data from data URI
+                                    header, b64_data = s.split(',', 1)
+                                    if len(b64_data) > 50000:  # > ~37KB base64 = large image
+                                        import base64
+                                        from PIL import Image
+                                        import io
+                                        
+                                        # Decode, downscale, re-encode
+                                        img_bytes = base64.b64decode(b64_data)
+                                        img = Image.open(io.BytesIO(img_bytes))
+                                        
+                                        # Downscale to max 256px for AI (better than 128px for analysis)
+                                        MAX_AI_SIZE = 256
+                                        if img.width > MAX_AI_SIZE or img.height > MAX_AI_SIZE:
+                                            aspect = img.width / img.height
+                                            if img.width > img.height:
+                                                new_size = (MAX_AI_SIZE, int(MAX_AI_SIZE / aspect))
+                                            else:
+                                                new_size = (int(MAX_AI_SIZE * aspect), MAX_AI_SIZE)
+                                            
+                                            img = img.resize(new_size, Image.Resampling.LANCZOS)
+                                            
+                                            # Re-encode to base64
+                                            buffer = io.BytesIO()
+                                            img.save(buffer, format='PNG')
+                                            small_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                            
+                                            print(f"AI_IMAGE_DOWNSCALE: {len(b64_data)} -> {len(small_b64)} chars ({img.width}x{img.height})")
+                                            return f"{header},{small_b64}"
+                                        
+                                        return s  # Keep original if already small enough
+                                except Exception as e:
+                                    print(f"AI_IMAGE_DOWNSCALE_ERROR: {e}")
+                                    return "[IMAGE_PROCESSING_ERROR]"
+                            elif len(s) > 100000 and _re.search(r"[A-Za-z0-9+/=]{1000,}", s):
+                                return "[LARGE_DATA_STRIPPED]"
+                            return s
+                        else:
+                            return value
+                    except Exception:
+                        return value
+
+                # IMPORTANT: Recompute token count using sanitized messages to avoid base64/data_uri inflation
+                import copy as _copy_for_count
+                messages_for_count = []
+                for m in conversation_messages:
+                    if not isinstance(m, dict):
+                        continue
+                    m2 = _copy_for_count.deepcopy(m)
+                    c = m2.get('content')
+                    if isinstance(c, (dict, list, str)):
+                        # IMPORTANT: operate on a deep-copied content to avoid mutating originals
+                        c_copy = _copy_for_count.deepcopy(c)
+                        m2['content'] = _strip_heavy_fields_recursive(c_copy)
+                    messages_for_count.append(m2)
+
+                print(f"CONVERSATION_LOOP: Starting OpenAI call with {len(messages_for_count)} messages")
                 if conversation_messages:
                     last_msg = conversation_messages[-1]
                     if last_msg and isinstance(last_msg, dict):
@@ -3680,7 +3800,8 @@ def chat():
                 # Debug logs for OpenAI messages have been quieted to reduce console noise.
                 
                 # Clean messages for OpenAI with intelligent image management
-                openai_messages = []
+                # (using the _strip_heavy_fields_recursive function defined above)
+                openai_messages_send = []
                 recent_images = []  # Track recent images for context
                 prior_assistant_with_tools = False
                 
@@ -3694,8 +3815,70 @@ def chat():
                     
                     clean_msg = {
                         'role': role,
-                        'content': msg.get('content')
+                        'content': None
                     }
+                    # Deep copy content to avoid in-place mutation of original conversation payload
+                    try:
+                        import copy as _copy_content
+                        content_src = msg.get('content')
+                        if isinstance(content_src, (dict, list)):
+                            clean_msg['content'] = _copy_content.deepcopy(content_src)
+                        else:
+                            clean_msg['content'] = content_src
+                    except Exception:
+                        clean_msg['content'] = msg.get('content')
+                    
+                    # CRITICAL FIX: Convert tool screenshot results to proper IMAGE format
+                    if role == 'tool' and clean_msg['content']:
+                        content = clean_msg['content']
+                        if isinstance(content, str):
+                            # Parse tool content JSON to extract image data
+                            try:
+                                import json as tool_json
+                                tool_data = tool_json.loads(content)
+                                
+                                # Check if this is a screenshot tool result with image data
+                                if isinstance(tool_data, dict):
+                                    extracted_image = None
+                                    
+                                    # Extract image from top-level image_data
+                                    if 'image_data' in tool_data and len(str(tool_data['image_data'])) > 1000:
+                                        extracted_image = {
+                                            'base64_data': tool_data['image_data'],
+                                            'mime_type': tool_data.get('mime_type', 'image/png'),
+                                            'name': tool_data.get('image_name', tool_data.get('image_id', 'screenshot'))
+                                        }
+                                        # Clean the tool content 
+                                        tool_data['image_data'] = f"[CONVERTED TO IMAGE ATTACHMENT]"
+                                        
+                                    # Extract image from screenshots array
+                                    elif 'screenshots' in tool_data and isinstance(tool_data['screenshots'], list):
+                                        for screenshot in tool_data['screenshots']:
+                                            if isinstance(screenshot, dict) and 'image_data' in screenshot:
+                                                if len(str(screenshot['image_data'])) > 1000:
+                                                    extracted_image = {
+                                                        'base64_data': screenshot['image_data'],
+                                                        'mime_type': screenshot.get('mime_type', 'image/png'),
+                                                        'name': screenshot.get('prompt', 'screenshot').replace(' ', '_')
+                                                    }
+                                                    screenshot['image_data'] = f"[CONVERTED TO IMAGE ATTACHMENT]"
+                                                    break
+                                    
+                                    # STRIP IMAGE DATA COMPLETELY - tool messages can't use vision format
+                                    # The AI already received the image, no need to send it back
+                                    if extracted_image:
+                                        print(f"TOOL_IMAGE_STRIP: Removed {len(extracted_image['base64_data'])} chars of base64 for '{extracted_image['name']}'")
+                                    
+                                    # Always use clean JSON without base64
+                                    clean_msg['content'] = tool_json.dumps(tool_data)
+                                    
+                            except Exception as e:
+                                print(f"TOOL_CONTENT_PARSE_ERROR: {e}")
+                                # Fallback: just strip without converting
+                                if '"image_data":"' in content and len(content) > 10000:
+                                    import re
+                                    content = re.sub(r'"image_data":"[^"]{1000,}"', '"image_data":"[STRIPPED]"', content)
+                                    clean_msg['content'] = content
                     
                     # Handle images intelligently - AGGRESSIVE filtering to prevent token explosion
                     if 'images' in msg and isinstance(msg['images'], list):
@@ -3744,7 +3927,16 @@ def chat():
                                     fn = fixed_tool_call.get('function') or {}
                                     if isinstance(fn, dict) and 'arguments' in fn:
                                         fn_args = fn.get('arguments')
-                                        fn['arguments'] = _sanitize_tool_arguments(fn_args)
+                                        # First ensure valid JSON string
+                                        sanitized_args = _sanitize_tool_arguments(fn_args)
+                                        # Then recursively strip heavy/base64/data_uri fields inside arguments
+                                        try:
+                                            import json as _json
+                                            parsed_args = _json.loads(sanitized_args)
+                                            parsed_args = _strip_heavy_fields_recursive(parsed_args)
+                                            fn['arguments'] = _json.dumps(parsed_args, separators=(",", ":"))
+                                        except Exception:
+                                            fn['arguments'] = sanitized_args
                                         fixed_tool_call['function'] = fn
                                 except Exception:
                                     pass
@@ -3758,7 +3950,69 @@ def chat():
                     if 'name' in msg:
                         clean_msg['name'] = msg['name']
                     
-                    openai_messages.append(clean_msg)
+                    # FINAL SAFETY: Apply downscaling to ALL message content including vision parts
+                    content_to_clean = clean_msg.get('content')
+                    if isinstance(content_to_clean, (dict, list, str)):
+                        if role == 'user' and isinstance(content_to_clean, list):
+                            # User messages with vision format - downscale image_url parts
+                            cleaned_content = []
+                            for part in content_to_clean:
+                                if isinstance(part, dict) and part.get('type') == 'image_url':
+                                    # CRITICAL: Apply downscaling to image_url data URIs
+                                    image_url_dict = part.get('image_url', {})
+                                    url = image_url_dict.get('url', '')
+                                    
+                                    if url.startswith('data:image/') and ';base64,' in url:
+                                        # Apply the same downscaling logic
+                                        downscaled_url = _strip_heavy_fields_recursive(url)
+                                        if downscaled_url != url:
+                                            print(f"USER_IMAGE_DOWNSCALE: Applied to user message image")
+                                            part = dict(part)
+                                            part['image_url'] = {'url': downscaled_url}
+                                    
+                                    cleaned_content.append(part)
+                                else:
+                                    cleaned_content.append(_strip_heavy_fields_recursive(part) if isinstance(part, (dict, list)) else part)
+                            clean_msg['content'] = cleaned_content
+                        elif role != 'user':
+                            # Non-user messages: strip everything
+                            clean_msg['content'] = _strip_heavy_fields_recursive(content_to_clean)
+                        # For user string content, keep as-is (might be legitimate text with references)
+                    openai_messages_send.append(clean_msg)
+
+                # Build a sanitized copy for counting purposes (do NOT modify messages for sending)
+                def _strip_images_for_count(value):
+                    try:
+                        if isinstance(value, dict):
+                            out = {}
+                            for k, v in value.items():
+                                if k == 'type' and v == 'image_url':
+                                    out[k] = v
+                                    out['image_url'] = {'url': '[IMAGE_DATA_REDACTED]'}
+                                elif isinstance(v, str) and v.startswith('data:image/') and ';base64,' in v:
+                                    out[k] = '[DATA_URI_STRIPPED]'
+                                else:
+                                    out[k] = _strip_images_for_count(v)
+                            return out
+                        elif isinstance(value, list):
+                            return [_strip_images_for_count(x) for x in value]
+                        elif isinstance(value, str):
+                            if value.startswith('data:image/') and ';base64,' in value:
+                                return '[DATA_URI_STRIPPED]'
+                            return value
+                        else:
+                            return value
+                    except Exception:
+                        return value
+
+                openai_messages_count = []
+                import copy as _copy
+                for m in openai_messages_send:
+                    m2 = _copy.deepcopy(m)
+                    c = m2.get('content')
+                    if isinstance(c, (dict, list, str)):
+                        m2['content'] = _strip_images_for_count(c)
+                    openai_messages_count.append(m2)
 
                 # Prepend appropriate system prompt based on mode
                 if chat_mode == 'ask' and SYSTEM_PROMPT_ASK:
@@ -3771,14 +4025,64 @@ def chat():
                     system_msg = None
                 
                 if system_msg:
-                    openai_messages = [system_msg] + openai_messages
+                    openai_messages_send = [system_msg] + openai_messages_send
+                    openai_messages_count = [system_msg] + openai_messages_count
+                
+                # VISION_NORMALIZE: Enforce OpenAI vision format and downscale data URIs before sending
+                def _normalize_openai_vision(messages):
+                    normalized = []
+                    for msg in messages:
+                        try:
+                            m = dict(msg)
+                            content = m.get('content')
+                            if isinstance(content, list):
+                                first_text = None
+                                first_image = None
+                                for part in content:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    t = part.get('type')
+                                    if t == 'text' and first_text is None:
+                                        first_text = {"type": "text", "text": str(part.get('text', ''))}
+                                    elif t == 'image_url' and first_image is None:
+                                        url = str(part.get('image_url', {}).get('url', ''))
+                                        # Downscale large data URIs
+                                        if url.startswith('data:image/') and ';base64,' in url:
+                                            url = _strip_heavy_fields_recursive(url)
+                                        first_image = {"type": "image_url", "image_url": {"url": url}}
+                                new_content = []
+                                if first_text:
+                                    new_content.append(first_text)
+                                if first_image:
+                                    new_content.append(first_image)
+                                if new_content:
+                                    m['content'] = new_content
+                            normalized.append(m)
+                        except Exception:
+                            normalized.append(msg)
+                    return normalized
+
+                print("VISION_NORMALIZE: Normalizing user messages to OpenAI image_url format")
+                openai_messages_send = _normalize_openai_vision(openai_messages_send)
+                
+                # FINAL VALIDATION: Check message sizes before sending
+                total_message_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages_send)
+                if total_message_chars > 500000:
+                    print(f"FINAL_CHECK: WARNING - Still have large message content ({total_message_chars} chars)")
+                    # Try to find and log which message is causing the issue
+                    for i, msg in enumerate(openai_messages_send):
+                        msg_chars = len(str(msg.get('content', '')))
+                        if msg_chars > 100000:
+                            print(f"FINAL_CHECK: Message {i} ({msg.get('role', 'unknown')}) has {msg_chars} chars")
+                else:
+                    print(f"FINAL_CHECK: Message content size looks good ({total_message_chars} chars)")
                 
                 # Debug: Check total token usage with ACTUAL LiteLLM counting
-                total_tokens = _count_tokens_for_messages(openai_messages, model)
-                total_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages)
+                total_tokens = _count_tokens_for_messages(openai_messages_count, model)
+                total_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages_count)
                 model_limit = _get_model_token_limit(model)
                 percent_used = (total_tokens / model_limit * 100) if model_limit > 0 else 0
-                print(f"LITELLM_PREP: Sending {len(openai_messages)} messages to {model_friendly_name} ({model})")
+                print(f"LITELLM_PREP: Sending {len(openai_messages_send)} messages to {model_friendly_name} ({model})")
                 print(f"LITELLM_PREP: Token usage: {total_tokens} tokens ({percent_used:.1f}% of {model_limit} limit), {total_chars} chars")
                 if total_tokens > 150000:
                     print(f"LITELLM_PREP: WARNING - High token count ({total_tokens} tokens), may hit limits!")
@@ -3860,7 +4164,7 @@ def chat():
                         
                         completion_params = {
                             "model": model_try,
-                            "messages": openai_messages,
+                            "messages": openai_messages_send,
                             "tools": safe_tools,
                             "tool_choice": "auto", 
                             "stream": True

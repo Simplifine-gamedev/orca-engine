@@ -60,7 +60,7 @@
 #include "core/os/time.h"
 
 // dtl diff library
-#include "dtl.hpp"
+#include "thirdparty/dtl/dtl/dtl.hpp"
 
 // Persist inline diff state across focus changes/reloads for the same script.
 static String s_pending_diff_path;

@@ -5315,9 +5315,67 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 			return result;
 		}
 		String path = p_args["path"];
+		
+		// Store current scene to detect change
+		Node *old_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+		String old_scene_path = old_root ? old_root->get_scene_file_path() : "";
+		
+		// NON-BLOCKING: Let Godot handle scene loading naturally
 		EditorInterface::get_singleton()->open_scene_from_path(path);
-		result["success"] = true;
-		result["message"] = "Scene opened: " + path;
+		
+		// Brief non-blocking wait to let initial processing happen
+		for (int i = 0; i < 3; i++) {
+			SceneTree::get_singleton()->process(0.001f);
+		}
+		
+		// Check what actually happened
+		Node *current_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+		String current_scene_path = current_root ? current_root->get_scene_file_path() : "";
+		
+		// Determine if scene loading succeeded
+		bool scene_actually_loaded = false;
+		String actual_scene_name = "";
+		
+		if (current_root) {
+			// Check if we got the scene we wanted
+			if (current_scene_path == path) {
+				scene_actually_loaded = true;
+				actual_scene_name = String(current_root->get_name());
+			} else if (!old_scene_path.is_empty() && current_scene_path != old_scene_path) {
+				// Scene changed but not to what we expected - still count as success
+				scene_actually_loaded = true;
+				actual_scene_name = String(current_root->get_name());
+			} else if (old_scene_path.is_empty() && !current_scene_path.is_empty()) {
+				// We now have a scene where we didn't before
+				scene_actually_loaded = true;
+				actual_scene_name = String(current_root->get_name());
+			}
+		}
+		
+		if (scene_actually_loaded && current_root) {
+			result["success"] = true;
+			result["message"] = "Scene opened: " + path;
+			result["scene_root_name"] = String(current_root->get_name());
+			result["scene_root_type"] = String(current_root->get_class());
+			result["actual_scene_path"] = current_scene_path;
+			
+			// Add warning if scene path doesn't match what was requested
+			if (current_scene_path != path) {
+				result["warning"] = "Opened scene '" + current_scene_path + "' instead of requested '" + path + "'";
+			}
+		} else {
+			// Scene loading failed - provide detailed error info
+			result["success"] = false;
+			result["error_code"] = "SCENE_LOAD_FAILED";
+			result["message"] = "Failed to load scene: " + path + ". The scene file may be corrupted or contain syntax errors.";
+			result["requested_path"] = path;
+			result["current_scene"] = current_scene_path.is_empty() ? "none" : current_scene_path;
+			
+			// Suggest recovery actions for AI
+			result["recovery_suggestions"] = Array({
+				"Check the scene file for syntax errors, this is likely due to a bug in the scene file, you would have to fix manually"
+			});
+		}
 
 	} else if (operation == "instantiate") {
 		if (!p_args.has("path")) {
@@ -9540,7 +9598,7 @@ Dictionary EditorTools::get_camera_info(const Dictionary &p_args) {
 Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 	Dictionary result;
 	String filename = p_args.get("filename", "screenshot_debug.png");
-	String target = p_args.get("target", "editor"); // "editor", "game", "both"
+	String target = p_args.get("target", "game"); // "editor", "game", "both" - default to game for runtime screenshots
 	bool return_base64 = p_args.get("return_base64", false);
 	
 	// Default to base64 for AI tools unless specifically requested otherwise
@@ -9569,12 +9627,17 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 			return false;
 		}
 		
-		// Get image safely - use Godot's error handling instead of try-catch
+		// NON-BLOCKING: Get image safely with yield to prevent freezing
+		print_line("AI Chat: Starting screenshot capture for " + source_name);
+		
 		Ref<Image> screenshot = viewport_texture->get_image();
 		if (screenshot.is_null() || screenshot->is_empty()) {
 			print_line("AI Chat: Screenshot image is null or empty for " + source_name);
 			return false;
 		}
+		
+		// Process a frame to prevent UI freeze during image processing
+		OS::get_singleton()->delay_usec(1000); // 1ms yield
 		
 		// Double-check image size matches expectations
 		if (screenshot->get_width() != viewport_size.x || screenshot->get_height() != viewport_size.y) {
@@ -9583,23 +9646,7 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 		
 		Vector2i original_size = Vector2i(screenshot->get_width(), screenshot->get_height());
 		
-		// CRITICAL: Downscale for chat to prevent token explosion
-		if (return_base64) {
-			// Limit to 128px max dimension for chat display - tiny to prevent token explosion
-			const int MAX_CHAT_SIZE = 128;
-			if (original_size.x > MAX_CHAT_SIZE || original_size.y > MAX_CHAT_SIZE) {
-				float aspect = (float)original_size.x / (float)original_size.y;
-				Vector2i new_size;
-				if (original_size.x > original_size.y) {
-					new_size.x = MAX_CHAT_SIZE;
-					new_size.y = (int)(MAX_CHAT_SIZE / aspect);
-				} else {
-					new_size.y = MAX_CHAT_SIZE;
-					new_size.x = (int)(MAX_CHAT_SIZE * aspect);
-				}
-				screenshot->resize(new_size.x, new_size.y, Image::INTERPOLATE_LANCZOS);
-			}
-		}
+		// Keep full resolution for UI display - downscaling will happen in backend for AI
 		
 		Dictionary capture_info;
 		capture_info["source"] = source_name;
@@ -9607,29 +9654,96 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 		capture_info["display_size"] = Vector2i(screenshot->get_width(), screenshot->get_height());
 		
 		if (return_base64) {
-			// Convert to base64 for immediate use in chat
+			// NON-BLOCKING: Convert to base64 with yield to prevent freeze
+			print_line("AI Chat: Converting screenshot to PNG buffer...");
 			Vector<uint8_t> png_buffer = screenshot->save_png_to_buffer();
+			
+			// Yield to UI during base64 encoding (can be expensive)
+			OS::get_singleton()->delay_usec(1000);
+			
 			if (png_buffer.size() > 0) {
+				print_line("AI Chat: Encoding " + String::num_int64(png_buffer.size()) + " bytes to base64...");
 				String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_buffer);
-				capture_info["base64"] = base64_data;
+				
+				// FOR UI LAZY LOADING: Use same format as image generation tools
+				capture_info["image_data"] = base64_data;  // Key field for lazy loader
+				capture_info["base64"] = base64_data;      // Backward compatibility
+				capture_info["data_uri"] = "data:image/png;base64," + base64_data;
 				capture_info["mime_type"] = "image/png";
-				print_line("AI Chat: Screenshot downscaled to " + String::num_int64(screenshot->get_width()) + "x" + String::num_int64(screenshot->get_height()) + " for chat (base64 size: " + String::num_int64(base64_data.length()) + " chars)");
+				capture_info["image_type"] = "screenshot";  // Important for UI handling
+				capture_info["prompt"] = "Runtime Screenshot (" + source_name + ")"; // For lazy loader title
+				
+				print_line("AI Chat: Screenshot ready - " + String::num_int64(screenshot->get_width()) + "x" + String::num_int64(screenshot->get_height()) + " (base64: " + String::num_int64(base64_data.length()) + " chars)");
 			}
 		} else {
-			// Save to file at original resolution
-			String save_name = source_name + "_" + filename;
-			String full_path = ProjectSettings::get_singleton()->globalize_path("res://") + save_name;
-			Error save_result = screenshot->save_png(full_path);
-			if (save_result == OK) {
-				capture_info["path"] = full_path;
-			} else {
-				return false;
-			}
+			// DISABLED: Don't save screenshots to disk - they're for AI analysis only
+			// This prevents cluttering the project with screenshot files
+			// String save_name = source_name + "_" + filename;
+			// String full_path = ProjectSettings::get_singleton()->globalize_path("res://") + save_name;
+			// Error save_result = screenshot->save_png(full_path);
+			// if (save_result == OK) {
+			//     capture_info["path"] = full_path;
+			// } else {
+			//     return false;
+			// }
+			capture_info["message"] = "Screenshot captured (not saved to disk)";
 		}
 		
 		screenshots.push_back(capture_info);
 		return true;
 	};
+	
+	// Capture game viewport first (higher priority for runtime screenshots)
+	if (target == "game" || target == "both") {
+		print_line("AI Chat: Capturing game viewport...");
+		
+		// Check if game is running
+		if (!EditorRunBar::get_singleton()->is_playing()) {
+			print_line("AI Chat: Game is not running - cannot capture game viewport");
+			Dictionary game_failure;
+			game_failure["source"] = "game";
+			game_failure["message"] = "Game not running. Use runtime_manager(op='game.start') first, then capture screenshot.";
+			game_failure["success"] = false;
+			screenshots.push_back(game_failure);
+		} else {
+			// Game is running - use different approach for external game window
+			print_line("AI Chat: Game is running, attempting to capture external game window");
+			
+			// SIMPLIFIED: Use RuntimeInspector which has working game viewport detection
+			print_line("AI Chat: Delegating to RuntimeInspector for game screenshot");
+			Dictionary runtime_result = RuntimeInspector::capture_viewport_screenshot("game", return_base64);
+			
+			if (runtime_result.get("success", false)) {
+				// Extract the image data and format for our result
+				Dictionary capture_info;
+				capture_info["source"] = "game";
+				capture_info["size"] = Vector2i(runtime_result.get("width", 0), runtime_result.get("height", 0));
+				
+				if (return_base64) {
+					String base64_data = runtime_result.get("image_data", "");
+					if (!base64_data.is_empty()) {
+						capture_info["image_data"] = base64_data;
+						capture_info["base64"] = base64_data;
+						capture_info["data_uri"] = "data:image/png;base64," + base64_data;
+						capture_info["mime_type"] = "image/png";
+						capture_info["image_type"] = "screenshot";
+						capture_info["prompt"] = runtime_result.get("prompt", "Game Screenshot");
+					}
+				}
+				
+				screenshots.push_back(capture_info);
+				captured_any = true;
+				print_line("AI Chat: RuntimeInspector game capture successful");
+			} else {
+				print_line("AI Chat: RuntimeInspector game capture failed: " + String(runtime_result.get("error", "Unknown error")));
+				Dictionary game_failure;
+				game_failure["source"] = "game";
+				game_failure["message"] = "Game screenshot failed: " + String(runtime_result.get("error", "Unknown error"));
+				game_failure["success"] = false;
+				screenshots.push_back(game_failure);
+			}
+		}
+	}
 	
 	// Capture editor viewport - this should be immediate and synchronous
 	if (target == "editor" || target == "both") {

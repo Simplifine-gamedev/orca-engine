@@ -9,6 +9,7 @@
 #include "core/core_bind.h"
 #include "editor/editor_node.h"
 #include "editor/editor_interface.h"
+#include "editor/run/editor_run_bar.h"
 #include "editor/debugger/editor_debugger_inspector.h"
 #include "editor/debugger/script_editor_debugger.h"
 #include "scene/main/canvas_item.h"
@@ -563,8 +564,33 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 		return result;
 	}
 	
-	// Get the viewport to capture  
-	Viewport *viewport = scene_tree->get_root();
+	// Get the viewport to capture - find the GAME viewport, not editor
+	Viewport *viewport = nullptr;
+	
+	// Try to find the game window/viewport by looking for running game instances
+	if (EditorRunBar::get_singleton() && EditorRunBar::get_singleton()->is_playing()) {
+		// Look for game viewports in the scene tree
+		Window *root_window = scene_tree->get_root();
+		if (root_window) {
+			// Search through all child windows to find the game window
+			TypedArray<Node> windows = root_window->find_children("*", "Window", true, false);
+			for (int i = 0; i < windows.size(); i++) {
+				Window *child_window = Object::cast_to<Window>(windows[i]);
+				if (child_window && child_window != root_window) {
+					// This could be the game window - try to get its main viewport
+					viewport = child_window;
+					print_line("AI Chat: Found potential game window: " + child_window->get_name());
+					break;
+				}
+			}
+		}
+	}
+	
+	// Fallback to root viewport if no game viewport found
+	if (!viewport) {
+		viewport = scene_tree->get_root();
+		print_line("AI Chat: Using root viewport as fallback");
+	}
 	
 	if (!viewport) {
 		result["success"] = false;
@@ -580,7 +606,12 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 		return result;
 	}
 	
-	// Get image from viewport
+	// NON-BLOCKING: Get image from viewport with yield to prevent freeze
+	print_line("AI Chat: Capturing viewport image...");
+	
+	// Brief yield before expensive image capture
+	OS::get_singleton()->delay_usec(1000);
+	
 	Ref<Image> img = viewport_texture->get_image();
 	
 	if (img.is_null() || img->is_empty()) {
@@ -590,40 +621,53 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 		return result;
 	}
 	
+	// Yield during image processing
+	OS::get_singleton()->delay_usec(1000);
+	
 	result["success"] = true;
 	result["width"] = img->get_width();
 	result["height"] = img->get_height();
 	result["format"] = img->get_format();
 	
 	if (p_return_base64) {
-		// Convert to PNG and encode as base64
+		// NON-BLOCKING: Convert to PNG and encode as base64 with yields
+		print_line("AI Chat: Converting to PNG buffer...");
 		Vector<uint8_t> png_buffer = img->save_png_to_buffer();
+		
+		// Yield during base64 encoding (expensive operation)
+		OS::get_singleton()->delay_usec(2000); // 2ms yield
+		
+		print_line("AI Chat: Encoding to base64...");
 		String base64 = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_buffer);
 		
 		// Generate unique ID for screenshot
 		String screenshot_id = "screenshot_" + p_target + "_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
 		
-		result["image_data"] = base64;  // Use "image_data" key for frontend compatibility
-		result["base64"] = base64;      // Keep for backward compatibility
+		// CRITICAL: Format result for UI lazy loader (same as image generation)
+		result["image_data"] = base64;  // Key field that triggers lazy loading
+		result["base64"] = base64;      // Backward compatibility
 		result["data_uri"] = "data:image/png;base64," + base64;
-		result["prompt"] = "Runtime Screenshot (" + p_target + ")";  // Add prompt for display
-		result["image_type"] = "screenshot";
+		result["prompt"] = "Runtime Screenshot (" + p_target + ")";  // Title for lazy loader
+		result["image_type"] = "screenshot";  // Tells UI this is a screenshot
 		result["image_id"] = screenshot_id;
 		result["image_name"] = screenshot_id;
 		result["target"] = p_target;
+		result["model"] = "Viewport Capture";  // For lazy loader display
+		
+		print_line("AI Chat: Screenshot ready - " + String::num_int64(img->get_width()) + "x" + String::num_int64(img->get_height()) + " pixels");
 	}
 	
-	// Save to file
-	String filename = p_target + "_screenshot_" + String::num_int64(OS::get_singleton()->get_unix_time()) + ".png";
-	String path = "res://" + filename;
-	Error err = img->save_png(path);
-	
-	if (err == OK) {
-		result["saved_path"] = path;
-		result["filename"] = filename;
-	} else {
-		result["save_error"] = "Failed to save screenshot to " + path;
-	}
+	// DISABLED: Don't automatically save screenshots to disk - they're for AI analysis only
+	// This prevents cluttering the project with screenshot files
+	// String filename = p_target + "_screenshot_" + String::num_int64(OS::get_singleton()->get_unix_time()) + ".png";
+	// String path = "res://" + filename;
+	// Error err = img->save_png(path);
+	// if (err == OK) {
+	//     result["saved_path"] = path;
+	//     result["filename"] = filename;
+	// } else {
+	//     result["save_error"] = "Failed to save screenshot to " + path;
+	// }
 	
 	return result;
 }

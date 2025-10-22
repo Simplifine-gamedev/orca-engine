@@ -31,6 +31,7 @@
 #include "scene/gui/item_list.h"
 #include "scene/gui/label.h"
 #include "scene/gui/line_edit.h"
+#include "scene/gui/dialogs.h"
 #include "scene/gui/option_button.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/split_container.h"
@@ -349,6 +350,14 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	texture_download_request->set_use_threads(true);
 	add_child(texture_download_request);
 	
+	// Remeshing HTTP request
+	remesh_request = memnew(HTTPRequest);
+	remesh_request->set_name("RemeshRequest");
+	remesh_request->set_timeout(180); // allow up to 3 minutes
+	remesh_request->set_body_size_limit(200 * 1024 * 1024); // 200 MB limit
+	remesh_request->set_use_threads(true);
+	add_child(remesh_request);
+	
 	// Texture poll timer
 	texture_poll_timer = memnew(Timer);
 	texture_poll_timer->set_wait_time(5.0); // Poll every 5 seconds
@@ -417,6 +426,24 @@ void DesignStudio3DEditor::_setup_current_view_tab() {
 	texture_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
 	texture_status_label->set_custom_minimum_size(Size2(0, 60 * EDSCALE));
 	current_view_tab->add_child(texture_status_label);
+	
+	// Remesh dialog (prompt for target faces)
+	remesh_dialog = memnew(AcceptDialog);
+	remesh_dialog->set_title("Remesh Model");
+	remesh_dialog->set_ok_button_text("Remesh");
+	remesh_dialog->connect("confirmed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_dialog_confirmed));
+	add_child(remesh_dialog);
+	
+	VBoxContainer *remesh_vbox = memnew(VBoxContainer);
+	remesh_dialog->add_child(remesh_vbox);
+	
+	Label *faces_label = memnew(Label);
+	faces_label->set_text("Target Faces:");
+	remesh_vbox->add_child(faces_label);
+	
+	remesh_faces_input = memnew(LineEdit);
+	remesh_faces_input->set_placeholder("e.g. 75000");
+	remesh_vbox->add_child(remesh_faces_input);
 	
 	// Don't add to mode_tabs yet - will be added when model is loaded
 }
@@ -1247,9 +1274,13 @@ void DesignStudio3DEditor::_on_export_pressed() {
 		return;
 	}
 	
-	// Save the cached model data to workspace
+	// Save the cached model data to workspace (preserve extension)
 	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
-	String filename = "exported_model_" + timestamp + ".obj";
+	String ext = current_model_path.get_extension();
+	if (ext.is_empty()) {
+		ext = "obj";
+	}
+	String filename = "exported_model_" + timestamp + "." + ext;
 	String save_path = "res://" + filename;
 	String project_path = ProjectSettings::get_singleton()->globalize_path(save_path);
 	
@@ -1540,9 +1571,214 @@ void DesignStudio3DEditor::_on_segment_pressed() {
 }
 
 void DesignStudio3DEditor::_on_remesh_pressed() {
-	// Placeholder for Re-mesh functionality
-	if (status_label) {
-		status_label->set_text("[INFO] Re-mesh feature coming soon!");
+	if (current_loaded_mesh.is_null() && current_model_path.is_empty()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] No model loaded for remeshing");
+		}
+		return;
+	}
+	
+	int default_faces = current_face_count > 0 ? current_face_count / 2 : 75000;
+	if (default_faces < 1) {
+		default_faces = 1;
+	}
+	if (remesh_faces_input) {
+		remesh_faces_input->set_text(itos(default_faces));
+	}
+	if (remesh_dialog) {
+		remesh_dialog->popup_centered(Size2(420 * EDSCALE, 0));
+	}
+}
+
+void DesignStudio3DEditor::_on_remesh_dialog_confirmed() {
+	int target_faces = remesh_faces_input ? remesh_faces_input->get_text().strip_edges().to_int() : 0;
+	if (target_faces <= 0) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Please enter a valid target face count");
+		}
+		return;
+	}
+	_start_remeshing(target_faces);
+}
+
+void DesignStudio3DEditor::_start_remeshing(int p_target_faces) {
+	if (current_model_path.is_empty()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] No model data available to upload");
+		}
+		return;
+	}
+
+	Ref<FileAccess> source = FileAccess::open(current_model_path, FileAccess::READ);
+	if (source.is_null()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to open current model file for remeshing");
+		}
+		return;
+	}
+	PackedByteArray file_bytes = source->get_buffer(source->get_length());
+	source->close();
+
+	String boundary = "----WebKitFormBoundary" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+	PackedByteArray body;
+
+	String filename = current_model_path.get_file();
+	if (filename.is_empty()) {
+		filename = "model.glb";
+	}
+
+	// File part
+	String part1 = "--" + boundary + "\r\n";
+	part1 += "Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n";
+	part1 += "Content-Type: application/octet-stream\r\n\r\n";
+	body.append_array(part1.to_utf8_buffer());
+	body.append_array(file_bytes);
+	body.append_array(String("\r\n").to_utf8_buffer());
+
+	// target_faces part
+	String part2 = "--" + boundary + "\r\n";
+	part2 += "Content-Disposition: form-data; name=\"target_faces\"\r\n\r\n";
+	part2 += itos(p_target_faces) + "\r\n";
+	body.append_array(part2.to_utf8_buffer());
+
+	String closing = "--" + boundary + "--\r\n";
+	body.append_array(closing.to_utf8_buffer());
+
+	PackedStringArray headers;
+	headers.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
+	headers.push_back("User-Agent: Godot-Editor/4.0");
+	headers.push_back("Accept: */*");
+
+	String url = REMESH_API_URL + "/remesh";
+
+	if (texture_status_label) {
+		texture_status_label->set_text("[REMESH] Uploading model for remeshing to " + itos(p_target_faces) + " faces...");
+	}
+	if (remesh_button) {
+		remesh_button->set_disabled(true);
+	}
+
+	if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed))) {
+		remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed));
+	}
+	remesh_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed), CONNECT_ONE_SHOT);
+
+	Error err = remesh_request->request_raw(url, headers, HTTPClient::METHOD_POST, body);
+	if (err != OK) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to start remesh request. Error: " + itos(err));
+		}
+		if (remesh_button) {
+			remesh_button->set_disabled(false);
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_remesh_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Remesh request failed. Result: " + itos(p_result));
+		}
+		if (remesh_button) {
+			remesh_button->set_disabled(false);
+		}
+		return;
+	}
+
+	if (p_code != 200) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Remesh failed (HTTP " + itos(p_code) + ")");
+		}
+		if (remesh_button) {
+			remesh_button->set_disabled(false);
+		}
+		return;
+	}
+
+	if (p_body.size() == 0) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Remesh response is empty");
+		}
+		if (remesh_button) {
+			remesh_button->set_disabled(false);
+		}
+		return;
+	}
+
+	// Try to determine file type from headers and content
+	String content_type;
+	String header_filename;
+	for (int i = 0; i < p_headers.size(); i++) {
+		String h = p_headers[i];
+		if (h.begins_with("Content-Type:") || h.begins_with("content-type:")) {
+			content_type = h.substr(h.find(":") + 1).strip_edges();
+		}
+		if (h.begins_with("Content-Disposition:") || h.begins_with("content-disposition:")) {
+			int fn_pos = h.find("filename=");
+			if (fn_pos != -1) {
+				String fn = h.substr(fn_pos + 9).strip_edges();
+				fn = fn.trim_prefix("\"").trim_suffix("\"");
+				header_filename = fn;
+			}
+		}
+	}
+
+	bool looks_glb = false;
+	bool looks_obj = false;
+	if (p_body.size() >= 4) {
+		const uint8_t *b = p_body.ptr();
+		// GLB magic 'glTF'
+		if (b[0] == 'g' && b[1] == 'l' && b[2] == 'T' && b[3] == 'F') {
+			looks_glb = true;
+		}
+	}
+	// Heuristic for OBJ: text-based starting tokens
+	int probe_len = MIN(128, p_body.size());
+	String probe = String::utf8((const char *)p_body.ptr(), probe_len);
+	if (probe.begins_with("#") || probe.begins_with("v ") || probe.begins_with("o ") || probe.begins_with("mtllib") || probe.begins_with("g ")) {
+		looks_obj = true;
+	}
+
+	// If server provided a filename, use its extension preference
+	if (!header_filename.is_empty()) {
+		String ext = header_filename.get_extension().to_lower();
+		if (ext == "glb") looks_glb = true;
+		if (ext == "obj") looks_obj = true;
+	}
+
+	if (looks_obj && !looks_glb) {
+		// Directly load OBJ into viewer and set path via existing helper
+		_load_model_from_data(p_body);
+		if (texture_status_label) {
+			texture_status_label->set_text("[SUCCESS] Remeshed OBJ received and loaded in viewer. Export to save.");
+		}
+	} else if (looks_glb) {
+		String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+		String filename = header_filename.is_empty() ? (String("remeshed_model_") + timestamp + ".glb") : header_filename;
+		String temp_path = "user://" + filename;
+		Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_buffer(p_body);
+			file->close();
+			current_model_path = temp_path;
+			if (texture_status_label) {
+				texture_status_label->set_text("[SUCCESS] Remeshed GLB downloaded. Export to import into project.");
+			}
+		} else {
+			if (texture_status_label) {
+				texture_status_label->set_text("[ERROR] Failed to save remeshed GLB file");
+			}
+		}
+	} else {
+		// Unknown content; show brief snippet for debugging
+		String snippet = probe;
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Unknown remesh response format. First bytes: \n" + snippet);
+		}
+	}
+
+	if (remesh_button) {
+		remesh_button->set_disabled(false);
 	}
 }
 

@@ -40,7 +40,7 @@
 #include "servers/rendering/shader_warnings.h"
 
 // Include dtl for diff functionality
-#include "dtl.hpp"
+#include "thirdparty/dtl/dtl/dtl.hpp"
 
 class GDShaderSyntaxHighlighter : public CodeHighlighter {
 	GDCLASS(GDShaderSyntaxHighlighter, CodeHighlighter)

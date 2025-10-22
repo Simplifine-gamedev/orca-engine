@@ -1,6 +1,32 @@
 #!/usr/bin/env python
-from misc.utility.scons_hints import *
 
 Import("env")
 
-env.add_source_files(env.editor_sources, "*.cpp")
+env_dock = env.Clone()
+
+dock_sources = [
+    "ai_chat_actions.cpp",
+    "ai_chat_dock_user_messages.cpp", 
+    "ai_chat_dock.cpp",
+    "ai_chat_history_manager.cpp",
+    "ai_chat_input_box.cpp",
+    "ai_chat_mode_selector.cpp",
+    "ai_chat_streaming_indicator.cpp",
+    "ai_checkpoint_manager.cpp",
+    "ai_conversation_persistence.cpp",
+    "ai_image_lazy_loader.cpp",
+    "ai_manual_snapshots.cpp",
+    "ai_pending_edits_banner.cpp",
+    "ai_tool_server.cpp",
+    "diff_viewer.cpp",
+    "editor_dock_manager.cpp",
+    "filesystem_dock.cpp",
+    "groups_editor.cpp",
+    "history_dock.cpp",
+    "import_dock.cpp",
+    "inspector_dock.cpp",
+    "node_dock.cpp",
+    "scene_tree_dock.cpp",
+]
+
+env_dock.add_source_files(env.editor_sources, dock_sources)

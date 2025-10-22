@@ -582,12 +582,13 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "runtime_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Run/stop/status, error summaries/details, screenshots. Common operations: 'game.start' (start game), 'game.stop' (stop game), 'game.status' (get status), 'errors.summary' (get error summary), 'screenshot.capture' (take screenshot).",
+            "description": "REQUIRED: Always specify 'op' parameter. Run/stop/status, error summaries/details. TEMP: screenshots disabled.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "op": {"type": "string", "enum": ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "errors.test", "errors.debug", "screenshot.capture", "console.get_output", "input.test_action", "input.test_key"]},
+                    # TEMP: Removed 'screenshot.capture' from enum to disable screenshot tool
+                    "op": {"type": "string", "enum": ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "errors.test", "errors.debug", "console.get_output", "input.test_action", "input.test_key"]},
                     "scene_path": {"type": "string"},
                     "clear_errors": {"type": "boolean", "default": True},
 
@@ -597,10 +598,10 @@ _godot_tools_template = [
                     "message_contains": {"type": "string"},
                     "group_duplicates": {"type": "boolean", "default": True},
 
-                    # Screenshot parameters
-                    "filename": {"type": "string", "default": "screenshot_debug.png"},
-                    "target": {"type": "string", "enum": ["editor", "game", "both"], "default": "game"},
-                    "return_base64": {"type": "boolean", "default": True},
+                    # Screenshot parameters (TEMP disabled)
+                    # "filename": {"type": "string", "default": "screenshot_debug.png"},
+                    # "target": {"type": "string", "enum": ["editor", "game", "both"], "default": "game"},
+                    # "return_base64": {"type": "boolean", "default": True},
                     
                     # Console output parameters
                     "output_type": {"type": "string", "enum": ["all", "print", "error", "warning"], "default": "all"},
