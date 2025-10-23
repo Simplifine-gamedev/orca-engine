@@ -621,6 +621,44 @@ _godot_tools_template = [
     {
         "type": "function",
         "function": {
+            "name": "terminal_manager",
+            "description": "REQUIRED: Always specify 'op' parameter. Execute standard CLI/terminal commands on the local machine. Supports common command line operations like file management, version control, text processing, and system utilities. All operations run on the local machine (frontend). Common operations: 'execute' (run command), 'history' (command history), 'clear' (clear output).",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": [
+                            "execute", "history", "clear", "status", "pwd", "cd", "allowed_commands"
+                        ],
+                        "description": "**REQUIRED** terminal operation. 'execute' runs commands, 'history' shows command history, 'clear' clears output, 'status' shows terminal status, 'pwd' gets current directory, 'cd' changes directory, 'allowed_commands' lists allowed commands"
+                    },
+                    "dry_run": {"type": "boolean", "default": False, "description": "If true, don't actually execute the command, just validate it"},
+                    
+                    # Command execution
+                    "command": {"type": "string", "description": "CLI command to execute (for 'execute' operation). Examples: 'ls -la' (list files), 'grep -r \"pattern\" .' (search text), 'git status' (version control), 'pwd' (current directory), 'find . -name \"*.txt\"' (find files), 'cat filename.txt' (view file)"},
+                    "working_directory": {"type": "string", "description": "Working directory for command execution (defaults to project root)"},
+                    "timeout": {"type": "integer", "default": 30, "description": "Command timeout in seconds (max 300s for safety)"},
+                    "capture_output": {"type": "boolean", "default": True, "description": "Whether to capture and return command output"},
+                    "shell": {"type": "boolean", "default": False, "description": "Whether to execute command through shell (use with caution)"},
+                    "env_vars": {"type": "object", "description": "Additional environment variables to set for command execution"},
+                    
+                    # Directory operations  
+                    "path": {"type": "string", "description": "Directory path for 'cd' operation"},
+                    
+                    # History operations
+                    "max_history": {"type": "integer", "default": 50, "description": "Maximum number of history entries to return"},
+                    "filter_pattern": {"type": "string", "description": "Filter history entries by pattern (regex supported)"}
+                },
+                "required": ["op"]
+            }
+        }
+    },
+    
+    {
+        "type": "function",
+        "function": {
             "name": "runtime_inspector",
             "description": "REQUIRED: Always specify 'op' parameter. Inspect and modify runtime node properties, materials, shaders, environment settings during play. Common operations: 'runtime.node.get_props' (get node properties), 'runtime.node.set_prop' (set property), 'runtime.material.get' (get material).",
             "parameters": {

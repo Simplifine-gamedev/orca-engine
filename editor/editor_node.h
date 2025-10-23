@@ -335,6 +335,7 @@ private:
 	EditorRunBar *project_run_bar = nullptr;
 	HBoxContainer *right_menu_hb = nullptr;
 	Button *update_badge_button = nullptr;
+	Button *version_control_button = nullptr;
 
 	// Spacers to center 2D / 3D / Script buttons.
 	HBoxContainer *left_spacer = nullptr;
@@ -586,6 +587,7 @@ private:
 	void _update_title();
 	void _update_unsaved_cache();
 	void _version_control_menu_option(int p_idx);
+	void _open_version_control_dock();
 	void _close_messages();
 	void _show_messages();
 	void _vp_resized();

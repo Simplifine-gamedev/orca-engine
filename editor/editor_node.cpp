@@ -84,6 +84,8 @@
 #include "editor/doc/editor_help.h"
 #include "editor/docks/ai_chat_dock.h"
 #include "editor/docks/editor_dock_manager.h"
+#include "editor/docks/editor_terminal_plugin.h"
+#include "editor/git/git_gui_dialog.h"
 #include "editor/docks/filesystem_dock.h"
 #include "editor/docks/history_dock.h"
 #include "editor/docks/import_dock.h"
@@ -352,6 +354,15 @@ void EditorNode::_version_control_menu_option(int p_idx) {
 		} break;
 	}
 }
+
+void EditorNode::_open_version_control_dock() {
+	// Open the comprehensive Git GUI
+	GitGuiDialog *git_dialog = memnew(GitGuiDialog);
+	git_dialog->set_project_path(ProjectSettings::get_singleton()->get_resource_path());
+	gui_base->add_child(git_dialog);
+	git_dialog->popup_centered();
+}
+
 
 void EditorNode::_update_title() {
 	const String appname = GLOBAL_GET("application/config/name");
@@ -8288,6 +8299,14 @@ EditorNode::EditorNode() {
 	update_badge_button->connect("pressed", callable_mp(this, &EditorNode::_menu_option).bind(HELP_CHECK_FOR_UPDATES));
 	right_menu_hb->add_child(update_badge_button);
 
+	// Version Control button for easy Git access.
+	version_control_button = memnew(Button);
+	version_control_button->set_flat(true);
+	version_control_button->set_text(TTRC("Git"));
+	version_control_button->set_tooltip_text(TTRC("Open Version Control Panel (Git operations)"));
+	version_control_button->connect("pressed", callable_mp(this, &EditorNode::_open_version_control_dock));
+	right_menu_hb->add_child(version_control_button);
+
 	renderer = memnew(OptionButton);
 	renderer->set_visible(true);
 	renderer->set_flat(true);
@@ -8461,6 +8480,9 @@ EditorNode::EditorNode() {
 	Button *output_button = bottom_panel->add_item(TTRC("Output"), log, ED_SHORTCUT_AND_COMMAND("bottom_panels/toggle_output_bottom_panel", TTRC("Toggle Output Bottom Panel"), KeyModifierMask::ALT | Key::O));
 	log->set_tool_button(output_button);
 	log->set_ai_chat_dock(ai_chat_dock);
+
+	// Add terminal to bottom panel
+	add_editor_plugin(memnew(EditorTerminalPlugin));
 
 	center_split->connect(SceneStringName(resized), callable_mp(this, &EditorNode::_vp_resized));
 

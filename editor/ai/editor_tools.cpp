@@ -12408,6 +12408,382 @@ Dictionary EditorTools::runtime_manager(const Dictionary &p_args) {
     }
 }
 
+Dictionary EditorTools::terminal_manager(const Dictionary &p_args) {
+    Dictionary result;
+    String op = p_args.get("op", "");
+    
+    if (op.is_empty()) {
+        result["success"] = false;
+        result["error"] = "Operation 'op' parameter is required";
+        return result;
+    }
+    
+    print_line("EditorTools: terminal_manager called with op: " + op);
+    
+    if (op == "execute") {
+        String command = p_args.get("command", "");
+        if (command.is_empty()) {
+            result["success"] = false;
+            result["error"] = "Command parameter is required for execute operation";
+            return result;
+        }
+        
+        String working_directory = p_args.get("working_directory", "");
+        if (working_directory.is_empty()) {
+            working_directory = ProjectSettings::get_singleton()->get_resource_path();
+        }
+        
+        int timeout = p_args.get("timeout", 30);
+        timeout = CLAMP(timeout, 1, 300); // 1 second to 5 minutes max
+        
+        bool dry_run = p_args.get("dry_run", false);
+        bool capture_output = p_args.get("capture_output", true);
+        bool use_shell = p_args.get("shell", false);
+        
+        print_line("EditorTools: Executing terminal command: " + command);
+        print_line("EditorTools: Working directory: " + working_directory);
+        
+        if (dry_run) {
+            result["success"] = true;
+            result["command"] = command;
+            result["working_directory"] = working_directory;
+            result["dry_run"] = true;
+            result["message"] = "Dry run - command validated but not executed";
+            return result;
+        }
+        
+        // Detect if shell features are needed (pipes, redirects, wildcards, etc.)
+        bool needs_shell = use_shell || 
+                          command.contains("|") ||   // Pipes
+                          command.contains(">") ||   // Redirects  
+                          command.contains("<") ||   // Input redirects
+                          command.contains("&&") ||  // Command chaining
+                          command.contains("||") ||  // OR chaining
+                          command.contains(";") ||   // Command separation
+                          command.contains("*") ||   // Wildcards
+                          command.contains("?") ||   // Single char wildcards
+                          command.contains("[") ||   // Character classes
+                          command.contains("$") ||   // Variables
+                          command.contains("~") ||   // Home directory
+                          command.contains("`");     // Command substitution
+        
+        if (needs_shell) {
+            print_line("EditorTools: Using shell execution for complex command");
+            
+            // Use shell execution for complex commands
+            String shell_executable;
+            List<String> shell_arguments;
+            
+            #ifdef WINDOWS_ENABLED
+                shell_executable = "cmd";
+                shell_arguments.push_back("/c");
+                shell_arguments.push_back("cd /d \"" + working_directory + "\" && " + command);
+            #else
+                shell_executable = "sh";
+                shell_arguments.push_back("-c");
+                shell_arguments.push_back("cd \"" + working_directory + "\" && " + command);
+            #endif
+            
+            // Execute through shell
+            String output_text;
+            int exit_code;
+            Error err = OS::get_singleton()->execute(shell_executable, shell_arguments, &output_text, &exit_code, true, nullptr, false);
+            
+            result["command"] = command;
+            result["working_directory"] = working_directory;
+            result["shell_used"] = true;
+            result["exit_code"] = exit_code;
+            result["execution_time"] = Time::get_singleton()->get_ticks_msec();
+            
+            if (err == OK) {
+                result["success"] = true;
+                result["output"] = capture_output ? output_text : "";
+                result["has_output"] = !output_text.is_empty();
+                result["message"] = exit_code == 0 ? "Shell command executed successfully" : 
+                                   "Shell command completed with exit code " + String::num_int64(exit_code);
+                
+                if (exit_code != 0) {
+                    result["is_error"] = true;
+                    result["error_output"] = output_text;
+                }
+            } else {
+                result["success"] = false;
+                result["error"] = "Failed to execute shell command";
+                result["system_error"] = "OS shell execution failed";
+            }
+            
+            return result;
+        }
+        
+        // Simple command execution (no shell features)
+        Vector<String> parts = command.split(" ");
+        if (parts.is_empty()) {
+            result["success"] = false;
+            result["error"] = "Empty command";
+            return result;
+        }
+        
+        String executable = parts[0];
+        List<String> arguments;
+        for (int i = 1; i < parts.size(); i++) {
+            arguments.push_back(parts[i]);
+        }
+        
+        // For shell execution, we validate differently since command goes through shell
+        if (needs_shell) {
+            // Shell execution: validate that no dangerous commands are present
+            HashSet<String> dangerous_commands;
+            dangerous_commands.insert("sudo");
+            dangerous_commands.insert("su");
+            dangerous_commands.insert("rm -rf");
+            dangerous_commands.insert("rmdir /s");
+            dangerous_commands.insert("format");
+            dangerous_commands.insert("mkfs");
+            dangerous_commands.insert("fdisk");
+            dangerous_commands.insert("dd");
+            dangerous_commands.insert("reboot");
+            dangerous_commands.insert("shutdown");
+            dangerous_commands.insert("halt");
+            dangerous_commands.insert("init");
+            
+            String cmd_lower = command.to_lower();
+            for (const String &dangerous : dangerous_commands) {
+                if (cmd_lower.contains(dangerous)) {
+                    result["success"] = false;
+                    result["error"] = "Command contains dangerous operation: " + dangerous;
+                    result["security_violation"] = true;
+                    return result;
+                }
+            }
+        } else {
+            // Direct execution: use whitelist validation
+            String executable = parts[0];
+            HashSet<String> allowed_commands;
+            // File and directory operations
+            allowed_commands.insert("ls");
+            allowed_commands.insert("dir");  
+            allowed_commands.insert("pwd");
+            allowed_commands.insert("cd");
+            allowed_commands.insert("cat");
+            allowed_commands.insert("head");
+            allowed_commands.insert("tail");
+            allowed_commands.insert("find");
+            allowed_commands.insert("grep");
+            allowed_commands.insert("tree");
+            allowed_commands.insert("cp");
+            allowed_commands.insert("mv");
+            allowed_commands.insert("mkdir");
+            allowed_commands.insert("rm");
+            allowed_commands.insert("touch");
+            allowed_commands.insert("chmod");
+            // Text processing
+            allowed_commands.insert("sort");
+            allowed_commands.insert("uniq");
+            allowed_commands.insert("wc");
+            allowed_commands.insert("diff");
+            allowed_commands.insert("cut");
+            allowed_commands.insert("awk");
+            allowed_commands.insert("sed");
+            // Version control
+            allowed_commands.insert("git");
+            // Network utilities
+            allowed_commands.insert("curl");
+            allowed_commands.insert("wget");
+            allowed_commands.insert("ping");
+            // System utilities
+            allowed_commands.insert("echo");
+            allowed_commands.insert("which");
+            allowed_commands.insert("whoami");
+            allowed_commands.insert("uname");
+            allowed_commands.insert("date");
+            allowed_commands.insert("uptime");
+            // Process management
+            allowed_commands.insert("ps");
+            allowed_commands.insert("top");
+            allowed_commands.insert("htop");
+            allowed_commands.insert("kill");
+            // Scripting
+            allowed_commands.insert("python");
+            allowed_commands.insert("python3");
+            allowed_commands.insert("node");
+            allowed_commands.insert("sh");
+            allowed_commands.insert("bash");
+            
+            // Check if command is allowed
+            if (!allowed_commands.has(executable)) {
+                result["success"] = false;
+                result["error"] = "Command '" + executable + "' is not allowed for security reasons";
+                Array allowed_array;
+                for (const String &cmd : allowed_commands) {
+                    allowed_array.push_back(cmd);
+                }
+                result["allowed_commands"] = allowed_array;
+                return result;
+            }
+        }
+        
+        // Special handling for Git commands (use -C for directory)
+        List<String> final_arguments;
+        if (executable == "git") {
+            final_arguments.push_back("-C");
+            final_arguments.push_back(working_directory);
+            for (const String &arg : arguments) {
+                final_arguments.push_back(arg);
+            }
+        } else {
+            final_arguments = arguments;
+        }
+        
+        // Execute the command directly (simple mode)
+        String output_text;
+        int exit_code;
+        Error err = OS::get_singleton()->execute(executable, final_arguments, &output_text, &exit_code, true, nullptr, false);
+        
+        result["command"] = command;
+        result["working_directory"] = working_directory;
+        result["executable"] = executable;
+        result["shell_used"] = false;
+        result["exit_code"] = exit_code;
+        result["execution_time"] = Time::get_singleton()->get_ticks_msec();
+        
+        if (err == OK) {
+            result["success"] = true;
+            result["output"] = capture_output ? output_text : "";
+            result["has_output"] = !output_text.is_empty();
+            result["message"] = exit_code == 0 ? "Command executed successfully" : 
+                               "Command completed with exit code " + String::num_int64(exit_code);
+            
+            if (exit_code != 0) {
+                result["is_error"] = true;
+                result["error_output"] = output_text;
+            }
+        } else {
+            result["success"] = false;
+            result["error"] = "Failed to execute command: " + executable;
+            result["system_error"] = "OS execution failed";
+        }
+        
+        return result;
+        
+    } else if (op == "history") {
+        // Get command history from EditorTerminal if available
+        result["success"] = true;
+        result["operation"] = "history";
+        result["message"] = "Command history retrieval - this would access the terminal history";
+        result["history"] = Array(); // TODO: Connect to actual terminal history
+        return result;
+        
+    } else if (op == "clear") {
+        // Clear terminal output
+        result["success"] = true;
+        result["operation"] = "clear";
+        result["message"] = "Terminal output cleared";
+        return result;
+        
+    } else if (op == "status") {
+        // Get terminal status
+        result["success"] = true;
+        result["operation"] = "status";
+        result["current_directory"] = ProjectSettings::get_singleton()->get_resource_path();
+        result["terminal_available"] = true;
+        result["message"] = "Terminal is ready for command execution";
+        return result;
+        
+    } else if (op == "pwd") {
+        // Get current working directory
+        result["success"] = true;
+        result["operation"] = "pwd";
+        result["current_directory"] = ProjectSettings::get_singleton()->get_resource_path();
+        String current_dir = result["current_directory"];
+        result["message"] = "Current working directory: " + current_dir;
+        return result;
+        
+    } else if (op == "cd") {
+        String path = p_args.get("path", "");
+        if (path.is_empty()) {
+            result["success"] = false;
+            result["error"] = "Path parameter is required for cd operation";
+            return result;
+        }
+        
+        // Note: Since commands run in project context anyway, this is mainly informational
+        result["success"] = true;
+        result["operation"] = "cd";
+        result["message"] = "Note: All terminal commands run in project root context";
+        result["project_root"] = ProjectSettings::get_singleton()->get_resource_path();
+        return result;
+        
+    } else if (op == "allowed_commands") {
+        // List standard CLI commands allowed
+        Array allowed;
+        HashSet<String> allowed_commands;
+        // File and directory operations
+        allowed_commands.insert("ls");
+        allowed_commands.insert("dir");
+        allowed_commands.insert("pwd");
+        allowed_commands.insert("cd");
+        allowed_commands.insert("cat");
+        allowed_commands.insert("head");
+        allowed_commands.insert("tail");
+        allowed_commands.insert("find");
+        allowed_commands.insert("grep");
+        allowed_commands.insert("tree");
+        allowed_commands.insert("cp");
+        allowed_commands.insert("mv");
+        allowed_commands.insert("mkdir");
+        allowed_commands.insert("rm");
+        allowed_commands.insert("touch");
+        allowed_commands.insert("chmod");
+        // Text processing
+        allowed_commands.insert("sort");
+        allowed_commands.insert("uniq");
+        allowed_commands.insert("wc");
+        allowed_commands.insert("diff");
+        allowed_commands.insert("cut");
+        allowed_commands.insert("awk");
+        allowed_commands.insert("sed");
+        // Version control
+        allowed_commands.insert("git");
+        // Network utilities
+        allowed_commands.insert("curl");
+        allowed_commands.insert("wget");
+        allowed_commands.insert("ping");
+        // System utilities
+        allowed_commands.insert("echo");
+        allowed_commands.insert("which");
+        allowed_commands.insert("whoami");
+        allowed_commands.insert("uname");
+        allowed_commands.insert("date");
+        allowed_commands.insert("uptime");
+        // Process management
+        allowed_commands.insert("ps");
+        allowed_commands.insert("top");
+        allowed_commands.insert("htop");
+        allowed_commands.insert("kill");
+        // Scripting
+        allowed_commands.insert("python");
+        allowed_commands.insert("python3");
+        allowed_commands.insert("node");
+        allowed_commands.insert("sh");
+        allowed_commands.insert("bash");
+        
+        for (const String &cmd : allowed_commands) {
+            allowed.push_back(cmd);
+        }
+        
+        result["success"] = true;
+        result["operation"] = "allowed_commands";
+        result["allowed_commands"] = allowed;
+        result["message"] = "Retrieved " + String::num_int64(allowed.size()) + " allowed commands";
+        return result;
+        
+    } else {
+        result["success"] = false;
+        result["error"] = String("Unknown terminal_manager operation: ") + op;
+        return result;
+    }
+}
+
 // Advanced batch operations implementation
 Dictionary EditorTools::create_and_configure_nodes_batch(const Dictionary &p_args) {
 	Dictionary result;

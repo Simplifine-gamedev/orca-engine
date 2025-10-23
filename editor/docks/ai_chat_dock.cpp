@@ -5,6 +5,7 @@
  * See LICENSES/COMPANY-NONCOMMERCIAL.md for terms. Commercial use requires a separate license from Simplifine.
  */
 #include "ai_chat_dock.h"
+#include "ai_terminal_ui.h"
 #include "ai_chat_input_box.h"
 #include "ai_chat_streaming_indicator.h"
 #include "ai_checkpoint_manager.h"
@@ -4480,6 +4481,8 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
                 local_result = EditorTools::runtime_manager(arguments_to_forward);
             } else if (tool_executed == "runtime_inspector") {
                 local_result = EditorTools::runtime_inspector(arguments_to_forward);
+            } else if (tool_executed == "terminal_manager") {
+                local_result = EditorTools::terminal_manager(arguments_to_forward);
             } else {
                 // Handle other tools that might have frontend_only operations
                 local_result["success"] = false;
@@ -5002,6 +5005,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 		slow_tools.insert("apply_edit"); // Already handled as slow
 		slow_tools.insert("settings_manager"); // Listing/searching settings can be heavy
 		slow_tools.insert("project_manager"); // CRITICAL: Defer for UI feedback on fs.write/write_lines/replace_string
+		slow_tools.insert("terminal_manager"); // CRITICAL: Defer for UI feedback on command execution
 		// NOTE: search_manager is NOT in slow_tools - it's backend-only (except grep mode)
 		// Add other slow tools as needed
 	}
@@ -5275,6 +5279,8 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			result = EditorTools::runtime_manager(args);
 		} else if (function_name == "runtime_inspector") {
 			result = EditorTools::runtime_inspector(args);
+		} else if (function_name == "terminal_manager") {
+			result = EditorTools::terminal_manager(args);
 		} else {
 			result["success"] = false;
 			result["message"] = "Unknown tool: " + function_name;
@@ -6452,6 +6458,32 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             } else if (actual_op == "compile.check") {
                 int error_count = p_result.get("error_count", 0);
                 return error_count > 0 ? "Found " + String::num_int64(error_count) + " compilation errors" : "No compilation errors";
+            }
+        } else if (p_tool_name == "terminal_manager") {
+            // Terminal operations status
+            if (actual_op == "execute") {
+                String command = p_args.get("command", "");
+                int exit_code = p_result.get("exit_code", 0);
+                bool shell_used = p_result.get("shell_used", false);
+                String exec_type = shell_used ? "shell" : "direct";
+                
+                if (exit_code == 0) {
+                    return "✓ " + command + " (" + exec_type + ")";
+                } else {
+                    return "✗ " + command + " (exit: " + String::num_int64(exit_code) + ", " + exec_type + ")";
+                }
+            } else if (actual_op == "pwd") {
+                String dir = p_result.get("current_directory", "");
+                return "Current directory: " + dir;
+            } else if (actual_op == "status") {
+                return "Terminal ready";
+            } else if (actual_op == "allowed_commands") {
+                Array cmds = p_result.get("allowed_commands", Array());
+                return "Available commands: " + String::num_int64(cmds.size()) + " commands";
+            } else if (actual_op == "history") {
+                return "Command history retrieved";
+            } else if (actual_op == "clear") {
+                return "Terminal output cleared";
             }
         } else if (p_tool_name == "resource_manager") {
             if (actual_op == "image.generate_or_edit") {
@@ -7633,6 +7665,12 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
     // PERFORMANCE: Check if we should truncate this tool result for faster loading
     if (_should_truncate_tool_result(p_tool_name, p_result)) {
 		_create_truncated_tool_ui(p_content_vbox, p_tool_name, p_result);
+		return;
+	}
+	
+	// TERMINAL UI: Create special terminal-like UI for terminal_manager
+	if (p_tool_name == "terminal_manager") {
+		AiTerminalUI::create_terminal_ui(p_content_vbox, p_args, p_result, p_success);
 		return;
 	}
 	
@@ -10770,6 +10808,9 @@ void AIChatDock::_execute_frontend_tool_deferred(const String &p_tool_call_id, c
     } else if (p_function_name == "project_manager") {
         // CRITICAL FIX: Execute project_manager deferred for UI feedback on file operations
         result = EditorTools::project_manager(args);
+    } else if (p_function_name == "terminal_manager") {
+        // Execute terminal_manager deferred for UI feedback on long-running commands
+        result = EditorTools::terminal_manager(args);
     } else {
         result["success"] = false;
         result["message"] = "Tool " + p_function_name + " should not be deferred. This is a bug.";
@@ -18609,6 +18650,7 @@ void AIChatDock::_on_view_snapshots_pressed() {
 		print_line("AI Chat: ERROR - manual_snapshots not initialized");
 	}
 }
+
 
 void AIChatDock::_on_snapshot_restore_requested(const String &p_snapshot_tag) {
 	print_line("AI Chat: Snapshot restore requested: " + p_snapshot_tag);

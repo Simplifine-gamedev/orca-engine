@@ -2920,6 +2920,39 @@ def runtime_inspector_internal(arguments: dict) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def terminal_manager_internal(arguments: dict) -> dict:
+    """Handle terminal_manager tool operations - all frontend-only"""
+    try:
+        # CRITICAL: Check for tool generation failures first
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits."
+            )
+            
+            print(f"🚨 TERMINAL_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
+        
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+            
+        # All terminal operations are frontend-only (need local machine access)
+        return {
+            "success": False,
+            "frontend_only": True,
+            "message": f"Terminal operation '{op}' is handled by the frontend with local machine CLI access",
+            "operation": op,
+            "arguments_to_forward": arguments,
+            "requires_local_machine": True,  # Signal that this needs local terminal access
+            "context": "generic_cli"  # Clear context for AI understanding
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 def capture_screenshot_internal(arguments: dict) -> dict:
     """Capture screenshot from editor or running game"""
     return {
@@ -2964,6 +2997,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return runtime_manager_internal(arguments)
     elif function_name == "runtime_inspector":
         return runtime_inspector_internal(arguments)
+    elif function_name == "terminal_manager":
+        return terminal_manager_internal(arguments)
     # Legacy individual tools (maintain backward compatibility)
     elif function_name == "image_operation":
         return image_operation_internal(arguments)
@@ -4555,6 +4590,10 @@ def chat():
                         
                         # runtime_inspector: all operations are frontend-only
                         elif func_name == "runtime_inspector":
+                            return False
+                        
+                        # terminal_manager: all operations are frontend-only (need local machine access)
+                        elif func_name == "terminal_manager":
                             return False
                         
                         # All other tools are frontend-only

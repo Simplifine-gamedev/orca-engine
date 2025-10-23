@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+
+Import("env")
+
+env_git = env.Clone()
+
+git_sources = [
+    "git_manager.cpp",
+    "git_credentials.cpp", 
+    "git_gui_dialog.cpp",
+]
+
+env_git.add_source_files(env.editor_sources, git_sources)

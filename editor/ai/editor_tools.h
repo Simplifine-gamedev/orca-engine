@@ -139,6 +139,7 @@ public:
 	static Dictionary search_manager(const Dictionary &p_args);
 	static Dictionary runtime_manager(const Dictionary &p_args);
 	static Dictionary runtime_inspector(const Dictionary &p_args);
+	static Dictionary terminal_manager(const Dictionary &p_args);
 
 	// Multiplexed introspection/debug tool
 	static Dictionary editor_introspect(const Dictionary &p_args);
