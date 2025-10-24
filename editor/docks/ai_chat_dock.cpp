@@ -8,6 +8,7 @@
 #include "ai_terminal_ui.h"
 #include "ai_chat_input_box.h"
 #include "ai_chat_streaming_indicator.h"
+#include "ai_chat_tool_styling.h"
 #include "ai_checkpoint_manager.h"
 #include "ai_manual_snapshots.h"
 #include "core/io/config_file.h"
@@ -6200,24 +6201,11 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	String descriptive_status = _generate_descriptive_tool_status(p_name, p_args, data, success);
 	toggle_button->set_text(descriptive_status);
 	
-	toggle_button->set_flat(false);
-	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	toggle_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	// Prevent long status lines from expanding the dock width
-	toggle_button->set_clip_text(true);
-	toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	// Use monochromatic styling (no green/red colors)
+	AIChatToolStyling::style_tool_result_button(toggle_button, success, this);
+	
 	// Preserve full text in tooltip for accessibility
 	toggle_button->set_tooltip_text(toggle_button->get_text());
-	// Remove icons for cleaner appearance - just use colored text
-	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
 	// Add accept/reject buttons for file editing tools after the main toggle button
@@ -7402,8 +7390,8 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
         Label *tool_label = memnew(Label);
         // CRITICAL FIX: Use descriptive status from the start, not generic "[TOOL]"
         tool_label->set_text(descriptive_status);
-		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color
-		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		// Use monochromatic styling for executing tools
+		AIChatToolStyling::style_executing_tool_label(tool_label, this);
 		tool_hbox->add_child(tool_label);
 
 		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
@@ -7507,21 +7495,9 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 	String descriptive_status = _generate_descriptive_tool_status(p_tool_message.name, args, result, success);
 	toggle_button->set_text(descriptive_status);
 	
-    toggle_button->set_flat(false);
-	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	toggle_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-    toggle_button->set_clip_text(true);
-    toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	// Remove icons for cleaner appearance - just use colored text
-	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	toggle_button->add_theme_style_override("normal", tool_button_style);
+	// Use monochromatic styling (no green/red colors)
+	AIChatToolStyling::style_tool_result_button(toggle_button, success, this);
+	toggle_button->set_tooltip_text(toggle_button->get_text());
 	tool_container->add_child(toggle_button);
 
     PanelContainer *content_panel = memnew(PanelContainer);
@@ -14380,14 +14356,13 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 		if (tool_label) {
 			if (p_status == "starting") {
 				tool_label->set_text("Executing: " + p_tool_name + "...");
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
 			} else if (p_status == "running") {
 				tool_label->set_text("Running: " + p_tool_name + "...");
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			} else if (p_status == "completed") {
 				tool_label->set_text("Completed: " + p_tool_name);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
+			// Use monochromatic styling for all states
+			AIChatToolStyling::style_executing_tool_label(tool_label, this);
 		}
 		}
 	}
@@ -14430,17 +14405,15 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 				print_line("AI Chat: UPDATE_STATUS - Found Label, updating text");
 			if (p_status == "executing") {
 				tool_label->set_text(p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
 			} else if (p_status == "starting") {
 				tool_label->set_text("Starting: " + p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for starting
 			} else if (p_status == "running") {
 				tool_label->set_text(p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			} else if (p_status == "completed") {
 				tool_label->set_text("Completed: " + p_tool_name);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
+			// Use monochromatic styling for all states
+			AIChatToolStyling::style_executing_tool_label(tool_label, this);
 			
 			// Force immediate UI update
 			tool_label->queue_redraw();
@@ -14641,8 +14614,8 @@ void AIChatDock::_create_backend_tool_placeholder(const String &p_tool_id, const
     Label *tool_label = memnew(Label);
     String executing_message = _generate_executing_tool_message(p_tool_name, "");
     tool_label->set_text(executing_message);
-	tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0));
-	tool_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
+	// Use monochromatic styling for executing tools
+	AIChatToolStyling::style_executing_tool_label(tool_label, this);
 	tool_hbox->add_child(tool_label);
 	
 	chat_container->add_child(bubble_panel);
@@ -17845,22 +17818,12 @@ void AIChatDock::_apply_simplified_tool_result(const String &p_tool_call_id, con
 	placeholder->add_child(simple_container);
 
 	Button *status_button = memnew(Button);
-	status_button->set_text("[" + p_tool_name + "] " + status_message);
-	status_button->set_flat(true);
-	status_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	status_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	status_button->set_clip_text(true);
+	// Use the status message directly (no [tool_name] prefix)
+	status_button->set_text(status_message);
+	
+	// Use monochromatic styling (no green/red colors)
+	AIChatToolStyling::style_tool_result_button(status_button, success, this);
 	status_button->set_tooltip_text("Click to view full details");
-	// Remove icons for cleaner appearance - just use colored text
-	status_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	status_button->add_theme_style_override("normal", tool_button_style);
 	
 	// On click, expand to show full tool result
 	status_button->connect("pressed", callable_mp(this, &AIChatDock::_expand_simplified_tool_result).bind(p_tool_call_id, p_tool_name, p_content, placeholder));
