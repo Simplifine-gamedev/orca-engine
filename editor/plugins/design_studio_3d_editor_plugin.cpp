@@ -33,7 +33,9 @@
 #include "scene/gui/line_edit.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/option_button.h"
+#include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
+#include "scene/gui/slider.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/gui/tab_container.h"
@@ -66,10 +68,15 @@ void DesignStudio3DEditor::_setup_ui() {
 	hsplit->set_anchors_and_offsets_preset(Control::PRESET_FULL_RECT);
 	add_child(hsplit);
 	
-	// Left panel with tabs
+	// Left panel with scroll container
+	ScrollContainer *scroll_container = memnew(ScrollContainer);
+	scroll_container->set_custom_minimum_size(Size2(320 * EDSCALE, 0));
+	scroll_container->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	hsplit->add_child(scroll_container);
+	
 	VBoxContainer *left_panel = memnew(VBoxContainer);
-	left_panel->set_custom_minimum_size(Size2(320 * EDSCALE, 0));
-	hsplit->add_child(left_panel);
+	left_panel->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	scroll_container->add_child(left_panel);
 	
 	// Title
 	Label *title = memnew(Label);
@@ -226,20 +233,44 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 		hsplit->add_child(right_panel);
 	}
 	
-	VBoxContainer *viewer_vbox = memnew(VBoxContainer);
-	right_panel->add_child(viewer_vbox);
+	viewer_controls_container = memnew(VBoxContainer);
+	right_panel->add_child(viewer_controls_container);
 	
 	Label *viewer_title = memnew(Label);
 	viewer_title->set_text("3D Preview (Isolated)");
 	viewer_title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	viewer_vbox->add_child(viewer_title);
+	viewer_controls_container->add_child(viewer_title);
 	
 	// SubViewport for 3D preview
 	viewport_container = memnew(SubViewportContainer);
 	viewport_container->set_stretch(true);
 	viewport_container->set_v_size_flags(Control::SIZE_EXPAND_FILL);
 	viewport_container->set_custom_minimum_size(Size2(400 * EDSCALE, 400 * EDSCALE));
-	viewer_vbox->add_child(viewport_container);
+	viewer_controls_container->add_child(viewport_container);
+	
+	// LOD Controls at bottom of viewer
+	VBoxContainer *lod_controls = memnew(VBoxContainer);
+	lod_controls->set_custom_minimum_size(Size2(0, 60 * EDSCALE));
+	viewer_controls_container->add_child(lod_controls);
+	
+	// LOD Slider Label
+	lod_slider_label = memnew(Label);
+	lod_slider_label->set_text("LOD Level: Not Available");
+	lod_slider_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	lod_slider_label->add_theme_font_size_override("font_size", 11 * EDSCALE);
+	lod_controls->add_child(lod_slider_label);
+	
+	// LOD Slider
+	lod_slider = memnew(HSlider);
+	lod_slider->set_min(0);
+	lod_slider->set_max(0);
+	lod_slider->set_step(1);
+	lod_slider->set_value(0);
+	lod_slider->set_custom_minimum_size(Size2(200 * EDSCALE, 24 * EDSCALE));
+	lod_slider->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	lod_slider->connect("value_changed", callable_mp(this, &DesignStudio3DEditor::_on_lod_slider_changed));
+	lod_slider->set_visible(false); // Hidden until LODs are generated
+	lod_controls->add_child(lod_slider);
 	
 	// PROPER ISOLATED 3D VIEWER
 	viewport = memnew(SubViewport);
@@ -385,6 +416,11 @@ void DesignStudio3DEditor::_setup_current_view_tab() {
 	
 	current_view_tab->add_child(memnew(HSeparator));
 	
+	// LOD Section
+	_setup_lod_ui();
+	
+	current_view_tab->add_child(memnew(HSeparator));
+	
 	// Action buttons section
 	Label *actions_title = memnew(Label);
 	actions_title->set_text("Model Actions");
@@ -523,6 +559,25 @@ void DesignStudio3DEditor::_update_model_info() {
 		}
 	}
 	
+	// Add LOD information
+	if (lod_levels.size() > 0) {
+		info_text += "\n\nLOD System:";
+		info_text += "\n  Total LOD Levels: " + String::num_int64(lod_levels.size());
+		info_text += "\n  Current LOD: " + String::num_int64(current_lod_index);
+		info_text += String("\n  Auto LOD: ") + (auto_lod_enabled ? "Enabled" : "Disabled");
+		
+		// Show all LOD levels with their face counts
+		for (int i = 0; i < lod_levels.size(); i++) {
+			String prefix = (i == current_lod_index) ? "→ " : "  ";
+			info_text += "\n" + prefix + "LOD " + String::num_int64(i) + 
+						": " + String::num_int64(lod_levels[i].face_count) + " faces" + 
+						" (≥" + String::num(lod_levels[i].distance_threshold, 1) + " units)";
+		}
+	} else {
+		info_text += "\n\nLOD System: Not generated";
+		info_text += "\n  Click 'Generate LOD Levels' to enable automatic detail switching";
+	}
+	
 	model_info_label->set_text(info_text);
 }
 
@@ -531,6 +586,9 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 		status_label->set_text("[BUSY] Already generating...");
 		return;
 	}
+	
+	// Cancel any ongoing operations before starting new generation
+	_cancel_all_requests();
 	
 	// Clear the 3D viewer and hide Current View tab
 	if (preview_mesh) {
@@ -546,6 +604,9 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	current_face_count = 0;
 	current_normal_count = 0;
 	current_texture_coord_count = 0;
+	
+	// Clear LOD system for new generation
+	_clear_lod_levels();
 	
 	// Clear texture state
 	current_parent_job_id = "";
@@ -926,6 +987,9 @@ void DesignStudio3DEditor::_load_model_from_data(const PackedByteArray &p_data) 
 		current_normal_count = normal_count;
 		current_texture_coord_count = texture_count;
 		
+		// Clear any existing LODs since this is a new model
+		_clear_lod_levels();
+		
 		if (vertex_count > 0 || face_count > 0) {
 			preview += "Model Statistics:\n";
 			preview += "  Vertices: " + String::num_int64(vertex_count) + "\n";
@@ -1096,6 +1160,8 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 				if (new_pos.length() > 0.3f) {
 					camera->set_position(new_pos);
 					camera->look_at(center, Vector3(0, 1, 0));
+					// Update LOD based on new camera distance
+					_update_lod_based_on_distance();
 				}
 				viewport_container->accept_event();
 			}
@@ -1113,6 +1179,8 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 				if (new_pos.length() < 15.0f) {
 					camera->set_position(new_pos);
 					camera->look_at(center, Vector3(0, 1, 0));
+					// Update LOD based on new camera distance
+					_update_lod_based_on_distance();
 				}
 				viewport_container->accept_event();
 			}
@@ -1132,10 +1200,24 @@ void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &p_event) {
 		_update_camera_from_orbit();
 		last_mouse_pos = mm->get_position();
 		viewport_container->accept_event(); // Consume the event
+		
+		// Update LOD based on camera distance if auto LOD is enabled
+		_update_lod_based_on_distance();
 	}
 }
 
 void DesignStudio3DEditor::_start_download_with_headers(const String &p_url) {
+	// Check if request is busy
+	if (download_request->get_http_client_status() != HTTPClient::STATUS_DISCONNECTED) {
+		status_label->set_text("[ERROR] Download request is busy. Please wait...");
+		return;
+	}
+	
+	// Disconnect any existing connections first
+	if (download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded))) {
+		download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded));
+	}
+	
 	// Connect callback
 	download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded), CONNECT_ONE_SHOT);
 	
@@ -1162,6 +1244,9 @@ void DesignStudio3DEditor::_on_download_retry_timeout() {
 }
 
 void DesignStudio3DEditor::_on_refresh_models_pressed() {
+	// Cancel any ongoing operations before browsing models
+	_cancel_all_requests();
+	
 	browse_status_label->set_text("Loading models...");
 	models_list->clear();
 	
@@ -1256,11 +1341,26 @@ void DesignStudio3DEditor::_load_model_for_viewing(const Dictionary &p_model_dat
 		return;
 	}
 	
+	// Check if request is busy
+	if (download_request->get_http_client_status() != HTTPClient::STATUS_DISCONNECTED) {
+		browse_status_label->set_text("[ERROR] Download request is busy. Please wait or try again...");
+		return;
+	}
+	
+	// Disconnect any existing connections first
+	if (download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded))) {
+		download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded));
+	}
+	
 	browse_status_label->set_text("Downloading...");
 	
 	// Download but DON'T save to workspace yet
 	download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded), CONNECT_ONE_SHOT);
-	download_request->request(model_url);
+	Error err = download_request->request(model_url);
+	
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to start download. Error: " + itos(err));
+	}
 }
 
 void DesignStudio3DEditor::_on_export_pressed() {
@@ -1274,46 +1374,109 @@ void DesignStudio3DEditor::_on_export_pressed() {
 		return;
 	}
 	
-	// Save the cached model data to workspace (preserve extension)
 	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
-	String ext = current_model_path.get_extension();
-	if (ext.is_empty()) {
-		ext = "obj";
-	}
-	String filename = "exported_model_" + timestamp + "." + ext;
-	String save_path = "res://" + filename;
-	String project_path = ProjectSettings::get_singleton()->globalize_path(save_path);
+	int exported_files = 0;
+	String export_summary = "";
 	
-	// Read the temp file and save to workspace
-	Ref<FileAccess> source = FileAccess::open(current_model_path, FileAccess::READ);
-	if (source.is_valid()) {
-		PackedByteArray data = source->get_buffer(source->get_length());
-		source->close();
+	// Export LOD levels if they exist
+	if (lod_levels.size() > 1) {
+		// Export all LOD levels
+		for (int i = 0; i < lod_levels.size(); i++) {
+			const LODLevel &lod = lod_levels[i];
+			
+			if (lod.model_path.is_empty()) {
+				continue; // Skip if no file path
+			}
+			
+			String ext = lod.model_path.get_extension();
+			if (ext.is_empty()) {
+				ext = "obj";
+			}
+			
+			String filename = "exported_model_lod" + itos(i) + "_" + timestamp + "." + ext;
+			String save_path = "res://" + filename;
+			String project_path = ProjectSettings::get_singleton()->globalize_path(save_path);
+			
+			// Read the LOD file and save to workspace
+			Ref<FileAccess> source = FileAccess::open(lod.model_path, FileAccess::READ);
+			if (source.is_valid()) {
+				PackedByteArray data = source->get_buffer(source->get_length());
+				source->close();
+				
+				Ref<FileAccess> dest = FileAccess::open(project_path, FileAccess::WRITE);
+				if (dest.is_valid()) {
+					dest->store_buffer(data);
+					dest->flush();
+					dest->close();
+					
+					exported_files++;
+					export_summary += "LOD " + itos(i) + ": " + filename + " (" + itos(lod.face_count) + " faces)\n";
+				}
+			}
+		}
 		
-		Ref<FileAccess> dest = FileAccess::open(project_path, FileAccess::WRITE);
-		if (dest.is_valid()) {
-			dest->store_buffer(data);
-			dest->flush(); // FORCE flush to disk immediately
-			dest->close();
-			
-			// IMMEDIATE scan to detect new file
+		if (exported_files > 0) {
+			// IMMEDIATE scan to detect new files
 			EditorFileSystem::get_singleton()->scan_changes();
-			
-			// Also update the specific file
-			EditorFileSystem::get_singleton()->update_file(save_path);
-			
-			// Call scan again after short delay to ensure it's picked up
 			EditorFileSystem::get_singleton()->call_deferred("scan_changes");
 			
-			status_label->set_text("[SUCCESS] Exported to: " + filename + "\nImporting...");
+			status_label->set_text("[SUCCESS] Exported " + itos(exported_files) + " LOD levels:\n" + export_summary + "Importing...");
 			if (browse_status_label) {
-				browse_status_label->set_text("[SUCCESS] Exported and importing!");
+				browse_status_label->set_text("[SUCCESS] Exported " + itos(exported_files) + " LOD files!");
+			}
+			
+			if (lod_status_label) {
+				lod_status_label->set_text(String("[EXPORT SUCCESS] All LOD levels exported to workspace!\n") + 
+										  "Files: " + itos(exported_files) + " LOD levels");
 			}
 		} else {
-			status_label->set_text("[ERROR] Failed to write to workspace");
+			status_label->set_text("[ERROR] Failed to export LOD levels");
 		}
 	} else {
-		status_label->set_text("[ERROR] Failed to read temp model");
+		// Export single model (original behavior)
+		String ext = current_model_path.get_extension();
+		if (ext.is_empty()) {
+			ext = "obj";
+		}
+		String filename = "exported_model_" + timestamp + "." + ext;
+		String save_path = "res://" + filename;
+		String project_path = ProjectSettings::get_singleton()->globalize_path(save_path);
+		
+		// Read the temp file and save to workspace
+		Ref<FileAccess> source = FileAccess::open(current_model_path, FileAccess::READ);
+		if (source.is_valid()) {
+			PackedByteArray data = source->get_buffer(source->get_length());
+			source->close();
+			
+			Ref<FileAccess> dest = FileAccess::open(project_path, FileAccess::WRITE);
+			if (dest.is_valid()) {
+				dest->store_buffer(data);
+				dest->flush(); // FORCE flush to disk immediately
+				dest->close();
+				
+				// IMMEDIATE scan to detect new file
+				EditorFileSystem::get_singleton()->scan_changes();
+				
+				// Also update the specific file
+				EditorFileSystem::get_singleton()->update_file(save_path);
+				
+				// Call scan again after short delay to ensure it's picked up
+				EditorFileSystem::get_singleton()->call_deferred("scan_changes");
+				
+				status_label->set_text("[SUCCESS] Exported to: " + filename + "\nImporting...");
+				if (browse_status_label) {
+					browse_status_label->set_text("[SUCCESS] Exported and importing!");
+				}
+				
+				if (lod_status_label) {
+					lod_status_label->set_text("[EXPORT SUCCESS] Model exported (no LODs generated)");
+				}
+			} else {
+				status_label->set_text("[ERROR] Failed to write to workspace");
+			}
+		} else {
+			status_label->set_text("[ERROR] Failed to read temp model");
+		}
 	}
 }
 
@@ -1474,6 +1637,598 @@ String DesignStudio3DEditor::_image_to_base64(const String &p_image_path) {
 	}
 	
 	return base64_string;
+}
+
+void DesignStudio3DEditor::_setup_lod_ui() {
+	// LOD Section
+	Label *lod_title = memnew(Label);
+	lod_title->set_text("Level of Detail (LOD)");
+	lod_title->add_theme_font_size_override("font_size", 14 * EDSCALE);
+	current_view_tab->add_child(lod_title);
+	
+	lod_container = memnew(VBoxContainer);
+	current_view_tab->add_child(lod_container);
+	
+	// Auto LOD toggle
+	auto_lod_checkbox = memnew(CheckBox);
+	auto_lod_checkbox->set_text("Auto LOD (Distance-Based)");
+	auto_lod_checkbox->set_pressed(true);
+	auto_lod_checkbox->connect("toggled", callable_mp(this, &DesignStudio3DEditor::_on_auto_lod_toggled));
+	lod_container->add_child(auto_lod_checkbox);
+	
+	// LOD Quality Preset
+	Label *quality_label = memnew(Label);
+	quality_label->set_text("LOD Quality Preset:");
+	lod_container->add_child(quality_label);
+	
+	lod_quality_selector = memnew(OptionButton);
+	lod_quality_selector->add_item("Conservative (3 LODs)", 0);
+	lod_quality_selector->add_item("Balanced (4 LODs)", 1);
+	lod_quality_selector->add_item("Aggressive (5 LODs)", 2);
+	lod_quality_selector->select(1); // Default to Balanced
+	lod_quality_selector->connect("item_selected", callable_mp(this, &DesignStudio3DEditor::_on_lod_quality_changed));
+	lod_container->add_child(lod_quality_selector);
+	
+	// Generate LODs button
+	generate_lods_button = memnew(Button);
+	generate_lods_button->set_text("Generate LOD Levels");
+	generate_lods_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_generate_lods_pressed));
+	lod_container->add_child(generate_lods_button);
+	
+	// Current LOD display
+	current_lod_label = memnew(Label);
+	current_lod_label->set_text("LOD: Not generated");
+	current_lod_label->add_theme_font_size_override("font_size", 11 * EDSCALE);
+	lod_container->add_child(current_lod_label);
+	
+	// LOD Status
+	lod_status_label = memnew(Label);
+	lod_status_label->set_text("Generate LOD levels for automatic detail switching");
+	lod_status_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	lod_status_label->set_custom_minimum_size(Size2(0, 40 * EDSCALE));
+	lod_container->add_child(lod_status_label);
+}
+
+void DesignStudio3DEditor::_on_generate_lods_pressed() {
+	if (is_generating_lods) {
+		lod_status_label->set_text("[BUSY] Already generating LODs...");
+		return;
+	}
+	
+	if (current_loaded_mesh.is_null() || current_model_path.is_empty()) {
+		lod_status_label->set_text("[ERROR] No model loaded to generate LODs from");
+		return;
+	}
+	
+	_start_lod_generation();
+}
+
+void DesignStudio3DEditor::_on_auto_lod_toggled(bool p_pressed) {
+	auto_lod_enabled = p_pressed;
+	if (auto_lod_enabled && lod_levels.size() > 0) {
+		lod_status_label->set_text("[AUTO LOD] Enabled - will switch based on camera distance");
+		// Update based on current distance
+		_update_lod_based_on_distance();
+	} else if (!auto_lod_enabled) {
+		lod_status_label->set_text("[MANUAL LOD] Disabled auto switching - use slider to control");
+	}
+	_update_lod_slider();
+}
+
+void DesignStudio3DEditor::_on_lod_slider_changed(float p_value) {
+	if (auto_lod_enabled) {
+		return; // Don't allow manual changes when auto LOD is enabled
+	}
+	
+	int target_lod = (int)p_value;
+	if (target_lod != current_lod_index && target_lod < lod_levels.size()) {
+		_switch_to_lod(target_lod);
+	}
+}
+
+void DesignStudio3DEditor::_on_lod_quality_changed(int p_index) {
+	// Quality preset changed - user can regenerate LODs with new settings
+	if (lod_levels.size() > 0) {
+		lod_status_label->set_text("[PRESET CHANGED] Click 'Generate LOD Levels' to apply new quality preset");
+	}
+}
+
+void DesignStudio3DEditor::_start_lod_generation() {
+	_clear_lod_levels();
+	
+	int quality_preset = lod_quality_selector->get_selected();
+	
+	// Define LOD configurations based on quality preset
+	Vector<float> lod_face_ratios;
+	Vector<float> lod_distances;
+	
+	switch (quality_preset) {
+		case 0: // Conservative (3 LODs)
+			lod_face_ratios.push_back(1.0f);    // LOD 0: 100%
+			lod_face_ratios.push_back(0.5f);    // LOD 1: 50%
+			lod_face_ratios.push_back(0.25f);   // LOD 2: 25%
+			
+			lod_distances.push_back(0.0f);      // LOD 0: 0-3 units
+			lod_distances.push_back(3.0f);      // LOD 1: 3-8 units
+			lod_distances.push_back(8.0f);      // LOD 2: 8+ units
+			break;
+			
+		case 1: // Balanced (4 LODs) - DEFAULT
+			lod_face_ratios.push_back(1.0f);    // LOD 0: 100%
+			lod_face_ratios.push_back(0.65f);   // LOD 1: 65%
+			lod_face_ratios.push_back(0.35f);   // LOD 2: 35%
+			lod_face_ratios.push_back(0.15f);   // LOD 3: 15%
+			
+			lod_distances.push_back(0.0f);      // LOD 0: 0-2.5 units
+			lod_distances.push_back(2.5f);      // LOD 1: 2.5-5 units
+			lod_distances.push_back(5.0f);      // LOD 2: 5-10 units
+			lod_distances.push_back(10.0f);     // LOD 3: 10+ units
+			break;
+			
+		case 2: // Aggressive (5 LODs)
+			lod_face_ratios.push_back(1.0f);    // LOD 0: 100%
+			lod_face_ratios.push_back(0.7f);    // LOD 1: 70%
+			lod_face_ratios.push_back(0.45f);   // LOD 2: 45%
+			lod_face_ratios.push_back(0.25f);   // LOD 3: 25%
+			lod_face_ratios.push_back(0.1f);    // LOD 4: 10%
+			
+			lod_distances.push_back(0.0f);      // LOD 0: 0-2 units
+			lod_distances.push_back(2.0f);      // LOD 1: 2-4 units
+			lod_distances.push_back(4.0f);      // LOD 2: 4-7 units
+			lod_distances.push_back(7.0f);      // LOD 3: 7-12 units
+			lod_distances.push_back(12.0f);     // LOD 4: 12+ units
+			break;
+	}
+	
+	// Create LOD 0 (original model)
+	LODLevel lod0;
+	lod0.mesh = current_loaded_mesh;
+	lod0.model_path = current_model_path;
+	lod0.target_faces = current_face_count;
+	lod0.vertex_count = current_vertex_count;
+	lod0.face_count = current_face_count;
+	lod0.distance_threshold = lod_distances[0];
+	lod_levels.push_back(lod0);
+	
+	// Setup for generating remaining LODs
+	is_generating_lods = true;
+	lods_generated_count = 1; // LOD 0 is already "generated"
+	total_lods_to_generate = lod_face_ratios.size();
+	current_lod_index = 0;
+	
+	generate_lods_button->set_disabled(true);
+	
+	lod_status_label->set_text("[GENERATING] Creating LOD 0 (Original): " + 
+							   itos(current_face_count) + " faces\n" +
+							   "Generating " + itos(total_lods_to_generate - 1) + " additional LOD levels...");
+	
+	// Start generating LOD 1
+	if (lod_face_ratios.size() > 1) {
+		_generate_next_lod();
+	} else {
+		// Only one LOD level requested
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+		_update_lod_info();
+	}
+}
+
+void DesignStudio3DEditor::_generate_next_lod() {
+	if (lods_generated_count >= total_lods_to_generate) {
+		// All LODs generated
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+		_update_lod_info();
+		_update_lod_slider();
+		lod_status_label->set_text("[SUCCESS] Generated " + itos(lod_levels.size()) + " LOD levels!\n" +
+								   "Auto LOD switching is " + (auto_lod_enabled ? "ENABLED" : "DISABLED") + "\n" +
+								   (auto_lod_enabled ? "Zoom in/out to see LOD switching" : "Use slider below 3D viewer to change LOD"));
+		return;
+	}
+	
+	int quality_preset = lod_quality_selector->get_selected();
+	Vector<float> lod_face_ratios;
+	Vector<float> lod_distances;
+	
+	// Recreate ratios and distances (same as in _start_lod_generation)
+	switch (quality_preset) {
+		case 0: // Conservative
+			lod_face_ratios.append_array({1.0f, 0.5f, 0.25f});
+			lod_distances.append_array({0.0f, 3.0f, 8.0f});
+			break;
+		case 1: // Balanced
+			lod_face_ratios.append_array({1.0f, 0.65f, 0.35f, 0.15f});
+			lod_distances.append_array({0.0f, 2.5f, 5.0f, 10.0f});
+			break;
+		case 2: // Aggressive
+			lod_face_ratios.append_array({1.0f, 0.7f, 0.45f, 0.25f, 0.1f});
+			lod_distances.append_array({0.0f, 2.0f, 4.0f, 7.0f, 12.0f});
+			break;
+	}
+	
+	// Calculate target faces for current LOD
+	int target_faces = (int)(current_face_count * lod_face_ratios[lods_generated_count]);
+	if (target_faces < 1) target_faces = 1;
+	
+	// Update status
+	lod_status_label->set_text("[GENERATING] LOD " + itos(lods_generated_count) + " (" + itos(lods_generated_count + 1) + "/" + itos(total_lods_to_generate) + ")\n" +
+							   "Target: " + itos(target_faces) + " faces (" + itos((int)(lod_face_ratios[lods_generated_count] * 100)) + "% of original)");
+	
+	// Start remeshing for this LOD level
+	_start_remeshing_for_lod(target_faces, lod_distances[lods_generated_count]);
+}
+
+void DesignStudio3DEditor::_start_remeshing_for_lod(int p_target_faces, float p_distance_threshold) {
+	if (current_model_path.is_empty()) {
+		lod_status_label->set_text("[ERROR] No model data available for LOD generation");
+		return;
+	}
+
+	Ref<FileAccess> source = FileAccess::open(current_model_path, FileAccess::READ);
+	if (source.is_null()) {
+		lod_status_label->set_text("[ERROR] Failed to read model file for LOD generation");
+		return;
+	}
+	PackedByteArray file_bytes = source->get_buffer(source->get_length());
+	source->close();
+
+	String boundary = "----WebKitFormBoundary" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+	PackedByteArray body;
+
+	String filename = current_model_path.get_file();
+	if (filename.is_empty()) {
+		filename = "model.glb";
+	}
+
+	// File part
+	String part1 = "--" + boundary + "\r\n";
+	part1 += "Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n";
+	part1 += "Content-Type: application/octet-stream\r\n\r\n";
+	body.append_array(part1.to_utf8_buffer());
+	body.append_array(file_bytes);
+	body.append_array(String("\r\n").to_utf8_buffer());
+
+	// target_faces part
+	String part2 = "--" + boundary + "\r\n";
+	part2 += "Content-Disposition: form-data; name=\"target_faces\"\r\n\r\n";
+	part2 += itos(p_target_faces) + "\r\n";
+	body.append_array(part2.to_utf8_buffer());
+
+	String closing = "--" + boundary + "--\r\n";
+	body.append_array(closing.to_utf8_buffer());
+
+	PackedStringArray headers;
+	headers.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
+	headers.push_back("User-Agent: Godot-Editor/4.0");
+	headers.push_back("Accept: */*");
+
+	String url = REMESH_API_URL + "/remesh";
+
+	// Store the distance threshold for when the LOD is completed
+	lod_distance_threshold_pending = p_distance_threshold;
+
+	// Check if remesh request is busy
+	if (remesh_request->get_http_client_status() != HTTPClient::STATUS_DISCONNECTED) {
+		lod_status_label->set_text("[ERROR] Remesh request is busy. Please wait...");
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+		return;
+	}
+	
+	// Disconnect any existing connections
+	if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated))) {
+		remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated));
+	}
+	if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed))) {
+		remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed));
+	}
+	
+	remesh_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated), CONNECT_ONE_SHOT);
+
+	Error err = remesh_request->request_raw(url, headers, HTTPClient::METHOD_POST, body);
+	if (err != OK) {
+		lod_status_label->set_text("[ERROR] Failed to start LOD remesh request. Error: " + itos(err));
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+	}
+}
+
+void DesignStudio3DEditor::_on_lod_generated(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (p_result != HTTPRequest::RESULT_SUCCESS) {
+		lod_status_label->set_text("[ERROR] LOD generation failed. Result: " + itos(p_result));
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+		return;
+	}
+
+	if (p_code != 200) {
+		lod_status_label->set_text("[ERROR] LOD generation failed (HTTP " + itos(p_code) + ")");
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+		return;
+	}
+
+	if (p_body.size() == 0) {
+		lod_status_label->set_text("[ERROR] LOD generation response is empty");
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+		return;
+	}
+
+	// Create new LOD level from the response
+	LODLevel new_lod;
+	
+	// Save LOD data to temp file
+	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String filename = "lod_" + itos(lods_generated_count) + "_" + timestamp + ".obj";
+	String temp_path = "user://" + filename;
+	
+	Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
+	if (file.is_valid()) {
+		file->store_buffer(p_body);
+		file->close();
+		
+		// Parse OBJ to get mesh and statistics
+		String content = String::utf8((const char *)p_body.ptr(), p_body.size());
+		Ref<ArrayMesh> lod_mesh = _parse_obj_to_mesh(content);
+		
+		if (lod_mesh.is_valid()) {
+			// Count faces and vertices from the content
+			int vertex_count = 0;
+			int face_count = 0;
+			PackedStringArray lines = content.split("\n");
+			for (int i = 0; i < lines.size(); i++) {
+				String line = lines[i].strip_edges();
+				if (line.begins_with("v ")) vertex_count++;
+				else if (line.begins_with("f ")) face_count++;
+			}
+			
+			new_lod.mesh = lod_mesh;
+			new_lod.model_path = temp_path;
+			new_lod.vertex_count = vertex_count;
+			new_lod.face_count = face_count;
+			new_lod.distance_threshold = lod_distance_threshold_pending;
+			
+			// Calculate target faces based on current_face_count
+			int quality_preset = lod_quality_selector->get_selected();
+			Vector<float> lod_face_ratios;
+			switch (quality_preset) {
+				case 0: lod_face_ratios.append_array({1.0f, 0.5f, 0.25f}); break;
+				case 1: lod_face_ratios.append_array({1.0f, 0.65f, 0.35f, 0.15f}); break;
+				case 2: lod_face_ratios.append_array({1.0f, 0.7f, 0.45f, 0.25f, 0.1f}); break;
+			}
+			
+			if (lods_generated_count < lod_face_ratios.size()) {
+				new_lod.target_faces = (int)(current_face_count * lod_face_ratios[lods_generated_count]);
+			} else {
+				new_lod.target_faces = face_count;
+			}
+			
+			lod_levels.push_back(new_lod);
+			lods_generated_count++;
+			
+			lod_status_label->set_text("[SUCCESS] LOD " + itos(lods_generated_count - 1) + " created: " + 
+									   itos(face_count) + " faces\n" +
+									   "Progress: " + itos(lods_generated_count) + "/" + itos(total_lods_to_generate));
+			
+			// Generate next LOD or finish
+			_generate_next_lod();
+		} else {
+			lod_status_label->set_text("[ERROR] Failed to parse LOD mesh data");
+			is_generating_lods = false;
+			generate_lods_button->set_disabled(false);
+		}
+	} else {
+		lod_status_label->set_text("[ERROR] Failed to save LOD file");
+		is_generating_lods = false;
+		generate_lods_button->set_disabled(false);
+	}
+}
+
+void DesignStudio3DEditor::_update_lod_based_on_distance() {
+	if (!auto_lod_enabled || lod_levels.size() <= 1 || !camera || !preview_mesh) {
+		return;
+	}
+	
+	// Calculate distance from camera to model center
+	Vector3 camera_pos = camera->get_global_position();
+	Vector3 model_pos = preview_mesh->get_global_position();
+	float distance = camera_pos.distance_to(model_pos);
+	
+	// Find appropriate LOD level based on distance
+	int target_lod = current_lod_index;
+	
+	for (int i = lod_levels.size() - 1; i >= 0; i--) {
+		if (distance >= lod_levels[i].distance_threshold) {
+			target_lod = i;
+			break;
+		}
+	}
+	
+	// Switch if needed
+	if (target_lod != current_lod_index) {
+		_switch_to_lod(target_lod);
+	}
+}
+
+void DesignStudio3DEditor::_switch_to_lod(int p_lod_index) {
+	if (p_lod_index < 0 || p_lod_index >= lod_levels.size()) {
+		return;
+	}
+	
+	if (p_lod_index == current_lod_index) {
+		return; // Already using this LOD
+	}
+	
+	current_lod_index = p_lod_index;
+	
+	// Switch the mesh in the viewer
+	if (preview_mesh && lod_levels[current_lod_index].mesh.is_valid()) {
+		preview_mesh->set_mesh(lod_levels[current_lod_index].mesh);
+		
+		// Update current loaded mesh reference
+		current_loaded_mesh = lod_levels[current_lod_index].mesh;
+		
+		_update_lod_info();
+		_update_lod_slider();
+		
+		print_line("LOD switched to level " + itos(current_lod_index) + " (" + itos(lod_levels[current_lod_index].face_count) + " faces)");
+	}
+}
+
+void DesignStudio3DEditor::_clear_lod_levels() {
+	lod_levels.clear();
+	current_lod_index = 0;
+	is_generating_lods = false;
+	lods_generated_count = 0;
+	total_lods_to_generate = 0;
+	
+	if (current_lod_label) {
+		current_lod_label->set_text("LOD: Not generated");
+	}
+	
+	_update_lod_slider();
+}
+
+void DesignStudio3DEditor::_update_lod_info() {
+	if (!current_lod_label) {
+		return;
+	}
+	
+	if (lod_levels.size() == 0) {
+		current_lod_label->set_text("LOD: Not generated");
+		return;
+	}
+	
+	String lod_info = "LOD " + itos(current_lod_index) + "/" + itos(lod_levels.size() - 1);
+	lod_info += " (" + itos(lod_levels[current_lod_index].face_count) + " faces)";
+	
+	if (auto_lod_enabled) {
+		lod_info += " [AUTO]";
+	} else {
+		lod_info += " [MANUAL]";
+	}
+	
+	current_lod_label->set_text(lod_info);
+}
+
+void DesignStudio3DEditor::_update_lod_slider() {
+	if (!lod_slider || !lod_slider_label) {
+		return;
+	}
+	
+	if (lod_levels.size() <= 1) {
+		// No LODs or only one LOD - hide slider
+		lod_slider->set_visible(false);
+		lod_slider_label->set_text("LOD Level: Not Available");
+		return;
+	}
+	
+	// Show and configure slider
+	lod_slider->set_visible(true);
+	lod_slider->set_max(lod_levels.size() - 1);
+	lod_slider->set_value(current_lod_index);
+	
+	// Update label
+	String slider_text = "LOD " + itos(current_lod_index) + "/" + itos(lod_levels.size() - 1);
+	slider_text += " (" + itos(lod_levels[current_lod_index].face_count) + " faces)";
+	
+	if (auto_lod_enabled) {
+		slider_text += " - AUTO MODE";
+		lod_slider->set_editable(false); // Disable slider in auto mode
+		lod_slider->set_modulate(Color(0.7, 0.7, 0.7, 1.0)); // Dim it
+	} else {
+		slider_text += " - MANUAL";
+		lod_slider->set_editable(true); // Enable slider in manual mode
+		lod_slider->set_modulate(Color(1.0, 1.0, 1.0, 1.0)); // Full color
+	}
+	
+	lod_slider_label->set_text(slider_text);
+}
+
+void DesignStudio3DEditor::_cancel_all_requests() {
+	// Cancel and disconnect all HTTP requests to prevent conflicts
+	
+	if (submit_request) {
+		submit_request->cancel_request();
+		if (submit_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_submitted))) {
+			submit_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_submitted));
+		}
+	}
+	
+	if (poll_request) {
+		poll_request->cancel_request();
+		if (poll_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_status_received))) {
+			poll_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_job_status_received));
+		}
+	}
+	
+	if (download_request) {
+		download_request->cancel_request();
+		if (download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded))) {
+			download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded));
+		}
+	}
+	
+	if (browse_request) {
+		browse_request->cancel_request();
+		if (browse_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_models_list_received))) {
+			browse_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_models_list_received));
+		}
+	}
+	
+	if (remesh_request) {
+		remesh_request->cancel_request();
+		if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed))) {
+			remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed));
+		}
+		if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated))) {
+			remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated));
+		}
+	}
+	
+	if (texture_request) {
+		texture_request->cancel_request();
+		if (texture_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted))) {
+			texture_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted));
+		}
+	}
+	
+	if (texture_poll_request) {
+		texture_poll_request->cancel_request();
+		if (texture_poll_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received))) {
+			texture_poll_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received));
+		}
+	}
+	
+	if (texture_download_request) {
+		texture_download_request->cancel_request();
+		if (texture_download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded))) {
+			texture_download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded));
+		}
+	}
+	
+	if (segment_request) {
+		segment_request->cancel_request();
+		if (segment_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted))) {
+			segment_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted));
+		}
+	}
+	
+	// Stop timers
+	if (poll_timer && poll_timer->is_connected("timeout", callable_mp(this, &DesignStudio3DEditor::_on_poll_timeout))) {
+		poll_timer->stop();
+	}
+	
+	if (texture_poll_timer && texture_poll_timer->is_connected("timeout", callable_mp(this, &DesignStudio3DEditor::_on_texture_poll_timeout))) {
+		texture_poll_timer->stop();
+	}
+	
+	if (download_retry_timer && download_retry_timer->is_connected("timeout", callable_mp(this, &DesignStudio3DEditor::_on_download_retry_timeout))) {
+		download_retry_timer->stop();
+	}
+	
+	print_line("All HTTP requests cancelled and disconnected");
 }
 
 String DesignStudio3DEditor::_get_or_create_persistent_user_id() {
@@ -1658,9 +2413,25 @@ void DesignStudio3DEditor::_start_remeshing(int p_target_faces) {
 		remesh_button->set_disabled(true);
 	}
 
+	// Check if remesh request is busy
+	if (remesh_request->get_http_client_status() != HTTPClient::STATUS_DISCONNECTED) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Remesh request is busy. Please wait...");
+		}
+		if (remesh_button) {
+			remesh_button->set_disabled(false);
+		}
+		return;
+	}
+	
+	// Disconnect any existing connections
 	if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed))) {
 		remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed));
 	}
+	if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated))) {
+		remesh_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_lod_generated));
+	}
+	
 	remesh_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed), CONNECT_ONE_SHOT);
 
 	Error err = remesh_request->request_raw(url, headers, HTTPClient::METHOD_POST, body);

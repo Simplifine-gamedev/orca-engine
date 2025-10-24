@@ -182,6 +182,13 @@ private:
 	Button *send_button = nullptr;
 	Button *stop_button = nullptr;
 	MenuButton *attach_button = nullptr;
+	
+	// Token indicator for conversation length tracking
+	Label *token_indicator = nullptr;
+	HTTPRequest *token_count_request = nullptr;
+	Timer *token_update_timer = nullptr;
+	int cached_token_count = 0;
+	bool token_counting_in_progress = false;
 	HFlowContainer *attached_files_container = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 	EditorFileDialog *save_image_dialog = nullptr;
@@ -342,6 +349,13 @@ private:
 	void _save_conversations_async();
 	void _on_input_text_changed();
 	void _on_input_field_gui_input(const Ref<InputEvent> &p_event);
+	
+	// Token counting methods
+	void _update_token_indicator();
+	void _request_token_count();
+	void _on_token_count_response(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_token_update_timer_timeout();
+	
 	void _update_at_mention_popup();
 	void _populate_at_mention_tree(const String &p_filter = "");
 	void _populate_tree_recursive(EditorFileSystemDirectory *p_dir, TreeItem *p_parent, const String &p_filter);

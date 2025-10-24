@@ -1,32 +1,8 @@
-/**************************************************************************/
-/*  design_studio_3d_editor_plugin.h                                      */
-/**************************************************************************/
-/*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
-/**************************************************************************/
-/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
-/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-/*                                                                        */
-/* Permission is hereby granted, free of charge, to any person obtaining  */
-/* a copy of this software and associated documentation files (the        */
-/* "Software"), to deal in the Software without restriction, including    */
-/* without limitation the rights to use, copy, modify, merge, publish,    */
-/* distribute, sublicense, and/or sell copies of the Software, and to     */
-/* permit persons to whom the Software is furnished to do so, subject to  */
-/* the following conditions:                                              */
-/*                                                                        */
-/* The above copyright notice and this permission notice shall be         */
-/* included in all copies or substantial portions of the Software.        */
-/*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
-/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
-/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
-/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
-/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
-/**************************************************************************/
+// --------------------------------------------------------------
+// © 2025 Simplifine Corp. Original backend contribution for this Godot fork.
+// Personal Non‑Commercial License applies. Commercial use requires a separate license from Simplifine.
+// See LICENSES/COMPANY-NONCOMMERCIAL.md.
+// --------------------------------------------------------------
 
 #pragma once
 
@@ -41,11 +17,13 @@ class DirectionalLight3D;
 class AcceptDialog;
 class EditorFileDialog;
 class HTTPRequest;
+class HSlider;
 class ItemList;
 class Label;
 class LineEdit;
 class MeshInstance3D;
 class OptionButton;
+class ScrollContainer;
 class SubViewport;
 class SubViewportContainer;
 class TabContainer;
@@ -99,6 +77,14 @@ class DesignStudio3DEditor : public PanelContainer {
 	Button *remesh_button = nullptr;
 	Button *cancel_operation_button = nullptr;
 	
+	// LOD UI Elements
+	VBoxContainer *lod_container = nullptr;
+	Button *generate_lods_button = nullptr;
+	Label *lod_status_label = nullptr;
+	OptionButton *lod_quality_selector = nullptr;
+	CheckBox *auto_lod_checkbox = nullptr;
+	Label *current_lod_label = nullptr;
+	
 	// Export button (shared)
 	Button *export_button = nullptr;
 	
@@ -111,6 +97,11 @@ class DesignStudio3DEditor : public PanelContainer {
 	Camera3D *camera = nullptr;
 	DirectionalLight3D *light = nullptr;
 	MeshInstance3D *preview_mesh = nullptr;
+	
+	// LOD Viewer Controls
+	VBoxContainer *viewer_controls_container = nullptr;
+	class HSlider *lod_slider = nullptr;
+	Label *lod_slider_label = nullptr;
 	
 	// HTTP Requests
 	HTTPRequest *submit_request = nullptr;
@@ -151,6 +142,24 @@ class DesignStudio3DEditor : public PanelContainer {
 	int current_face_count = 0;
 	int current_normal_count = 0;
 	int current_texture_coord_count = 0;
+	
+	// LOD System
+	struct LODLevel {
+		Ref<Mesh> mesh;
+		String model_path;
+		int target_faces;
+		int vertex_count;
+		int face_count;
+		float distance_threshold; // Distance at which this LOD becomes active
+	};
+	
+	Vector<LODLevel> lod_levels;
+	int current_lod_index = 0;
+	bool auto_lod_enabled = true;
+	bool is_generating_lods = false;
+	int lods_generated_count = 0;
+	int total_lods_to_generate = 0;
+	float lod_distance_threshold_pending = 0.0f; // Temp storage for LOD generation
 	
 	// Download retry logic
 	String download_url_to_retry;
@@ -223,6 +232,25 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_texture_status_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_textured_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _create_parent_job_if_needed();
+	
+	// LOD operations
+	void _setup_lod_ui();
+	void _on_generate_lods_pressed();
+	void _on_auto_lod_toggled(bool p_pressed);
+	void _on_lod_quality_changed(int p_index);
+	void _on_lod_slider_changed(float p_value);
+	void _start_lod_generation();
+	void _generate_next_lod();
+	void _start_remeshing_for_lod(int p_target_faces, float p_distance_threshold);
+	void _on_lod_generated(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _update_lod_based_on_distance();
+	void _switch_to_lod(int p_lod_index);
+	void _clear_lod_levels();
+	void _update_lod_info();
+	void _update_lod_slider();
+	
+	// HTTP Request Management
+	void _cancel_all_requests();
 
 protected:
 	void _notification(int p_what);

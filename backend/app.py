@@ -48,6 +48,10 @@ load_dotenv()
 _dev_mode = os.getenv('DEV_MODE', 'false').lower() == 'true'
 
 # Choose logging server URL based on environment
+
+# Summarization Configuration Constants
+UNIVERSAL_SUMMARIZATION_TRIGGER = 150000  # Trigger summarization at 150k tokens
+EMERGENCY_THRESHOLD = 180000  # Emergency threshold at 180k tokens
 if _dev_mode:
     # Development mode: use local logging server
     LOGGING_SERVER_URL = 'http://localhost:3031'
@@ -569,39 +573,26 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
         min_initial_needed = 10      # Need 10+ messages for first summary
         min_incremental_needed = 15  # Need 15+ messages for incremental summary
 
-    # TRIGGER EARLY: Use token threshold OR message count (whichever hits first)
-    trigger_threshold = int(model_limit * trigger_ratio)
-    # HARD LIMIT: emergency threshold
-    emergency_threshold = int(model_limit * emergency_ratio)
-
-    # Model-specific early trigger: GPT-4o has smaller context window so trigger earlier
-    # Default to 8000 tokens unless overridden by env GPT4O_SUMMARY_TRIGGER_TOKENS  
-    try:
-        gpt4o_fixed = int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '8000'))  # Reasonable production default
-    except Exception:
-        gpt4o_fixed = 8000
-    if isinstance(model, str) and (model == 'openai/gpt-4o' or model.startswith('openai/gpt-4o@') or model.endswith('/gpt-4o')):
-        old_threshold = trigger_threshold
-        trigger_threshold = min(trigger_threshold, gpt4o_fixed)
-        print(f"SUMMARIZATION_TUNING[gpt-4o]: trigger_threshold {old_threshold} -> {trigger_threshold} tokens (env GPT4O_SUMMARY_TRIGGER_TOKENS={gpt4o_fixed})")
+    # Use global universal trigger thresholds (defined at top of file)
     
     # Calculate ACTUAL token usage using LiteLLM's token_counter
     total_tokens = _count_tokens_for_messages(messages, model)
-    print(f"TOKEN_COUNT: Conversation using {total_tokens} tokens ({(total_tokens/model_limit*100):.1f}% of {model_limit} limit)")
+    model_limit = _get_model_token_limit(model)
+    print(f"TOKEN_COUNT: Conversation using {total_tokens} tokens (limit: {model_limit}, trigger: {UNIVERSAL_SUMMARIZATION_TRIGGER})")
     
     # TOKEN-ONLY TRIGGER: Use only token count, ignore message count
-    token_count_trigger = total_tokens > trigger_threshold
+    token_count_trigger = total_tokens > UNIVERSAL_SUMMARIZATION_TRIGGER
     
     if not token_count_trigger:
         return messages, False  # No management needed yet
     
     # Check if this is an emergency (over emergency threshold)
-    is_emergency = total_tokens >= emergency_threshold
+    is_emergency = total_tokens >= EMERGENCY_THRESHOLD
     
     if is_emergency:
-        print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds emergency limit ({emergency_threshold})! Forcing aggressive summarization")
+        print(f"🚨 CONVERSATION_EMERGENCY: {total_tokens} tokens exceeds emergency limit ({EMERGENCY_THRESHOLD})! Forcing aggressive summarization")
     else:
-        print(f"CONVERSATION_MANAGE: {total_tokens} tokens exceeds threshold ({trigger_threshold}), starting smart summarization")
+        print(f"CONVERSATION_MANAGE: {total_tokens} tokens exceeds threshold ({UNIVERSAL_SUMMARIZATION_TRIGGER}), starting smart summarization")
     
     # PRODUCTION-GRADE INCREMENTAL SUMMARIZATION
     # Strategy: Keep system message + summaries + recent N messages
@@ -609,18 +600,7 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
 
     initial_recent_messages_to_keep = keep_recent_emergency if is_emergency else keep_recent_normal
 
-    # Force summarization path for gpt-4o (or any model) when token threshold hit even with few messages
-    force_summarize_now = False
-    if isinstance(model, str) and (model == 'openai/gpt-4o' or model.startswith('openai/gpt-4o@') or model.endswith('/gpt-4o')):
-        if total_tokens >= trigger_threshold:
-            force_summarize_now = True
-            print(f"FORCE_SUMMARIZE[gpt-4o]: total_tokens={total_tokens} >= trigger_threshold={trigger_threshold} — overriding guards")
-
-    if force_summarize_now:
-        # Ensure there is something meaningful to summarize
-        # Keep enough recent messages but ensure we can summarize a reasonable amount
-        initial_recent_messages_to_keep = min(initial_recent_messages_to_keep, max(15, len(messages) - min_initial_needed))
-        print(f"GPT4O_ADJUST: Adjusted recent_keep to {initial_recent_messages_to_keep} to ensure meaningful summarization")
+    # No model-specific overrides - universal behavior for all models
     
     recent_messages_to_keep = initial_recent_messages_to_keep
     
@@ -628,8 +608,8 @@ def _manage_conversation_length_fallback(messages: list, model: str) -> tuple[li
     if test_mode:
         print(f"🧪 TEST_MODE: Using testing barriers (60 messages, 40% tokens)")
     
-    if len(messages) <= recent_messages_to_keep + 5 and not force_summarize_now:
-        return messages, False  # Too short to summarize (unless forced above)
+    if len(messages) <= recent_messages_to_keep + 5:
+        return messages, False  # Too short to summarize meaningfully
     
     # Separate system messages (NEVER summarize these!)
     system_messages = []
@@ -3634,12 +3614,9 @@ def chat():
                 
                 # Check if we WILL summarize (before actually doing it)
                 total_tokens = _count_tokens_for_messages(conversation_messages, model)
-                model_limit = _get_model_token_limit(model)
-                trigger_threshold = int(model_limit * 0.5)
-                if model.startswith('openai/gpt-4o'):
-                    trigger_threshold = min(trigger_threshold, int(os.getenv('GPT4O_SUMMARY_TRIGGER_TOKENS', '1500')))
+                # Use global universal trigger threshold
                 
-                will_summarize = total_tokens > trigger_threshold
+                will_summarize = total_tokens > UNIVERSAL_SUMMARIZATION_TRIGGER
                 
                 if will_summarize:
                     # SEND STATUS BEFORE SUMMARIZATION STARTS
@@ -4126,7 +4103,7 @@ def chat():
                 
                 # REMOVED: Emergency pruning - let backend conversation management handle this gracefully
                 if total_chars > 300000:
-                    print(f"⚠️ LARGE_CONVERSATION: {len(openai_messages)} messages, {total_chars} chars")
+                    print(f"⚠️ LARGE_CONVERSATION: {len(openai_messages_send)} messages, {total_chars} chars")
                     print("ℹ️ Backend conversation management will handle via intelligent summarization")
                 
                 # Resilient model call with 5 retries (1 second each) then fallback to GPT-5
@@ -4405,28 +4382,28 @@ def chat():
                             
                             # Get actual model limit
                             actual_limit = _get_model_token_limit(model_try)
-                            current_tokens = _count_tokens_for_messages(openai_messages, model_try)
+                            current_tokens = _count_tokens_for_messages(openai_messages_send, model_try)
                             print(f"🚨 OVERFLOW_STATS: {current_tokens} tokens used, limit is {actual_limit}")
                             
                             # Notify frontend
                             yield json.dumps({
                                 "status": "emergency_summarizing",
                                 "message": f"Conversation too large ({current_tokens} tokens > {actual_limit} limit) - condensing...",
-                                "original_count": len(openai_messages),
+                                "original_count": len(openai_messages_send),
                                 "tokens_used": current_tokens,
                                 "tokens_limit": actual_limit
                             }) + '\n'
                             
                             # Force AGGRESSIVE summarization to get well under limit
-                            original_count = len(openai_messages)
-                            system_msgs = [m for m in openai_messages if m.get('role') == 'system']
-                            other_msgs = [m for m in openai_messages if m.get('role') != 'system']
+                            original_count = len(openai_messages_send)
+                            system_msgs = [m for m in openai_messages_send if m.get('role') == 'system']
+                            other_msgs = [m for m in openai_messages_send if m.get('role') != 'system']
                             
                             # Emergency: Keep only last 15 messages (aggressive!)
-                            openai_messages = system_msgs + other_msgs[-15:]
-                            final_tokens = _count_tokens_for_messages(openai_messages, model_try)
+                            openai_messages_send = system_msgs + other_msgs[-15:]
+                            final_tokens = _count_tokens_for_messages(openai_messages_send, model_try)
                             
-                            print(f"✅ EMERGENCY_SUMMARIZE: Reduced {current_tokens} → {final_tokens} tokens ({original_count} → {len(openai_messages)} messages)")
+                            print(f"✅ EMERGENCY_SUMMARIZE: Reduced {current_tokens} → {final_tokens} tokens ({original_count} → {len(openai_messages_send)} messages)")
                             print(f"✅ EMERGENCY_RESULT: Now at {(final_tokens/actual_limit*100):.1f}% of limit - safe to retry")
                             
                             # Notify frontend of completion
@@ -4448,11 +4425,11 @@ def chat():
                             print(f"TOOL_CALL_RECOVERY: Detected orphaned tool calls error (attempt {recovery_attempts}/{max_recovery_attempts}), attempting recovery...")
                             
                             # Try to fix the orphaned tool calls
-                            fixed_messages, was_fixed = _detect_and_fix_orphaned_tool_calls(openai_messages, str(e))
+                            fixed_messages, was_fixed = _detect_and_fix_orphaned_tool_calls(openai_messages_send, str(e))
                             
                             if was_fixed:
                                 # Update messages and retry immediately with the fixed messages
-                                openai_messages = fixed_messages
+                                openai_messages_send = fixed_messages
                                 print(f"TOOL_CALL_RECOVERY: Fixed orphaned tool calls, retrying request...")
                                 
                                 # Send recovery status to frontend
@@ -5707,9 +5684,10 @@ def chat():
                 # If we get here, it means no backend tools were called.
                 # It's either a final text response or tool calls for the frontend.
                 
+                
                 # CRITICAL FIX: Create original_tool_calls_for_history for frontend tools
                 original_tool_calls_for_history = []
-                print(f"FRONTEND_PROCESSING: Creating tool calls for history from {len(tool_call_aggregator)} aggregated tools")
+                print(f"FRONTEND_PROCESSING: Creating tool calls for history from {len(tool_call_aggregator)} remaining tools")
                 for i, func in tool_call_aggregator.items():
                     tool_id = tool_ids[i]
                     tool_call_entry = {
@@ -5788,22 +5766,17 @@ def chat():
                     }
                     print(f"FRONTEND_PROCESSING: ⚡ SENDING executing_tools to frontend NOW with {len(tool_calls_for_frontend)} tools")
                     
-                    # CRITICAL FIX: Add padding field to exceed buffer threshold (4KB) to force immediate transmission
-                    # Flask dev server buffers small messages, causing 30+ second delays
+                    # SAFER: Use proper HTTP streaming without corrupting chunked encoding
                     base_response = json.dumps(frontend_response)
-                    padding_needed = max(0, 4096 - len(base_response) - 50)  # 50 bytes for JSON overhead
-                    if padding_needed > 0:
-                        # Add padding as a valid JSON field that frontend will ignore
-                        import json as _json
-                        response_dict = _json.loads(base_response)
-                        response_dict["_flush_padding"] = " " * padding_needed
-                        response_line = _json.dumps(response_dict) + '\n'
-                        print(f"FRONTEND_PROCESSING: Added {padding_needed} bytes of padding to force immediate transmission (total: {len(response_line)} bytes)")
-                    else:
-                        response_line = base_response + '\n'
+                    response_line = base_response + '\n'
+                    
+                    # Force flush using a safer method - yield empty string first to ensure transmission
+                    if len(response_line) < 4096:
+                        print(f"FRONTEND_PROCESSING: Small response ({len(response_line)} bytes) - forcing flush with empty yield")
+                        yield ""  # Force Flask to send current buffer
                     
                     yield response_line
-                    print(f"FRONTEND_PROCESSING: ✅ Yielded executing_tools ({len(response_line)} bytes) - should transmit immediately")
+                    print(f"FRONTEND_PROCESSING: ✅ Yielded executing_tools ({len(response_line)} bytes) safely")
                     
                     # The assistant message was already added above, so don't add it again
                     
@@ -7294,6 +7267,38 @@ def get_available_models():
             "success": False,
             "error": str(e)
         }), 500
+
+@app.route('/count_tokens', methods=['POST'])
+def count_tokens():
+    """Count tokens for a conversation using LiteLLM"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+            
+        messages = data.get('messages', [])
+        model = data.get('model', 'openai/gpt-4o')
+        
+        if not messages:
+            return jsonify({
+                'token_count': 0,
+                'model_limit': _get_model_token_limit(model),
+                'percentage': 0.0
+            })
+        
+        # Use existing token counting function
+        token_count = _count_tokens_for_messages(messages, model)
+        model_limit = _get_model_token_limit(model)
+        percentage = (token_count / model_limit * 100) if model_limit > 0 else 0
+        
+        return jsonify({
+            'token_count': token_count,
+            'model_limit': model_limit,
+            'percentage': percentage
+        })
+    except Exception as e:
+        print(f"TOKEN_COUNT_ERROR: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/crash_report/test_supabase', methods=['GET'])
 def test_crash_supabase():

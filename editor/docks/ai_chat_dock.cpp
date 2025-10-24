@@ -124,6 +124,13 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_process_send_request_async"), &AIChatDock::_process_send_request_async);
 	ClassDB::bind_method(D_METHOD("_save_conversations_async"), &AIChatDock::_save_conversations_async);
 	ClassDB::bind_method(D_METHOD("_on_input_text_changed"), &AIChatDock::_on_input_text_changed);
+	
+	// Token counting method bindings
+	ClassDB::bind_method(D_METHOD("_update_token_indicator"), &AIChatDock::_update_token_indicator);
+	ClassDB::bind_method(D_METHOD("_request_token_count"), &AIChatDock::_request_token_count);
+	ClassDB::bind_method(D_METHOD("_on_token_count_response"), &AIChatDock::_on_token_count_response);
+	ClassDB::bind_method(D_METHOD("_on_token_update_timer_timeout"), &AIChatDock::_on_token_update_timer_timeout);
+	
 	ClassDB::bind_method(D_METHOD("_update_at_mention_popup"), &AIChatDock::_update_at_mention_popup);
 	ClassDB::bind_method(D_METHOD("_populate_at_mention_tree"), &AIChatDock::_populate_at_mention_tree);
 	ClassDB::bind_method(D_METHOD("_populate_tree_recursive"), &AIChatDock::_populate_tree_recursive);
@@ -1248,6 +1255,16 @@ void AIChatDock::_notification(int p_notification) {
                         stop_requested = false;
                         current_request_id = "";
                     }
+                    
+                    // CRITICAL FIX: Safely handle CONNECTION_ERROR to prevent permanent corruption
+                    // This fixes the "HTTP Invalid chunk hex len" error that permanently corrupts the client
+                    if (client_status == HTTPClient::STATUS_CONNECTION_ERROR) {
+                        print_line("AI Chat: Connection error detected - marking HTTP client for recreation");
+                        // Note: We don't immediately close/recreate here to avoid crashes during polling
+                        // Instead, _send_chat_request() will detect the error state and recreate safely
+                        print_line("AI Chat: HTTP client marked as corrupted - will be recreated on next request");
+                    }
+                    
                     _update_ui_state();
                     http_status = STATUS_DONE;
                     current_assistant_message_label = nullptr;
@@ -2868,6 +2885,111 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 void AIChatDock::_on_input_text_changed() {
 	// Keep send-button enablement consistent with global busy logic
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || _is_busy());
+	
+	// Update token indicator when input changes
+	_update_token_indicator();
+}
+
+void AIChatDock::_update_token_indicator() {
+	if (!token_indicator || token_counting_in_progress) {
+		return;
+	}
+	
+	// Debounced update - restart timer on each call
+	if (token_update_timer) {
+		token_update_timer->stop();
+		token_update_timer->start(0.5); // Update after 500ms of no changes
+	}
+}
+
+void AIChatDock::_on_token_update_timer_timeout() {
+	if (token_counting_in_progress) {
+		return;
+	}
+	_request_token_count();
+}
+
+void AIChatDock::_request_token_count() {
+	if (token_counting_in_progress || !token_count_request) {
+		return;
+	}
+	
+	token_counting_in_progress = true;
+	
+	// Build messages array for current conversation + input text
+	Array messages_array;
+	Vector<ChatMessage> &current_messages = _get_current_chat_history();
+	
+	// Add existing conversation messages
+	for (const ChatMessage &msg : current_messages) {
+		Dictionary api_msg = _build_api_message(msg);
+		messages_array.push_back(api_msg);
+	}
+	
+	// Add current input if not empty
+	String current_input = input_field ? input_field->get_text().strip_edges() : "";
+	if (!current_input.is_empty()) {
+		Dictionary user_msg;
+		user_msg["role"] = "user";
+		user_msg["content"] = current_input;
+		messages_array.push_back(user_msg);
+	}
+	
+	// Prepare request data
+	Dictionary request_data;
+	request_data["messages"] = messages_array;
+	request_data["model"] = model;
+	
+	String json_data = JSON::stringify(request_data);
+	
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	_add_version_headers_to_request(headers);
+	
+	String url = _get_api_base_url() + "/count_tokens";
+	token_count_request->request(url, headers, HTTPClient::METHOD_POST, json_data);
+}
+
+void AIChatDock::_on_token_count_response(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	token_counting_in_progress = false;
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		// Silently fail for token counting - don't show errors to user
+		return;
+	}
+	
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	JSON json;
+	Error err = json.parse(response_text);
+	if (err != OK) {
+		return;
+	}
+	
+	Dictionary data = json.get_data();
+	if (data.has("token_count")) {
+		cached_token_count = data["token_count"];
+		int model_limit = data.get("model_limit", 0);
+		float percentage = data.get("percentage", 0.0);
+		
+		// Update indicator text and color based on usage
+		String indicator_text = String::num(cached_token_count) + " tokens";
+		if (model_limit > 0) {
+			indicator_text += " (" + String::num_int64((int)(percentage)) + "%)";
+		}
+		
+		token_indicator->set_text(indicator_text);
+		
+		// Color coding: green -> yellow -> red
+		Color indicator_color;
+		if (percentage < 60) {
+			indicator_color = get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6);
+		} else if (percentage < 80) {
+			indicator_color = Color(1.0, 0.8, 0.0); // Yellow warning
+		} else {
+			indicator_color = get_theme_color(SNAME("error_color"), SNAME("Editor")); // Red danger
+		}
+		token_indicator->add_theme_color_override("font_color", indicator_color);
+	}
 }
 // --- At-Mention Implementation ---
 // This is actually not working rn! :/ 
@@ -3020,6 +3142,9 @@ void AIChatDock::_on_model_selected(int p_index) {
 		if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/model")) {
 			EditorSettings::get_singleton()->set_setting("ai_chat/model", model);
 		}
+		
+		// Update token indicator since different models have different limits
+		_update_token_indicator();
 	}
 }
 
@@ -5756,6 +5881,9 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 		_queue_delayed_save();
 	}
+
+	// Update token indicator when new messages are added
+	_update_token_indicator();
 
 	// Auto-scroll to bottom
 	call_deferred("_scroll_to_bottom");
@@ -11460,6 +11588,13 @@ void AIChatDock::_finalize_chat_request() {
     // Always pass current project root to ensure backend targets the right project
     headers.push_back("X-Project-Root: " + ProjectSettings::get_singleton()->globalize_path("res://"));
 
+	// CRITICAL FIX: Ensure HTTP client is valid before using (recreate if closed due to previous errors)
+	if (!http_client.is_valid() || http_client->get_status() == HTTPClient::STATUS_CONNECTION_ERROR) {
+		print_line("AI Chat: HTTP client invalid or in error state - recreating...");
+		http_client = HTTPClient::create();
+		print_line("AI Chat: Fresh HTTP client created successfully");
+	}
+
 	// Setup HTTPClient for streaming
 	http_client->set_read_chunk_size(4096); // 4kb chunk size
 
@@ -12125,8 +12260,21 @@ void AIChatDock::_load_conversations() {
     Error err;
     String file_content = FileAccess::get_file_as_string(final_path, &err);
     if (err != OK) {
-        print_line("AI Chat: Failed to load conversations file");
-        return;
+        print_line("AI Chat: Failed to load main conversations file - attempting emergency backup recovery...");
+        
+        // Try to recover from emergency backup automatically
+        if (conversation_persistence && conversation_persistence->recover_from_corruption()) {
+            print_line("AI Chat: SUCCESS - Recovered conversations from emergency backup, retrying load...");
+            // Retry loading with recovered file
+            file_content = FileAccess::get_file_as_string(final_path, &err);
+            if (err != OK) {
+                print_line("AI Chat: RECOVERY FAILED - Even backup recovery couldn't restore file access");
+                return;
+            }
+        } else {
+            print_line("AI Chat: RECOVERY FAILED - No valid emergency backups found or recovery failed");
+            return;
+        }
     }
     
     // Check file size - if too large, truncate or skip loading to prevent HTTP errors
@@ -12170,16 +12318,82 @@ void AIChatDock::_load_conversations() {
         }
     }
     if (!parsed) {
-        print_line("AI Chat: Failed to parse conversations file (and temp fallback)");
-        return;
+        print_line("AI Chat: Failed to parse main and temp conversations files - attempting emergency backup recovery...");
+        
+        // Try to recover from emergency backup automatically  
+        if (conversation_persistence && conversation_persistence->recover_from_corruption()) {
+            print_line("AI Chat: SUCCESS - Recovered conversations from emergency backup, retrying parse...");
+            // Retry loading with recovered file
+            file_content = FileAccess::get_file_as_string(final_path, &err);
+            if (err == OK && parse_json_string(file_content, data)) {
+                parsed = true;
+                print_line("AI Chat: SUCCESS - Parsed recovered conversations file");
+            } else {
+                print_line("AI Chat: RECOVERY FAILED - Recovered file still unparseable");
+                return;
+            }
+        } else {
+            print_line("AI Chat: RECOVERY FAILED - No valid emergency backups found or recovery failed");
+            return;
+        }
     }
 
     if (!data.has("conversations")) {
-        print_line("AI Chat: Conversations key missing in file: " + final_path);
-        return;
+        print_line("AI Chat: Conversations key missing in file - attempting emergency backup recovery...");
+        
+        // Try to recover from emergency backup automatically
+        if (conversation_persistence && conversation_persistence->recover_from_corruption()) {
+            print_line("AI Chat: SUCCESS - Recovered conversations from emergency backup, retrying load...");
+            // Retry loading with recovered file
+            file_content = FileAccess::get_file_as_string(final_path, &err);
+            if (err == OK && parse_json_string(file_content, data) && data.has("conversations")) {
+                print_line("AI Chat: SUCCESS - Recovered file has valid conversations structure");
+            } else {
+                print_line("AI Chat: RECOVERY FAILED - Recovered file missing conversations key or unparseable");
+                return;
+            }
+        } else {
+            print_line("AI Chat: RECOVERY FAILED - No valid emergency backups found or recovery failed");
+            return;
+        }
     }
 
     Array conversations_array = data["conversations"];
+    
+    // CRITICAL: Smart recovery - detect when main file has empty conversations but backups contain real data
+    bool main_file_mostly_empty = true;
+    int total_messages = 0;
+    
+    for (int i = 0; i < conversations_array.size(); i++) {
+        Dictionary conv = conversations_array[i];
+        if (conv.has("messages")) {
+            Array messages = conv["messages"];
+            total_messages += messages.size();
+            if (messages.size() > 1) {  // More than just empty conversation
+                main_file_mostly_empty = false;
+            }
+        }
+    }
+    
+    // If main file is mostly empty but we have recent emergency backups, try recovery
+    if (main_file_mostly_empty && total_messages <= 1) {
+        print_line("AI Chat: Main file has empty conversations (" + String::num_int64(total_messages) + " messages) - checking for emergency backup recovery...");
+        
+        if (conversation_persistence && conversation_persistence->recover_from_corruption()) {
+            print_line("AI Chat: SUCCESS - Recovered real conversation data from emergency backup, retrying load...");
+            // Retry loading with recovered file
+            file_content = FileAccess::get_file_as_string(final_path, &err);
+            if (err == OK && parse_json_string(file_content, data) && data.has("conversations")) {
+                conversations_array = data["conversations"];
+                print_line("AI Chat: SUCCESS - Loaded recovered conversations with real data");
+            } else {
+                print_line("AI Chat: RECOVERY FAILED - Recovered file still has issues");
+            }
+        } else {
+            print_line("AI Chat: No emergency backup recovery available");
+        }
+    }
+    
     conversations.clear();
 
     for (int i = 0; i < conversations_array.size(); i++) {
@@ -12552,6 +12766,9 @@ void AIChatDock::_switch_to_conversation(int p_index) {
 	
 	// Queue a save to persist any pending edit map changes from previous convo
 	_queue_delayed_save();
+	
+	// Update token indicator when switching conversations
+	_update_token_indicator();
 	
 	// Keep dropdown selection in sync
 	_update_conversation_dropdown();
@@ -12948,6 +13165,17 @@ AIChatDock::AIChatDock() {
 	summarization_http_request = memnew(HTTPRequest);
 	add_child(summarization_http_request);
 	summarization_http_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_summarization_request_completed));
+	
+	// Initialize token counting system
+	token_count_request = memnew(HTTPRequest);
+	add_child(token_count_request);
+	token_count_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_token_count_response));
+
+	token_update_timer = memnew(Timer);
+	token_update_timer->set_wait_time(0.5);
+	token_update_timer->set_one_shot(true);
+	add_child(token_update_timer);
+	token_update_timer->connect("timeout", callable_mp(this, &AIChatDock::_on_token_update_timer_timeout));
 	
 	// Initialize rate limit popup
 	rate_limit_popup = memnew(AcceptDialog);

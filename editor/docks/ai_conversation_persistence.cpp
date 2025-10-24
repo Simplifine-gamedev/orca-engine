@@ -284,3 +284,83 @@ void AIConversationPersistence::_log_load_attempt(const String &p_operation, boo
     }
     print_line(log_msg);
 }
+
+bool AIConversationPersistence::recover_from_corruption() {
+    print_line("AI Chat Persistence: Starting corruption recovery process...");
+    
+    // First try regular backup recovery
+    if (_attempt_recovery_from_backup()) {
+        print_line("AI Chat Persistence: Successfully recovered from regular backup");
+        return true;
+    }
+    
+    // Try emergency backups as fallback
+    Ref<DirAccess> da = DirAccess::open(backup_directory);
+    if (!da.is_valid()) {
+        print_line("AI Chat Persistence: Cannot access backup directory");
+        return false;
+    }
+    
+    // Find the LARGEST EMERGENCY backup (most likely to contain real data, not empty corruption)
+    PackedStringArray files = da->get_files();
+    String largest_emergency;
+    int64_t largest_size = 0;
+    
+    for (int i = 0; i < files.size(); i++) {
+        String file = files[i];
+        if (file.begins_with("EMERGENCY_backup_") && file.ends_with(".simplifine")) {
+            String backup_path = backup_directory.path_join(file);
+            Ref<FileAccess> size_check = FileAccess::open(backup_path, FileAccess::READ);
+            if (size_check.is_valid()) {
+                int64_t file_size = size_check->get_length();
+                size_check->close();
+                
+                // Skip tiny files (likely empty conversations or corruption)
+                if (file_size > 1000 && file_size > largest_size) {  
+                    largest_size = file_size;
+                    largest_emergency = file;
+                }
+            }
+        }
+    }
+    
+    if (largest_emergency.is_empty()) {
+        print_line("AI Chat Persistence: No large emergency backup files found for recovery");
+        return false;
+    }
+    
+    String emergency_path = backup_directory.path_join(largest_emergency);
+    print_line("AI Chat Persistence: Attempting emergency backup recovery from LARGEST backup: " + largest_emergency + " (" + String::num_int64(largest_size) + " bytes)");
+    
+    Error err;
+    String backup_content = FileAccess::get_file_as_string(emergency_path, &err);
+    if (err != OK) {
+        print_line("AI Chat Persistence: Failed to read emergency backup file");
+        return false;
+    }
+    
+    // Validate emergency backup
+    Ref<JSON> json;
+    json.instantiate();
+    Error parse_err = json->parse(backup_content);
+    if (parse_err != OK) {
+        print_line("AI Chat Persistence: Emergency backup has corrupted JSON");
+        return false;
+    }
+    
+    Dictionary data = json->get_data();
+    if (!_validate_json_structure(data)) {
+        print_line("AI Chat Persistence: Emergency backup has invalid structure");
+        return false;
+    }
+    
+    // Recovery successful - restore from emergency backup
+    SaveResult copy_result = _atomic_write_file(conversations_file_path, backup_content);
+    if (copy_result == SAVE_SUCCESS) {
+        print_line("AI Chat Persistence: EMERGENCY RECOVERY SUCCESS - Restored from LARGEST backup: " + largest_emergency + " (" + String::num_int64(largest_size) + " bytes)");
+        return true;
+    }
+    
+    print_line("AI Chat Persistence: Failed to write recovered emergency backup");
+    return false;
+}
