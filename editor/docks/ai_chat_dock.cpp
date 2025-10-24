@@ -1169,7 +1169,7 @@ void AIChatDock::_notification(int p_notification) {
 
 			// Only initialize embedding system if this is the active singleton instance
 			if (singleton == this) {
-				// Ensure indexing is set up immediately on startup (guest if needed)
+				// Ensure indexing is set up immediately on startup
 				_ensure_project_indexing();
 			} else {
 				print_line("AI Chat: Skipping embedding initialization - not the active singleton instance");
@@ -2128,10 +2128,8 @@ void AIChatDock::_on_login_button_pressed() {
     PopupMenu *providers = memnew(PopupMenu);
     add_child(providers);
     int id_google = 1;
-    int id_guest = 2;
     providers->add_icon_item(get_theme_icon(SNAME("Key"), SNAME("EditorIcons")), "Sign in with Google", id_google);
-    providers->add_separator();
-    providers->add_icon_item(get_theme_icon(SNAME("Key"), SNAME("EditorIcons")), "Continue as Guest", id_guest);
+    // Guest mode removed - users must authenticate at startup
     providers->set_name("auth_provider_menu");
     providers->connect("id_pressed", callable_mp(this, &AIChatDock::_on_auth_provider_selected));
     // Popup directly under the login button using parent-anchored rect
@@ -2175,27 +2173,17 @@ void AIChatDock::_on_auth_provider_selected(int p_id) {
     String provider;
     if (p_id == 1) {
         provider = "google";
-    } else if (p_id == 2) {
-        provider = "guest";
     } else {
         return;
     }
     pending_login_provider = provider;
-    if (provider == "guest") {
-        // Call backend to create/get guest session, then reflect in UI
-        current_user_id = "guest:" + get_machine_id();
-        current_user_name = "Guest";
-        auth_token = ""; // Guest flow in backend does not need token in headers
-        _update_user_status();
-        print_line("AI Chat: Using guest session");
-        return;
-    } else {
-        String machine_id = OS::get_singleton()->get_unique_id();
-        String url = AILoginHelper::build_auth_login_url(api_endpoint, machine_id, provider);
-        OS::get_singleton()->shell_open(url);
-    }
+    
+    // Open web login for Google OAuth
+    String machine_id = OS::get_singleton()->get_unique_id();
+    String url = AILoginHelper::build_auth_login_url(api_endpoint, machine_id, provider);
+    OS::get_singleton()->shell_open(url);
 
-    // Start polling silently; if Microsoft was chosen, require provider and disallow guest
+    // Start polling for authentication
     user_status_label->set_text("Waiting for login...");
     _start_login_polling();
 }
@@ -2317,10 +2305,7 @@ void AIChatDock::_logout_user() {
 	print_line("AI Chat: User logged out - embedding system reset");
 }
 bool AIChatDock::_is_user_authenticated() const {
-	// Treat guest sessions as authenticated for indexing and chat.
-	if (current_user_id.begins_with("guest:")) {
-		return true;
-	}
+	// Guest mode removed - require real authentication
 	return !current_user_id.is_empty() && !auth_token.is_empty();
 }
 
@@ -2404,13 +2389,10 @@ void AIChatDock::_ensure_project_indexing() {
 	print_line("AI Chat: DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
 	print_line("AI Chat: DEBUG - initial_indexing_done: " + String(initial_indexing_done ? "true" : "false"));
 	
-    // If not authenticated, fallback to guest automatically
+    // Guest mode removed - users must be authenticated to use AI chat
     if (!_is_user_authenticated()) {
-        current_user_id = "guest:" + get_machine_id();
-        current_user_name = "Guest";
-        auth_token = "";
-        _update_user_status();
-        print_line("AI Chat: No auth detected; indexing as guest");
+        print_line("AI Chat: User not authenticated - skipping indexing. Please sign in.");
+        return;
     }
 	
 	// Initialize embedding system if needed
@@ -6574,30 +6556,78 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
         String message = p_result.get("message", "");
         return "" + p_tool_name + ": " + message;
     } else {
-        // Error messages - also make them more descriptive
+        // Error messages - use positive, user-friendly language
+        String error_message = p_result.get("message", "");
+        
         if (p_tool_name == "search_manager" && actual_op == "project.search") {
             String query = p_args.get("query", "");
-            return "✗ Search failed for: '" + query + "'";
+            return "No results found for: '" + query + "'";
         } else if (p_tool_name == "project_manager" && actual_op == "fs.read") {
             String path = p_args.get("path", "");
-            return "✗ Failed to read: " + _convert_to_godot_path(path);
+            return "Could not read file: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.write") {
             String path = p_args.get("path", "");
-            return "✗ Failed to write: " + _convert_to_godot_path(path);
+            return "Could not write file: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.write_lines") {
             String path = p_args.get("path", "");
-            return "✗ Failed to edit lines in: " + _convert_to_godot_path(path);
+            return "Could not edit file: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.replace_string") {
             String path = p_args.get("path", "");
-            return "✗ Failed to replace string in: " + _convert_to_godot_path(path);
+            return "Could not replace text in: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.delete") {
+            String path = p_args.get("path", "");
+            return "Could not delete: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.copy") {
+            String path = p_args.get("path", "");
+            return "Could not copy file: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.move") {
+            String path = p_args.get("path", "");
+            return "Could not move file: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.mkdir") {
+            String path = p_args.get("path", "");
+            return "Could not create directory: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "apply_edit") {
             String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
-            return "✗ Edit failed for: " + _convert_to_godot_path(file_path);
+            return "Could not apply edit to: " + _convert_to_godot_path(file_path);
+        } else if (p_tool_name == "image_operation") {
+            return "Could not generate image" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "search_across_project") {
+            String query = p_args.get("query", "");
+            return "No files found" + (!query.is_empty() ? " for: '" + query + "'" : "");
+        } else if (p_tool_name == "search_across_godot_docs") {
+            String query = p_args.get("query", "");
+            return "No documentation found" + (!query.is_empty() ? " for: '" + query + "'" : "");
+        } else if (p_tool_name == "search_godot_assets") {
+            String query = p_args.get("query", "");
+            return "No assets found" + (!query.is_empty() ? " for: '" + query + "'" : "");
+        } else if (p_tool_name == "install_godot_asset") {
+            return "Could not install asset" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "scene_manager" && actual_op == "node.create") {
+            String type = p_args.get("type", "node");
+            return "Could not create " + type;
+        } else if (p_tool_name == "scene_manager" && actual_op == "node.delete") {
+            String path = p_args.get("path", "node");
+            return "Could not delete: " + path;
+        } else if (p_tool_name == "scene_manager" && actual_op == "scene.open") {
+            String path = p_args.get("scene_path", p_args.get("path", ""));
+            return "Could not open scene: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "runtime_manager" && actual_op == "game.start") {
+            return "Could not start game" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "runtime_manager" && actual_op == "game.stop") {
+            return "Could not stop game" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "runtime_manager" && actual_op == "screenshot.take") {
+            return "Could not capture screenshot" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "resource_manager" && actual_op == "image.generate_or_edit") {
+            return "Could not generate image" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "resource_manager" && actual_op == "image.slice_spritesheet") {
+            return "Could not slice spritesheet" + (!error_message.is_empty() ? ": " + error_message : "");
         }
         
-        // Fallback to generic error message
-        String message = p_result.get("message", "");
-        return "✗ " + p_tool_name + " failed: " + message;
+        // Fallback to generic friendly message
+        if (!error_message.is_empty()) {
+            return error_message;
+        }
+        return "Operation could not be completed";
     }
 }
 
@@ -11668,7 +11698,7 @@ void AIChatDock::_update_ui_state() {
 
 	// Handle send button state
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || busy);
-	input_field->set_editable(!busy);
+	// Allow typing while streaming for better UX - users can prepare their next message
 
 	// Update conversation dropdown indicator: show orange dot for busy conversations
 	if (conversation_history_manager) {
