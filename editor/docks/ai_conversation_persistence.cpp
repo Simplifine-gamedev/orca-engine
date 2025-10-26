@@ -5,6 +5,7 @@
 #include "ai_conversation_persistence.h"
 
 AIConversationPersistence::AIConversationPersistence() {
+    save_in_progress = false;
 }
 
 void AIConversationPersistence::initialize(const String &p_conversations_file_path) {
@@ -283,6 +284,133 @@ void AIConversationPersistence::_log_load_attempt(const String &p_operation, boo
         log_msg += " - " + p_details;
     }
     print_line(log_msg);
+}
+
+// CRITICAL: Safe save method - prevents race conditions and data corruption
+AIConversationPersistence::SaveResult AIConversationPersistence::save_conversations_safe(const String &p_json_data) {
+    // Prevent race conditions - only one save at a time
+    if (save_in_progress) {
+        _log_save_attempt("safe_save", false, "Save already in progress, storing data for later");
+        pending_save_data = p_json_data; // Store for retry
+        return SAVE_ERROR_ALREADY_IN_PROGRESS;
+    }
+    
+    save_in_progress = true;
+    _log_save_attempt("safe_save_start", true, "Beginning safe save operation");
+    
+    // Always create backup before any write operation
+    bool backup_created = _create_backup_before_save(conversations_file_path);
+    if (!backup_created && FileAccess::exists(conversations_file_path)) {
+        _log_save_attempt("backup_creation", false, "Failed to create backup - ABORTING save for safety");
+        save_in_progress = false;
+        return SAVE_ERROR_FILE_ACCESS;
+    }
+    
+    // Use atomic write to prevent corruption
+    SaveResult result = _atomic_write_file(conversations_file_path, p_json_data);
+    
+    if (result == SAVE_SUCCESS) {
+        _log_save_attempt("safe_save_complete", true, "Safe save successful");
+        _cleanup_old_backups();
+    } else {
+        _log_save_attempt("safe_save_failed", false, "Safe save failed: " + last_error);
+    }
+    
+    save_in_progress = false;
+    return result;
+}
+
+AIConversationPersistence::SaveResult AIConversationPersistence::save_conversations_with_validation(const String &p_json_data) {
+    // First validate the JSON structure before attempting any save
+    Ref<JSON> json;
+    json.instantiate();
+    Error parse_err = json->parse(p_json_data);
+    if (parse_err != OK) {
+        _log_save_attempt("validation", false, "JSON parse error before save");
+        return SAVE_ERROR_JSON_GENERATION;
+    }
+    
+    Dictionary data = json->get_data();
+    if (!_validate_json_structure(data)) {
+        _log_save_attempt("validation", false, "Invalid conversation structure before save");
+        return SAVE_ERROR_JSON_GENERATION;
+    }
+    
+    // Check size safety
+    if (!is_size_safe_for_save(p_json_data)) {
+        _log_save_attempt("size_check", false, "File size unsafe - attempting safe handling");
+        if (!handle_large_file_safely(p_json_data)) {
+            return SAVE_ERROR_DISK_FULL;
+        }
+    }
+    
+    return save_conversations_safe(p_json_data);
+}
+
+bool AIConversationPersistence::is_size_safe_for_save(const String &p_json_data) const {
+    return p_json_data.length() < MAX_FILE_SIZE;
+}
+
+bool AIConversationPersistence::handle_large_file_safely(const String &p_json_data) {
+    // NEVER just delete conversations! Instead, create large file backup and suggest cleanup
+    _log_save_attempt("large_file_handling", true, "Creating large file backup instead of deletion");
+    
+    String timestamp = String::num_int64(Time::get_singleton()->get_unix_time_from_system());
+    String large_backup = backup_directory.path_join("LARGE_FILE_backup_" + timestamp + ".simplifine");
+    
+    Ref<FileAccess> large_file = FileAccess::open(large_backup, FileAccess::WRITE);
+    if (!large_file.is_valid()) {
+        _log_save_attempt("large_backup", false, "Failed to create large file backup");
+        return false;
+    }
+    
+    large_file->store_string(p_json_data);
+    large_file->close();
+    
+    _log_save_attempt("large_backup", true, "Large conversation data backed up to: " + large_backup);
+    
+    // Try to create a reasonable subset of conversations for main file
+    // Parse and keep only recent conversations to stay under size limit
+    Ref<JSON> json;
+    json.instantiate();
+    Error parse_err = json->parse(p_json_data);
+    if (parse_err != OK) {
+        return false;
+    }
+    
+    Dictionary data = json->get_data();
+    if (!data.has("conversations")) {
+        return false;
+    }
+    
+    Array conversations = data["conversations"];
+    Array trimmed_conversations;
+    int64_t estimated_size = 1000; // Base JSON overhead
+    
+    // Keep most recent conversations that fit in size limit - SAFER iteration
+    for (int i = conversations.size() - 1; i >= 0 && estimated_size < (MAX_FILE_SIZE / 2); i--) {
+        if (i < 0 || i >= conversations.size()) break; // Safety check
+        
+        Dictionary conv = conversations[i];
+        Ref<JSON> temp_json;
+        temp_json.instantiate();
+        String conv_json = temp_json->stringify(conv);
+        int64_t conv_size = conv_json.length();
+        
+        // Prevent runaway memory usage
+        if (estimated_size + conv_size < (MAX_FILE_SIZE / 2)) {
+            trimmed_conversations.push_front(conv);
+            estimated_size += conv_size;
+        } else {
+            break; // Stop adding if we'd exceed limit
+        }
+    }
+    
+    data["conversations"] = trimmed_conversations;
+    String trimmed_json = JSON().stringify(data, "  ");
+    
+    // Save the trimmed version safely
+    return save_conversations_safe(trimmed_json) == SAVE_SUCCESS;
 }
 
 bool AIConversationPersistence::recover_from_corruption() {

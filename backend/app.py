@@ -73,6 +73,7 @@ elif LOGGING_SERVER_URL and detailed_logging_enabled in ['true', 'auto']:
     try:
         from litellm_callback import GodotLiteLLMLogger
         litellm_logger = GodotLiteLLMLogger(LOGGING_SERVER_URL)
+        litellm.drop_params = True  # CRITICAL: Fix GPT-5 temperature errors
         litellm.callbacks = [litellm_logger]
         mode = "DEV" if _dev_mode else "PROD"
         logging_mode = "FORCED" if detailed_logging_enabled == 'true' else "AUTO"
@@ -82,6 +83,7 @@ elif LOGGING_SERVER_URL and detailed_logging_enabled in ['true', 'auto']:
         litellm_logger = None
 else:
     print("ℹ️  LiteLLM logging disabled: no server URL available or DETAILED_LOGGING=false")
+    litellm.drop_params = True  # CRITICAL: Fix GPT-5 temperature errors even without logging
     litellm_logger = None
 
 # Print final logging status
@@ -392,6 +394,90 @@ def _detect_and_fix_orphaned_tool_calls(messages: list, error_message: str) -> t
         print(f"TOOL_CALL_RECOVERY: Failed to fix orphaned tool calls: {recovery_error}")
         return messages, False
 
+def _detect_and_fix_duplicate_tool_results(messages: list, error_message: str) -> tuple[list, bool]:
+    """
+    CRITICAL RECOVERY MECHANISM: Detect and fix duplicate tool result errors.
+    
+    PURPOSE:
+    When frontend sends duplicate tool results or conversation state gets corrupted,
+    we may end up with multiple tool result messages for the same tool_call_id.
+    This violates both OpenAI and Anthropic API contracts causing errors like:
+    
+    Anthropic: "each tool_use must have a single result. Found multiple tool_result blocks with id: XXX"
+    OpenAI: "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'"
+    
+    SOLUTION:
+    This function detects duplicate tool results and keeps only the LAST (most recent) result
+    for each tool_call_id, which typically contains the final/complete result.
+    
+    Args:
+        messages: The conversation messages list  
+        error_message: The error message from LiteLLM
+        
+    Returns:
+        (fixed_messages, was_fixed): Fixed messages and whether recovery succeeded
+    """
+    try:
+        error_str = str(error_message).lower()
+        
+        # Check for duplicate tool result signatures
+        is_duplicate_error = (
+            ("multiple" in error_str and "tool_result" in error_str and "blocks with id" in error_str) or
+            ("each tool_use must have a single result" in error_str) or
+            ("found multiple" in error_str and "tool_result" in error_str)
+        )
+        
+        if not is_duplicate_error:
+            return messages, False
+        
+        # Extract the problematic tool call ID from error message
+        import re
+        id_pattern = r"with id:\s*([^\s\"}']+)"
+        match = re.search(id_pattern, str(error_message))
+        
+        if not match:
+            print("DUPLICATE_TOOL_RECOVERY: Could not extract tool call ID from error message")
+            return messages, False
+        
+        problematic_id = match.group(1)
+        print(f"DUPLICATE_TOOL_RECOVERY: Detected duplicate results for tool_call_id: {problematic_id}")
+        
+        # Find all tool result messages with this ID
+        duplicate_tool_results = []
+        for i, msg in enumerate(messages):
+            if (msg.get('role') == 'tool' and 
+                msg.get('tool_call_id') == problematic_id):
+                duplicate_tool_results.append((i, msg))
+        
+        if len(duplicate_tool_results) <= 1:
+            print(f"DUPLICATE_TOOL_RECOVERY: Found {len(duplicate_tool_results)} results for {problematic_id} - no duplicates to fix")
+            return messages, False
+        
+        print(f"DUPLICATE_TOOL_RECOVERY: Found {len(duplicate_tool_results)} duplicate results for {problematic_id}")
+        
+        # Keep only the LAST result (most recent/complete) and remove others
+        fixed_messages = []
+        indices_to_remove = set()
+        
+        # Mark all but the last duplicate for removal
+        for i, (msg_index, msg) in enumerate(duplicate_tool_results[:-1]):  # All except last
+            indices_to_remove.add(msg_index)
+            print(f"DUPLICATE_TOOL_RECOVERY: Marking duplicate tool result at index {msg_index} for removal")
+        
+        # Rebuild messages without duplicates
+        for i, msg in enumerate(messages):
+            if i not in indices_to_remove:
+                fixed_messages.append(msg)
+        
+        removed_count = len(messages) - len(fixed_messages)
+        print(f"DUPLICATE_TOOL_RECOVERY: Removed {removed_count} duplicate tool results, kept the most recent one")
+        
+        return fixed_messages, True
+        
+    except Exception as recovery_error:
+        print(f"DUPLICATE_TOOL_RECOVERY: Failed to fix duplicate tool results: {recovery_error}")
+        return messages, False
+
 def _generate_ai_summary(messages: list, summary_type: str, model: str = "openai/gpt-4o-mini") -> str:
     """Generate PRODUCTION-GRADE AI summary with technical details preserved"""
     try:
@@ -487,7 +573,7 @@ Conversation ({len(messages)} messages):
             model=summary_model,
             messages=[{"role": "user", "content": summary_prompt}],
             max_tokens=5000,  # INCREASED: Much larger budget for comprehensive context preservation
-            temperature=0.0,  # Maximum precision for code/values
+            temperature=0.1,  # Minimum precision (GPT-5 doesn't support 0.0)
             timeout=60  # Allow more time for thorough analysis of large conversations
         )
         
@@ -4414,10 +4500,50 @@ def chat():
                             attempts = 0  # Reset attempts for retry
                             continue
                         
-                        # SPECIAL CASE: Orphaned tool calls recovery
-                        # This specific error means tool calls exist but their results are missing
+                        # CRITICAL RECOVERY: Try duplicate tool result recovery FIRST (most common issue)
                         error_str_lower = error_str.lower()
+                        
+                        # 1. DUPLICATE TOOL RESULTS RECOVERY (fixes David's issue)
                         if (recovery_attempts < max_recovery_attempts and 
+                            (("multiple" in error_str_lower and "tool_result" in error_str_lower) or
+                             ("each tool_use must have a single result" in error_str_lower))):
+                            
+                            recovery_attempts += 1
+                            print(f"DUPLICATE_TOOL_RECOVERY: Detected duplicate tool results error (attempt {recovery_attempts}/{max_recovery_attempts}), attempting recovery...")
+                            
+                            # Try to fix duplicate tool results  
+                            fixed_messages, was_fixed = _detect_and_fix_duplicate_tool_results(openai_messages_send, str(e))
+                            
+                            if was_fixed:
+                                # Update messages and retry immediately with fixed messages
+                                openai_messages_send = fixed_messages
+                                print(f"DUPLICATE_TOOL_RECOVERY: Fixed duplicate tool results, retrying request...")
+                                
+                                # Send recovery status to frontend
+                                yield json.dumps({
+                                    "status": "recovering", 
+                                    "message": f"Recovered from duplicate tool results (attempt {recovery_attempts}), continuing...",
+                                    "recovery_type": "duplicate_tool_results",
+                                    "recovery_attempt": recovery_attempts
+                                }) + '\n'
+                                
+                                # Log recovery event for analytics
+                                try:
+                                    log_event('duplicate_tool_recovery', {
+                                        'attempt': recovery_attempts,
+                                        'model': model_friendly_name,
+                                        'error_snippet': str(e)[:100]
+                                    })
+                                except Exception:
+                                    pass
+                                
+                                # Retry immediately with fixed messages
+                                continue
+                            else:
+                                print(f"DUPLICATE_TOOL_RECOVERY: Failed to fix duplicate tool results, trying orphaned tool call recovery...")
+                        
+                        # 2. ORPHANED TOOL CALLS RECOVERY (handles missing results)
+                        elif (recovery_attempts < max_recovery_attempts and 
                             "tool_calls" in error_str_lower and "tool_call_id" in error_str_lower and 
                             "must be followed by tool messages" in error_str_lower):
                             
@@ -4454,7 +4580,7 @@ def chat():
                                 continue
                             else:
                                 print(f"TOOL_CALL_RECOVERY: Failed to fix orphaned tool calls, falling back to normal error handling")
-                        elif recovery_attempts >= max_recovery_attempts and "tool_calls" in error_str:
+                        elif recovery_attempts >= max_recovery_attempts and ("tool_calls" in error_str or "tool_result" in error_str):
                             print(f"TOOL_CALL_RECOVERY: Maximum recovery attempts ({max_recovery_attempts}) reached, giving up on recovery")
                         
                         # Check for stop during retry loop
@@ -6423,7 +6549,7 @@ def predict_code_edit():
                 # Apply reasoning params first, then set temperature if not in thinking mode
                 completion_params.update(reasoning_params)
                 if not reasoning_params:  # Only set lower temp if NOT in thinking mode
-                    completion_params["temperature"] = 0.2  # Lower temperature for precise indentation
+                    completion_params["temperature"] = 0.2  # Lower temperature for precise indentation (GPT-5 min is 0.1)
                 
                 try:
                     response = completion(**completion_params)

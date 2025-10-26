@@ -10,6 +10,8 @@
 #include "ai_chat_streaming_indicator.h"
 #include "ai_checkpoint_manager.h"
 #include "ai_manual_snapshots.h"
+#include "ai_conversation_persistence.h"
+#include "ai_chat_save_coordinator.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -205,6 +207,10 @@ void AIChatDock::_bind_methods() {
 	
 	// Emergency conversation saving
 	ClassDB::bind_method(D_METHOD("_emergency_save_conversations"), &AIChatDock::_emergency_save_conversations);
+	
+	// Large file safety methods
+	ClassDB::bind_method(D_METHOD("_retry_load_after_trim", "file_path"), &AIChatDock::_retry_load_after_trim);
+	ClassDB::bind_method(D_METHOD("_attempt_recovery_and_reload"), &AIChatDock::_attempt_recovery_and_reload);
 	
 	// Safe edit message handling
 	ClassDB::bind_method(D_METHOD("_send_edited_message_safely"), &AIChatDock::_send_edited_message_safely);
@@ -428,8 +434,12 @@ void AIChatDock::_apply_deferred_summarization(const Dictionary &p_summary_data)
         
         print_line("AI Chat: Preserved " + String::num_int64(tool_results_map.size()) + " tool_results, " + String::num_int64(attached_files_map.size()) + " attached_files");
         
-        // STEP 2: Clear and rebuild from backend's summarized messages
+        // STEP 2: Clear and rebuild from backend's summarized messages WITH DEDUPLICATION
         chat_history.clear();
+        
+        // CRITICAL: Track tool_call_ids to prevent duplicates from backend's summarized messages
+        HashSet<String> seen_tool_ids;
+        int skipped_backend_duplicates = 0;
         
         for (int i = 0; i < new_messages.size(); i++) {
             Dictionary msg_dict = new_messages[i];
@@ -441,6 +451,16 @@ void AIChatDock::_apply_deferred_summarization(const Dictionary &p_summary_data)
             msg.tool_call_id = msg_dict.get("tool_call_id", "");
             msg.name = msg_dict.get("name", "");
             msg.project_context = msg_dict.get("project_context", "");
+            
+            // STEP 2.5: Check for duplicate tool results in backend's summarized messages
+            if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
+                if (seen_tool_ids.has(msg.tool_call_id)) {
+                    skipped_backend_duplicates++;
+                    print_line("AI Chat: BACKEND_SUMMARY_DEDUP: Skipping duplicate tool result from backend with ID: " + msg.tool_call_id);
+                    continue; // Skip this duplicate from backend
+                }
+                seen_tool_ids.insert(msg.tool_call_id);
+            }
             
             // STEP 3: Restore tool_results from preservation map
             if (msg.role == "tool" && !msg.tool_call_id.is_empty() && tool_results_map.has(msg.tool_call_id)) {
@@ -457,6 +477,10 @@ void AIChatDock::_apply_deferred_summarization(const Dictionary &p_summary_data)
             msg.thinking_blocks = msg_dict.get("thinking_blocks", Array());
             
             chat_history.push_back(msg);
+        }
+        
+        if (skipped_backend_duplicates > 0) {
+            print_line("AI Chat: 🛡️ BACKEND_SUMMARY_DEDUP: Prevented " + String::num_int64(skipped_backend_duplicates) + " duplicates from backend summary");
         }
         
         // STEP 5: Rebuild UI with summarized conversation
@@ -1150,6 +1174,10 @@ void AIChatDock::_notification(int p_notification) {
             // Initialize robust conversation persistence
             conversation_persistence = memnew(AIConversationPersistence);
             conversation_persistence->initialize(conversations_file_path);
+            
+            // Initialize safe save coordinator to prevent data loss
+            save_coordinator = memnew(AIChatSaveCoordinator);
+            save_coordinator->initialize(conversation_persistence);
             
             _load_conversations();
             _init_checkpoints_repo();
@@ -2508,14 +2536,16 @@ void AIChatDock::_save_conversations_to_disk(const String &p_json_data) {
         }
         da->rename(temp_name, final_name);
     } else {
-        // Fallback: write directly if Directory open failed
-        Ref<FileAccess> file = FileAccess::open(final_path, FileAccess::WRITE, &err);
-        if (err != OK) {
-            print_line("AI Chat: Failed to save conversations file: " + String::num_int64(err));
-            return;
+        // SAFE fallback: Use safe coordinator instead of dangerous direct write
+        print_line("AI Chat: Directory operations failed, using safe coordinator for fallback save");
+        if (save_coordinator && save_coordinator->is_ready()) {
+            AIChatSaveCoordinator::SaveStatus status = save_coordinator->save_conversations_safe_sync(p_json_data);
+            if (status != AIChatSaveCoordinator::SAVE_SUCCESS_SYNC) {
+                print_line("AI Chat: Safe coordinator fallback failed: " + save_coordinator->get_status_message());
+            }
+        } else {
+            print_line("AI Chat: CRITICAL ERROR - No safe coordinator available for fallback, save aborted to prevent data loss");
         }
-        file->store_string(p_json_data);
-        file->close();
     }
 	// print_line("AI Chat: Conversations saved successfully");
 }
@@ -2788,11 +2818,16 @@ void AIChatDock::_background_save(void *p_data_ptr) {
             }
             da->rename(temp_name, final_name);
         } else {
-            // Fallback: write directly if Directory open failed
-            Ref<FileAccess> file = FileAccess::open(final_path, FileAccess::WRITE, &err);
-            if (err == OK) {
-                file->store_string(json_string);
-                file->close();
+            // SAFE fallback: Use safe coordinator instead of dangerous direct write
+            print_line("AI Chat: Chunked save directory operations failed, using safe coordinator for fallback");
+            AIChatDock *instance = save_data->instance;
+            if (instance && instance->save_coordinator && instance->save_coordinator->is_ready()) {
+                AIChatSaveCoordinator::SaveStatus status = instance->save_coordinator->save_conversations_chunked_safe(json_string);
+                if (status != AIChatSaveCoordinator::SAVE_SUCCESS_SYNC) {
+                    print_line("AI Chat: Safe coordinator chunked fallback failed: " + instance->save_coordinator->get_status_message());
+                }
+            } else {
+                print_line("AI Chat: CRITICAL ERROR - No safe coordinator available for chunked fallback, save aborted to prevent data loss");
             }
         }
     }
@@ -11018,14 +11053,42 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 		}
 		
 		if (current_ui_count > summarized_ui_count) {
-			// Add messages that were added to UI since summarization
+			// CRITICAL FIX: Add messages but DEDUPLICATE tool results to prevent API errors
 			int new_messages_count = current_ui_count - summarized_ui_count;
+			
+			// Build set of existing tool_call_ids in summarized messages to prevent duplicates
+			HashSet<String> existing_tool_ids;
+			for (int j = 0; j < summarized_messages.size(); j++) {
+				if (summarized_messages[j].role == "tool" && !summarized_messages[j].tool_call_id.is_empty()) {
+					existing_tool_ids.insert(summarized_messages[j].tool_call_id);
+				}
+			}
+			
+			int added_count = 0;
+			int skipped_duplicates = 0;
+			
 			for (int i = summarized_ui_count; i < current_ui_count; i++) {
-				summarized_messages.push_back(chat_history[i]);
+				const ChatMessage &new_msg = chat_history[i];
+				
+				// Check if this is a duplicate tool result
+				if (new_msg.role == "tool" && !new_msg.tool_call_id.is_empty()) {
+					if (existing_tool_ids.has(new_msg.tool_call_id)) {
+						skipped_duplicates++;
+						print_line("AI Chat: MERGE_DEDUP: Skipping duplicate tool result with ID: " + new_msg.tool_call_id);
+						continue; // Skip this duplicate
+					}
+					existing_tool_ids.insert(new_msg.tool_call_id); // Track for future checks
+				}
+				
+				summarized_messages.push_back(new_msg);
+				added_count++;
 			}
 			
 			if (p_start_index == 0) {
-				print_line("AI Chat: ✅ Appended " + String::num_int64(new_messages_count) + " NEW UI messages (indices " + String::num_int64(summarized_ui_count) + " to " + String::num_int64(current_ui_count - 1) + ")");
+				print_line("AI Chat: ✅ Appended " + String::num_int64(added_count) + " NEW UI messages (indices " + String::num_int64(summarized_ui_count) + " to " + String::num_int64(current_ui_count - 1) + ")");
+				if (skipped_duplicates > 0) {
+					print_line("AI Chat: 🛡️ MERGE_DEDUP: Prevented " + String::num_int64(skipped_duplicates) + " duplicate tool results from reaching backend");
+				}
 			}
 		} else if (p_start_index == 0) {
 			print_line("AI Chat: No new UI messages since summarization");
@@ -12290,11 +12353,17 @@ void AIChatDock::_load_conversations() {
             print_line("AI Chat: Backed up large conversations to: " + backup_path);
         }
         
-        // Start with empty conversations to prevent HTTP corruption
-        conversations.clear();
-        _create_new_conversation();
-        _update_conversation_dropdown();
-        return;
+        // CRITICAL FIX: Never delete user conversations! Always preserve user data.
+        print_line("AI Chat: Large file detected - creating backup but preserving user data");
+        
+        // Create backup but continue loading - DON'T delete user data
+        if (conversation_persistence) {
+            conversation_persistence->create_emergency_backup();
+        }
+        
+        // For very large files, still attempt to load but warn user
+        print_line("AI Chat: WARNING - Large conversation file may cause slow loading");
+        // Continue with normal loading process - don't exit here
     }
 
     auto parse_json_string = [](const String &p_json, Dictionary &r_out) -> bool {
@@ -12592,13 +12661,18 @@ void AIChatDock::_save_conversations() {
         }
         da->rename(temp_name, final_name);
     } else {
-        Ref<FileAccess> file = FileAccess::open(final_path, FileAccess::WRITE, &err);
-        if (err != OK) {
-            print_line("AI Chat: Failed to save conversations file");
-            return;
+        // SAFE fallback: Use safe coordinator instead of dangerous direct write
+        print_line("AI Chat: Main save directory operations failed, using safe coordinator for critical fallback");
+        if (save_coordinator && save_coordinator->is_ready()) {
+            AIChatSaveCoordinator::SaveStatus status = save_coordinator->save_conversations_safe_sync(json_string);
+            if (status != AIChatSaveCoordinator::SAVE_SUCCESS_SYNC) {
+                print_line("AI Chat: CRITICAL - Safe coordinator main fallback failed: " + save_coordinator->get_status_message());
+            } else {
+                print_line("AI Chat: Safe coordinator successfully saved conversations via critical fallback");
+            }
+        } else {
+            print_line("AI Chat: CATASTROPHIC ERROR - No safe coordinator available for main save fallback, save aborted to prevent total data loss");
         }
-        file->store_string(json_string);
-        file->close();
     }
 }
 void AIChatDock::_create_new_conversation() {
@@ -18896,7 +18970,11 @@ AIChatDock::~AIChatDock() {
 		memdelete(user_message_handler);
 	}
 	
-	// Clean up conversation persistence
+	// Clean up conversation persistence and save coordinator
+	if (save_coordinator) {
+		memdelete(save_coordinator);
+		save_coordinator = nullptr;
+	}
 	if (conversation_persistence) {
 		memdelete(conversation_persistence);
 		conversation_persistence = nullptr;
@@ -18917,4 +18995,15 @@ AIChatDock::~AIChatDock() {
 	if (save_mutex) {
 		memdelete(save_mutex);
 	}
+}
+
+// SIMPLE SAFETY METHODS: Handle large files without deleting user data
+void AIChatDock::_retry_load_after_trim(const String &p_file_path) {
+	print_line("AI Chat: Large file recovery - preserving user data");
+	// Just log and continue - don't delete anything
+}
+
+void AIChatDock::_attempt_recovery_and_reload() {
+	print_line("AI Chat: Recovery attempt - preserving user data");  
+	// Just log and continue - don't delete anything
 }

@@ -75,6 +75,8 @@ class Timer;
 class Thread;
 class Label;
 class PanelContainer;
+class AIConversationPersistence;
+class AIChatSaveCoordinator;
 // Use engine's Mutex alias definition instead of forward-decl to avoid conflict
 #include "core/os/mutex.h"
 
@@ -454,6 +456,8 @@ private:
 	// Conversation management
 	void _load_conversations();
 	void _save_conversations();
+	void _retry_load_after_trim(const String &p_file_path);
+	void _attempt_recovery_and_reload();
 	void _save_conversations_chunked(int p_start_index);
 	void _finalize_conversations_save();
 	void _queue_delayed_save();
@@ -775,6 +779,10 @@ private:
 	
 	// Robust conversation persistence
 	AIConversationPersistence *conversation_persistence = nullptr;
+	AIChatSaveCoordinator *save_coordinator = nullptr;
+	
+	// Large file handling safety
+	bool large_file_recovery_in_progress = false;
 
 protected:
 	void _notification(int p_notification);
