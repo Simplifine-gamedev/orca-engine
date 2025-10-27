@@ -3008,6 +3008,56 @@ void AIChatDock::_on_token_count_response(int p_result, int p_code, const Packed
 		}
 		token_indicator->add_theme_color_override("font_color", indicator_color);
 	}
+	
+	// Dynamic height adjustment for up to 6 lines
+	if (input_field && input_field->is_inside_tree()) {
+		String text = input_field->get_text();
+		int line_count = 1; // Start with 1 line minimum
+		
+		// Count actual lines in the text
+		for (int i = 0; i < text.length(); i++) {
+			if (text[i] == '\n') {
+				line_count++;
+			}
+		}
+		
+		// Add wrapped lines based on text width (approximate)
+		// This is a simplified calculation - actual wrapping is more complex
+		if (!text.is_empty()) {
+			Ref<Font> font = input_field->get_theme_font(SNAME("font"));
+			int font_size = input_field->get_theme_font_size(SNAME("font_size"));
+			if (font.is_valid()) {
+				float content_width = input_field->get_size().width - 40; // Account for margins
+				if (content_width > 0) {
+					Vector<String> lines = text.split("\n");
+					line_count = 0;
+					for (const String &line : lines) {
+						if (line.is_empty()) {
+							line_count++;
+						} else {
+							float line_width = font->get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).width;
+							int wrapped_lines = MAX(1, (int)Math::ceil(line_width / content_width));
+							line_count += wrapped_lines;
+						}
+					}
+				}
+			}
+		}
+		
+		// Clamp to maximum 6 lines
+		line_count = MIN(line_count, 6);
+		
+		// Calculate height: base padding + (line_count * line_height)
+		int line_height = input_field->get_theme_font_size(SNAME("font_size")) + 4; // Font size + some spacing
+		int base_padding = 32; // Top and bottom padding from style
+		int target_height = base_padding + (line_count * line_height);
+		
+		// Ensure minimum height
+		target_height = MAX(target_height, 80);
+		
+		// Update the input field height
+		input_field->set_custom_minimum_size(Size2(0, target_height));
+	}
 }
 // --- At-Mention Implementation ---
 // This is actually not working rn! :/ 

@@ -43,6 +43,10 @@
 #include "drivers/apple/os_log_logger.h"
 #include "main/main.h"
 
+#ifdef TOOLS_ENABLED
+#include "editor/auth/auth_manager.h"
+#endif
+
 #ifdef SDL_ENABLED
 #include "drivers/sdl/joypad_sdl.h"
 #endif
@@ -842,13 +846,14 @@ Error OS_MacOS::create_instance(const List<String> &p_arguments, ProcessID *r_ch
 		String path = String::utf8([[[NSBundle mainBundle] bundlePath] UTF8String]);
 #ifdef TOOLS_ENABLED
 		if (Engine::get_singleton() && !Engine::get_singleton()->is_project_manager_hint() && !Engine::get_singleton()->is_editor_hint()) {
-			// Project started from the editor, inject "path" argument to set instance working directory.
+			// Project started from the editor - use executable instead of bundle to prevent duplicate dock icons
+			String exec_path = get_executable_path();
 			char cwd[PATH_MAX];
 			if (::getcwd(cwd, sizeof(cwd)) != nullptr) {
 				List<String> arguments = p_arguments;
 				arguments.push_back("--path");
 				arguments.push_back(String::utf8(cwd));
-				return create_process(path, arguments, r_child_id, false);
+				return OS_Unix::create_process(exec_path, arguments, r_child_id, false);
 			}
 		}
 #endif
@@ -1238,6 +1243,30 @@ void OS_MacOS_Headless::run() {
 	}
 
 	Main::cleanup();
+}
+
+void OS_MacOS_NSApp::handle_auth_url(const String &p_url) {
+	print_line("macOS: Received auth URL: " + p_url);
+	
+#ifdef TOOLS_ENABLED
+	// Forward to AuthManager if it exists and the editor is running
+	if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
+		// Try to get AuthManager singleton and call handle_deep_link directly
+		AuthManager *auth = AuthManager::get_singleton();
+		if (auth) {
+			print_line("macOS: Calling AuthManager::handle_deep_link()");
+			bool success = auth->handle_deep_link(p_url);
+			print_line("macOS: handle_deep_link returned: " + String(success ? "true" : "false"));
+			return;
+		} else {
+			print_line("macOS: AuthManager singleton not initialized yet");
+		}
+		
+		// Fallback: Store the URL to be processed on startup
+		print_line("macOS: Storing URL in environment for startup");
+		OS::get_singleton()->set_environment("ORCA_AUTH_URL", p_url);
+	}
+#endif
 }
 
 OS_MacOS_Headless::OS_MacOS_Headless(const char *p_execpath, int p_argc, char **p_argv) :

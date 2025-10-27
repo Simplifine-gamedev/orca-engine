@@ -71,6 +71,17 @@ int main(int argc, char *argv[]) {
 	ERR_FAIL_NULL_V(cwd, ERR_OUT_OF_MEMORY);
 	char *ret = getcwd(cwd, PATH_MAX);
 
+	// Check if this is an orca:// auth callback
+	#ifdef TOOLS_ENABLED
+	if (argc > 1) {
+		String arg1 = String(argv[1]);
+		if (arg1.begins_with("orca://")) {
+			// Store the auth URL for the editor to process
+			OS::get_singleton()->set_environment("ORCA_AUTH_URL", arg1);
+		}
+	}
+	#endif
+
 	Error err = Main::setup(argv[0], argc - 1, &argv[1]);
 
 	if (err != OK) {

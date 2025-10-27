@@ -103,9 +103,9 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	// --- TEXT INPUT FIELD ---
 	p_chat_dock->input_field = memnew(TextEdit);
 			
-	// Enable word wrapping and disable auto-height expansion
+	// Enable word wrapping and manual height expansion (up to 6 lines)
 	p_chat_dock->input_field->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
-	p_chat_dock->input_field->set_fit_content_height_enabled(false);
+	p_chat_dock->input_field->set_fit_content_height_enabled(false); // Keep disabled for manual control
 	
 	// Remove border from input field since panel provides it
 	Ref<StyleBoxFlat> input_style = memnew(StyleBoxFlat);

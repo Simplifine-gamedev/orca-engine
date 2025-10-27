@@ -90,6 +90,7 @@ if env.editor_build:
     SConscript("animation/SCsub")
     SConscript("asset_library/SCsub")
     SConscript("audio/SCsub")
+    SConscript("auth/SCsub")
     SConscript("ai/SCsub")
     SConscript("../thirdparty/dtl/SCsub")
     SConscript("debugger/SCsub")
