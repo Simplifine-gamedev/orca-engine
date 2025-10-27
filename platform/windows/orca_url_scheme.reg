@@ -1,0 +1,23 @@
+Windows Registry Editor Version 5.00
+
+; Register orca:// URL scheme for Orca Engine authentication
+
+[HKEY_CLASSES_ROOT\orca]
+@="URL:Orca Protocol"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\orca\DefaultIcon]
+@="C:\\Program Files\\Orca\\Orca.exe,1"
+
+[HKEY_CLASSES_ROOT\orca\shell]
+
+[HKEY_CLASSES_ROOT\orca\shell\open]
+
+[HKEY_CLASSES_ROOT\orca\shell\open\command]
+@="\"C:\\Program Files\\Orca\\Orca.exe\" \"%1\""
+
+
+
+
+
+

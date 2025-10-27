@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=Orca Engine
+GenericName=Game Engine
+Comment=Multi-platform 2D and 3D game engine
+Exec=/usr/bin/orca %u
+TryExec=/usr/bin/orca
+Icon=orca
+Type=Application
+MimeType=x-scheme-handler/orca;application/x-godot-project;
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=Orca
+
+
+
+
+
+
