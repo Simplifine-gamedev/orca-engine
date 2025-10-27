@@ -72,6 +72,10 @@ class QuickSettingsDialog : public AcceptDialog {
 
 	Label *custom_theme_label = nullptr;
 
+	// Account/Auth controls
+	Button *sign_out_button = nullptr;
+	void _on_sign_out_pressed();
+
 #ifndef ANDROID_ENABLED
 	void _language_selected(int p_id);
 #endif

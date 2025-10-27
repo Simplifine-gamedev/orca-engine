@@ -31,6 +31,7 @@
 #include "quick_settings_dialog.h"
 
 #include "core/string/translation_server.h"
+#include "editor/auth/auth_dialog.h"
 #include "editor/auth/auth_manager.h"
 #include "editor/editor_string_names.h"
 #include "editor/settings/editor_settings.h"
@@ -255,6 +256,51 @@ void QuickSettingsDialog::_notification(int p_what) {
 	}
 }
 
+void QuickSettingsDialog::_on_sign_out_pressed() {
+	// Get AuthManager singleton
+	AuthManager *auth = AuthManager::get_singleton();
+	if (!auth) {
+		return;
+	}
+	
+	// Sign out the user
+	auth->sign_out();
+	
+	// Close the settings dialog
+	hide();
+	
+	// Find and hide the ProjectManager
+	Node *root = get_tree()->get_root();
+	if (root) {
+		for (int i = 0; i < root->get_child_count(); i++) {
+			Node *child = root->get_child(i);
+			if (child->get_class() == "ProjectManager") {
+				Control *pm = Object::cast_to<Control>(child);
+				if (pm) {
+					pm->hide();
+				}
+				break;
+			}
+		}
+	}
+	
+	// Show the auth dialog
+	AuthDialog *auth_dialog = memnew(AuthDialog);
+	root->add_child(auth_dialog);
+	auth_dialog->show_login();
+	
+	// Store reference to ProjectManager for showing it after auth
+	if (root) {
+		for (int i = 0; i < root->get_child_count(); i++) {
+			Node *child = root->get_child(i);
+			if (child->get_class() == "ProjectManager") {
+				auth_dialog->set_meta("project_manager", child);
+				break;
+			}
+		}
+	}
+}
+
 void QuickSettingsDialog::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("restart_required"));
 }
@@ -277,19 +323,34 @@ QuickSettingsDialog::QuickSettingsDialog() {
 	settings_list = memnew(VBoxContainer);
 	settings_list_panel->add_child(settings_list);
 
-	// Account information.
+	// Account information with sign out button.
 	{
 		AuthManager *auth = AuthManager::get_singleton();
 		String account_email = "Not signed in";
-		if (auth && auth->get_is_authenticated()) {
+		bool is_signed_in = auth && auth->get_is_authenticated();
+		
+		if (is_signed_in) {
 			account_email = auth->get_user_email();
 		}
+		
+		HBoxContainer *account_container = memnew(HBoxContainer);
 		
 		Label *account_label = memnew(Label(account_email));
 		account_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		account_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		account_container->add_child(account_label);
 		
-		_add_setting_control(TTRC("Account"), account_label);
+		if (is_signed_in) {
+			sign_out_button = memnew(Button);
+			sign_out_button->set_text(TTRC("Sign Out"));
+			sign_out_button->connect(SceneStringName(pressed), callable_mp(this, &QuickSettingsDialog::_on_sign_out_pressed));
+			account_container->add_child(sign_out_button);
+		}
+		
+		account_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		account_container->set_stretch_ratio(2.0);
+		
+		_add_setting_control(TTRC("Account"), account_container);
 	}
 
 #ifndef ANDROID_ENABLED
