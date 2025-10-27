@@ -336,6 +336,7 @@ private:
 	HBoxContainer *right_menu_hb = nullptr;
 	Button *update_badge_button = nullptr;
 	Button *version_control_button = nullptr;
+	Button *account_button = nullptr;
 
 	// Spacers to center 2D / 3D / Script buttons.
 	HBoxContainer *left_spacer = nullptr;
@@ -588,6 +589,8 @@ private:
 	void _update_unsaved_cache();
 	void _version_control_menu_option(int p_idx);
 	void _open_version_control_dock();
+	void _show_account_settings();
+	void _sign_out_from_account_settings(AcceptDialog *p_dialog);
 	void _close_messages();
 	void _show_messages();
 	void _vp_resized();

@@ -189,6 +189,7 @@ static const char *godot_ac_ctx = "gd_accessibility_observer_ctx";
 			if (url_string.begins_with("orca://")) {
 				// Handle authentication deep link
 				os_mac->handle_auth_url(url_string);
+				return; // Don't add to args or create new instance
 			} else {
 				args.push_back(vformat("--uri=\"%s\"", url_string));
 			}

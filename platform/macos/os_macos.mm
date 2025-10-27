@@ -1246,26 +1246,18 @@ void OS_MacOS_Headless::run() {
 }
 
 void OS_MacOS_NSApp::handle_auth_url(const String &p_url) {
-	print_line("macOS: Received auth URL: " + p_url);
+	print_line("macOS: Received auth URL");
 	
 #ifdef TOOLS_ENABLED
-	// Forward to AuthManager if it exists and the editor is running
-	if (Engine::get_singleton() && Engine::get_singleton()->is_editor_hint()) {
-		// Try to get AuthManager singleton and call handle_deep_link directly
-		AuthManager *auth = AuthManager::get_singleton();
-		if (auth) {
-			print_line("macOS: Calling AuthManager::handle_deep_link()");
-			bool success = auth->handle_deep_link(p_url);
-			print_line("macOS: handle_deep_link returned: " + String(success ? "true" : "false"));
-			return;
-		} else {
-			print_line("macOS: AuthManager singleton not initialized yet");
-		}
-		
-		// Fallback: Store the URL to be processed on startup
-		print_line("macOS: Storing URL in environment for startup");
-		OS::get_singleton()->set_environment("ORCA_AUTH_URL", p_url);
+	// Try to get AuthManager singleton and call handle_deep_link directly
+	AuthManager *auth = AuthManager::get_singleton();
+	if (auth) {
+		auth->handle_deep_link(p_url);
+		return;
 	}
+	
+	// Fallback: Store the URL to be processed on startup if AuthManager doesn't exist yet
+	OS::get_singleton()->set_environment("ORCA_AUTH_URL", p_url);
 #endif
 }
 

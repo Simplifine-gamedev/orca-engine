@@ -102,6 +102,11 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	
 	is_authenticated = true;
 	print_line("Authentication successful for user: " + user_email);
+	
+	// Notify the auth dialog if it exists
+	if (auth_dialog) {
+		auth_dialog->call_deferred("_check_auth_status");
+	}
 
 	return true;
 }
@@ -367,7 +372,7 @@ void AuthManager::store_tokens(const String &p_access_token, const String &p_ref
 	user_email = p_email;
 	user_name = p_name;
 
-	// Store securely
+	// Store securely in keychain
 	_store_token_secure("orca_access_token", p_access_token);
 	_store_token_secure("orca_refresh_token", p_refresh_token);
 	_store_token_secure("orca_user_id", p_user_id);

@@ -13,6 +13,7 @@
 #include "ai_manual_snapshots.h"
 #include "ai_conversation_persistence.h"
 #include "ai_chat_save_coordinator.h"
+#include "editor/auth/auth_manager.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -2096,24 +2097,9 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 // Authentication Implementation
 
 void AIChatDock::_setup_authentication_ui() {
-	// User authentication row
-	HBoxContainer *auth_container = memnew(HBoxContainer);
-	add_child(auth_container);
-	
-	Label *auth_label = memnew(Label);
-	auth_label->set_text("User:");
-	auth_container->add_child(auth_label);
-	
-	user_status_label = memnew(Label);
-	user_status_label->set_text("Not logged in");
-	user_status_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	auth_container->add_child(user_status_label);
-	
-	login_button = memnew(Button);
-	login_button->set_text("Login");
-	login_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Key"), SNAME("EditorIcons")));
-	login_button->connect("pressed", callable_mp(this, &AIChatDock::_on_login_button_pressed));
-	auth_container->add_child(login_button);
+	// Toolbar for import/export/snapshot buttons (auth removed - handled by AuthManager)
+	HBoxContainer *toolbar_container = memnew(HBoxContainer);
+	add_child(toolbar_container);
 	
 	// Import conversation button
 	import_button = memnew(Button);
@@ -2121,7 +2107,7 @@ void AIChatDock::_setup_authentication_ui() {
 	import_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Load"), SNAME("EditorIcons")));
 	import_button->connect("pressed", callable_mp(this, &AIChatDock::_on_import_button_pressed));
 	import_button->set_tooltip_text("Import conversation from JSON file");
-	auth_container->add_child(import_button);
+	toolbar_container->add_child(import_button);
 	
 	// Export conversation button
 	export_button = memnew(Button);
@@ -2129,7 +2115,7 @@ void AIChatDock::_setup_authentication_ui() {
 	export_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Save"), SNAME("EditorIcons")));
 	export_button->connect("pressed", callable_mp(this, &AIChatDock::_on_export_button_pressed));
 	export_button->set_tooltip_text("Export current conversation to JSON file");
-	auth_container->add_child(export_button);
+	toolbar_container->add_child(export_button);
 	
 	// Manual Snapshot button
 	snapshot_button = memnew(Button);
@@ -2137,7 +2123,7 @@ void AIChatDock::_setup_authentication_ui() {
 	snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Favorites"), SNAME("EditorIcons")));
 	snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_snapshot_pressed));
 	snapshot_button->set_tooltip_text("Save a named snapshot of your entire project");
-	auth_container->add_child(snapshot_button);
+	toolbar_container->add_child(snapshot_button);
 	
 	// Restore Snapshot button
 	restore_snapshot_button = memnew(Button);
@@ -2145,7 +2131,7 @@ void AIChatDock::_setup_authentication_ui() {
 	restore_snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
 	restore_snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_snapshots_pressed));
 	restore_snapshot_button->set_tooltip_text("View and restore manual snapshots");
-	auth_container->add_child(restore_snapshot_button);
+	toolbar_container->add_child(restore_snapshot_button);
 	
 	// Create HTTP request for authentication
 	auth_request = memnew(HTTPRequest);
@@ -2351,8 +2337,9 @@ void AIChatDock::_logout_user() {
 	print_line("AI Chat: User logged out - embedding system reset");
 }
 bool AIChatDock::_is_user_authenticated() const {
-	// Guest mode removed - require real authentication
-	return !current_user_id.is_empty() && !auth_token.is_empty();
+	// Use AuthManager for authentication
+	AuthManager *auth = AuthManager::get_singleton();
+	return auth && auth->get_is_authenticated();
 }
 
 void AIChatDock::_auto_verify_saved_credentials() {
@@ -11698,11 +11685,7 @@ void AIChatDock::_finalize_chat_request() {
 	headers.push_back("Content-Type: application/json");
 	_add_version_headers_to_request(headers);
 	
-	// Add authentication headers
-	if (!auth_token.is_empty()) {
-		headers.push_back("Authorization: Bearer " + auth_token);
-	}
-    headers.push_back("X-User-ID: " + current_user_id);
+	// Auth headers added by _add_version_headers_to_request
 	headers.push_back("X-Machine-ID: " + get_machine_id());
     // Always pass current project root to ensure backend targets the right project
     headers.push_back("X-Project-Root: " + ProjectSettings::get_singleton()->globalize_path("res://"));
@@ -15346,13 +15329,7 @@ void AIChatDock::_send_embedding_request(const String &p_action, const Dictionar
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	_add_version_headers_to_request(headers);
-	
-	// Add authentication headers
-	if (!auth_token.is_empty()) {
-		headers.push_back("Authorization: Bearer " + auth_token);
-	}
-	headers.push_back("X-User-ID: " + current_user_id);
+	_add_version_headers_to_request(headers); // Includes auth headers
 	headers.push_back("X-Machine-ID: " + get_machine_id());
 	
     print_line("AI Chat: Sending embedding request: " + p_action + " to " + embed_url +
@@ -17880,6 +17857,13 @@ Dictionary AIChatDock::_summarize_scene_node_for_context(const Dictionary &p_nod
 void AIChatDock::_add_version_headers_to_request(PackedStringArray &p_headers) {
 	p_headers.push_back("X-Frontend-Version: " + FRONTEND_VERSION);
 	p_headers.push_back("X-Frontend-API-Version: " + API_VERSION);
+	
+	// Add authentication headers from AuthManager
+	AuthManager *auth = AuthManager::get_singleton();
+	if (auth && auth->get_is_authenticated()) {
+		p_headers.push_back("Authorization: Bearer " + auth->get_access_token());
+		p_headers.push_back("X-User-ID: " + auth->get_user_id());
+	}
 }
 
 void AIChatDock::_check_version_compatibility_on_startup() {

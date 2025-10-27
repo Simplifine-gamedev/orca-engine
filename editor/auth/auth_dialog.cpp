@@ -124,13 +124,16 @@ void AuthDialog::_on_create_account_pressed() {
 
 void AuthDialog::_check_auth_status() {
 	AuthManager *auth = AuthManager::get_singleton();
-	if (auth && auth->get_is_authenticated()) {
+	
+	if (!auth) {
+		return;
+	}
+	
+	if (auth->get_is_authenticated()) {
 		show_success();
 		waiting_for_callback = false;
 		set_process(false);
 		should_load_project_manager = true;
-		
-		print_line("ORCA AUTH: Authentication successful! Showing ProjectManager...");
 		
 		// Show the hidden ProjectManager
 		if (has_meta("project_manager")) {
@@ -232,8 +235,9 @@ void AuthDialog::show_error(const String &p_message) {
 void AuthDialog::_setup_google_oauth_ui() {
 	// Google OAuth Sign In button
 	sign_in_button = memnew(Button);
-	sign_in_button->set_text("🌐 Sign in with Google");
+	sign_in_button->set_text("Sign in with Google");
 	sign_in_button->set_custom_minimum_size(Size2(300, 45) * EDSCALE);
+	sign_in_button->add_theme_color_override("font_color", Color(1, 1, 1));
 	sign_in_button->connect("pressed", callable_mp(this, &AuthDialog::_on_sign_in_pressed));
 	
 	HBoxContainer *signin_center = memnew(HBoxContainer);
@@ -262,7 +266,7 @@ void AuthDialog::_setup_google_oauth_ui() {
 	
 	// Toggle to Email mode button
 	toggle_auth_mode_button = memnew(Button);
-	toggle_auth_mode_button->set_text("📧 Sign in with Email");
+	toggle_auth_mode_button->set_text("or Sign in with Email");
 	toggle_auth_mode_button->set_flat(true);
 	toggle_auth_mode_button->connect("pressed", callable_mp(this, &AuthDialog::_on_toggle_auth_mode_pressed));
 	
@@ -376,11 +380,11 @@ void AuthDialog::_show_auth_mode(bool p_email_mode) {
 	
 	// Update toggle button text
 	if (p_email_mode) {
-		toggle_auth_mode_button->set_text("🌐 Back to Google");
+		toggle_auth_mode_button->set_text("Back to Google");
 		description_label->set_text("Sign in with email and password");
 		_toggle_signup_mode(); // Show appropriate email mode
 	} else {
-		toggle_auth_mode_button->set_text("📧 Sign in with Email");
+		toggle_auth_mode_button->set_text("or Sign in with Email");
 		description_label->set_text("Choose your sign in method");
 	}
 }

@@ -4467,6 +4467,21 @@ int Main::start() {
 				translation_server->get_editor_domain()->set_pseudolocalization_enabled(true);
 			}
 
+			// Initialize authentication system for editor
+			print_line("=== ORCA AUTH: Initializing authentication system for editor ===");
+			AuthManager *auth_manager = memnew(AuthManager);
+			
+			// Check for auth URL from deep link
+			String auth_url = OS::get_singleton()->get_environment("ORCA_AUTH_URL");
+			if (!auth_url.is_empty()) {
+				print_line("ORCA AUTH: Found deep link URL in editor");
+				auth_manager->handle_deep_link(auth_url);
+				OS::get_singleton()->unset_environment("ORCA_AUTH_URL");
+			} else {
+				print_line("ORCA AUTH: No deep link, trying auto-login");
+				auth_manager->try_auto_login();
+			}
+
 			editor_node = memnew(EditorNode);
 			sml->get_root()->add_child(editor_node);
 
