@@ -31,6 +31,7 @@
 #include "quick_settings_dialog.h"
 
 #include "core/string/translation_server.h"
+#include "editor/auth/auth_manager.h"
 #include "editor/editor_string_names.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
@@ -273,11 +274,26 @@ QuickSettingsDialog::QuickSettingsDialog() {
 		settings_list_panel = memnew(PanelContainer);
 		main_vbox->add_child(settings_list_panel);
 
-		settings_list = memnew(VBoxContainer);
-		settings_list_panel->add_child(settings_list);
+	settings_list = memnew(VBoxContainer);
+	settings_list_panel->add_child(settings_list);
+
+	// Account information.
+	{
+		AuthManager *auth = AuthManager::get_singleton();
+		String account_email = "Not signed in";
+		if (auth && auth->get_is_authenticated()) {
+			account_email = auth->get_user_email();
+		}
+		
+		Label *account_label = memnew(Label(account_email));
+		account_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		account_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		
+		_add_setting_control(TTRC("Account"), account_label);
+	}
 
 #ifndef ANDROID_ENABLED
-		// Language options.
+	// Language options.
 		{
 			language_option_button = memnew(OptionButton);
 			language_option_button->set_auto_translate_mode(AUTO_TRANSLATE_MODE_DISABLED);
