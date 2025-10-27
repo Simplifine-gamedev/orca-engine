@@ -82,10 +82,23 @@ void AIChatInputBox::create_input_ui(AIChatDock *p_chat_dock, VBoxContainer *p_p
 	
 	top_toolbar->add_child(p_chat_dock->attach_button);
 
-	// Spacer to push buttons to left
+	// Spacer to push token indicator to right
 	Control *top_spacer = memnew(Control);
 	top_spacer->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	top_toolbar->add_child(top_spacer);
+
+	// Token indicator label (moved to top for better visibility)
+	p_chat_dock->token_indicator = memnew(Label);
+	p_chat_dock->token_indicator->set_text("0 tokens");
+	p_chat_dock->token_indicator->set_h_size_flags(Control::SIZE_SHRINK_END);
+	p_chat_dock->token_indicator->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+
+	// Style the token indicator (slightly larger than before)
+	Color token_text_color = p_chat_dock->get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6);
+	p_chat_dock->token_indicator->add_theme_color_override("font_color", token_text_color);
+	p_chat_dock->token_indicator->add_theme_font_size_override("font_size", 13);
+
+	top_toolbar->add_child(p_chat_dock->token_indicator);
 
 	// --- TEXT INPUT FIELD ---
 	p_chat_dock->input_field = memnew(TextEdit);

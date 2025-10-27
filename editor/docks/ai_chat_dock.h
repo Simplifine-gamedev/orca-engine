@@ -75,6 +75,8 @@ class Timer;
 class Thread;
 class Label;
 class PanelContainer;
+class AIConversationPersistence;
+class AIChatSaveCoordinator;
 // Use engine's Mutex alias definition instead of forward-decl to avoid conflict
 #include "core/os/mutex.h"
 
@@ -182,6 +184,13 @@ private:
 	Button *send_button = nullptr;
 	Button *stop_button = nullptr;
 	MenuButton *attach_button = nullptr;
+	
+	// Token indicator for conversation length tracking
+	Label *token_indicator = nullptr;
+	HTTPRequest *token_count_request = nullptr;
+	Timer *token_update_timer = nullptr;
+	int cached_token_count = 0;
+	bool token_counting_in_progress = false;
 	HFlowContainer *attached_files_container = nullptr;
 	EditorFileDialog *file_dialog = nullptr;
 	EditorFileDialog *save_image_dialog = nullptr;
@@ -342,6 +351,13 @@ private:
 	void _save_conversations_async();
 	void _on_input_text_changed();
 	void _on_input_field_gui_input(const Ref<InputEvent> &p_event);
+	
+	// Token counting methods
+	void _update_token_indicator();
+	void _request_token_count();
+	void _on_token_count_response(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_token_update_timer_timeout();
+	
 	void _update_at_mention_popup();
 	void _populate_at_mention_tree(const String &p_filter = "");
 	void _populate_tree_recursive(EditorFileSystemDirectory *p_dir, TreeItem *p_parent, const String &p_filter);
@@ -440,6 +456,8 @@ private:
 	// Conversation management
 	void _load_conversations();
 	void _save_conversations();
+	void _retry_load_after_trim(const String &p_file_path);
+	void _attempt_recovery_and_reload();
 	void _save_conversations_chunked(int p_start_index);
 	void _finalize_conversations_save();
 	void _queue_delayed_save();
@@ -761,6 +779,10 @@ private:
 	
 	// Robust conversation persistence
 	AIConversationPersistence *conversation_persistence = nullptr;
+	AIChatSaveCoordinator *save_coordinator = nullptr;
+	
+	// Large file handling safety
+	bool large_file_recovery_in_progress = false;
 
 protected:
 	void _notification(int p_notification);

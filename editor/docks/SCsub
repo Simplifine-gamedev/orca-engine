@@ -11,6 +11,7 @@ dock_sources = [
     "ai_chat_history_manager.cpp",
     "ai_chat_input_box.cpp",
     "ai_chat_mode_selector.cpp",
+    "ai_chat_save_coordinator.cpp",
     "ai_chat_streaming_indicator.cpp",
     "ai_chat_tool_styling.cpp",
     "ai_checkpoint_manager.cpp",

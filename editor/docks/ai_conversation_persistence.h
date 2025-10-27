@@ -28,7 +28,8 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#ifndef AI_CONVERSATION_PERSISTENCE_H
+#define AI_CONVERSATION_PERSISTENCE_H
 
 #include "core/io/file_access.h"
 #include "core/io/dir_access.h"
@@ -50,7 +51,8 @@ public:
         SAVE_ERROR_FILE_ACCESS,
         SAVE_ERROR_JSON_GENERATION,
         SAVE_ERROR_DISK_FULL,
-        SAVE_ERROR_PERMISSION
+        SAVE_ERROR_PERMISSION,
+        SAVE_ERROR_ALREADY_IN_PROGRESS
     };
     
     enum LoadResult {
@@ -68,6 +70,10 @@ private:
     // Safety limits
     static const int64_t MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
     static const int MAX_BACKUP_FILES = 10;
+    
+    // Race condition prevention
+    bool save_in_progress;
+    String pending_save_data;
     
     // Corruption recovery
     bool _attempt_recovery_from_backup();
@@ -87,6 +93,10 @@ public:
     
     void initialize(const String &p_conversations_file_path);
     
+    // SAFE save operations - ALL saves should use these!
+    SaveResult save_conversations_safe(const String &p_json_data);
+    SaveResult save_conversations_with_validation(const String &p_json_data);
+    
     // Main save/load operations - use AIChatDock types directly
     template<typename ConversationType>
     SaveResult save_conversations_generic(const Vector<ConversationType> &p_conversations);
@@ -98,8 +108,10 @@ public:
     void create_emergency_backup();
     bool recover_from_corruption();
     
-    // Validation
+    // Validation and safety checks
     bool validate_conversations_file();
+    bool is_size_safe_for_save(const String &p_json_data) const;
+    bool handle_large_file_safely(const String &p_json_data);
     int64_t get_file_size() const;
     
     // Status
@@ -109,3 +121,5 @@ public:
 private:
     String last_error;
 };
+
+#endif // AI_CONVERSATION_PERSISTENCE_H
