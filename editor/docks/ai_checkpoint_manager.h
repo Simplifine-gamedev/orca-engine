@@ -57,6 +57,14 @@ public:
 	static CheckpointResult create_comprehensive_checkpoint(const String &p_project_root, const String &p_message, int p_message_index);
 
 	/**
+	 * Get or create the isolated checkpoint directory path
+	 * Returns path to .ai-checkpoints directory with its own git repo
+	 * @param p_project_root Project root directory
+	 * @return Path to checkpoint storage directory
+	 */
+	static String _get_checkpoint_directory(const String &p_project_root);
+
+	/**
 	 * Restore project to a specific checkpoint
 	 * @param p_project_root Absolute path to project root
 	 * @param p_message_index Message index to restore to
@@ -78,44 +86,69 @@ private:
     static bool _git_exec(const String &p_project_root, const List<String> &p_args, String &r_output, int &r_exitcode);
 
 	/**
-	 * Initialize Git repository in project if it doesn't exist
+	 * Initialize Git repository in checkpoint directory (separate from project)
 	 */
-	static bool _init_git_repo(const String &p_project_root);
+	static bool _init_checkpoint_git_repo(const String &p_checkpoint_dir);
 
 	/**
-	 * Create minimal .gitignore to preserve important Godot files
+	 * Copy all project files to checkpoint directory
 	 */
-	static void _create_minimal_gitignore(const String &p_project_root);
+	static bool _copy_project_to_checkpoint(const String &p_project_root, const String &p_checkpoint_dir);
 
 	/**
-	 * Ensure .gitignore is committed to repository (prevents it from being ignored)
+	 * Restore all project files from checkpoint directory
 	 */
-	static void _ensure_gitignore_committed(const String &p_project_root);
+	static bool _restore_project_from_checkpoint(const String &p_checkpoint_dir, const String &p_project_root);
 
 	/**
-	 * Stage ALL files for commit (including .import files)
+	 * Create project .gitignore to ignore .ai-checkpoints directory
 	 */
-	static bool _stage_all_files(const String &p_project_root);
+	static void _ensure_project_gitignore_excludes_checkpoints(const String &p_project_root);
 
 	/**
-	 * Create Git commit with all staged files
+	 * Recursively copy directory contents
 	 */
-	static bool _create_commit(const String &p_project_root, const String &p_message, int p_message_index);
+	static bool _copy_directory_recursive(const String &p_source, const String &p_destination, bool p_is_to_checkpoint);
 
 	/**
-	 * Create Git tag for easy checkpoint reference
+	 * Recursively remove directory contents (with preservation options)
 	 */
-	static bool _create_checkpoint_tag(const String &p_project_root, int p_message_index);
+	static bool _remove_directory_contents_recursive(const String &p_directory, bool p_preserve_git_only);
 
 	/**
-	 * Find checkpoint tag for given message index
+	 * Create minimal .gitignore in checkpoint directory
 	 */
-	static String _find_checkpoint_tag(const String &p_project_root, int p_message_index);
+	static void _create_checkpoint_gitignore(const String &p_checkpoint_dir);
 
 	/**
-	 * Perform Git hard reset to checkpoint tag
+	 * Ensure .gitignore is committed to checkpoint repository
 	 */
-	static bool _git_reset_to_tag(const String &p_project_root, const String &p_tag);
+	static void _ensure_gitignore_committed(const String &p_checkpoint_dir);
+
+	/**
+	 * Stage ALL files for commit in checkpoint directory
+	 */
+	static bool _stage_all_files(const String &p_checkpoint_dir);
+
+	/**
+	 * Create Git commit with all staged files in checkpoint directory
+	 */
+	static bool _create_commit(const String &p_checkpoint_dir, const String &p_message, int p_message_index);
+
+	/**
+	 * Create Git tag for easy checkpoint reference in checkpoint directory
+	 */
+	static bool _create_checkpoint_tag(const String &p_checkpoint_dir, int p_message_index);
+
+	/**
+	 * Find checkpoint tag for given message index in checkpoint directory
+	 */
+	static String _find_checkpoint_tag(const String &p_checkpoint_dir, int p_message_index);
+
+	/**
+	 * Perform Git hard reset to checkpoint tag in checkpoint directory
+	 */
+	static bool _git_reset_to_tag(const String &p_checkpoint_dir, const String &p_tag);
 
 	/**
 	 * Clear all editor state before restoration (prevents crashes)
