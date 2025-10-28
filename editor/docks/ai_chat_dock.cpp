@@ -680,12 +680,12 @@ void AIChatDock::_create_thinking_section_for_current_message() {
 	thinking_content_panel->set_visible(false); // Collapsed by default
 	current_thinking_section->add_child(thinking_content_panel);
 	
-	// Style the thinking content panel
+	// Style the thinking content panel - transparent with no padding
 	Ref<StyleBoxFlat> thinking_style = memnew(StyleBoxFlat);
-	thinking_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	thinking_style->set_border_width_all(1);
-	thinking_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	thinking_style->set_content_margin_all(8);
+	thinking_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	thinking_style->set_border_width_all(0);
+	thinking_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
+	thinking_style->set_content_margin_all(0); // No padding
 	thinking_style->set_corner_radius_all(4);
 	thinking_content_panel->add_theme_style_override("panel", thinking_style);
 	
@@ -736,12 +736,12 @@ void AIChatDock::_create_saved_thinking_section(VBoxContainer *p_message_vbox, c
 	thinking_content_panel->set_visible(false); // Collapsed by default
 	thinking_section->add_child(thinking_content_panel);
 	
-	// Style the thinking content panel
+	// Style the thinking content panel - transparent with no padding
 	Ref<StyleBoxFlat> thinking_style = memnew(StyleBoxFlat);
-	thinking_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	thinking_style->set_border_width_all(1);
-	thinking_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	thinking_style->set_content_margin_all(8);
+	thinking_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	thinking_style->set_border_width_all(0);
+	thinking_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
+	thinking_style->set_content_margin_all(0); // No padding
 	thinking_style->set_corner_radius_all(4);
 	thinking_content_panel->add_theme_style_override("panel", thinking_style);
 	
@@ -1773,13 +1773,13 @@ void AIChatDock::_create_edit_message_bubble(const AIChatDock::ChatMessage &p_me
 	chat_container->add_child(message_panel);
 	message_panel->set_visible(true);
 
-	// User message styling (editing mode)
+	// User message styling (editing mode) - transparent with no padding
 	Ref<StyleBoxFlat> panel_style = memnew(StyleBoxFlat);
-	panel_style->set_content_margin_all(12);
+	panel_style->set_content_margin_all(0);
 	panel_style->set_corner_radius_all(8);
-	panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.15)); // Brighter to indicate edit mode
-	panel_style->set_border_width_all(2);
-	panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor"))); // Accent border for edit mode
+	panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent
+	panel_style->set_border_width_all(0);
+	panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 	message_panel->add_theme_style_override("panel", panel_style);
 
 	// Content
@@ -3578,17 +3578,14 @@ void AIChatDock::_update_attached_files_display() {
 		PanelContainer *file_chip = memnew(PanelContainer);
 		attached_files_container->add_child(file_chip);
 		
-		// Modern tab-like styling
+		// Modern tab-like styling - transparent
 		Ref<StyleBoxFlat> chip_style = memnew(StyleBoxFlat);
-		// Subtle background with modern styling
-		chip_style->set_bg_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-		chip_style->set_border_width_all(1);
-		chip_style->set_border_color(get_theme_color(SNAME("dark_color_3"), SNAME("Editor")));
+		// Transparent background
+		chip_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+		chip_style->set_border_width_all(0);
+		chip_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
 		chip_style->set_corner_radius_all(6); // More modern rounded corners
-		chip_style->set_content_margin(SIDE_TOP, 2);
-		chip_style->set_content_margin(SIDE_RIGHT, 6);
-		chip_style->set_content_margin(SIDE_BOTTOM, 2);
-		chip_style->set_content_margin(SIDE_LEFT, 6);
+		chip_style->set_content_margin_all(0); // No padding
 		chip_style->set_shadow_color(Color(0, 0, 0, 0.15));
 		chip_style->set_shadow_size(1);
 		file_chip->add_theme_style_override("panel", chip_style);
@@ -6387,6 +6384,7 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 
 	// Create the replacement UI.
 	VBoxContainer *tool_container = memnew(VBoxContainer);
+	tool_container->add_theme_constant_override("separation", 0); // No spacing between tool elements
 	placeholder->add_child(tool_container);
 	
 	if (add_response_start > 0) {
@@ -6425,10 +6423,10 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 				toggle_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_output_toggled).bind(content_panel));
 
 				Ref<StyleBoxFlat> content_style = memnew(StyleBoxFlat);
-				content_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	content_style->set_border_width_all(1);
-	content_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-				content_style->set_content_margin_all(10);
+				content_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	content_style->set_border_width_all(0);
+	content_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
+				content_style->set_content_margin_all(0); // No padding
 				content_panel->add_theme_style_override("panel", content_style);
 
 	VBoxContainer *content_vbox = memnew(VBoxContainer);
@@ -6991,18 +6989,15 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	Color role_color;
 
 	if (p_message.role == "user") {
-		// User messages: clearer light blue background for better distinction
-		panel_style->set_content_margin_all(12); // Padding for user messages
-		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
-		panel_style->set_border_width_all(1);
-		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
+		// User messages: transparent with no padding
+		panel_style->set_content_margin_all(0); // No padding
+		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
+		panel_style->set_border_width_all(0); // No border
+		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
-		// Assistant messages: transparent background with minimal padding
-		panel_style->set_content_margin(SIDE_LEFT, 12);
-		panel_style->set_content_margin(SIDE_RIGHT, 12);
-		panel_style->set_content_margin(SIDE_TOP, 0);    // No top padding - tight to user message
-		panel_style->set_content_margin(SIDE_BOTTOM, 12);
+		// Assistant messages: transparent background with no padding
+		panel_style->set_content_margin_all(0); // No padding
 		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
 		panel_style->set_border_width_all(0); // No border
 		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
@@ -7236,18 +7231,15 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	Color role_color;
 
 	if (p_message.role == "user") {
-		// User messages: clearer light blue background for better distinction
-		panel_style->set_content_margin_all(12); // Padding for user messages
-		panel_style->set_bg_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")).lightened(0.8) * Color(1, 1, 1, 0.15));
-		panel_style->set_border_width_all(1);
-		panel_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")) * Color(1, 1, 1, 0.35));
+		// User messages: transparent with no padding
+		panel_style->set_content_margin_all(0); // No padding
+		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
+		panel_style->set_border_width_all(0); // No border
+		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
-		// Assistant messages: transparent background with minimal padding
-		panel_style->set_content_margin(SIDE_LEFT, 12);
-		panel_style->set_content_margin(SIDE_RIGHT, 12);
-		panel_style->set_content_margin(SIDE_TOP, 0);    // No top padding - tight to user message
-		panel_style->set_content_margin(SIDE_BOTTOM, 12);
+		// Assistant messages: transparent background with no padding
+		panel_style->set_content_margin_all(0); // No padding
 		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
 		panel_style->set_border_width_all(0); // No border
 		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
@@ -7517,6 +7509,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
+	tools_container->add_theme_constant_override("separation", 0); // No spacing between tool results
 	message_vbox->add_child(tools_container);
 
 	// Add a label for the tool calls section
@@ -7575,7 +7568,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 
 		Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
 		placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-		placeholder_style->set_content_margin_all(10);
+		placeholder_style->set_content_margin_all(0); // No padding
 		placeholder_style->set_border_width_all(0); // No border
 		placeholder_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
 		placeholder_style->set_corner_radius_all(5);
@@ -7679,6 +7672,7 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 
 	// Create the tool result UI using the same logic as _add_tool_response_to_chat
 	VBoxContainer *tool_container = memnew(VBoxContainer);
+	tool_container->add_theme_constant_override("separation", 0); // No spacing between tool elements
 	placeholder->add_child(tool_container);
 
     Button *toggle_button = memnew(Button);
@@ -7707,10 +7701,10 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     toggle_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_output_toggled).bind(content_panel));
 
     Ref<StyleBoxFlat> content_style = memnew(StyleBoxFlat);
-    content_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-    content_style->set_border_width_all(1);
-    content_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-    content_style->set_content_margin_all(6);
+    content_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+    content_style->set_border_width_all(0);
+    content_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
+    content_style->set_content_margin_all(0); // No padding
     content_panel->add_theme_style_override("panel", content_style);
 
     // Wrap tool content in a scroll container to avoid growing beyond view
@@ -10725,10 +10719,10 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	toggle_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_output_toggled).bind(content_panel));
 
 	Ref<StyleBoxFlat> content_style = memnew(StyleBoxFlat);
-	content_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	content_style->set_border_width_all(1);
-	content_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-	content_style->set_content_margin_all(10);
+	content_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	content_style->set_border_width_all(0);
+	content_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
+	content_style->set_content_margin_all(0); // No padding
 	content_panel->add_theme_style_override("panel", content_style);
 
 	VBoxContainer *content_vbox = memnew(VBoxContainer);
@@ -13663,13 +13657,13 @@ void AIChatDock::_display_generated_image_deferred(const String &p_base64_data, 
 	message_vbox->add_child(image_panel);
 	print_line("AI Chat: Added image panel to message vbox");
 	
-	// Style the image panel
+	// Style the image panel - transparent with no padding
 	Ref<StyleBoxFlat> image_style = memnew(StyleBoxFlat);
-	image_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	image_style->set_border_width_all(2);
-	image_style->set_border_color(get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+	image_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	image_style->set_border_width_all(0);
+	image_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
 	image_style->set_corner_radius_all(8);
-	image_style->set_content_margin_all(8);
+	image_style->set_content_margin_all(0); // No padding
 	image_panel->add_theme_style_override("panel", image_style);
 	
 	VBoxContainer *image_container = memnew(VBoxContainer);
@@ -14936,10 +14930,10 @@ void AIChatDock::_create_backend_tool_placeholder(const String &p_tool_id, const
 	message_vbox->add_child(placeholder);
 
 	Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
-	placeholder_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	placeholder_style->set_content_margin_all(10);
-	placeholder_style->set_border_width_all(1);
-	placeholder_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+	placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	placeholder_style->set_content_margin_all(0); // No padding
+	placeholder_style->set_border_width_all(0);
+	placeholder_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
 	placeholder_style->set_corner_radius_all(5);
 	placeholder->add_theme_style_override("panel", placeholder_style);
 
@@ -18195,6 +18189,7 @@ void AIChatDock::_expand_simplified_tool_result(const String &p_tool_call_id, co
 	
 	// Create full tool result UI directly instead of calling deferred
 	VBoxContainer *tool_container = memnew(VBoxContainer);
+	tool_container->add_theme_constant_override("separation", 0); // No spacing between tool elements
 	p_placeholder->add_child(tool_container);
 
 	Button *toggle_button = memnew(Button);
@@ -18229,10 +18224,10 @@ void AIChatDock::_expand_simplified_tool_result(const String &p_tool_call_id, co
 	toggle_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_output_toggled).bind(content_panel));
 
 	Ref<StyleBoxFlat> content_style = memnew(StyleBoxFlat);
-	content_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-	content_style->set_border_width_all(1);
-	content_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-	content_style->set_content_margin_all(10);
+	content_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent
+	content_style->set_border_width_all(0);
+	content_style->set_border_color(Color(0, 0, 0, 0)); // Transparent
+	content_style->set_content_margin_all(0); // No padding
 	content_panel->add_theme_style_override("panel", content_style);
 
 	VBoxContainer *content_vbox = memnew(VBoxContainer);

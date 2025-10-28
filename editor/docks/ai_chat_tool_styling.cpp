@@ -44,7 +44,7 @@ void AIChatToolStyling::style_tool_result_button(Button *p_button, bool p_succes
 	int default_size = p_theme_source->get_theme_font_size(SNAME("font_size"), SNAME("Button"));
 	p_button->add_theme_font_size_override("font_size", default_size - 1); // 1 size smaller
 	
-	// Completely transparent style - no borders, no background
+	// Completely transparent style - no borders, no background for all states
 	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
 	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
 	tool_button_style->set_border_width_all(0); // No border
@@ -55,6 +55,14 @@ void AIChatToolStyling::style_tool_result_button(Button *p_button, bool p_succes
 	p_button->add_theme_style_override("normal", tool_button_style);
 	p_button->add_theme_style_override("hover", tool_button_style);
 	p_button->add_theme_style_override("pressed", tool_button_style);
+	p_button->add_theme_style_override("focus", tool_button_style); // No border when focused/clicked
+	p_button->add_theme_style_override("disabled", tool_button_style);
+	
+	// Override font color for hover/pressed to make text white when clicked
+	Color hover_color = Color(1, 1, 1, 1); // White text when hovering/clicking
+	p_button->add_theme_color_override("font_hover_color", hover_color);
+	p_button->add_theme_color_override("font_pressed_color", hover_color);
+	p_button->add_theme_color_override("font_focus_color", hover_color);
 }
 
 void AIChatToolStyling::style_tool_placeholder_panel(PanelContainer *p_panel, Control *p_theme_source) {
