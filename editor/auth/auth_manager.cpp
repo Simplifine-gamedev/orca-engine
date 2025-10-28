@@ -425,18 +425,8 @@ bool AuthManager::_store_token_secure(const String &p_key, const String &p_value
 	// Delete existing item first
 	_delete_token_secure(p_key);
 	
-	// Create access control that allows Orca.app to access without prompting
-	SecAccessRef access = nullptr;
-	OSStatus status = SecAccessCreate(CFSTR("Orca Engine"), nullptr, &access);
-	
-	if (status != errSecSuccess) {
-		print_error("Failed to create keychain access: " + String::num_int64(status));
-		// Continue anyway - will prompt but at least work
-	}
-	
-	// Create keychain item with attributes
-	SecKeychainItemRef item_ref = nullptr;
-	status = SecKeychainAddGenericPassword(
+	// Add new item to keychain
+	OSStatus status = SecKeychainAddGenericPassword(
 		nullptr, // Default keychain
 		service_name.utf8().length(),
 		service_name.utf8().get_data(),
@@ -444,26 +434,13 @@ bool AuthManager::_store_token_secure(const String &p_key, const String &p_value
 		"Orca",
 		p_value.utf8().length(),
 		p_value.utf8().get_data(),
-		&item_ref
+		nullptr
 	);
 	
 	if (status != errSecSuccess) {
 		print_error("Failed to store token in keychain: " + String::num_int64(status));
-		if (access) CFRelease(access);
 		return false;
 	}
-	
-	// Set access control to allow this app without prompting
-	if (access && item_ref) {
-		status = SecKeychainItemSetAccess(item_ref, access);
-		if (status != errSecSuccess) {
-			print_error("Failed to set keychain item access: " + String::num_int64(status));
-		}
-	}
-	
-	// Clean up
-	if (access) CFRelease(access);
-	if (item_ref) CFRelease(item_ref);
 	
 	return true;
 }
