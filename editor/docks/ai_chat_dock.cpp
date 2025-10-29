@@ -5970,6 +5970,58 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 		}
 	}
 	
+	// CRITICAL: Check for .tscn parsing errors after file operations and report to AI immediately
+	if ((p_name == "project_manager" || p_name == "apply_edit") && p_result.get("success", false)) {
+		String operation = p_args.get("op", "");
+		String file_path = p_args.get("path", "");
+		
+		if ((operation == "fs.write" || operation == "fs.replace_string") && !file_path.is_empty()) {
+			String ext = file_path.get_extension().to_lower();
+			if ((ext == "tscn" || ext == "tres") && scene_parsing_errors.has(file_path)) {
+				String parsing_error = scene_parsing_errors[file_path];
+				print_line("🚨 AI Chat: SCENE PARSING ERROR detected for " + file_path + " - including in tool result for AI correction");
+				
+				// Modify the result to include parsing error for immediate AI feedback
+				Dictionary modified_result = result_for_content.duplicate(true); // Use current result_for_content
+				modified_result["success"] = false;
+				modified_result["corruption_detected"] = true;
+				modified_result["parsing_error"] = parsing_error;
+				modified_result["error"] = "⚠️ SCENE FILE CORRUPTION DETECTED: " + parsing_error + "\n\n" +
+										   "TASK COMPLETED - CORRUPTION ANALYSIS COMPLETE\n\n" +
+										   "Your edit to this .tscn file has caused parsing errors. Godot cannot load the scene. " +
+										   "The corruption has been detected and reported to the user. " +
+										   "This typically happens due to:\n" +
+										   "• Unbalanced brackets [ ]\n" +
+										   "• Unterminated strings (missing quotes)\n" +
+										   "• Malformed section headers\n" +
+										   "• Invalid escape sequences in embedded scripts\n\n" +
+										   "DO NOT attempt to fix this - report the findings to the user.";
+				modified_result["task_completed"] = true;
+				modified_result["user_intervention_required"] = true;
+				modified_result["file_type"] = "scene";
+				modified_result["original_file_path"] = file_path;
+				
+				// Add specific repair suggestions based on error type
+				if (parsing_error.contains("parsing")) {
+					Array suggestions;
+					suggestions.push_back("Check for unbalanced [ ] brackets in the .tscn file");
+					suggestions.push_back("Ensure all strings are properly quoted");
+					suggestions.push_back("Verify section headers like [gd_scene], [node], [sub_resource]");
+					suggestions.push_back("For embedded scripts, escape quotes as \\\" inside script/source");
+					modified_result["repair_suggestions"] = suggestions;
+				}
+				
+				// Use the modified result instead
+				result_for_content = modified_result;
+				
+				print_line("AI Chat: Modified tool result to include parsing error for immediate AI correction");
+				
+				// Keep the error for potential future operations on this file
+				// Don't clear it here - let successful operations clear it
+			}
+		}
+	}
+	
 	// Store the original tool arguments for proper UI recreation
 	// CRITICAL: Store the FULL result with image_data for UI rendering
 	msg.tool_results.clear();
@@ -13361,18 +13413,70 @@ void AIChatDock::_apply_file_edit_immediate(const String &p_path, const String &
     f->store_string(p_content);
     f->close();
 
-    // If we edited a recognized resource, reload it so the editor reflects the change
-    Ref<Resource> res = ResourceLoader::load(p_path);
-    if (res.is_valid()) {
-        // For resources like .tres/.tscn, reload from disk and save to ensure proper import metadata
-        ResourceSaver::save(res, p_path);
-    } else {
-        // If it wasn't loadable yet (new file), try to load it now to register in the FS
-        res = ResourceLoader::load(p_path);
+    // CRITICAL: Validate .tscn files immediately after writing to catch corruption
+    String ext = p_path.get_extension().to_lower();
+    if (ext == "tscn" || ext == "tres") {
+        Error load_error = OK;
+        Ref<Resource> res = ResourceLoader::load(p_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE, &load_error);
+        
+        if (load_error != OK) {
+            String error_msg;
+            switch (load_error) {
+                case ERR_PARSE_ERROR:
+                    error_msg = "Error while parsing file '" + p_path.get_file() + "'. The .tscn file appears to be corrupted.";
+                    break;
+                case ERR_FILE_CORRUPT:
+                    error_msg = "Scene file '" + p_path.get_file() + "' appears to be invalid/corrupt.";
+                    break;
+                case ERR_CANT_OPEN:
+                    error_msg = "Can't open file '" + p_path.get_file() + "'. The file could have been moved or deleted.";
+                    break;
+                default:
+                    error_msg = "Error while loading file '" + p_path.get_file() + "' (Error code: " + itos(load_error) + ")";
+                    break;
+            }
+            
+            print_line("🚨 AI Chat: SCENE FILE CORRUPTION DETECTED - " + error_msg);
+            
+            // CRITICAL: Store parsing error so it can be included in tool results
+            scene_parsing_errors[p_path] = error_msg;
+            
+            // Show immediate error dialog to user
+            EditorNode::get_singleton()->show_accept(
+                "⚠️ AI Edit Corruption Detected!\n\n" + error_msg + 
+                "\n\nThe AI's edit to this scene file has caused corruption. "
+                "This error has been sent back to the AI for correction.\n\n"
+                "File: " + p_path,
+                "OK"
+            );
+            
+            return; // Don't continue processing corrupted file
+        }
+        
+        // File loaded successfully - clear any previous errors
+        if (scene_parsing_errors.has(p_path)) {
+            scene_parsing_errors.erase(p_path);
+        }
+        
         if (res.is_valid()) {
+            // For resources like .tres/.tscn, reload from disk and save to ensure proper import metadata
             ResourceSaver::save(res, p_path);
         }
+        
+        print_line("✅ AI Chat: .tscn file validation passed for: " + p_path);
+    } else {
+        // Non-scene files - original logic
+        Ref<Resource> res = ResourceLoader::load(p_path);
+        if (res.is_valid()) {
+            ResourceSaver::save(res, p_path);
+        } else {
+            res = ResourceLoader::load(p_path);
+            if (res.is_valid()) {
+                ResourceSaver::save(res, p_path);
+            }
+        }
     }
+    
     print_line("AI Chat: Wrote edited content to: " + p_path);
 
     // Notify the editor about the change so the file system picks it up

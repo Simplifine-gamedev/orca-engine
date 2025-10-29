@@ -770,6 +770,7 @@ private:
 	String _get_immediate_tool_status(const String &p_tool_name, const String &p_arguments_str);
     AIPendingEditsBanner *pending_edits_banner = nullptr;
 	HashMap<String, String> pending_apply_edits; // tool_call_id -> file_path
+	HashMap<String, String> scene_parsing_errors; // file_path -> error_message (for .tscn corruption detection)
 	
 	// Consolidated pending edits (replaces old system)
 	HashMap<String, Array> file_to_tool_ids; // file_path -> [tool_call_ids] for same file consolidation
