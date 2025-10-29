@@ -178,12 +178,13 @@ if [ -n "$SECRET_REFS" ]; then
         --region ${REGION} \
         --allow-unauthenticated \
         --port 8080 \
-        --memory 4Gi \
-        --cpu 2 \
-        --concurrency 40 \
-        --min-instances 2 \
-        --max-instances 100 \
-        --timeout 600 \
+        --memory 8Gi \
+        --cpu 4 \
+        --concurrency 20 \
+        --min-instances 1 \
+        --max-instances 50 \
+        --timeout 900 \
+        --execution-environment gen2 \
         --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION},DETAILED_LOGGING=auto" \
         --set-secrets "$SECRET_REFS"
 else
@@ -194,12 +195,13 @@ else
         --region ${REGION} \
         --allow-unauthenticated \
         --port 8080 \
-        --memory 4Gi \
-        --cpu 2 \
-        --concurrency 40 \
-        --min-instances 2 \
-        --max-instances 100 \
-        --timeout 600 \
+        --memory 8Gi \
+        --cpu 4 \
+        --concurrency 20 \
+        --min-instances 1 \
+        --max-instances 50 \
+        --timeout 900 \
+        --execution-environment gen2 \
         --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION},DETAILED_LOGGING=auto"
 fi
 

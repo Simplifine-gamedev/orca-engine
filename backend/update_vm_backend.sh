@@ -1,0 +1,76 @@
+#!/bin/bash
+
+# Quick backend code update script for the VM instance
+
+PROJECT_ID="${1:-eastern-rider-436701-f4}"
+INSTANCE_NAME="${2:-godot-ai-backend-vm}"
+ZONE="${3:-us-central1-c}"
+
+echo "🔄 UPDATING BACKEND CODE ON VM"
+echo "Instance: $INSTANCE_NAME"
+
+# Create deployment package
+echo "📦 Packaging updated code..."
+tar -czf backend_update.tar.gz *.py *.txt *.md requirements.txt 2>/dev/null || true
+
+# Upload to VM
+echo "📤 Uploading to VM..."
+gcloud compute scp backend_update.tar.gz $INSTANCE_NAME:/tmp/ --zone=$ZONE --project=$PROJECT_ID
+
+# Update environment if it exists
+if [ -f ".env" ]; then
+    echo "🔐 Uploading updated environment..."
+    gcloud compute scp .env $INSTANCE_NAME:/tmp/backend_update.env --zone=$ZONE --project=$PROJECT_ID
+fi
+
+# Deploy on VM
+echo "⚙️  Deploying on VM..."
+gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --project=$PROJECT_ID --command="
+set -e
+echo '🔄 UPDATING BACKEND APPLICATION...'
+
+# Stop service
+sudo systemctl stop godot-ai-backend
+
+# Extract new code
+cd /opt/godot-ai-backend
+sudo tar -xzf /tmp/backend_update.tar.gz
+sudo chown -R www-data:www-data /opt/godot-ai-backend
+
+# Update environment if provided
+if [ -f '/tmp/backend_update.env' ]; then
+    sudo cp /tmp/backend_update.env /opt/godot-ai-backend/.env
+    sudo chown www-data:www-data /opt/godot-ai-backend/.env
+    echo '🔐 Environment updated'
+fi
+
+# Update dependencies
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Restart service
+sudo systemctl start godot-ai-backend
+sleep 3
+
+# Check status
+sudo systemctl status godot-ai-backend --no-pager
+echo ''
+if sudo systemctl is-active godot-ai-backend > /dev/null; then
+    echo '✅ Backend updated and running successfully'
+else
+    echo '❌ Backend failed to start after update'
+    echo 'Logs:'
+    sudo journalctl -u godot-ai-backend --lines=10 --no-pager
+fi
+"
+
+# Clean up
+rm -f backend_update.tar.gz
+
+# Get VM IP for reference
+EXTERNAL_IP=$(gcloud compute instances describe $INSTANCE_NAME --zone=$ZONE --project=$PROJECT_ID --format="get(networkInterfaces[0].accessConfigs[0].natIP)")
+
+echo ""
+echo "✅ BACKEND UPDATE COMPLETE!"
+echo "🌐 Backend URL: http://$EXTERNAL_IP:8080"
+echo "📊 Monitor: gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --project=$PROJECT_ID --command=\"sudo journalctl -u godot-ai-backend -f\""
