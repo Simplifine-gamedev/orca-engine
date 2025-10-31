@@ -9,6 +9,7 @@
 #include "editor/plugins/editor_plugin.h"
 #include "scene/gui/panel_container.h"
 #include "scene/main/http_request.h"
+#include "design_studio_texture_system.h"
 
 class Button;
 class Camera3D;
@@ -63,10 +64,14 @@ class DesignStudio3DEditor : public PanelContainer {
 	Label *status_label = nullptr;
 	
 	// Browse tab
-	ItemList *models_list = nullptr;
+	ItemList *models_list = nullptr; // Keep for compatibility during transition
+	ScrollContainer *models_scroll = nullptr;
+	VBoxContainer *models_container = nullptr;
 	Button *load_selected_button = nullptr;
 	Button *refresh_list_button = nullptr;
 	Label *browse_status_label = nullptr;
+	Dictionary model_rows; // Maps model_id -> row container
+	Dictionary expanded_models; // Tracks which models are expanded
 	
 	// Current View tab (appears after model is loaded)
 	VBoxContainer *current_view_tab = nullptr;
@@ -91,6 +96,12 @@ class DesignStudio3DEditor : public PanelContainer {
 	// File dialog
 	EditorFileDialog *file_dialog = nullptr;
 	
+	// Model selection dialog
+	AcceptDialog *model_selection_dialog = nullptr;
+	OptionButton *model_version_selector = nullptr;
+	Dictionary pending_base_model_data;
+	Array pending_textured_models;
+	
 	// UI Elements - 3D Viewer
 	SubViewportContainer *viewport_container = nullptr;
 	SubViewport *viewport = nullptr;
@@ -108,14 +119,11 @@ class DesignStudio3DEditor : public PanelContainer {
 	HTTPRequest *poll_request = nullptr;
 	HTTPRequest *download_request = nullptr;
 	HTTPRequest *browse_request = nullptr;
+	HTTPRequest *textured_models_request = nullptr;
 	Timer *poll_timer = nullptr;
 	
-	// Texture/Segmentation HTTP Requests
-	HTTPRequest *texture_request = nullptr;
-	HTTPRequest *texture_poll_request = nullptr;
-	HTTPRequest *texture_download_request = nullptr;
-	HTTPRequest *segment_request = nullptr;
-	Timer *texture_poll_timer = nullptr;
+	// Texture System
+	DesignStudioTextureSystem *texture_system = nullptr;
 
 	// Remeshing
 	HTTPRequest *remesh_request = nullptr;
@@ -131,11 +139,11 @@ class DesignStudio3DEditor : public PanelContainer {
 	Dictionary current_model_data; // Data of currently loaded model
 	String selected_image_path; // Path to selected image
 	
-	// Texture/Segmentation State
-	String current_parent_job_id; // Parent job ID for texture/segmentation operations
-	String current_texture_job_id; // Current texture generation job ID
-	bool is_texturing = false;
-	bool is_segmenting = false;
+	// Textured models tracking
+	Dictionary pending_textured_requests; // Maps base_model_id -> item_index
+	Dictionary textured_models_cache; // Maps base_model_id -> Array of textured models
+	Array textured_request_queue; // Queue of Dictionary requests to process
+	bool is_processing_textured_requests = false;
 	
 	// Model statistics
 	int current_vertex_count = 0;
@@ -204,6 +212,21 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_export_pressed();
 	void _load_model_for_viewing(const Dictionary &p_model_data);
 	
+	// Textured models support
+	void _fetch_textured_models_for_base_model(const String &p_base_model_id, int p_item_index);
+	void _process_textured_request_queue();
+	void _on_textured_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_textured_model_selected(const String &p_textured_model_id);
+	void _show_model_selection_dialog(const Dictionary &p_base_model, const Array &p_textured_models);
+	void _on_model_selection_confirmed();
+	
+	// New expandable UI methods
+	void _create_model_row(const Dictionary &p_model_data, int p_index);
+	void _update_model_row_with_textures(const String &p_base_model_id, const Array &p_textured_models);
+	void _on_model_row_pressed(const String &p_model_id);
+	void _on_expand_button_pressed(const String &p_model_id);
+	void _on_textured_option_pressed(const String &p_textured_model_id);
+	
 	void _on_select_image_pressed();
 	void _on_image_file_selected(const String &p_path);
 	void _on_generation_mode_changed(int p_index);
@@ -221,17 +244,11 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _start_remeshing(int p_target_faces);
 	void _on_remesh_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	
-	// Texture/Segmentation operations
-	void _start_texture_generation(const String &p_prompt);
-	void _start_segmentation();
-	void _upload_model_for_texturing();
-	void _on_texture_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _on_segment_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _start_texture_polling(const String &p_job_id);
-	void _on_texture_poll_timeout();
-	void _on_texture_status_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _on_textured_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
-	void _create_parent_job_if_needed();
+	// Texture System Callbacks
+	void _on_texture_started(const String &p_job_id);
+	void _on_texture_progress(const String &p_status, const Dictionary &p_data = Dictionary());
+	void _on_texture_completed(const PackedByteArray &p_model_data, const String &p_filename);
+	void _on_texture_failed(const String &p_error_message);
 	
 	// LOD operations
 	void _setup_lod_ui();

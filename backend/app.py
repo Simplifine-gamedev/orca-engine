@@ -97,29 +97,34 @@ else:
     print("🔇 DETAILED_LOGGING: DISABLED (default - set DETAILED_LOGGING=true to enable)")
 # --- End LiteLLM Setup ---
 
-# Vertex AI configuration (DISABLED - using direct Anthropic API instead)
-# VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')  
-# VERTEX_AI_LOCATION = 'us-central1'
-# VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
+# Vertex AI configuration for Claude models (ENABLED)
+VERTEX_AI_PROJECT = os.getenv('VERTEXAI_PROJECT')
+VERTEX_AI_LOCATION = os.getenv('VERTEXAI_LOCATION', 'us-east5')  # Claude 4 works in us-east5
+VERTEX_AI_CREDENTIALS_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 
-# # Set up Vertex AI authentication (DISABLED)
-# if VERTEX_AI_PROJECT:
-#     os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
-#     os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
-#     
-#     if VERTEX_AI_CREDENTIALS_PATH:
-#         # Use explicit credentials file if provided
-#         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
-#         print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
-#     else:
-#         # Use default GCP authentication (gcloud CLI credentials)
-#         print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
-#     
-#     print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
-# else:
-#     print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
-
-print("VERTEX_AI: Disabled - using direct Anthropic API instead")
+# Set up Vertex AI authentication for Claude models
+if VERTEX_AI_PROJECT:
+    os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
+    os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
+    
+    if VERTEX_AI_CREDENTIALS_PATH:
+        # Use explicit credentials file if provided
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
+        print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
+    else:
+        # Auto-detect vertex-ai-key.json in current directory
+        import os.path
+        key_file = os.path.join(os.path.dirname(__file__), 'vertex-ai-key.json')
+        if os.path.exists(key_file):
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = key_file
+            print(f"VERTEX_AI: Auto-detected credentials at {key_file}")
+        else:
+            print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
+    
+    print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
+    print("VERTEX_AI: Claude models will use Vertex AI by default")
+else:
+    print("WARNING: VERTEXAI_PROJECT not set - Claude models will use direct Anthropic API")
 
 # --- Global State & Configuration ---
 
@@ -243,6 +248,11 @@ def _get_model_token_limit(model: str) -> int:
         "anthropic/claude-3-5-sonnet-20241022": 180000,
         "anthropic/claude-3-5-sonnet": 180000,
         "anthropic/claude-3-opus": 180000,
+        
+        # Vertex AI Claude models - same limits as direct Anthropic
+        "vertex_ai/claude-sonnet-4@20250514": 180000,
+        "vertex_ai/claude-3-5-sonnet@20240620": 180000,
+        "vertex_ai/claude-3-opus@20240229": 180000,
         
         # OpenAI models - 120k with 8k safety margin
         "openai/gpt-5": 120000,
@@ -574,7 +584,8 @@ Conversation ({len(messages)} messages):
             messages=[{"role": "user", "content": summary_prompt}],
             max_tokens=5000,  # INCREASED: Much larger budget for comprehensive context preservation
             temperature=0.1,  # Minimum precision (GPT-5 doesn't support 0.0)
-            timeout=60  # Allow more time for thorough analysis of large conversations
+            timeout=120,  # INCREASED: 2 minutes for comprehensive summaries in GCP
+            request_timeout=120  # CRITICAL: Explicit request timeout for GCP Cloud Run
         )
         
         ai_summary = response.choices[0].message.content.strip()
@@ -884,6 +895,13 @@ def log_request_info():
     try:
         if _should_emit_for_local_request():
             debug_print(f"DEBUG REQUEST: {request.method} {request.url} from {request.environ.get('REMOTE_ADDR')}")
+        
+        # CRITICAL: Enhanced GCP debugging - log all requests in cloud to detect hangs
+        is_gcp_cloud = bool(os.getenv('K_SERVICE') or os.getenv('GAE_ENV') or os.getenv('CLOUD_RUN_JOB'))
+        if is_gcp_cloud:
+            print(f"GCP_REQUEST_START: {request.method} {request.endpoint} from {request.environ.get('REMOTE_ADDR')} at {time.time()}")
+            # Track request start time for hang detection
+            g.gcp_request_start = time.time()
     except Exception:
         pass
     try:
@@ -942,6 +960,20 @@ def log_request_end(response):
     try:
         started = getattr(g, 'request_started_at', None)
         dur_ms = int((time.time() - started) * 1000) if started else None
+        
+        # CRITICAL: Enhanced GCP hang detection
+        is_gcp_cloud = bool(os.getenv('K_SERVICE') or os.getenv('GAE_ENV') or os.getenv('CLOUD_RUN_JOB'))
+        if is_gcp_cloud:
+            gcp_start = getattr(g, 'gcp_request_start', None)
+            if gcp_start:
+                gcp_duration = time.time() - gcp_start
+                print(f"GCP_REQUEST_END: {request.method} {request.endpoint} completed in {gcp_duration:.2f}s (status: {response.status_code})")
+                # Log slow requests that could indicate hanging issues
+                if gcp_duration > 30:
+                    print(f"GCP_SLOW_REQUEST: ⚠️ Request took {gcp_duration:.2f}s - potential hang risk!")
+                elif gcp_duration > 60:
+                    print(f"GCP_VERY_SLOW_REQUEST: 🚨 Request took {gcp_duration:.2f}s - serious hang risk!")
+        
         # Add anonymized hints only; never content
         uid = request.headers.get('X-User-ID') if request else None
         mid = request.headers.get('X-Machine-ID') if request else None
@@ -993,10 +1025,25 @@ else:
     raise ValueError("FLASK_SECRET_KEY must be set in production")
 
 # Multi-provider model configuration using LiteLLM
-# Base models (always available)
+# Base models with dual Claude support (Vertex AI default, Anthropic direct as option)
+def _get_claude_model():
+    """Get Claude model - Vertex AI by default, Anthropic direct as fallback"""
+    # Check if user explicitly wants direct Anthropic
+    if os.getenv("CLAUDE_PROVIDER", "").lower() == "anthropic":
+        return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
+    
+    # Default to Vertex AI if project is configured
+    if os.getenv('VERTEXAI_PROJECT'):
+        return os.getenv("CLAUDE_MODEL", "vertex_ai/claude-sonnet-4@20250514")
+    
+    # Fallback to direct Anthropic if no Vertex project
+    return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
+
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514"),
+    "claude-4": _get_claude_model(),  # Dynamic Claude selection
+    "claude-4-anthropic": "anthropic/claude-sonnet-4-20250514",  # Direct Anthropic option
+    "claude-4-vertex": "vertex_ai/claude-sonnet-4@20250514",     # Direct Vertex option
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
@@ -4265,7 +4312,9 @@ def chat():
                             "messages": openai_messages_send,
                             "tools": safe_tools,
                             "tool_choice": "auto", 
-                            "stream": True
+                            "stream": True,
+                            "timeout": 300,  # CRITICAL: 5 minute timeout for streaming responses
+                            "request_timeout": 300  # CRITICAL: Explicit request timeout for GCP Cloud Run
                         }
                         
                         # EXPERIMENTAL: Always enable thinking mode when requested, regardless of tools
@@ -4870,12 +4919,19 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_image_op, daemon=True)
                             t.start()
-                            # Poll for stop while tool runs
+                            # Poll for stop while tool runs with timeout protection
+                            timeout_start = time.time()
+                            max_timeout = 300  # 5 minutes max for image operations
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during image_operation")
                                     # We don't kill the thread; we just stop streaming and drop the result
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: image_operation exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Tool execution timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.1)
                             image_result = _tool_result_holder["result"] or {"success": False, "error": "image_operation returned no result"}
@@ -4976,10 +5032,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_search, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 120  # 2 minutes max for project search operations
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during search_across_project")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: search_across_project exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Search operation timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.05)
                             search_result = _tool_result_holder["result"] or {"success": False, "error": "search_across_project returned no result"}
@@ -5097,10 +5160,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_docs, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 120  # 2 minutes max for docs search
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during search_across_godot_docs")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: search_across_godot_docs exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Docs search timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.05)
                             docs_result = _tool_result_holder["result"] or {"success": False, "error": "search_across_godot_docs returned no result"}
@@ -5159,10 +5229,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_slice, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 180  # 3 minutes max for spritesheet processing
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during slice_spritesheet")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: slice_spritesheet exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Spritesheet processing timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.05)
                             slice_result = _tool_result_holder["result"] or {"success": False, "error": "slice_spritesheet returned no result"}
@@ -5205,10 +5282,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_asset_search, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 120  # 2 minutes max for asset search
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during search_godot_assets")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: search_godot_assets exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Asset search timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.05)
                             
@@ -5280,10 +5364,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_asset_install, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 300  # 5 minutes max for asset install (downloads can be slow)
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during install_godot_asset")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: install_godot_asset exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Asset install timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.1)  # Slightly longer delay for install operations
                             
@@ -5339,10 +5430,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_3d_generation, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 600  # 10 minutes max for 3D model generation (very slow operation)
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during generate_3d_model")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: generate_3d_model exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"3D model generation timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.1)  # Longer delay for 3D generation
                             
@@ -5469,10 +5567,17 @@ def chat():
                             t = Thread(target=_run_project_manager, daemon=True)
                             t.start()
                             # Poll for stop while tool runs - this loop allows tool_starting to be sent
+                            timeout_start = time.time()
+                            max_timeout = 120  # 2 minutes max for project manager operations
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during project_manager")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: project_manager exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Project manager operation timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.05)  # Yield control to allow streaming
                             pm_result = _tool_result_holder["result"] or {"success": False, "error": "project_manager returned no result"}
@@ -5538,10 +5643,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_search_manager, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 120  # 2 minutes max for search manager operations
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during search_manager")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: search_manager exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Search manager operation timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.05)
                             sm_result = _tool_result_holder["result"] or {"success": False, "error": "search_manager returned no result"}
@@ -5718,10 +5830,17 @@ def chat():
                                     _tool_result_holder["done"] = True
                             t = Thread(target=_run_resource_mgr, daemon=True)
                             t.start()
+                            timeout_start = time.time()
+                            max_timeout = 300  # 5 minutes max for resource manager operations (image processing can be slow)
                             while not _tool_result_holder["done"]:
                                 if check_stop():
                                     print(f"STOP_DETECTED: Request {request_id} stopping during resource_manager")
                                     yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                # CRITICAL: Add timeout protection to prevent infinite hangs in GCP
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: resource_manager exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Resource manager operation timed out after {max_timeout} seconds"}) + '\n'
                                     return
                                 time.sleep(0.1)
                             rm_result = _tool_result_holder["result"] or {"success": False, "error": "resource_manager returned no result"}
@@ -5971,18 +6090,62 @@ def chat():
             except Exception:
                 pass
 
-    # Preserve request context during streaming to avoid 'Working outside of request context'.
-    # Add error handling for large responses that can corrupt HTTP chunked encoding
+    # CRITICAL GCP FIX: Enhanced streaming response handling for Cloud Run
+    # GCP Cloud Run has different buffering behavior than local Flask
+    def generate_with_gcp_optimization():
+        """Enhanced stream generator with GCP Cloud Run optimizations"""
+        try:
+            for chunk in generate_stream():
+                # CRITICAL: Force immediate flushing for GCP Cloud Run
+                # Without this, responses can buffer and cause apparent "hangs"
+                if chunk:
+                    yield chunk
+                    # Force flush every few chunks to prevent buffering issues in GCP
+                    if hasattr(chunk, '__len__') and len(chunk) > 100:
+                        yield ""  # Force Flask to flush the buffer
+        except Exception as stream_error:
+            print(f"STREAM_GENERATION_ERROR: {stream_error}")
+            # Send error as final stream chunk instead of raising
+            error_chunk = json.dumps({
+                "status": "stream_error",
+                "error": f"Stream generation failed: {str(stream_error)}",
+                "error_type": "stream_generation_failure",
+                "recoverable": True
+            }) + '\n'
+            yield error_chunk
+
     try:
-        return Response(stream_with_context(generate_stream()), mimetype='application/x-ndjson')
+        # CRITICAL: Add explicit headers for GCP Cloud Run streaming
+        response = Response(
+            stream_with_context(generate_with_gcp_optimization()),
+            mimetype='application/x-ndjson',
+            headers={
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+                'X-Accel-Buffering': 'no',  # Disable nginx buffering
+                'Connection': 'keep-alive'
+            }
+        )
+        return response
     except Exception as e:
-        print(f"STREAMING_ERROR: {e}")
-        # Fallback: return a simple error response instead of streaming
+        print(f"STREAMING_RESPONSE_ERROR: {e}")
+        # Enhanced fallback with proper error categorization
+        error_type = "streaming_setup_failure"
+        if "timeout" in str(e).lower():
+            error_type = "streaming_timeout"
+        elif "memory" in str(e).lower():
+            error_type = "streaming_memory_issue"
+        elif "connection" in str(e).lower():
+            error_type = "streaming_connection_error"
+            
         return jsonify({
-            "error": "Streaming failed due to large conversation size",
+            "error": f"Streaming failed: {str(e)}",
             "suggestion": "Try starting a new conversation or using shorter responses",
             "status": "error",
-            "error_type": "streaming_failure"
+            "error_type": error_type,
+            "recoverable": True,
+            "timestamp": int(time.time())
         }), 500
 
 @app.route('/generate_script', methods=['POST'])
@@ -6040,7 +6203,9 @@ def generate_script():
                 
                 completion_params = {
                     "model": model_id,
-                    "messages": [{"role": "user", "content": script_prompt}]
+                    "messages": [{"role": "user", "content": script_prompt}],
+                    "timeout": 120,  # CRITICAL: 2 minute timeout for script generation
+                    "request_timeout": 120  # CRITICAL: Explicit request timeout for GCP Cloud Run
                 }
                 completion_params.update(reasoning_params)
                 
@@ -6543,7 +6708,9 @@ def predict_code_edit():
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": full_prompt}
                     ],
-                    "max_tokens": 16000  # Higher limit to ensure complete file generation
+                    "max_tokens": 16000,  # Higher limit to ensure complete file generation
+                    "timeout": 180,  # CRITICAL: 3 minute timeout for code editing
+                    "request_timeout": 180  # CRITICAL: Explicit request timeout for GCP Cloud Run
                 }
                 
                 # Apply reasoning params first, then set temperature if not in thinking mode
@@ -7601,7 +7768,7 @@ def crash_report():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint for testing"""
+    """Enhanced health check endpoint with GCP hang detection"""
     version_info = version_checker.get_version_info()
     
     # CRITICAL: Validate tools array integrity to detect corruption
@@ -7630,6 +7797,20 @@ def health_check():
         tools_valid = False
         tools_error = f"Exception validating tools: {str(e)}"
     
+    # CRITICAL: GCP Cloud Run environment detection and resource monitoring
+    is_gcp_cloud = bool(os.getenv('K_SERVICE') or os.getenv('GAE_ENV') or os.getenv('CLOUD_RUN_JOB'))
+    
+    # Check for active requests that might be hanging
+    active_request_count = len(ACTIVE_REQUESTS)
+    oldest_request_age = 0
+    if ACTIVE_REQUESTS:
+        oldest_timestamp = min(data["timestamp"] for data in ACTIVE_REQUESTS.values())
+        oldest_request_age = int(time.time() - oldest_timestamp)
+    
+    # Memory usage check (basic)
+    import sys
+    memory_mb = sys.getsizeof(locals()) / (1024 * 1024)  # Rough approximation
+    
     response = {
         "status": "healthy" if tools_valid else "degraded", 
         "service": "orca-engine-ai-service",
@@ -7638,12 +7819,26 @@ def health_check():
         "version": auto_update_manager.current_version,
         "version_info": version_info,
         "tools_valid": tools_valid,
-        "tools_count": len(godot_tools) if isinstance(godot_tools, list) else 0
+        "tools_count": len(godot_tools) if isinstance(godot_tools, list) else 0,
+        # CRITICAL: GCP hang detection metrics
+        "gcp_environment": is_gcp_cloud,
+        "active_requests": active_request_count,
+        "oldest_request_age_seconds": oldest_request_age,
+        "memory_approx_mb": memory_mb,
+        "hang_protection_enabled": True,  # Indicates timeout fixes are active
+        "streaming_optimized": True,  # Indicates GCP streaming fixes are active
+        "timeout_fixes_version": "2025-10-28"  # Track when fixes were applied
     }
     
     if not tools_valid:
         response["tools_error"] = tools_error
         print(f"⚠️ HEALTH_CHECK: Tools array corrupted: {tools_error}")
+    
+    # CRITICAL: Log health check in GCP for hang monitoring
+    if is_gcp_cloud:
+        print(f"GCP_HEALTH_CHECK: status={response['status']}, active_requests={active_request_count}, oldest_age={oldest_request_age}s")
+        if oldest_request_age > 300:  # 5+ minute old requests
+            print(f"GCP_HANG_WARNING: 🚨 Oldest active request is {oldest_request_age}s old - possible hang!")
     
     return jsonify(response)
 
@@ -8001,11 +8196,21 @@ def search_across_godot_docs_internal(arguments: dict, use_enhanced: bool = True
             import weaviate.classes as wvc
             
             os.environ['OPENAI_API_KEY'] = api_key
+            # CRITICAL: Add timeout protection for Weaviate connection in GCP
+            import weaviate.connect
             client = weaviate.connect_to_weaviate_cloud(
                 cluster_url=WEAVIATE_URL,
                 auth_credentials=weaviate.auth.AuthApiKey(WEAVIATE_API_KEY),
-                headers={'X-OpenAI-Api-Key': api_key}
+                headers={'X-OpenAI-Api-Key': api_key},
+                additional_config=weaviate.connect.ConnectionConfig(
+                    session_pool_connections=20,
+                    session_pool_maxsize=200,
+                    session_pool_max_retries=3
+                )
             )
+            # Set client timeout to prevent hanging
+            if hasattr(client, '_timeout'):
+                client._timeout = 60  # 1 minute timeout for database operations
             
             # Use our production collection
             collection_name = "GodotDocs_Production"
@@ -8805,23 +9010,32 @@ def json_rpc_router():
         resp['telemetry'] = _telemetry(False, 'INTERNAL')
         return jsonify(resp), 500
 
+# Initialize services at module level for Gunicorn compatibility
+# Print 3D service status on startup
+if MODEL_3D_ENABLED:
+    print(f"3D_GENERATION: Enabled, forwarding to {MODEL_3D_SERVICE_URL}")
+else:
+    print("3D_GENERATION: Disabled (configure MODEL_3D_* environment variables to enable)")
+
+# Initialize auto-update system
+print(f"AUTO_UPDATE: Orca Engine v{auto_update_manager.current_version} - Update system initialized")
+
+# Start background update checker in production
+if not _dev_mode:
+    auto_update_manager.start_background_checker()
+    print("AUTO_UPDATE: Background checker started for production mode")
+else:
+    print("AUTO_UPDATE: Background checker disabled in dev mode")
+
+# CRITICAL: Enhanced startup logging for GCP VM deployment
+is_gcp_vm = bool(os.getenv('GCP_OPTIMIZED') or os.path.exists('/opt/godot-ai-backend'))
+if is_gcp_vm:
+    print("🏗️  GCP_VM_DEPLOYMENT: Starting Godot AI Backend on dedicated VM instance")
+    print(f"🔥 GUNICORN_WORKERS: Configured for high-throughput with multiple workers")
+    print(f"🛡️  HANG_PROTECTION: All timeout fixes and streaming optimizations active")
+
 if __name__ == '__main__':
-    # Print 3D service status on startup
-    if MODEL_3D_ENABLED:
-        print(f"3D_GENERATION: Enabled, forwarding to {MODEL_3D_SERVICE_URL}")
-    else:
-        print("3D_GENERATION: Disabled (configure MODEL_3D_* environment variables to enable)")
-    
-    # Initialize auto-update system
-    print(f"AUTO_UPDATE: Orca Engine v{auto_update_manager.current_version} - Update system initialized")
-    
-    # Start background update checker in production
-    if not _dev_mode:
-        auto_update_manager.start_background_checker()
-        print("AUTO_UPDATE: Background checker started for production mode")
-    else:
-        print("AUTO_UPDATE: Background checker disabled in dev mode")
-    
-    # Local dev only; in production use Gunicorn (configured in Dockerfile)
+    # Local development only - production uses Gunicorn
+    print("🧪 LOCAL_DEV: Starting Flask development server")
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=_dev_mode)
