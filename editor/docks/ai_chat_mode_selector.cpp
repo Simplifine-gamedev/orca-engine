@@ -105,6 +105,10 @@ void AIChatModeSelector::set_mode_by_string(const String &p_mode) {
     } else {
         mode_dropdown->select(MODE_ASK);
     }
+    
+    // Apply visual styling and emit signal to notify AIChatDock of the mode change
+    _apply_mode_colors();
+    emit_signal("mode_changed", get_mode_string());
 }
 
 

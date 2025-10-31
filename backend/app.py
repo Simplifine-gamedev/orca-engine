@@ -97,29 +97,34 @@ else:
     print("🔇 DETAILED_LOGGING: DISABLED (default - set DETAILED_LOGGING=true to enable)")
 # --- End LiteLLM Setup ---
 
-# Vertex AI configuration (DISABLED - using direct Anthropic API instead)
-# VERTEX_AI_PROJECT = os.getenv('VERTEX_AI_PROJECT')  
-# VERTEX_AI_LOCATION = 'us-central1'
-# VERTEX_AI_CREDENTIALS_PATH = os.getenv('VERTEX_AI_CREDENTIALS_PATH')
+# Vertex AI configuration for Claude models (ENABLED)
+VERTEX_AI_PROJECT = os.getenv('VERTEXAI_PROJECT')
+VERTEX_AI_LOCATION = os.getenv('VERTEXAI_LOCATION', 'us-east5')  # Claude 4 works in us-east5
+VERTEX_AI_CREDENTIALS_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 
-# # Set up Vertex AI authentication (DISABLED)
-# if VERTEX_AI_PROJECT:
-#     os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
-#     os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
-#     
-#     if VERTEX_AI_CREDENTIALS_PATH:
-#         # Use explicit credentials file if provided
-#         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
-#         print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
-#     else:
-#         # Use default GCP authentication (gcloud CLI credentials)
-#         print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
-#     
-#     print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
-# else:
-#     print("WARNING: VERTEX_AI_PROJECT not set - Vertex AI models will fail")
-
-print("VERTEX_AI: Disabled - using direct Anthropic API instead")
+# Set up Vertex AI authentication for Claude models
+if VERTEX_AI_PROJECT:
+    os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
+    os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
+    
+    if VERTEX_AI_CREDENTIALS_PATH:
+        # Use explicit credentials file if provided
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = VERTEX_AI_CREDENTIALS_PATH
+        print(f"VERTEX_AI: Using credentials from {VERTEX_AI_CREDENTIALS_PATH}")
+    else:
+        # Auto-detect vertex-ai-key.json in current directory
+        import os.path
+        key_file = os.path.join(os.path.dirname(__file__), 'vertex-ai-key.json')
+        if os.path.exists(key_file):
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = key_file
+            print(f"VERTEX_AI: Auto-detected credentials at {key_file}")
+        else:
+            print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
+    
+    print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
+    print("VERTEX_AI: Claude models will use Vertex AI by default")
+else:
+    print("WARNING: VERTEXAI_PROJECT not set - Claude models will use direct Anthropic API")
 
 # --- Global State & Configuration ---
 
@@ -243,6 +248,11 @@ def _get_model_token_limit(model: str) -> int:
         "anthropic/claude-3-5-sonnet-20241022": 180000,
         "anthropic/claude-3-5-sonnet": 180000,
         "anthropic/claude-3-opus": 180000,
+        
+        # Vertex AI Claude models - same limits as direct Anthropic
+        "vertex_ai/claude-sonnet-4@20250514": 180000,
+        "vertex_ai/claude-3-5-sonnet@20240620": 180000,
+        "vertex_ai/claude-3-opus@20240229": 180000,
         
         # OpenAI models - 120k with 8k safety margin
         "openai/gpt-5": 120000,
@@ -1015,10 +1025,25 @@ else:
     raise ValueError("FLASK_SECRET_KEY must be set in production")
 
 # Multi-provider model configuration using LiteLLM
-# Base models (always available)
+# Base models with dual Claude support (Vertex AI default, Anthropic direct as option)
+def _get_claude_model():
+    """Get Claude model - Vertex AI by default, Anthropic direct as fallback"""
+    # Check if user explicitly wants direct Anthropic
+    if os.getenv("CLAUDE_PROVIDER", "").lower() == "anthropic":
+        return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
+    
+    # Default to Vertex AI if project is configured
+    if os.getenv('VERTEXAI_PROJECT'):
+        return os.getenv("CLAUDE_MODEL", "vertex_ai/claude-sonnet-4@20250514")
+    
+    # Fallback to direct Anthropic if no Vertex project
+    return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
+
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514"),
+    "claude-4": _get_claude_model(),  # Dynamic Claude selection
+    "claude-4-anthropic": "anthropic/claude-sonnet-4-20250514",  # Direct Anthropic option
+    "claude-4-vertex": "vertex_ai/claude-sonnet-4@20250514",     # Direct Vertex option
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }

@@ -43,6 +43,7 @@
 #include "scene/main/timer.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/style_box_flat.h"
 #include "editor/gui/editor_file_dialog.h"
 
 void DesignStudio3DEditor::_bind_methods() {
@@ -72,6 +73,7 @@ void DesignStudio3DEditor::_setup_ui() {
 	ScrollContainer *scroll_container = memnew(ScrollContainer);
 	scroll_container->set_custom_minimum_size(Size2(320 * EDSCALE, 0));
 	scroll_container->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	scroll_container->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
 	hsplit->add_child(scroll_container);
 	
 	VBoxContainer *left_panel = memnew(VBoxContainer);
@@ -176,14 +178,31 @@ void DesignStudio3DEditor::_setup_ui() {
 	refresh_list_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_refresh_models_pressed));
 	browse_tab->add_child(refresh_list_button);
 	
+	// New expandable models UI
+	models_scroll = memnew(ScrollContainer);
+	models_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+	models_scroll->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	models_scroll->set_custom_minimum_size(Size2(280 * EDSCALE, 200 * EDSCALE));
+	models_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+	models_scroll->set_vertical_scroll_mode(ScrollContainer::SCROLL_MODE_AUTO);
+	browse_tab->add_child(models_scroll);
+	
+	models_container = memnew(VBoxContainer);
+	models_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	models_container->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	models_scroll->add_child(models_container);
+	
+	// Hide old ItemList - use new expandable UI instead
 	models_list = memnew(ItemList);
 	models_list->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-	models_list->set_custom_minimum_size(Size2(0, 200 * EDSCALE));
+	models_list->set_custom_minimum_size(Size2(0, 150 * EDSCALE));
+	models_list->hide();
 	browse_tab->add_child(models_list);
 	
 	load_selected_button = memnew(Button);
 	load_selected_button->set_text("Load Selected");
 	load_selected_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_load_selected_pressed));
+	load_selected_button->hide(); // Hide - we use direct clicking in new UI
 	browse_tab->add_child(load_selected_button);
 	
 	browse_status_label = memnew(Label);
@@ -217,6 +236,24 @@ void DesignStudio3DEditor::_setup_ui() {
 	file_dialog->add_filter("*.webp", "WebP Images");
 	file_dialog->connect("file_selected", callable_mp(this, &DesignStudio3DEditor::_on_image_file_selected));
 	add_child(file_dialog);
+	
+	// Create model selection dialog
+	model_selection_dialog = memnew(AcceptDialog);
+	model_selection_dialog->set_title("Select Model Version");
+	model_selection_dialog->set_ok_button_text("Load Selected");
+	model_selection_dialog->connect("confirmed", callable_mp(this, &DesignStudio3DEditor::_on_model_selection_confirmed));
+	add_child(model_selection_dialog);
+	
+	VBoxContainer *selection_vbox = memnew(VBoxContainer);
+	model_selection_dialog->add_child(selection_vbox);
+	
+	Label *selection_label = memnew(Label);
+	selection_label->set_text("Choose which version to load:");
+	selection_vbox->add_child(selection_label);
+	
+	model_version_selector = memnew(OptionButton);
+	model_version_selector->set_custom_minimum_size(Size2(400 * EDSCALE, 0));
+	selection_vbox->add_child(model_version_selector);
 	
 	// Setup Current View tab (initially hidden)
 	_setup_current_view_tab();
@@ -344,6 +381,11 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	browse_request->set_timeout(30);
 	add_child(browse_request);
 	
+	textured_models_request = memnew(HTTPRequest);
+	textured_models_request->set_name("TexturedModelsRequest");
+	textured_models_request->set_timeout(30);
+	add_child(textured_models_request);
+	
 	// Poll timer
 	poll_timer = memnew(Timer);
 	poll_timer->set_wait_time(5.0); // Poll every 5 seconds
@@ -358,28 +400,16 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	download_retry_timer->connect("timeout", callable_mp(this, &DesignStudio3DEditor::_on_download_retry_timeout));
 	add_child(download_retry_timer);
 	
-	// Texture/Segmentation HTTP Requests
-	texture_request = memnew(HTTPRequest);
-	texture_request->set_name("TextureRequest");
-	texture_request->set_timeout(60); // 60 seconds timeout
-	add_child(texture_request);
-	
-	segment_request = memnew(HTTPRequest);
-	segment_request->set_name("SegmentRequest");
-	segment_request->set_timeout(60); // 60 seconds timeout
-	add_child(segment_request);
-	
-	texture_poll_request = memnew(HTTPRequest);
-	texture_poll_request->set_name("TexturePollRequest");
-	texture_poll_request->set_timeout(30); // 30 seconds timeout
-	add_child(texture_poll_request);
-	
-	texture_download_request = memnew(HTTPRequest);
-	texture_download_request->set_name("TextureDownloadRequest");
-	texture_download_request->set_timeout(180); // 3 minutes timeout for large files
-	texture_download_request->set_body_size_limit(50 * 1024 * 1024); // 50 MB limit
-	texture_download_request->set_use_threads(true);
-	add_child(texture_download_request);
+	// Initialize Texture System
+	if (texture_system) {
+		texture_system->initialize_texture_system(this, current_user_id);
+		
+		// Set up texture system callbacks
+		texture_system->set_texture_started_callback(callable_mp(this, &DesignStudio3DEditor::_on_texture_started));
+		texture_system->set_texture_progress_callback(callable_mp(this, &DesignStudio3DEditor::_on_texture_progress));
+		texture_system->set_texture_completed_callback(callable_mp(this, &DesignStudio3DEditor::_on_texture_completed));
+		texture_system->set_texture_failed_callback(callable_mp(this, &DesignStudio3DEditor::_on_texture_failed));
+	}
 	
 	// Remeshing HTTP request
 	remesh_request = memnew(HTTPRequest);
@@ -388,13 +418,6 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	remesh_request->set_body_size_limit(200 * 1024 * 1024); // 200 MB limit
 	remesh_request->set_use_threads(true);
 	add_child(remesh_request);
-	
-	// Texture poll timer
-	texture_poll_timer = memnew(Timer);
-	texture_poll_timer->set_wait_time(5.0); // Poll every 5 seconds
-	texture_poll_timer->set_one_shot(false);
-	texture_poll_timer->connect("timeout", callable_mp(this, &DesignStudio3DEditor::_on_texture_poll_timeout));
-	add_child(texture_poll_timer);
 }
 
 void DesignStudio3DEditor::_setup_current_view_tab() {
@@ -428,7 +451,7 @@ void DesignStudio3DEditor::_setup_current_view_tab() {
 	current_view_tab->add_child(actions_title);
 	
 	add_texture_button = memnew(Button);
-	add_texture_button->set_text("Add Texture (Demo: Red Sports Car)");
+	add_texture_button->set_text("Generate AI Texture...");
 	add_texture_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_add_texture_pressed));
 	current_view_tab->add_child(add_texture_button);
 	
@@ -507,9 +530,6 @@ void DesignStudio3DEditor::_show_current_view_tab() {
 		if (texture_status_label) {
 			texture_status_label->set_text("Ready for texture/segmentation operations");
 		}
-		
-		// Clear parent job ID so it gets refreshed with current model's job_id
-		current_parent_job_id = "";
 	}
 }
 
@@ -607,12 +627,6 @@ void DesignStudio3DEditor::_on_generate_pressed() {
 	
 	// Clear LOD system for new generation
 	_clear_lod_levels();
-	
-	// Clear texture state
-	current_parent_job_id = "";
-	current_texture_job_id = "";
-	is_texturing = false;
-	is_segmenting = false;
 	
 	// Clear job ID so new generation gets fresh parent ID
 	current_job_id = "";
@@ -853,6 +867,11 @@ void DesignStudio3DEditor::_on_job_status_received(int p_result, int p_code, con
 }
 
 void DesignStudio3DEditor::_on_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	print_line("=== _on_model_downloaded CALLBACK TRIGGERED ===");
+	print_line("p_result: " + itos(p_result) + " (RESULT_SUCCESS=" + itos(HTTPRequest::RESULT_SUCCESS) + ")");
+	print_line("p_code: " + itos(p_code));
+	print_line("p_body.size(): " + itos(p_body.size()));
+	print_line("Headers count: " + itos(p_headers.size()));
 	
 	if (p_result != HTTPRequest::RESULT_SUCCESS) {
 		String error_msg = "Unknown error";
@@ -1284,19 +1303,54 @@ void DesignStudio3DEditor::_on_models_list_received(int p_result, int p_code, co
 	Array models = response["models"];
 	int count = response.get("count", 0);
 	
+	// Clear both old and new UI
 	models_list->clear();
-	for (int i = 0; i < models.size(); i++) {
+	for (int i = models_container->get_child_count() - 1; i >= 0; i--) {
+		models_container->get_child(i)->queue_free();
+	}
+	
+	textured_models_cache.clear();
+	pending_textured_requests.clear();
+	textured_request_queue.clear();
+	is_processing_textured_requests = false;
+	model_rows.clear();
+	expanded_models.clear();
+	
+	// Limit the number of models we process to prevent UI overflow
+	int max_models_to_show = 8; // Very strict limit for expandable UI
+	int models_to_process = MIN(models.size(), max_models_to_show);
+	
+	for (int i = 0; i < models_to_process; i++) {
 		Dictionary model = models[i];
 		String prompt = model.get("prompt", "Unknown");
 		String id = model.get("id", "");
 		String created = model.get("created_at", "");
 		
+		// Create new expandable row
+		_create_model_row(model, i);
+		
+		// Also keep old ItemList for compatibility
 		String display_text = prompt + " (" + created.substr(0, 10) + ")";
 		models_list->add_item(display_text);
 		models_list->set_item_metadata(i, model);
+		
+		// Queue textured models request for this base model
+		_fetch_textured_models_for_base_model(id, i);
 	}
 	
-	browse_status_label->set_text("Loaded " + itos(count) + " completed models");
+	// Show info if we truncated the list
+	if (models.size() > max_models_to_show) {
+		Label *info_label = memnew(Label);
+		info_label->set_text("... and " + itos(models.size() - max_models_to_show) + " more models (showing first " + itos(max_models_to_show) + ")");
+		info_label->add_theme_font_size_override("font_size", 10 * EDSCALE);
+		info_label->set_modulate(Color(0.7, 0.7, 0.7));
+		models_container->add_child(info_label);
+	}
+	
+	// Start processing the queue
+	_process_textured_request_queue();
+	
+	browse_status_label->set_text("Loaded " + itos(count) + " completed models (loading textured versions...)");
 }
 
 void DesignStudio3DEditor::_on_load_selected_pressed() {
@@ -1317,6 +1371,16 @@ void DesignStudio3DEditor::_on_load_selected_pressed() {
 		return;
 	}
 	
+	// Check if this model has textured versions
+	if (textured_models_cache.has(model_id)) {
+		Array textured_models = textured_models_cache[model_id];
+		if (textured_models.size() > 0) {
+			_show_model_selection_dialog(model_data, textured_models);
+			return;
+		}
+	}
+	
+	// No textured models, load the base model directly
 	browse_status_label->set_text("Loading: " + prompt + "...");
 	_load_model_for_viewing(model_data);
 }
@@ -1336,9 +1400,60 @@ void DesignStudio3DEditor::_load_model_for_viewing(const Dictionary &p_model_dat
 	
 	String model_url = p_model_data.get("output_file_url", "");
 	
-	if (model_url.is_empty()) {
-		browse_status_label->set_text("[ERROR] No URL for this model");
+	// Check if this is a textured model (uses different URL field)
+	bool is_textured = p_model_data.get("is_textured", false) || p_model_data.has("textured_mesh_url");
+	
+	// Debug output to track URL issues  
+	String model_id = p_model_data.get("id", "unknown");
+	print_line("Loading model ID: " + model_id + ", original URL: '" + model_url + "', is_textured: " + (is_textured ? "true" : "false"));
+	
+	if (model_url.is_empty() && p_model_data.has("textured_mesh_url")) {
+		Variant url_variant = p_model_data.get("textured_mesh_url", "");
+		print_line("textured_mesh_url variant type: " + itos(url_variant.get_type()) + ", is_null: " + (url_variant.is_null() ? "true" : "false"));
+		
+		// Handle both NIL (type 0) and STRING types
+		if (url_variant.get_type() == Variant::STRING && !url_variant.is_null()) {
+			String temp_url = url_variant;
+			print_line("textured_mesh_url string value: '" + temp_url + "'");
+			// Check if it's not null/empty string
+			if (!temp_url.is_empty() && temp_url != "null" && temp_url.begins_with("http")) {
+				model_url = temp_url;
+				print_line("Using direct textured_mesh_url: " + model_url);
+			}
+		} else if (url_variant.get_type() == Variant::NIL || url_variant.is_null()) {
+			print_line("textured_mesh_url is null/nil - will use API download endpoint");
+		}
+	}
+	
+	// For textured models with null/empty URLs, ALWAYS use the texture API download endpoint
+	if (is_textured && (model_url.is_empty() || model_url == "null" || model_url == "<null>")) {
+		model_url = "https://gpu-proxy-976792908107.us-central1.run.app/api/texture-jobs/" + model_id + "/download?user_id=" + current_user_id;
+		print_line("Using texture API download URL for textured model: " + model_url);
+	}
+	
+	print_line("Final model_url after all processing: '" + model_url + "'");
+	
+	// Validate URL is not empty and has a valid scheme
+	if (model_url.is_empty() || model_url.strip_edges().is_empty()) {
+		browse_status_label->set_text("[ERROR] No URL for model: " + model_id);
+		print_line("ERROR: Empty URL for model " + model_id);
 		return;
+	}
+	
+	// Check for valid URL scheme
+	if (!model_url.begins_with("http://") && !model_url.begins_with("https://")) {
+		browse_status_label->set_text("[ERROR] Invalid URL format: " + model_url);
+		print_line("ERROR: Invalid URL scheme for model " + model_id + ": " + model_url);
+		return;
+	}
+	
+	print_line("URL validation passed, proceeding with download: " + model_url);
+	
+	// Show different loading message for textured models
+	if (is_textured) {
+		browse_status_label->set_text("Downloading textured model...");
+	} else {
+		browse_status_label->set_text("Downloading...");
 	}
 	
 	// Check if request is busy
@@ -1352,14 +1467,26 @@ void DesignStudio3DEditor::_load_model_for_viewing(const Dictionary &p_model_dat
 		download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded));
 	}
 	
-	browse_status_label->set_text("Downloading...");
-	
 	// Download but DON'T save to workspace yet
 	download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_model_downloaded), CONNECT_ONE_SHOT);
-	Error err = download_request->request(model_url);
+	
+	print_line("About to call download_request->request() with URL: '" + model_url + "'");
+	print_line("URL length: " + itos(model_url.length()) + ", is_empty: " + (model_url.is_empty() ? "true" : "false"));
+	
+	// Try adding headers as we do in other successful requests
+	PackedStringArray headers;
+	headers.push_back("User-Agent: Godot-Editor/4.0");
+	headers.push_back("Accept: */*");
+	
+	Error err = download_request->request(model_url, headers);
+	
+	print_line("Request result: " + itos(err) + " (OK=0)");
 	
 	if (err != OK) {
 		browse_status_label->set_text("[ERROR] Failed to start download. Error: " + itos(err));
+		print_line("ERROR: HTTPRequest.request() failed with error " + itos(err));
+	} else {
+		print_line("HTTPRequest.request() call successful");
 	}
 }
 
@@ -2177,6 +2304,13 @@ void DesignStudio3DEditor::_cancel_all_requests() {
 		}
 	}
 	
+	if (textured_models_request) {
+		textured_models_request->cancel_request();
+		if (textured_models_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_models_received))) {
+			textured_models_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_models_received));
+		}
+	}
+	
 	if (remesh_request) {
 		remesh_request->cancel_request();
 		if (remesh_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_remesh_completed))) {
@@ -2187,41 +2321,14 @@ void DesignStudio3DEditor::_cancel_all_requests() {
 		}
 	}
 	
-	if (texture_request) {
-		texture_request->cancel_request();
-		if (texture_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted))) {
-			texture_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted));
-		}
-	}
-	
-	if (texture_poll_request) {
-		texture_poll_request->cancel_request();
-		if (texture_poll_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received))) {
-			texture_poll_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received));
-		}
-	}
-	
-	if (texture_download_request) {
-		texture_download_request->cancel_request();
-		if (texture_download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded))) {
-			texture_download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded));
-		}
-	}
-	
-	if (segment_request) {
-		segment_request->cancel_request();
-		if (segment_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted))) {
-			segment_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted));
-		}
+	// Cancel texture system operations
+	if (texture_system) {
+		texture_system->cancel_texture_generation();
 	}
 	
 	// Stop timers
 	if (poll_timer && poll_timer->is_connected("timeout", callable_mp(this, &DesignStudio3DEditor::_on_poll_timeout))) {
 		poll_timer->stop();
-	}
-	
-	if (texture_poll_timer && texture_poll_timer->is_connected("timeout", callable_mp(this, &DesignStudio3DEditor::_on_texture_poll_timeout))) {
-		texture_poll_timer->stop();
 	}
 	
 	if (download_retry_timer && download_retry_timer->is_connected("timeout", callable_mp(this, &DesignStudio3DEditor::_on_download_retry_timeout))) {
@@ -2264,65 +2371,46 @@ String DesignStudio3DEditor::_get_or_create_persistent_user_id() {
 }
 
 void DesignStudio3DEditor::_on_add_texture_pressed() {
-	if (is_texturing) {
-		status_label->set_text("[BUSY] Already generating texture...");
-		return;
-	}
-	
-	if (current_loaded_mesh.is_null()) {
-		status_label->set_text("[ERROR] No model loaded for texturing");
-		return;
-	}
-	
-	// Simple prompt for texture description - replace with proper dialog later
-	String prompt = "red sports car"; // TODO: Replace with actual user input dialog
-	if (texture_status_label) {
-		texture_status_label->set_text("[TEXTURE] Starting texture generation with prompt: " + prompt);
-	}
-	
-	_create_parent_job_if_needed();
-	
-	// Check if we have a valid parent job ID
-	if (current_parent_job_id.is_empty()) {
+	if (!texture_system) {
 		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Cannot generate texture without a valid parent model");
+			texture_status_label->set_text("[ERROR] Texture system not initialized");
 		}
 		return;
 	}
 	
-	_start_texture_generation(prompt);
-}
-
+	if (texture_system->is_texture_generation_active()) {
+	if (texture_status_label) {
+			texture_status_label->set_text("[BUSY] Already generating texture...");
+		}
+		return;
+	}
+	
+	if (current_loaded_mesh.is_null()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] No model loaded for texturing");
+		}
+		return;
+	}
+	
+	// Check if we have a valid job ID for the base model
+	if (current_job_id.is_empty()) {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Cannot generate texture without a valid base model");
+		}
+		return;
+	}
+	
+	// Show texture generation dialog
+	texture_system->show_texture_generation_dialog(current_job_id);
+	}
+	
 void DesignStudio3DEditor::_on_segment_pressed() {
-	if (is_segmenting) {
 		if (texture_status_label) {
-			texture_status_label->set_text("[BUSY] Already segmenting...");
-		}
-		return;
+		texture_status_label->set_text("[INFO] Segmentation feature coming soon...");
 	}
 	
-	if (current_loaded_mesh.is_null()) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] No model loaded for segmentation");
-		}
-		return;
-	}
-	
-	if (texture_status_label) {
-		texture_status_label->set_text("[SEGMENT] Starting model segmentation...");
-	}
-	
-	_create_parent_job_if_needed();
-	
-	// Check if we have a valid parent job ID
-	if (current_parent_job_id.is_empty()) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Cannot segment model without a valid parent model");
-		}
-		return;
-	}
-	
-	_start_segmentation();
+	// TODO: Implement segmentation using the new texture system
+	// This will be added in a future update
 }
 
 void DesignStudio3DEditor::_on_remesh_pressed() {
@@ -2554,15 +2642,9 @@ void DesignStudio3DEditor::_on_remesh_completed(int p_result, int p_code, const 
 }
 
 void DesignStudio3DEditor::_on_cancel_operation_pressed() {
-	// Stop any active texture/segmentation operations
-	if (is_texturing || is_segmenting) {
-		texture_poll_timer->stop();
-		
-		// Reset states
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
+	// Cancel texture generation if active
+	if (texture_system && texture_system->is_texture_generation_active()) {
+		texture_system->cancel_texture_generation();
 		
 		// Hide cancel button
 		if (cancel_operation_button) {
@@ -2571,480 +2653,609 @@ void DesignStudio3DEditor::_on_cancel_operation_pressed() {
 		
 		// Update status
 		if (texture_status_label) {
-			texture_status_label->set_text("[CANCELLED] Operation cancelled by user. Ready for new operations.");
-		}
-		
-		// Clear job ID
-		current_texture_job_id = "";
-	}
-}
-
-void DesignStudio3DEditor::_create_parent_job_if_needed() {
-	// Use current_job_id as parent_job_id if we have one from successful generation
-	if (current_parent_job_id.is_empty()) {
-		if (!current_job_id.is_empty()) {
-			current_parent_job_id = current_job_id;
-			if (texture_status_label) {
-				texture_status_label->set_text("[TEXTURE] Using job ID: " + current_parent_job_id.substr(0, 12) + "... as parent");
-			}
-		} else {
-			// No parent model available - this shouldn't happen if we only show Current View after model loading
-			if (texture_status_label) {
-				texture_status_label->set_text("[ERROR] No parent model available for texture generation");
-			}
-			return;
+			texture_status_label->set_text("[CANCELLED] Texture generation cancelled by user. Ready for new operations.");
 		}
 	}
 }
 
-void DesignStudio3DEditor::_start_texture_generation(const String &p_prompt) {
-	// Create multipart form data (NO FILE UPLOAD - backend downloads from storage)
-	String boundary = "----WebKitFormBoundary" + String::num_int64(OS::get_singleton()->get_ticks_msec());
-	String form_data;
-	
-	// Add user_id
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"user_id\"\r\n\r\n";
-	form_data += current_user_id + "\r\n";
-	
-	// Add parent_job_id
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"parent_job_id\"\r\n\r\n";
-	form_data += current_parent_job_id + "\r\n";
-	
-	// Add mesh_filename (GLB format as expected by server)
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"mesh_filename\"\r\n\r\n";
-	form_data += "model.glb\r\n";
-	
-	// Add text_prompt
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"text_prompt\"\r\n\r\n";
-	form_data += p_prompt + "\r\n";
-	
-	// Close form
-	form_data += "--" + boundary + "--\r\n";
-	
-	PackedByteArray form_bytes = form_data.to_utf8_buffer();
-	PackedStringArray headers;
-	headers.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
-	
-	String url = TEXTURE_API_URL + "/texture/text-to-texture-single";
-	
-	// Disconnect any existing connections first
-	if (texture_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted))) {
-		texture_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted));
+// ============================================================================
+// Texture System Callbacks
+// ============================================================================
+
+void DesignStudio3DEditor::_on_texture_started(const String &p_job_id) {
+			if (texture_status_label) {
+		String job_id_short = p_job_id.is_empty() ? "..." : p_job_id.substr(0, 8) + "...";
+		texture_status_label->set_text("[TEXTURE] Started texture generation job: " + job_id_short);
 	}
 	
-	texture_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_job_submitted), CONNECT_ONE_SHOT);
-	
-	Error err = texture_request->request_raw(url, headers, HTTPClient::METHOD_POST, form_bytes);
-	
-	if (err == OK) {
-		is_texturing = true;
+	// Disable texture button and show cancel button
+	if (add_texture_button) {
 		add_texture_button->set_disabled(true);
+	}
+	
 		if (cancel_operation_button) {
 			cancel_operation_button->set_visible(true);
-		}
-		if (texture_status_label) {
-			texture_status_label->set_text("[TEXTURE] Submitting texture generation job...");
-		}
-	} else {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to start texture request. Error: " + itos(err));
-		}
 	}
 }
 
-void DesignStudio3DEditor::_start_segmentation() {
-	// Create multipart form data (NO FILE UPLOAD - backend downloads from storage)
-	String boundary = "----WebKitFormBoundary" + String::num_int64(OS::get_singleton()->get_ticks_msec());
-	String form_data;
-	
-	// Add user_id
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"user_id\"\r\n\r\n";
-	form_data += current_user_id + "\r\n";
-	
-	// Add parent_job_id
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"parent_job_id\"\r\n\r\n";
-	form_data += current_parent_job_id + "\r\n";
-	
-	// Add mesh_filename (GLB format as expected by server)
-	form_data += "--" + boundary + "\r\n";
-	form_data += "Content-Disposition: form-data; name=\"mesh_filename\"\r\n\r\n";
-	form_data += "model.glb\r\n";
-	
-	// Close form
-	form_data += "--" + boundary + "--\r\n";
-	
-	PackedByteArray form_bytes = form_data.to_utf8_buffer();
-	PackedStringArray headers;
-	headers.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
-	
-	String url = TEXTURE_API_URL + "/segment";
-	
-	// Disconnect any existing connections first
-	if (segment_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted))) {
-		segment_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted));
-	}
-	
-	segment_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_job_submitted), CONNECT_ONE_SHOT);
-	
-	Error err = segment_request->request_raw(url, headers, HTTPClient::METHOD_POST, form_bytes);
-	
-	if (err == OK) {
-		is_segmenting = true;
-		segment_button->set_disabled(true);
-		if (cancel_operation_button) {
-			cancel_operation_button->set_visible(true);
-		}
+void DesignStudio3DEditor::_on_texture_progress(const String &p_status, const Dictionary &p_data) {
 		if (texture_status_label) {
-			texture_status_label->set_text("[SEGMENT] Submitting segmentation job...");
-		}
-	} else {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to start segmentation request. Error: " + itos(err));
-		}
-	}
-}
-
-void DesignStudio3DEditor::_on_texture_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	String job_type = is_texturing ? "texture" : "segmentation";
-	
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to submit " + job_type + " job (HTTP " + itos(p_code) + ")");
-		}
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
-		if (cancel_operation_button) {
-			cancel_operation_button->set_visible(false);
-		}
-		return;
-	}
-	
-	String response_text;
-	if (p_body.size() > 0) {
-		const uint8_t *r = p_body.ptr();
-		response_text = String::utf8((const char *)r, p_body.size());
-	}
-	
-	JSON json;
-	Error err = json.parse(response_text);
-	
-	if (err != OK) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to parse " + job_type + " response");
-		}
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
-		if (cancel_operation_button) {
-			cancel_operation_button->set_visible(false);
-		}
-		return;
-	}
-	
-	Dictionary response = json.get_data();
-	
-	if (response.has("job_id")) {
-		current_texture_job_id = response["job_id"];
-		String job_type_caps = job_type.capitalize();
-		if (texture_status_label) {
-			texture_status_label->set_text("[SUCCESS] " + job_type_caps + " job submitted! ID: " + current_texture_job_id.substr(0, 8) + "...\n[POLLING] Checking status...");
-		}
-		_start_texture_polling(current_texture_job_id);
-	} else {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] No job ID in " + job_type + " response");
-		}
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
-		if (cancel_operation_button) {
-			cancel_operation_button->set_visible(false);
-		}
-	}
-}
-
-void DesignStudio3DEditor::_on_segment_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to submit segmentation job (HTTP " + itos(p_code) + ")");
-		}
-		is_segmenting = false;
-		segment_button->set_disabled(false);
-		return;
-	}
-	
-	String response_text;
-	if (p_body.size() > 0) {
-		const uint8_t *r = p_body.ptr();
-		response_text = String::utf8((const char *)r, p_body.size());
-	}
-	
-	JSON json;
-	Error err = json.parse(response_text);
-	
-	if (err != OK) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to parse segmentation response");
-		}
-		is_segmenting = false;
-		segment_button->set_disabled(false);
-		return;
-	}
-	
-	Dictionary response = json.get_data();
-	
-	if (response.has("job_id")) {
-		current_texture_job_id = response["job_id"];
-		if (texture_status_label) {
-			texture_status_label->set_text("[SUCCESS] Segmentation job submitted! ID: " + current_texture_job_id.substr(0, 8) + "...\n[POLLING] Checking status...");
-		}
-		_start_texture_polling(current_texture_job_id);
-	} else {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] No job ID in segmentation response");
-		}
-		is_segmenting = false;
-		segment_button->set_disabled(false);
-	}
-}
-
-void DesignStudio3DEditor::_start_texture_polling(const String &p_job_id) {
-	current_texture_job_id = p_job_id;
-	texture_poll_timer->start();
-	// Immediately poll once
-	_on_texture_poll_timeout();
-}
-
-void DesignStudio3DEditor::_on_texture_poll_timeout() {
-	if (current_texture_job_id.is_empty()) {
-		texture_poll_timer->stop();
-		return;
-	}
-	
-	String url = TEXTURE_API_URL + "/jobs/" + current_texture_job_id;
-	
-	// Disconnect any existing connections first
-	if (texture_poll_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received))) {
-		texture_poll_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received));
-	}
-	
-	texture_poll_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_texture_status_received), CONNECT_ONE_SHOT);
-	texture_poll_request->request(url);
-}
-
-void DesignStudio3DEditor::_on_texture_status_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	String job_type = is_texturing ? "texture" : "segmentation";
-	
-	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to get " + job_type + " job status (HTTP " + itos(p_code) + ")");
-		}
-		texture_poll_timer->stop();
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
-		if (cancel_operation_button) {
-			cancel_operation_button->set_visible(false);
-		}
-		return;
-	}
-	
-	String response_text;
-	if (p_body.size() > 0) {
-		const uint8_t *r = p_body.ptr();
-		response_text = String::utf8((const char *)r, p_body.size());
-	}
-	
-	JSON json;
-	Error err = json.parse(response_text);
-	
-	if (err != OK) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to parse " + job_type + " status response");
-		}
-		texture_poll_timer->stop();
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
-		if (cancel_operation_button) {
-			cancel_operation_button->set_visible(false);
-		}
-		return;
-	}
-	
-	Dictionary job_data = json.get_data();
-	
-	if (!job_data.has("status")) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Invalid " + job_type + " status response");
-		}
-		texture_poll_timer->stop();
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
-		return;
-	}
-	
-	String status = job_data["status"];
-	
-	if (status == "queued") {
-		String queue_info = "";
-		if (job_data.has("queue_position")) {
-			int position = job_data["queue_position"];
-			queue_info = " (Position: " + itos(position) + " in queue)";
-		}
-		if (texture_status_label) {
-			texture_status_label->set_text("[QUEUED] " + job_type.capitalize() + " job queued... waiting for GPU" + queue_info);
-		}
-	} else if (status == "processing") {
-		String timing = is_texturing ? "(this may take 60-90 seconds)" : "(this may take 20-30 seconds)";
-		String progress_info = "";
-		if (job_data.has("progress_percent")) {
-			int progress = job_data["progress_percent"];
-			progress_info = " - " + itos(progress) + "% complete";
-		}
-		if (texture_status_label) {
-			texture_status_label->set_text("[PROCESSING] Generating " + job_type + " on GPU... " + timing + progress_info);
-		}
-	} else if (status == "completed") {
-		texture_poll_timer->stop();
+		String status_text = "[TEXTURE] " + p_status;
 		
-		String file_url = "";
-		if (job_data.has("texture_file_url")) {
-			file_url = job_data["texture_file_url"];
-		} else if (job_data.has("segmented_model_url")) {
-			file_url = job_data["segmented_model_url"];
-		} else if (job_data.has("output_file_url")) {
-			file_url = job_data["output_file_url"];
+		// Add any additional progress information from p_data
+		if (p_data.has("progress_percent")) {
+			int progress = p_data["progress_percent"];
+			status_text += " (" + itos(progress) + "%)";
 		}
 		
-		if (file_url.is_empty()) {
-			if (texture_status_label) {
-				texture_status_label->set_text("[ERROR] No file URL in completed " + job_type + " response");
-			}
-			is_texturing = false;
-			is_segmenting = false;
+		texture_status_label->set_text(status_text);
+	}
+}
+
+void DesignStudio3DEditor::_on_texture_completed(const PackedByteArray &p_model_data, const String &p_filename) {
+	// Save textured model to temp directory
+	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String filename = p_filename.is_empty() ? ("textured_model_" + timestamp + ".glb") : p_filename;
+	String temp_path = "user://" + filename;
+	
+	Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
+	if (file.is_valid()) {
+		file->store_buffer(p_model_data);
+		file->close();
+		
+		// Update current model path to the textured version
+		current_model_path = temp_path;
+		
+		if (texture_status_label) {
+			String status_text = "[SUCCESS] Textured model completed!\n";
+			status_text += "Size: " + String::humanize_size(p_model_data.size()) + "\n";
+			status_text += "File: " + filename + "\n\n";
+			status_text += "[INFO] Textured model ready for export to workspace!";
+			texture_status_label->set_text(status_text);
+		}
+		
+		print_line("Texture generation completed: " + temp_path);
+	} else {
+		if (texture_status_label) {
+			texture_status_label->set_text("[ERROR] Failed to save textured model file");
+		}
+	}
+	
+	// Re-enable texture button and hide cancel button
+	if (add_texture_button) {
+		add_texture_button->set_disabled(false);
+	}
+	
+		if (cancel_operation_button) {
+			cancel_operation_button->set_visible(false);
+		}
+		}
+	
+void DesignStudio3DEditor::_on_texture_failed(const String &p_error_message) {
+		if (texture_status_label) {
+		texture_status_label->set_text("[ERROR] Texture generation failed:\n" + p_error_message);
+	}
+	
+	// Re-enable texture button and hide cancel button
+	if (add_texture_button) {
 			add_texture_button->set_disabled(false);
-			segment_button->set_disabled(false);
-			return;
-		}
-		
-		if (texture_status_label) {
-			texture_status_label->set_text("[COMPLETE] Downloading " + job_type + " result...");
-		}
-		
-		// Disconnect any existing connections first
-		if (texture_download_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded))) {
-			texture_download_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded));
-		}
-		
-		texture_download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_model_downloaded), CONNECT_ONE_SHOT);
-		texture_download_request->request(file_url);
-	} else if (status == "failed") {
-		texture_poll_timer->stop();
-		String error_msg = job_data.get("error_message", "Unknown error");
-		if (texture_status_label) {
-			texture_status_label->set_text("[FAILED] " + job_type.capitalize() + " generation failed: " + error_msg);
-		}
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
+	}
+	
 		if (cancel_operation_button) {
 			cancel_operation_button->set_visible(false);
-		}
-	} else if (status == "initializing" || status == "starting") {
-		if (texture_status_label) {
-			texture_status_label->set_text("[STARTING] Initializing " + job_type + " generation...");
-		}
+	}
+	
+	print_line("Texture generation failed: " + p_error_message);
+}
+
+// ============================================================================
+// Textured Models Support
+// ============================================================================
+
+void DesignStudio3DEditor::_fetch_textured_models_for_base_model(const String &p_base_model_id, int p_item_index) {
+	if (p_base_model_id.is_empty()) {
+		return;
+	}
+	
+	// Store the request mapping
+	pending_textured_requests[p_base_model_id] = p_item_index;
+	
+	// Add to queue instead of making request immediately
+	Dictionary request_data;
+	request_data["base_model_id"] = p_base_model_id;
+	request_data["item_index"] = p_item_index;
+	request_data["url"] = "https://gpu-proxy-976792908107.us-central1.run.app/api/users/" + current_user_id + "/models/" + p_base_model_id + "/textures";
+	
+	textured_request_queue.push_back(request_data);
+}
+
+void DesignStudio3DEditor::_process_textured_request_queue() {
+	if (is_processing_textured_requests || textured_request_queue.is_empty()) {
+		return;
+	}
+	
+	// Check if the HTTP request is available
+	if (textured_models_request->get_http_client_status() != HTTPClient::STATUS_DISCONNECTED) {
+		// Request is busy, try again later
+		Timer *retry_timer = memnew(Timer);
+		retry_timer->set_wait_time(0.1); // 100ms delay
+		retry_timer->set_one_shot(true);
+		add_child(retry_timer);
+		retry_timer->connect("timeout", callable_mp(this, &DesignStudio3DEditor::_process_textured_request_queue));
+		retry_timer->connect("timeout", Callable(retry_timer, "queue_free"), CONNECT_DEFERRED);
+		retry_timer->start();
+		return;
+	}
+	
+	is_processing_textured_requests = true;
+	
+	// Get the next request from the queue
+	Dictionary request_data = textured_request_queue[0];
+	textured_request_queue.remove_at(0);
+	
+	String base_model_id = request_data["base_model_id"];
+	String url = request_data["url"];
+	
+	// Disconnect any existing connections
+	if (textured_models_request->is_connected("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_models_received))) {
+		textured_models_request->disconnect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_models_received));
+	}
+	
+	textured_models_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_textured_models_received), CONNECT_ONE_SHOT);
+	
+	PackedStringArray headers;
+	headers.push_back("User-Agent: Godot-Editor/4.0");
+	
+	textured_models_request->request(url, headers);
+	
+	print_line("Processing textured models request for: " + base_model_id);
+}
+
+void DesignStudio3DEditor::_on_textured_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	// Mark this request as complete
+	is_processing_textured_requests = false;
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
+		// Silently fail - not all models have textured versions
+		print_line("No textured models found (HTTP " + itos(p_code) + ")");
+		
+		// Continue processing the queue
+		_process_textured_request_queue();
+		return;
+	}
+	
+	String response_text;
+	if (p_body.size() > 0) {
+		const uint8_t *r = p_body.ptr();
+		response_text = String::utf8((const char *)r, p_body.size());
+	}
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	if (err != OK) {
+		print_line("Failed to parse textured models response");
+		return;
+	}
+	
+	Dictionary response = json.get_data();
+	if (!response.has("textures")) {
+		return;
+	}
+	
+	Array textures = response["textures"];
+	if (textures.size() == 0) {
+		return; // No textured models for this base model
+	}
+	
+	// Filter out textured models with invalid URLs - but show completed ones even if URL is null
+	Array valid_textures;
+	for (int i = 0; i < textures.size(); i++) {
+		Dictionary texture_data = textures[i];
+		String status = texture_data.get("status", "");
+		Variant url_variant = texture_data.get("textured_mesh_url", "");
+		
+		print_line("Checking texture: status=" + status + ", url_variant type=" + itos(url_variant.get_type()));
+		
+		// Include all completed textures - we'll handle URL issues during loading
+		if (status == "completed") {
+			valid_textures.push_back(texture_data);
+			
+			String url_debug = "";
+			if (url_variant.get_type() == Variant::STRING) {
+				url_debug = url_variant;
 	} else {
-		if (texture_status_label) {
-			texture_status_label->set_text(job_type.capitalize() + " Status: " + status);
+				url_debug = "null/" + itos(url_variant.get_type());
+			}
+			print_line("Added texture with URL: " + url_debug);
 		}
+	}
+	
+	if (valid_textures.size() == 0) {
+		print_line("No completed textured models found for base model");
+		return; // No valid textured models for this base model
+	}
+	
+	textures = valid_textures; // Use only valid textures
+	print_line("Found " + itos(textures.size()) + " completed textured models");
+	
+	// Get the base model info
+	String base_model_id = "";
+	if (response.has("base_model") && response["base_model"].get_type() == Variant::DICTIONARY) {
+		Dictionary base_model = response["base_model"];
+		base_model_id = base_model.get("id", "");
+	}
+	
+	if (base_model_id.is_empty()) {
+		return;
+	}
+	
+	// Store textured models in cache
+	textured_models_cache[base_model_id] = textures;
+	
+	print_line("About to update UI for base model: " + base_model_id + " with " + itos(textures.size()) + " textures");
+	
+	// Update the UI to show that textured models are available
+	_update_model_row_with_textures(base_model_id, textures);
+	
+	// Don't modify the ItemList text - keep it clean
+	if (pending_textured_requests.has(base_model_id)) {
+		pending_textured_requests.erase(base_model_id);
+	}
+	
+	print_line("Found " + itos(textures.size()) + " textured models for base model: " + base_model_id);
+	
+	// Continue processing the queue
+	_process_textured_request_queue();
+}
+
+void DesignStudio3DEditor::_on_textured_model_selected(const String &p_textured_model_id) {
+	if (p_textured_model_id.is_empty()) {
+		return;
+	}
+	
+	// Create a dictionary with textured model data
+	Dictionary textured_model_data;
+	textured_model_data["id"] = p_textured_model_id;
+	textured_model_data["is_textured"] = true;
+	
+	// Find the textured model data in our cache
+	for (const Variant &base_id_var : textured_models_cache.keys()) {
+		String base_id = base_id_var;
+		Array textures = textured_models_cache[base_id];
+		
+		for (int i = 0; i < textures.size(); i++) {
+			Dictionary texture_data = textures[i];
+			if (texture_data.get("id", "") == p_textured_model_id) {
+				textured_model_data = texture_data;
+				break;
+			}
+		}
+	}
+	
+	// Load the textured model
+	_load_model_for_viewing(textured_model_data);
+	
+	print_line("Loading textured model: " + p_textured_model_id);
+}
+
+void DesignStudio3DEditor::_show_model_selection_dialog(const Dictionary &p_base_model, const Array &p_textured_models) {
+	if (!model_selection_dialog || !model_version_selector) {
+		return;
+	}
+	
+	// Store the data for later use
+	pending_base_model_data = p_base_model;
+	pending_textured_models = p_textured_models;
+	
+	// Clear and populate the option button
+	model_version_selector->clear();
+	
+	// Add the base model as the first option
+	String base_prompt = p_base_model.get("prompt", "Unknown");
+	model_version_selector->add_item("Original: " + base_prompt, 0);
+	model_version_selector->set_item_metadata(0, p_base_model);
+	
+	// Add textured models
+	for (int i = 0; i < p_textured_models.size(); i++) {
+		Dictionary textured_model = p_textured_models[i];
+		String texture_prompt = textured_model.get("prompt", "Textured version");
+		String created_at = textured_model.get("created_at", "");
+		String display_text = "Textured: " + texture_prompt;
+		if (!created_at.is_empty()) {
+			display_text += " (" + created_at.substr(0, 10) + ")";
+		}
+		
+		model_version_selector->add_item(display_text, i + 1);
+		model_version_selector->set_item_metadata(i + 1, textured_model);
+	}
+	
+	// Select the first item (base model) by default
+	model_version_selector->select(0);
+	
+	// Show the dialog
+	model_selection_dialog->popup_centered(Size2(500 * EDSCALE, 0));
+}
+
+void DesignStudio3DEditor::_on_model_selection_confirmed() {
+	if (!model_version_selector) {
+		return;
+	}
+	
+	int selected_idx = model_version_selector->get_selected();
+	if (selected_idx < 0) {
+		return;
+	}
+	
+	Dictionary selected_model_data = model_version_selector->get_item_metadata(selected_idx);
+	if (selected_model_data.is_empty()) {
+		return;
+	}
+	
+	String selected_text = model_version_selector->get_item_text(selected_idx);
+	browse_status_label->set_text("Loading: " + selected_text + "...");
+	
+	_load_model_for_viewing(selected_model_data);
+}
+
+// ============================================================================
+// New Expandable UI Methods
+// ============================================================================
+
+void DesignStudio3DEditor::_create_model_row(const Dictionary &p_model_data, int p_index) {
+	String model_id = p_model_data.get("id", "");
+	String prompt = p_model_data.get("prompt", "Unknown");
+	String created = p_model_data.get("created_at", "");
+	
+	// Add minimal spacing between rows
+	if (p_index > 0) { // Don't add spacing before first item
+		Control *spacer = memnew(Control);
+		spacer->set_custom_minimum_size(Size2(0, 1 * EDSCALE)); // Minimal spacing
+		models_container->add_child(spacer);
+	}
+	
+	// Create main row container
+	VBoxContainer *row_container = memnew(VBoxContainer);
+	row_container->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	models_container->add_child(row_container);
+	
+	// Store reference to this row
+	model_rows[model_id] = row_container;
+	
+	// Create main model button
+	HBoxContainer *main_row = memnew(HBoxContainer);
+	row_container->add_child(main_row);
+	
+	// Main model button
+	Button *model_button = memnew(Button);
+	// Truncate long prompts to fit in panel
+	String truncated_prompt = prompt;
+	if (truncated_prompt.length() > 20) {
+		truncated_prompt = truncated_prompt.substr(0, 20) + "...";
+	}
+	model_button->set_text(truncated_prompt + " (" + created.substr(0, 10) + ")");
+	model_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+	model_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+	model_button->set_custom_minimum_size(Size2(0, 20 * EDSCALE)); // Very compact height
+	model_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_model_row_pressed).bind(model_id));
+	main_row->add_child(model_button);
+	
+	// Expand button (initially hidden)
+	Button *expand_button = memnew(Button);
+	expand_button->set_text(">");
+	expand_button->set_custom_minimum_size(Size2(20 * EDSCALE, 20 * EDSCALE));
+	expand_button->set_flat(true);
+	expand_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_expand_button_pressed).bind(model_id));
+	expand_button->hide(); // Will be shown when textured models are found
+	main_row->add_child(expand_button);
+	
+	// Container for textured options (initially hidden)
+	VBoxContainer *textured_container = memnew(VBoxContainer);
+	textured_container->set_custom_minimum_size(Size2(0, 0));
+	textured_container->set_v_size_flags(Control::SIZE_SHRINK_CENTER);
+	textured_container->hide();
+	row_container->add_child(textured_container);
+	
+	// Store references in button metadata for easy access
+	model_button->set_meta("model_data", p_model_data);
+	expand_button->set_meta("model_id", model_id);
+	expand_button->set_meta("textured_container", textured_container);
+	row_container->set_meta("expand_button", expand_button);
+	row_container->set_meta("textured_container", textured_container);
+	row_container->set_meta("model_button", model_button);
+}
+
+void DesignStudio3DEditor::_update_model_row_with_textures(const String &p_base_model_id, const Array &p_textured_models) {
+	print_line("_update_model_row_with_textures called for " + p_base_model_id + " with " + itos(p_textured_models.size()) + " textures");
+	
+	if (!model_rows.has(p_base_model_id)) {
+		print_line("ERROR: No model row found for " + p_base_model_id);
+		return;
+	}
+	
+	VBoxContainer *row_container = Object::cast_to<VBoxContainer>(model_rows[p_base_model_id]);
+	if (!row_container) {
+		print_line("ERROR: Could not cast row_container for " + p_base_model_id);
+		return;
+	}
+	
+	Button *expand_button = Object::cast_to<Button>(row_container->get_meta("expand_button"));
+	VBoxContainer *textured_container = Object::cast_to<VBoxContainer>(row_container->get_meta("textured_container"));
+	Button *model_button = Object::cast_to<Button>(row_container->get_meta("model_button"));
+	
+	if (!expand_button || !textured_container || !model_button) {
+		String debug_msg = "ERROR: Missing UI elements - expand_button: ";
+		debug_msg += expand_button ? "OK" : "NULL";
+		debug_msg += ", textured_container: ";
+		debug_msg += textured_container ? "OK" : "NULL";
+		debug_msg += ", model_button: ";
+		debug_msg += model_button ? "OK" : "NULL";
+		print_line(debug_msg);
+		return;
+	}
+	
+	print_line("UI elements found, updating row for " + p_base_model_id);
+	
+	// Change the row color to indicate textured models are available
+	Color textured_color = Color(0.4, 0.6, 1.0, 1.0); // More visible blue tint
+	model_button->set_modulate(textured_color);
+	
+	// Force show expand button and make it visible
+	expand_button->show();
+	expand_button->set_visible(true);
+	
+	// Force update the layout
+	row_container->queue_redraw();
+	models_container->queue_redraw();
+	
+	print_line("Expand button shown and row updated for " + p_base_model_id);
+	
+	// Create textured model options (limit to prevent UI overflow)
+	int max_textured_to_show = 2; // Limit to 2 textured models per base model to prevent UI explosion
+	int textured_count = MIN(p_textured_models.size(), max_textured_to_show);
+	
+	for (int i = 0; i < textured_count; i++) {
+		Dictionary textured_model = p_textured_models[i];
+		String texture_id = textured_model.get("id", "");
+		String texture_prompt = textured_model.get("prompt", "Textured version");
+		String created_at = textured_model.get("created_at", "");
+		
+		print_line("Creating textured button for: " + texture_id + " with prompt: " + texture_prompt);
+		
+		// Truncate long prompts to prevent UI overflow
+		if (texture_prompt.length() > 20) {
+			texture_prompt = texture_prompt.substr(0, 20) + "...";
+		}
+		
+		Button *textured_button = memnew(Button);
+		String display_text = "  [T] " + texture_prompt;
+		textured_button->set_text(display_text);
+		textured_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		textured_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		textured_button->set_custom_minimum_size(Size2(0, 14 * EDSCALE)); // Super compact
+		textured_button->set_flat(true);
+		textured_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_textured_option_pressed).bind(texture_id));
+		textured_button->set_meta("textured_model_data", textured_model);
+		
+		// Simple color modulation for textured options
+		Color textured_option_color = Color(0.8, 0.9, 1.0, 1.0);
+		textured_button->set_modulate(textured_option_color);
+		
+		textured_container->add_child(textured_button);
+		print_line("Added textured button to container");
+	}
+	
+	print_line("Created " + itos(textured_count) + " textured buttons");
+	
+	// Show "..." button if there are more textured models than we're showing
+	if (p_textured_models.size() > max_textured_to_show) {
+		Button *more_button = memnew(Button);
+		more_button->set_text("  +" + itos(p_textured_models.size() - max_textured_to_show) + " more");
+		more_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+		more_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		more_button->set_custom_minimum_size(Size2(0, 12 * EDSCALE));
+		more_button->set_flat(true);
+		more_button->set_disabled(true); // Just for info, not clickable
+		textured_container->add_child(more_button);
 	}
 }
 
-void DesignStudio3DEditor::_on_textured_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
-	String job_type = is_texturing ? "texture" : "segmentation";
-	
-	if (p_result != HTTPRequest::RESULT_SUCCESS) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to download " + job_type + " result. Result: " + itos(p_result));
-		}
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
+void DesignStudio3DEditor::_on_model_row_pressed(const String &p_model_id) {
+	if (!model_rows.has(p_model_id)) {
 		return;
 	}
 	
-	if (p_code != 200) {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Failed to download " + job_type + " result (HTTP " + itos(p_code) + ")");
-		}
-		is_texturing = false;
-		is_segmenting = false;
-		add_texture_button->set_disabled(false);
-		segment_button->set_disabled(false);
+	VBoxContainer *row_container = Object::cast_to<VBoxContainer>(model_rows[p_model_id]);
+	Button *model_button = Object::cast_to<Button>(row_container->get_meta("model_button"));
+	
+	if (!model_button) {
 		return;
 	}
 	
-	if (p_body.size() > 0) {
-		// Save result to temp directory
-		String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
-		String extension = is_texturing ? ".glb" : ".obj";
-		String filename = job_type + "_model_" + timestamp + extension;
-		String temp_path = "user://" + filename;
-		
-		Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
-		if (file.is_valid()) {
-			file->store_buffer(p_body);
-			file->close();
-			
-			if (texture_status_label) {
-				texture_status_label->set_text("[SUCCESS] " + job_type.capitalize() + " result downloaded!\nSize: " + String::humanize_size(p_body.size()) + "\nSaved as: " + filename + "\n\n[INFO] " + job_type.capitalize() + " result ready for viewing and export!");
-			}
-			
-			// Update current model path to the processed version
-			current_model_path = temp_path;
-			
-			// Try to load the processed model in viewer
-			// For now, just show success message - GLB/OBJ loading might need additional work
-		} else {
-			if (texture_status_label) {
-				texture_status_label->set_text("[ERROR] Failed to save " + job_type + " result file");
-			}
-		}
+	Dictionary model_data = model_button->get_meta("model_data");
+	String prompt = model_data.get("prompt", "Unknown");
+	
+	browse_status_label->set_text("Loading: " + prompt + "...");
+	_load_model_for_viewing(model_data);
+}
+
+void DesignStudio3DEditor::_on_expand_button_pressed(const String &p_model_id) {
+	print_line("Expand button pressed for model: " + p_model_id);
+	
+	if (!model_rows.has(p_model_id)) {
+		print_line("ERROR: Model row not found for: " + p_model_id);
+		return;
+	}
+	
+	VBoxContainer *row_container = Object::cast_to<VBoxContainer>(model_rows[p_model_id]);
+	Button *expand_button = Object::cast_to<Button>(row_container->get_meta("expand_button"));
+	VBoxContainer *textured_container = Object::cast_to<VBoxContainer>(row_container->get_meta("textured_container"));
+	
+	if (!expand_button || !textured_container) {
+		print_line("ERROR: Missing expand button or textured container");
+		return;
+	}
+	
+	bool is_expanded = expanded_models.get(p_model_id, false);
+	expanded_models[p_model_id] = !is_expanded;
+	
+	String debug_msg = "Toggle expand state: was ";
+	debug_msg += is_expanded ? "expanded" : "collapsed";
+	debug_msg += ", now ";
+	debug_msg += (!is_expanded) ? "expanded" : "collapsed";
+	print_line(debug_msg);
+	
+	if (is_expanded) {
+		// Collapse
+		textured_container->hide();
+		expand_button->set_text(">");
+		print_line("Collapsed textured options for " + p_model_id);
 	} else {
-		if (texture_status_label) {
-			texture_status_label->set_text("[ERROR] Downloaded " + job_type + " result is empty");
+		// Expand
+		textured_container->show();
+		expand_button->set_text("v");
+		String debug_msg = "Expanded textured options for " + p_model_id + " - container has " + itos(textured_container->get_child_count()) + " children";
+		print_line(debug_msg);
+	}
+}
+
+void DesignStudio3DEditor::_on_textured_option_pressed(const String &p_textured_model_id) {
+	if (p_textured_model_id.is_empty()) {
+		return;
+	}
+	
+	// Find the textured model data
+	Dictionary textured_model_data;
+	for (const Variant &base_id_var : textured_models_cache.keys()) {
+		String base_id = base_id_var;
+		Array textures = textured_models_cache[base_id];
+		
+		for (int i = 0; i < textures.size(); i++) {
+			Dictionary texture_data = textures[i];
+			if (texture_data.get("id", "") == p_textured_model_id) {
+				textured_model_data = texture_data;
+				break;
+			}
+		}
+		
+		if (!textured_model_data.is_empty()) {
+			break;
 		}
 	}
 	
-	// Reset state
-	is_texturing = false;
-	is_segmenting = false;
-	add_texture_button->set_disabled(false);
-	segment_button->set_disabled(false);
-	current_texture_job_id = "";
-	
-	// Hide cancel button
-	if (cancel_operation_button) {
-		cancel_operation_button->set_visible(false);
+	if (textured_model_data.is_empty()) {
+		browse_status_label->set_text("[ERROR] Textured model data not found");
+		return;
 	}
+	
+	String texture_prompt = textured_model_data.get("prompt", "Textured model");
+	browse_status_label->set_text("Loading textured model: " + texture_prompt + "...");
+	
+	// Force mark this as textured for proper URL handling
+	textured_model_data["is_textured"] = true;
+	
+	print_line("About to load textured model with data: " + JSON::stringify(textured_model_data));
+	
+	_load_model_for_viewing(textured_model_data);
 }
 
 DesignStudio3DEditor::DesignStudio3DEditor() {
@@ -3052,6 +3263,9 @@ DesignStudio3DEditor::DesignStudio3DEditor() {
 	
 	// Generate persistent user ID on first creation
 	current_user_id = _get_or_create_persistent_user_id();
+	
+	// Initialize texture system
+	texture_system = memnew(DesignStudioTextureSystem);
 	
 	// Confirm user ID is working
 	print_line("3D Design Studio initialized with persistent user ID: " + current_user_id);
