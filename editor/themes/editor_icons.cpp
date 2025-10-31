@@ -241,14 +241,14 @@ void editor_copy_icons(const Ref<Theme> &p_theme, const Ref<Theme> &p_old_theme)
 
 // Returns the SVG code for the default project icon.
 String get_default_project_icon() {
-	// Use Orca logo SVG directly - embedded in source
+	// Simple Orca-themed project icon
 	return String(
-		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 512 512\">"
-		"<defs>"
-		"<style>.cls-1{fill:#fff;}</style>"
-		"</defs>"
-		"<path class=\"cls-1\" d=\"M256,32C132.29,32,32,132.29,32,256S132.29,480,256,480,480,379.71,480,256,379.71,32,256,32ZM352,320c0,35.35-28.65,64-64,64H224c-35.35,0-64-28.65-64-64V192c0-35.35,28.65-64,64-64h64c35.35,0,64,28.65,64,64V320Z\"/>"
-		"<circle class=\"cls-1\" cx=\"256\" cy=\"192\" r=\"32\"/>"
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\">"
+		"<rect width=\"128\" height=\"128\" rx=\"16\" fill=\"#478cbf\"/>"
+		"<text x=\"64\" y=\"75\" font-family=\"Arial, sans-serif\" font-size=\"48\" font-weight=\"bold\" "
+		"text-anchor=\"middle\" fill=\"#ffffff\">ORCA</text>"
+		"<circle cx=\"32\" cy=\"35\" r=\"8\" fill=\"#ffffff\"/>"
+		"<circle cx=\"96\" cy=\"35\" r=\"8\" fill=\"#ffffff\"/>"
 		"</svg>"
 	);
 }

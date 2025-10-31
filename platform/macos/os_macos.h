@@ -165,6 +165,7 @@ public:
 	void cleanup();
 	bool os_should_terminate() const { return should_terminate; }
 	int get_cmd_argc() const { return argc; }
+	void handle_auth_url(const String &p_url);
 
 	virtual void run() override;
 

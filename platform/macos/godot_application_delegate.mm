@@ -183,7 +183,16 @@ static const char *godot_ac_ctx = "gd_accessibility_observer_ctx";
 		if ([url isFileURL]) {
 			args.push_back(String::utf8([url.path UTF8String]));
 		} else {
-			args.push_back(vformat("--uri=\"%s\"", String::utf8([url.absoluteString UTF8String])));
+			String url_string = String::utf8([url.absoluteString UTF8String]);
+			
+			// Check if this is an orca:// authentication callback
+			if (url_string.begins_with("orca://")) {
+				// Handle authentication deep link
+				os_mac->handle_auth_url(url_string);
+				return; // Don't add to args or create new instance
+			} else {
+				args.push_back(vformat("--uri=\"%s\"", url_string));
+			}
 		}
 	}
 	if (!args.is_empty()) {

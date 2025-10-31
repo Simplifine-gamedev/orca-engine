@@ -12,6 +12,7 @@
 #include "editor/themes/editor_scale.h"
 #include "editor/update/editor_updater.h"
 #include "scene/gui/margin_container.h"
+#include "scene/resources/style_box_flat.h"
 
 void UpdateNotificationPopup::_bind_methods() {
     ClassDB::bind_method(D_METHOD("show_update_notification", "version", "download_url"), &UpdateNotificationPopup::show_update_notification, DEFVAL(""));

@@ -8,10 +8,12 @@
 #include "ai_terminal_ui.h"
 #include "ai_chat_input_box.h"
 #include "ai_chat_streaming_indicator.h"
+#include "ai_chat_tool_styling.h"
 #include "ai_checkpoint_manager.h"
 #include "ai_manual_snapshots.h"
 #include "ai_conversation_persistence.h"
 #include "ai_chat_save_coordinator.h"
+#include "editor/auth/auth_manager.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -1204,7 +1206,7 @@ void AIChatDock::_notification(int p_notification) {
 
 			// Only initialize embedding system if this is the active singleton instance
 			if (singleton == this) {
-				// Ensure indexing is set up immediately on startup (guest if needed)
+				// Ensure indexing is set up immediately on startup
 				_ensure_project_indexing();
 			} else {
 				print_line("AI Chat: Skipping embedding initialization - not the active singleton instance");
@@ -2095,24 +2097,9 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 // Authentication Implementation
 
 void AIChatDock::_setup_authentication_ui() {
-	// User authentication row
-	HBoxContainer *auth_container = memnew(HBoxContainer);
-	add_child(auth_container);
-	
-	Label *auth_label = memnew(Label);
-	auth_label->set_text("User:");
-	auth_container->add_child(auth_label);
-	
-	user_status_label = memnew(Label);
-	user_status_label->set_text("Not logged in");
-	user_status_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	auth_container->add_child(user_status_label);
-	
-	login_button = memnew(Button);
-	login_button->set_text("Login");
-	login_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Key"), SNAME("EditorIcons")));
-	login_button->connect("pressed", callable_mp(this, &AIChatDock::_on_login_button_pressed));
-	auth_container->add_child(login_button);
+	// Toolbar for import/export/snapshot buttons (auth removed - handled by AuthManager)
+	HBoxContainer *toolbar_container = memnew(HBoxContainer);
+	add_child(toolbar_container);
 	
 	// Import conversation button
 	import_button = memnew(Button);
@@ -2120,7 +2107,7 @@ void AIChatDock::_setup_authentication_ui() {
 	import_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Load"), SNAME("EditorIcons")));
 	import_button->connect("pressed", callable_mp(this, &AIChatDock::_on_import_button_pressed));
 	import_button->set_tooltip_text("Import conversation from JSON file");
-	auth_container->add_child(import_button);
+	toolbar_container->add_child(import_button);
 	
 	// Export conversation button
 	export_button = memnew(Button);
@@ -2128,7 +2115,7 @@ void AIChatDock::_setup_authentication_ui() {
 	export_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Save"), SNAME("EditorIcons")));
 	export_button->connect("pressed", callable_mp(this, &AIChatDock::_on_export_button_pressed));
 	export_button->set_tooltip_text("Export current conversation to JSON file");
-	auth_container->add_child(export_button);
+	toolbar_container->add_child(export_button);
 	
 	// Manual Snapshot button
 	snapshot_button = memnew(Button);
@@ -2136,7 +2123,7 @@ void AIChatDock::_setup_authentication_ui() {
 	snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Favorites"), SNAME("EditorIcons")));
 	snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_snapshot_pressed));
 	snapshot_button->set_tooltip_text("Save a named snapshot of your entire project");
-	auth_container->add_child(snapshot_button);
+	toolbar_container->add_child(snapshot_button);
 	
 	// Restore Snapshot button
 	restore_snapshot_button = memnew(Button);
@@ -2144,7 +2131,7 @@ void AIChatDock::_setup_authentication_ui() {
 	restore_snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
 	restore_snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_snapshots_pressed));
 	restore_snapshot_button->set_tooltip_text("View and restore manual snapshots");
-	auth_container->add_child(restore_snapshot_button);
+	toolbar_container->add_child(restore_snapshot_button);
 	
 	// Create HTTP request for authentication
 	auth_request = memnew(HTTPRequest);
@@ -2173,10 +2160,8 @@ void AIChatDock::_on_login_button_pressed() {
     PopupMenu *providers = memnew(PopupMenu);
     add_child(providers);
     int id_google = 1;
-    int id_guest = 2;
     providers->add_icon_item(get_theme_icon(SNAME("Key"), SNAME("EditorIcons")), "Sign in with Google", id_google);
-    providers->add_separator();
-    providers->add_icon_item(get_theme_icon(SNAME("Key"), SNAME("EditorIcons")), "Continue as Guest", id_guest);
+    // Guest mode removed - users must authenticate at startup
     providers->set_name("auth_provider_menu");
     providers->connect("id_pressed", callable_mp(this, &AIChatDock::_on_auth_provider_selected));
     // Popup directly under the login button using parent-anchored rect
@@ -2220,27 +2205,17 @@ void AIChatDock::_on_auth_provider_selected(int p_id) {
     String provider;
     if (p_id == 1) {
         provider = "google";
-    } else if (p_id == 2) {
-        provider = "guest";
     } else {
         return;
     }
     pending_login_provider = provider;
-    if (provider == "guest") {
-        // Call backend to create/get guest session, then reflect in UI
-        current_user_id = "guest:" + get_machine_id();
-        current_user_name = "Guest";
-        auth_token = ""; // Guest flow in backend does not need token in headers
-        _update_user_status();
-        print_line("AI Chat: Using guest session");
-        return;
-    } else {
-        String machine_id = OS::get_singleton()->get_unique_id();
-        String url = AILoginHelper::build_auth_login_url(api_endpoint, machine_id, provider);
-        OS::get_singleton()->shell_open(url);
-    }
+    
+    // Open web login for Google OAuth
+    String machine_id = OS::get_singleton()->get_unique_id();
+    String url = AILoginHelper::build_auth_login_url(api_endpoint, machine_id, provider);
+    OS::get_singleton()->shell_open(url);
 
-    // Start polling silently; if Microsoft was chosen, require provider and disallow guest
+    // Start polling for authentication
     user_status_label->set_text("Waiting for login...");
     _start_login_polling();
 }
@@ -2362,11 +2337,9 @@ void AIChatDock::_logout_user() {
 	print_line("AI Chat: User logged out - embedding system reset");
 }
 bool AIChatDock::_is_user_authenticated() const {
-	// Treat guest sessions as authenticated for indexing and chat.
-	if (current_user_id.begins_with("guest:")) {
-		return true;
-	}
-	return !current_user_id.is_empty() && !auth_token.is_empty();
+	// Use AuthManager for authentication
+	AuthManager *auth = AuthManager::get_singleton();
+	return auth && auth->get_is_authenticated();
 }
 
 void AIChatDock::_auto_verify_saved_credentials() {
@@ -2449,13 +2422,10 @@ void AIChatDock::_ensure_project_indexing() {
 	print_line("AI Chat: DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
 	print_line("AI Chat: DEBUG - initial_indexing_done: " + String(initial_indexing_done ? "true" : "false"));
 	
-    // If not authenticated, fallback to guest automatically
+    // Guest mode removed - users must be authenticated to use AI chat
     if (!_is_user_authenticated()) {
-        current_user_id = "guest:" + get_machine_id();
-        current_user_name = "Guest";
-        auth_token = "";
-        _update_user_status();
-        print_line("AI Chat: No auth detected; indexing as guest");
+        print_line("AI Chat: User not authenticated - skipping indexing. Please sign in.");
+        return;
     }
 	
 	// Initialize embedding system if needed
@@ -3024,6 +2994,56 @@ void AIChatDock::_on_token_count_response(int p_result, int p_code, const Packed
 			indicator_color = get_theme_color(SNAME("error_color"), SNAME("Editor")); // Red danger
 		}
 		token_indicator->add_theme_color_override("font_color", indicator_color);
+	}
+	
+	// Dynamic height adjustment for up to 6 lines
+	if (input_field && input_field->is_inside_tree()) {
+		String text = input_field->get_text();
+		int line_count = 1; // Start with 1 line minimum
+		
+		// Count actual lines in the text
+		for (int i = 0; i < text.length(); i++) {
+			if (text[i] == '\n') {
+				line_count++;
+			}
+		}
+		
+		// Add wrapped lines based on text width (approximate)
+		// This is a simplified calculation - actual wrapping is more complex
+		if (!text.is_empty()) {
+			Ref<Font> font = input_field->get_theme_font(SNAME("font"));
+			int font_size = input_field->get_theme_font_size(SNAME("font_size"));
+			if (font.is_valid()) {
+				float content_width = input_field->get_size().width - 40; // Account for margins
+				if (content_width > 0) {
+					Vector<String> lines = text.split("\n");
+					line_count = 0;
+					for (const String &line : lines) {
+						if (line.is_empty()) {
+							line_count++;
+						} else {
+							float line_width = font->get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).width;
+							int wrapped_lines = MAX(1, (int)Math::ceil(line_width / content_width));
+							line_count += wrapped_lines;
+						}
+					}
+				}
+			}
+		}
+		
+		// Clamp to maximum 6 lines
+		line_count = MIN(line_count, 6);
+		
+		// Calculate height: base padding + (line_count * line_height)
+		int line_height = input_field->get_theme_font_size(SNAME("font_size")) + 4; // Font size + some spacing
+		int base_padding = 32; // Top and bottom padding from style
+		int target_height = base_padding + (line_count * line_height);
+		
+		// Ensure minimum height
+		target_height = MAX(target_height, 80);
+		
+		// Update the input field height
+		input_field->set_custom_minimum_size(Size2(0, target_height));
 	}
 }
 // --- At-Mention Implementation ---
@@ -6433,24 +6453,11 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	String descriptive_status = _generate_descriptive_tool_status(p_name, p_args, data, success);
 	toggle_button->set_text(descriptive_status);
 	
-	toggle_button->set_flat(false);
-	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	toggle_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	// Prevent long status lines from expanding the dock width
-	toggle_button->set_clip_text(true);
-	toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	// Use monochromatic styling (no green/red colors)
+	AIChatToolStyling::style_tool_result_button(toggle_button, success, this);
+	
 	// Preserve full text in tooltip for accessibility
 	toggle_button->set_tooltip_text(toggle_button->get_text());
-	// Remove icons for cleaner appearance - just use colored text
-	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
 	// Add accept/reject buttons for file editing tools after the main toggle button
@@ -6789,30 +6796,78 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
         String message = p_result.get("message", "");
         return "" + p_tool_name + ": " + message;
     } else {
-        // Error messages - also make them more descriptive
+        // Error messages - use positive, user-friendly language
+        String error_message = p_result.get("message", "");
+        
         if (p_tool_name == "search_manager" && actual_op == "project.search") {
             String query = p_args.get("query", "");
-            return "✗ Search failed for: '" + query + "'";
+            return "No results found for: '" + query + "'";
         } else if (p_tool_name == "project_manager" && actual_op == "fs.read") {
             String path = p_args.get("path", "");
-            return "✗ Failed to read: " + _convert_to_godot_path(path);
+            return "Could not read file: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.write") {
             String path = p_args.get("path", "");
-            return "✗ Failed to write: " + _convert_to_godot_path(path);
+            return "Could not write file: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.write_lines") {
             String path = p_args.get("path", "");
-            return "✗ Failed to edit lines in: " + _convert_to_godot_path(path);
+            return "Could not edit file: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.replace_string") {
             String path = p_args.get("path", "");
-            return "✗ Failed to replace string in: " + _convert_to_godot_path(path);
+            return "Could not replace text in: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.delete") {
+            String path = p_args.get("path", "");
+            return "Could not delete: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.copy") {
+            String path = p_args.get("path", "");
+            return "Could not copy file: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.move") {
+            String path = p_args.get("path", "");
+            return "Could not move file: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "project_manager" && actual_op == "fs.mkdir") {
+            String path = p_args.get("path", "");
+            return "Could not create directory: " + _convert_to_godot_path(path);
         } else if (p_tool_name == "apply_edit") {
             String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
-            return "✗ Edit failed for: " + _convert_to_godot_path(file_path);
+            return "Could not apply edit to: " + _convert_to_godot_path(file_path);
+        } else if (p_tool_name == "image_operation") {
+            return "Could not generate image" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "search_across_project") {
+            String query = p_args.get("query", "");
+            return "No files found" + (!query.is_empty() ? " for: '" + query + "'" : "");
+        } else if (p_tool_name == "search_across_godot_docs") {
+            String query = p_args.get("query", "");
+            return "No documentation found" + (!query.is_empty() ? " for: '" + query + "'" : "");
+        } else if (p_tool_name == "search_godot_assets") {
+            String query = p_args.get("query", "");
+            return "No assets found" + (!query.is_empty() ? " for: '" + query + "'" : "");
+        } else if (p_tool_name == "install_godot_asset") {
+            return "Could not install asset" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "scene_manager" && actual_op == "node.create") {
+            String type = p_args.get("type", "node");
+            return "Could not create " + type;
+        } else if (p_tool_name == "scene_manager" && actual_op == "node.delete") {
+            String path = p_args.get("path", "node");
+            return "Could not delete: " + path;
+        } else if (p_tool_name == "scene_manager" && actual_op == "scene.open") {
+            String path = p_args.get("scene_path", p_args.get("path", ""));
+            return "Could not open scene: " + _convert_to_godot_path(path);
+        } else if (p_tool_name == "runtime_manager" && actual_op == "game.start") {
+            return "Could not start game" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "runtime_manager" && actual_op == "game.stop") {
+            return "Could not stop game" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "runtime_manager" && actual_op == "screenshot.take") {
+            return "Could not capture screenshot" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "resource_manager" && actual_op == "image.generate_or_edit") {
+            return "Could not generate image" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "resource_manager" && actual_op == "image.slice_spritesheet") {
+            return "Could not slice spritesheet" + (!error_message.is_empty() ? ": " + error_message : "");
         }
         
-        // Fallback to generic error message
-        String message = p_result.get("message", "");
-        return "✗ " + p_tool_name + " failed: " + message;
+        // Fallback to generic friendly message
+        if (!error_message.is_empty()) {
+            return error_message;
+        }
+        return "Operation could not be completed";
     }
 }
 
@@ -7587,8 +7642,8 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
         Label *tool_label = memnew(Label);
         // CRITICAL FIX: Use descriptive status from the start, not generic "[TOOL]"
         tool_label->set_text(descriptive_status);
-		tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color
-		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		// Use monochromatic styling for executing tools
+		AIChatToolStyling::style_executing_tool_label(tool_label, this);
 		tool_hbox->add_child(tool_label);
 
 		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
@@ -7692,21 +7747,9 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
 	String descriptive_status = _generate_descriptive_tool_status(p_tool_message.name, args, result, success);
 	toggle_button->set_text(descriptive_status);
 	
-    toggle_button->set_flat(false);
-	toggle_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	toggle_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-    toggle_button->set_clip_text(true);
-    toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	// Remove icons for cleaner appearance - just use colored text
-	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	toggle_button->add_theme_style_override("normal", tool_button_style);
+	// Use monochromatic styling (no green/red colors)
+	AIChatToolStyling::style_tool_result_button(toggle_button, success, this);
+	toggle_button->set_tooltip_text(toggle_button->get_text());
 	tool_container->add_child(toggle_button);
 
     PanelContainer *content_panel = memnew(PanelContainer);
@@ -11694,11 +11737,7 @@ void AIChatDock::_finalize_chat_request() {
 	headers.push_back("Content-Type: application/json");
 	_add_version_headers_to_request(headers);
 	
-	// Add authentication headers
-	if (!auth_token.is_empty()) {
-		headers.push_back("Authorization: Bearer " + auth_token);
-	}
-    headers.push_back("X-User-ID: " + current_user_id);
+	// Auth headers added by _add_version_headers_to_request
 	headers.push_back("X-Machine-ID: " + get_machine_id());
     // Always pass current project root to ensure backend targets the right project
     headers.push_back("X-Project-Root: " + ProjectSettings::get_singleton()->globalize_path("res://"));
@@ -11918,7 +11957,7 @@ void AIChatDock::_update_ui_state() {
 
 	// Handle send button state
 	send_button->set_disabled(input_field->get_text().strip_edges().is_empty() || busy);
-	input_field->set_editable(!busy);
+	// Allow typing while streaming for better UX - users can prepare their next message
 
 	// Update conversation dropdown indicator: show orange dot for busy conversations
 	if (conversation_history_manager) {
@@ -14756,14 +14795,13 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 		if (tool_label) {
 			if (p_status == "starting") {
 				tool_label->set_text("Executing: " + p_tool_name + "...");
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
 			} else if (p_status == "running") {
 				tool_label->set_text("Running: " + p_tool_name + "...");
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			} else if (p_status == "completed") {
 				tool_label->set_text("Completed: " + p_tool_name);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
+			// Use monochromatic styling for all states
+			AIChatToolStyling::style_executing_tool_label(tool_label, this);
 		}
 		}
 	}
@@ -14806,17 +14844,15 @@ void AIChatDock::_update_tool_placeholder_with_description(const String &p_tool_
 				print_line("AI Chat: UPDATE_STATUS - Found Label, updating text");
 			if (p_status == "executing") {
 				tool_label->set_text(p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for executing
 			} else if (p_status == "starting") {
 				tool_label->set_text("Starting: " + p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0)); // Blue color for starting
 			} else if (p_status == "running") {
 				tool_label->set_text(p_description);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
 			} else if (p_status == "completed") {
 				tool_label->set_text("Completed: " + p_tool_name);
-				tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 			}
+			// Use monochromatic styling for all states
+			AIChatToolStyling::style_executing_tool_label(tool_label, this);
 			
 			// Force immediate UI update
 			tool_label->queue_redraw();
@@ -15017,8 +15053,8 @@ void AIChatDock::_create_backend_tool_placeholder(const String &p_tool_id, const
     Label *tool_label = memnew(Label);
     String executing_message = _generate_executing_tool_message(p_tool_name, "");
     tool_label->set_text(executing_message);
-	tool_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(0.2, 0.8, 1.0, 1.0));
-	tool_label->add_theme_icon_override("icon", get_theme_icon(SNAME("Tools"), SNAME("EditorIcons")));
+	// Use monochromatic styling for executing tools
+	AIChatToolStyling::style_executing_tool_label(tool_label, this);
 	tool_hbox->add_child(tool_label);
 	
 	chat_container->add_child(bubble_panel);
@@ -15397,13 +15433,7 @@ void AIChatDock::_send_embedding_request(const String &p_action, const Dictionar
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	_add_version_headers_to_request(headers);
-	
-	// Add authentication headers
-	if (!auth_token.is_empty()) {
-		headers.push_back("Authorization: Bearer " + auth_token);
-	}
-	headers.push_back("X-User-ID: " + current_user_id);
+	_add_version_headers_to_request(headers); // Includes auth headers
 	headers.push_back("X-Machine-ID: " + get_machine_id());
 	
     print_line("AI Chat: Sending embedding request: " + p_action + " to " + embed_url +
@@ -17931,6 +17961,13 @@ Dictionary AIChatDock::_summarize_scene_node_for_context(const Dictionary &p_nod
 void AIChatDock::_add_version_headers_to_request(PackedStringArray &p_headers) {
 	p_headers.push_back("X-Frontend-Version: " + FRONTEND_VERSION);
 	p_headers.push_back("X-Frontend-API-Version: " + API_VERSION);
+	
+	// Add authentication headers from AuthManager
+	AuthManager *auth = AuthManager::get_singleton();
+	if (auth && auth->get_is_authenticated()) {
+		p_headers.push_back("Authorization: Bearer " + auth->get_access_token());
+		p_headers.push_back("X-User-ID: " + auth->get_user_id());
+	}
 }
 
 void AIChatDock::_check_version_compatibility_on_startup() {
@@ -18221,22 +18258,12 @@ void AIChatDock::_apply_simplified_tool_result(const String &p_tool_call_id, con
 	placeholder->add_child(simple_container);
 
 	Button *status_button = memnew(Button);
-	status_button->set_text("[" + p_tool_name + "] " + status_message);
-	status_button->set_flat(true);
-	status_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-	status_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-	status_button->set_clip_text(true);
+	// Use the status message directly (no [tool_name] prefix)
+	status_button->set_text(status_message);
+	
+	// Use monochromatic styling (no green/red colors)
+	AIChatToolStyling::style_tool_result_button(status_button, success, this);
 	status_button->set_tooltip_text("Click to view full details");
-	// Remove icons for cleaner appearance - just use colored text
-	status_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	status_button->add_theme_style_override("normal", tool_button_style);
 	
 	// On click, expand to show full tool result
 	status_button->connect("pressed", callable_mp(this, &AIChatDock::_expand_simplified_tool_result).bind(p_tool_call_id, p_tool_name, p_content, placeholder));

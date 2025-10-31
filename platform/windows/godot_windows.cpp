@@ -76,6 +76,17 @@ int widechar_main(int argc, wchar_t **argv) {
 		argv_utf8[i] = wc_to_utf8(argv[i]);
 	}
 
+	// Check if this is an orca:// auth callback
+	#ifdef TOOLS_ENABLED
+	if (argc > 1) {
+		String arg1 = String(argv_utf8[1]);
+		if (arg1.begins_with("orca://")) {
+			// Store the auth URL for the editor to process
+			OS::get_singleton()->set_environment("ORCA_AUTH_URL", arg1);
+		}
+	}
+	#endif
+
 	TEST_MAIN_PARAM_OVERRIDE(argc, argv_utf8)
 
 	Error err = Main::setup(argv_utf8[0], argc - 1, &argv_utf8[1]);
