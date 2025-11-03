@@ -26,6 +26,10 @@ public:
 	
 	// Get monochrome color for tool status (no green/red)
 	static Color get_tool_status_color(bool p_success, Control *p_theme_source);
+	
+	// Format tool status with Cursor-style split emphasis (action bright, details faded)
+	// Example: "Writing file: path.gd" -> "Writing file" (bright) + ": path.gd" (faded)
+	static String format_tool_status_with_emphasis(const String &p_status);
 };
 
 #endif // AI_CHAT_TOOL_STYLING_H

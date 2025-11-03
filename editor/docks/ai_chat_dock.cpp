@@ -14,6 +14,12 @@
 #include "ai_conversation_persistence.h"
 #include "ai_chat_save_coordinator.h"
 #include "editor/auth/auth_manager.h"
+#include "ai_chat_path_formatter.h"
+#include "ai_chat_tool_name_formatter.h"
+#include "ai_chat_streaming_manager.h"
+#include "ai_chat_markdown_renderer.h"
+#include "ai_chat_model_manager.h"
+#include "ai_chat_input_handler.h"
 #include "core/io/config_file.h"
 #include "core/io/json.h"
 #include "core/os/time.h"
@@ -145,6 +151,9 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_mode_changed", "mode"), &AIChatDock::_on_mode_changed);
 	ClassDB::bind_method(D_METHOD("_populate_all_models"), &AIChatDock::_populate_all_models);
 	ClassDB::bind_method(D_METHOD("_on_models_request_completed"), &AIChatDock::_on_models_request_completed);
+	ClassDB::bind_method(D_METHOD("_on_add_models_pressed"), &AIChatDock::_on_add_models_pressed);
+	ClassDB::bind_method(D_METHOD("_on_add_models_item_selected"), &AIChatDock::_on_add_models_item_selected);
+	ClassDB::bind_method(D_METHOD("_on_add_models_dialog_confirmed"), &AIChatDock::_on_add_models_dialog_confirmed);
 	ClassDB::bind_method(D_METHOD("_on_index_button_pressed"), &AIChatDock::_on_index_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_tool_output_toggled"), &AIChatDock::_on_tool_output_toggled);
 	ClassDB::bind_method(D_METHOD("_on_tool_file_link_pressed", "path"), &AIChatDock::_on_tool_file_link_pressed);
@@ -569,7 +578,7 @@ void AIChatDock::_handle_thinking_content_delta(const String &p_reasoning_delta)
 	}
 	
 	// Update the thinking label with formatted content
-	String formatted_thinking = _markdown_to_bbcode(current_thinking_content);
+	String formatted_thinking = AIChatMarkdownRenderer::markdown_to_bbcode(current_thinking_content);
 	current_thinking_label->set_text(formatted_thinking);
 	
 	// Auto-scroll if user is at the bottom
@@ -619,7 +628,7 @@ void AIChatDock::_handle_thinking_blocks_delta(const Array &p_thinking_blocks_de
 	}
 	
 	// Update the thinking label
-	String formatted_thinking = _markdown_to_bbcode(current_thinking_content);
+	String formatted_thinking = AIChatMarkdownRenderer::markdown_to_bbcode(current_thinking_content);
 	current_thinking_label->set_text(formatted_thinking);
 	
 	// Auto-scroll if user is at the bottom
@@ -762,7 +771,7 @@ void AIChatDock::_create_saved_thinking_section(VBoxContainer *p_message_vbox, c
 	// Set the saved reasoning content
 	String thinking_content = p_message.reasoning_content;
 	if (!thinking_content.is_empty()) {
-		String formatted_thinking = _markdown_to_bbcode(thinking_content);
+		String formatted_thinking = AIChatMarkdownRenderer::markdown_to_bbcode(thinking_content);
 		thinking_label->set_text(formatted_thinking);
 	}
 	
@@ -874,6 +883,28 @@ void AIChatDock::_notification(int p_notification) {
 		image_warning_dialog = memnew(AcceptDialog);
 		image_warning_dialog->set_title("Image Downsampled");
 		add_child(image_warning_dialog);
+		
+		// Create "Add Models" dialog
+		add_models_dialog = memnew(AcceptDialog);
+		add_models_dialog->set_title("Add Models");
+		add_models_dialog->set_size(Size2i(500, 600));
+		
+		VBoxContainer *add_models_vbox = memnew(VBoxContainer);
+		add_models_dialog->add_child(add_models_vbox);
+		
+		Label *add_models_label = memnew(Label);
+		add_models_label->set_text("Select models to add to your dropdown:");
+		add_models_vbox->add_child(add_models_label);
+		
+		add_models_tree = memnew(Tree);
+		add_models_tree->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		add_models_tree->set_hide_root(true);
+		add_models_tree->set_select_mode(Tree::SELECT_MULTI);
+		add_models_tree->set_columns(1);
+		add_models_vbox->add_child(add_models_tree);
+		
+		add_models_dialog->connect("confirmed", callable_mp(this, &AIChatDock::_on_add_models_dialog_confirmed));
+		add_child(add_models_dialog);
 		
 		// Restore checkpoint confirmation dialog
 		restore_checkpoint_dialog = memnew(ConfirmationDialog);
@@ -1541,9 +1572,15 @@ void AIChatDock::_on_send_button_pressed() {
 		}
 	}
 	
-	// Now start the indicator
-	if (streaming_indicator && streaming_indicator->is_inside_tree()) {
+	// Now start the indicator only if no tool calls are executing
+	// The indicator should only show when waiting for final response (no content streaming, no tool calls)
+	// Show streaming indicator only when waiting for final response (after all outputs complete)
+	// Use streaming manager to determine visibility
+	bool is_content_streaming = false; // Check if content is actively streaming
+	if (streaming_indicator && AIChatStreamingManager::should_show_indicator(is_waiting_for_response, is_content_streaming, pending_tool_tasks)) {
 		streaming_indicator->start_animation();
+	} else if (pending_tool_tasks > 0) {
+		print_line("AI Chat: Not starting streaming indicator - tool calls are executing (pending_tool_tasks: " + String::num_int64(pending_tool_tasks) + ")");
 	}
 	
 	// CRITICAL: Create checkpoint BEFORE AI responds
@@ -3138,17 +3175,16 @@ void AIChatDock::_on_at_mention_item_selected() {
 }
 
 void AIChatDock::_on_input_field_gui_input(const Ref<InputEvent> &p_event) {
+	// Use input handler module for keyboard handling
+	if (AIChatInputHandler::handle_input_event(p_event, input_field, callable_mp(this, &AIChatDock::_on_send_button_pressed))) {
+		get_viewport()->set_input_as_handled();
+		return;
+	}
+	
+	// Handle clipboard paste for images
 	Ref<InputEventKey> key_event = p_event;
 	if (key_event.is_valid() && key_event->is_pressed() && !key_event->is_echo()) {
-		if (key_event->get_keycode() == Key::ENTER || key_event->get_keycode() == Key::KP_ENTER) {
-			if (!key_event->is_shift_pressed()) {
-				// Enter without Shift: send the message
-				_on_send_button_pressed();
-				get_viewport()->set_input_as_handled(); // Consume the event to prevent the default newline behavior
-			}
-			// Shift+Enter: let the TextEdit handle it normally to create a new line
-			// (don't call set_input_as_handled() so the event propagates to TextEdit)
-		} else if (key_event->get_keycode() == Key::V && key_event->is_command_or_control_pressed()) {
+		if (key_event->get_keycode() == Key::V && key_event->is_command_or_control_pressed()) {
 			// Cmd+V (Mac) or Ctrl+V: Check for image in clipboard
 			_handle_clipboard_paste();
 		}
@@ -3190,6 +3226,22 @@ void AIChatDock::_handle_clipboard_paste() {
 void AIChatDock::_on_model_selected(int p_index) {
 	if (model_dropdown) {
 		String selected_model = model_dropdown->get_item_text(p_index);
+		
+		// Handle "Add Models..." option
+		if (selected_model == "Add Models...") {
+			_show_add_models_dialog();
+			// Restore previous selection (don't change model)
+			if (model_dropdown->get_item_count() > 0) {
+				for (int i = 0; i < model_dropdown->get_item_count(); i++) {
+					if (model_dropdown->get_item_text(i) == model) {
+						model_dropdown->select(i);
+						break;
+					}
+				}
+			}
+			return;
+		}
+		
 		// Keep the full model name including [FAST] prefix for backend communication
 		model = selected_model;
 		print_line("AI Chat: Model selected: '" + selected_model + "' -> internal: '" + model + "'");
@@ -3209,6 +3261,115 @@ void AIChatDock::_on_mode_changed(const String &p_mode) {
 		EditorSettings::get_singleton()->set_setting("ai_chat/mode", chat_mode);
 	}
 	print_line("AI Chat: Mode changed to: " + chat_mode);
+}
+
+void AIChatDock::_on_add_models_pressed() {
+	_show_add_models_dialog();
+}
+
+void AIChatDock::_show_add_models_dialog() {
+	if (!add_models_dialog || !add_models_tree) {
+		return;
+	}
+	
+	// Populate tree with all available models
+	add_models_tree->clear();
+	add_models_tree->set_hide_root(true);
+	
+	// Get default models to mark them
+	Array default_model_names = AIChatModelManager::get_default_model_names();
+	HashSet<String> default_set;
+	for (int i = 0; i < default_model_names.size(); i++) {
+		default_set.insert(default_model_names[i]);
+	}
+	
+	// Get user-selected models from settings
+	Array user_selected_models;
+	if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/user_selected_models")) {
+		user_selected_models = EditorSettings::get_singleton()->get_setting("ai_chat/user_selected_models");
+	}
+	HashSet<String> user_selected_set;
+	for (int i = 0; i < user_selected_models.size(); i++) {
+		user_selected_set.insert(user_selected_models[i]);
+	}
+	
+	// Populate tree with all available models
+	for (int i = 0; i < all_available_models.size(); i++) {
+		Dictionary model_info = all_available_models[i];
+		String model_name = model_info.get("name", "");
+		if (model_name.is_empty()) {
+			continue;
+		}
+		
+		TreeItem *item = add_models_tree->create_item();
+		item->set_text(0, model_name);
+		
+		// Check if already selected (default or user-selected)
+		bool is_selected = default_set.has(model_name) || user_selected_set.has(model_name);
+		item->set_selectable(0, true);
+		item->set_checked(0, is_selected);
+		
+		// Mark default models with a note
+		if (default_set.has(model_name)) {
+			item->set_text(0, model_name + " (default)");
+		}
+	}
+	
+	add_models_dialog->popup_centered(Size2(500, 600));
+}
+
+void AIChatDock::_on_add_models_item_selected() {
+	// Handle item selection in the tree (optional)
+}
+
+void AIChatDock::_on_add_models_dialog_confirmed() {
+	if (!add_models_tree) {
+		return;
+	}
+	
+	// Collect selected models
+	Array selected_models;
+	TreeItem *root = add_models_tree->get_root();
+	if (root) {
+		TreeItem *item = root->get_first_child();
+		while (item) {
+			if (item->is_checked(0)) {
+				String model_name = item->get_text(0);
+				// Remove "(default)" suffix if present
+				if (model_name.ends_with(" (default)")) {
+					model_name = model_name.substr(0, model_name.length() - 10);
+				}
+				selected_models.push_back(model_name);
+			}
+			item = item->get_next();
+		}
+	}
+	
+	// Save user-selected models (excluding defaults)
+	Array default_model_names = AIChatModelManager::get_default_model_names();
+	HashSet<String> default_set;
+	for (int i = 0; i < default_model_names.size(); i++) {
+		default_set.insert(default_model_names[i]);
+	}
+	
+	Array user_selected_models;
+	for (int i = 0; i < selected_models.size(); i++) {
+		String model_name = selected_models[i];
+		// Only add non-default models to user selection
+		if (!default_set.has(model_name)) {
+			user_selected_models.push_back(model_name);
+		}
+	}
+	
+	// Save to editor settings
+	if (EditorSettings::get_singleton()) {
+		EditorSettings::get_singleton()->set_setting("ai_chat/user_selected_models", user_selected_models);
+	}
+	
+	// Repopulate dropdown with updated selection
+	_populate_all_models();
+	
+	print_line("AI Chat: Added " + String::num_int64(user_selected_models.size()) + " user-selected models");
 }
 void AIChatDock::_on_attachment_menu_item_pressed(int p_id) {
 	switch (p_id) {
@@ -4524,6 +4685,15 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		uint64_t receive_time = OS::get_singleton()->get_ticks_msec();
 		print_line("AI Chat: RECEIVED executing_tools at T+" + String::num_uint64(receive_time) + "ms");
 		
+		// Hide streaming indicator when tool calls start executing
+		// Indicator should only show after all outputs (text + tool calls) complete
+		if (streaming_indicator && AIChatStreamingManager::should_hide_during_content(true)) {
+			if (streaming_indicator->is_visible()) {
+				print_line("AI Chat: executing_tools - hiding streaming indicator (tool calls executing)");
+				streaming_indicator->stop_animation();
+			}
+		}
+		
 		if (response_data.has("assistant_message")) {
 			Dictionary assistant_message = response_data["assistant_message"];
 			Array tool_calls = assistant_message.get("tool_calls", Array());
@@ -4556,7 +4726,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 						// If the backend provided content here and the current message has none, adopt it
 						if (!assistant_content.is_empty() && last.content.is_empty()) {
 							last.content = assistant_content;
-							String bbcode = _markdown_to_bbcode(assistant_content);
+							String bbcode = AIChatMarkdownRenderer::markdown_to_bbcode(assistant_content);
 							if (!bbcode.is_empty()) {
 								current_assistant_message_label->set_text(bbcode);
 							}
@@ -4815,6 +4985,15 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 			streaming_indicator->stop_animation();
 		}
 		
+		// Ensure streaming indicator stays hidden when content is actively streaming
+		// Only show it when waiting for final response (no content, no tool calls)
+		// Use streaming manager to determine visibility
+		if (streaming_indicator && AIChatStreamingManager::should_hide_during_content(true)) {
+			if (streaming_indicator->is_visible()) {
+				streaming_indicator->stop_animation();
+			}
+		}
+		
 		// CRITICAL FIX: If last message is not assistant, create a new assistant message first!
 		Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
 		if (!chat_history.is_empty() && chat_history[chat_history.size() - 1].role != "assistant") {
@@ -4848,7 +5027,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 				
 				// Safety check: ensure content is valid before processing
 				if (!last_msg.content.is_empty()) {
-					String bbcode_content = _markdown_to_bbcode(last_msg.content);
+					String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(last_msg.content);
 					// Additional safety check for the converted content
 					if (!bbcode_content.is_empty()) {
 						label->set_text(bbcode_content);
@@ -4914,7 +5093,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					
 					// Update the existing label if available
 					if (current_assistant_message_label) {
-						String bbcode_content = _markdown_to_bbcode(final_content);
+						String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(final_content);
 						if (!bbcode_content.is_empty()) {
 							current_assistant_message_label->set_text(bbcode_content);
 						}
@@ -4956,7 +5135,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 				}
 				
 				if (!last_msg.content.is_empty()) {
-					String bbcode_content = _markdown_to_bbcode(last_msg.content);
+					String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(last_msg.content);
 					if (!bbcode_content.is_empty()) {
 						label->set_text(bbcode_content);
 					}
@@ -4968,7 +5147,7 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		} else {
 			// This case should ideally not happen if the stream started correctly.
 			if (!final_content.is_empty()) {
-				String bbcode_content = _markdown_to_bbcode(final_content);
+				String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(final_content);
 				if (!bbcode_content.is_empty()) {
 					label->set_text(bbcode_content);
 				}
@@ -6580,6 +6759,10 @@ String AIChatDock::_truncate_text_for_context(const String &p_text, int p_max_ch
     return head_str + "\n\n...\n[Middle omitted; content truncated to fit context]\n\n" + tail_str;
 }
 
+String AIChatDock::_humanize_tool_name(const String &p_tool_name) {
+    return AIChatToolNameFormatter::humanize_tool_name(p_tool_name);
+}
+
 String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result, bool p_success) {
     String op = p_args.get("op", "");
     String operation = p_args.get("operation", "");  // Support legacy parameter name
@@ -6598,35 +6781,35 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
                 return "Project context loaded: " + String::num_int64(scene_count) + " scenes, " + String::num_int64(script_count) + " scripts";
             } else if (actual_op == "fs.list") {
                 String dir = p_args.get("dir", "res://");
-                return "Listed files in: " + _convert_to_godot_path(dir);
+                return "Listed files in: " + AIChatPathFormatter::format_path_for_display(dir);
             } else if (actual_op == "fs.read") {
                 String path = p_args.get("path", "");
-                return "Read file: " + _convert_to_godot_path(path);
+                return "Read file: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "fs.write") {
                 String path = p_args.get("path", "");
-                return "Wrote file: " + _convert_to_godot_path(path);
+                return "Wrote file: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "fs.write_lines") {
                 String path = p_args.get("path", "");
                 int start_line = p_result.get("start_line", p_args.get("start_line", 0));
                 int end_line = p_result.get("end_line", p_args.get("end_line", 0));
-                return "Edited lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + _convert_to_godot_path(path);
+                return "Edited lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "fs.replace_string") {
                 String path = p_args.get("path", "");
                 int replacements = p_result.get("replacements_made", 1);
                 String find_str = p_args.get("find_string", "text");
-                return "Replaced " + String::num_int64(replacements) + " occurrence" + (replacements > 1 ? "s" : "") + " in: " + _convert_to_godot_path(path);
+                return "Replaced " + String::num_int64(replacements) + " occurrence" + (replacements > 1 ? "s" : "") + " in: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "fs.copy") {
                 String dest = p_args.get("destination", "");
-                return "Copied to: " + _convert_to_godot_path(dest);
+                return "Copied to: " + AIChatPathFormatter::format_path_for_display(dest);
             } else if (actual_op == "fs.move") {
                 String dest = p_args.get("destination", "");
-                return "Moved to: " + _convert_to_godot_path(dest);
+                return "Moved to: " + AIChatPathFormatter::format_path_for_display(dest);
             } else if (actual_op == "fs.delete") {
                 String path = p_args.get("path", "");
-                return "Deleted: " + _convert_to_godot_path(path);
+                return "Deleted: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "fs.mkdir") {
                 String path = p_args.get("path", "");
-                return "Created directory: " + _convert_to_godot_path(path);
+                return "Created directory: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "assets.search") {
                 String query = p_args.get("asset_query", "");
                 int found = p_result.get("total_found", 0);
@@ -6660,10 +6843,10 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
                 return "Deleted node: " + path;
             } else if (actual_op == "scene.open") {
                 String path = p_args.get("scene_path", p_args.get("path", ""));
-                return "Opened scene: " + _convert_to_godot_path(path);
+                return "Opened scene: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "scene.save_as") {
                 String path = p_args.get("scene_path", p_args.get("path", ""));
-                return "Saved scene as: " + _convert_to_godot_path(path);
+                return "Saved scene as: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (actual_op == "scene.nodes.get_all") {
                 int node_count = p_result.get("node_count", 0);
                 return "Found " + String::num_int64(node_count) + " nodes in scene";
@@ -6671,7 +6854,7 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
         } else if (p_tool_name == "script_manager") {
             if (actual_op == "script.attach") {
                 String script_path = p_args.get("script_path", "");
-                return "Attached script: " + _convert_to_godot_path(script_path);
+                return "Attached script: " + AIChatPathFormatter::format_path_for_display(script_path);
             } else if (actual_op == "script.detach") {
                 String path = p_args.get("path", "");
                 return "Detached script from: " + path;
@@ -6717,7 +6900,7 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
                 return "Created " + type + " resource";
             } else if (actual_op == "res.load_and_assign") {
                 String resource_path = p_args.get("resource_path", "");
-                return "Loaded resource: " + _convert_to_godot_path(resource_path);
+                return "Loaded resource: " + AIChatPathFormatter::format_path_for_display(resource_path);
             }
         } else if (p_tool_name == "settings_manager") {
             if (actual_op == "project_settings.set") {
@@ -6764,7 +6947,7 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
         if (p_tool_name == "apply_edit") {
             String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
             if (!file_path.is_empty()) {
-                return "Edit applied to: " + _convert_to_godot_path(file_path);
+                return "Edit applied to: " + AIChatPathFormatter::format_path_for_display(file_path);
             }
         } else if (p_tool_name == "image_operation") {
             String description = p_args.get("description", "image");
@@ -6784,15 +6967,15 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             return "Deleted node: " + path;
         } else if (p_tool_name == "read_file") {
             String path = p_args.get("path", "");
-            return "Read file: " + _convert_to_godot_path(path);
+            return "Read file: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "list_project_files") {
             String dir = p_args.get("dir", "res://");
-            return "Listed files in: " + _convert_to_godot_path(dir);
+            return "Listed files in: " + AIChatPathFormatter::format_path_for_display(dir);
         }
         
         // Fallback to generic success message
         String message = p_result.get("message", "");
-        return "" + p_tool_name + ": " + message;
+        return AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + ": " + message;
     } else {
         // Error messages - use positive, user-friendly language
         String error_message = p_result.get("message", "");
@@ -6802,31 +6985,31 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             return "No results found for: '" + query + "'";
         } else if (p_tool_name == "project_manager" && actual_op == "fs.read") {
             String path = p_args.get("path", "");
-            return "Could not read file: " + _convert_to_godot_path(path);
+            return "Could not read file: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.write") {
             String path = p_args.get("path", "");
-            return "Could not write file: " + _convert_to_godot_path(path);
+            return "Could not write file: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.write_lines") {
             String path = p_args.get("path", "");
-            return "Could not edit file: " + _convert_to_godot_path(path);
+            return "Could not edit file: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.replace_string") {
             String path = p_args.get("path", "");
-            return "Could not replace text in: " + _convert_to_godot_path(path);
+            return "Could not replace text in: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.delete") {
             String path = p_args.get("path", "");
-            return "Could not delete: " + _convert_to_godot_path(path);
+            return "Could not delete: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.copy") {
             String path = p_args.get("path", "");
-            return "Could not copy file: " + _convert_to_godot_path(path);
+            return "Could not copy file: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.move") {
             String path = p_args.get("path", "");
-            return "Could not move file: " + _convert_to_godot_path(path);
+            return "Could not move file: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "project_manager" && actual_op == "fs.mkdir") {
             String path = p_args.get("path", "");
-            return "Could not create directory: " + _convert_to_godot_path(path);
+            return "Could not create directory: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "apply_edit") {
             String file_path = p_args.has("path") ? p_args.get("path", "") : p_args.get("file_path", "");
-            return "Could not apply edit to: " + _convert_to_godot_path(file_path);
+            return "Could not apply edit to: " + AIChatPathFormatter::format_path_for_display(file_path);
         } else if (p_tool_name == "image_operation") {
             return "Could not generate image" + (!error_message.is_empty() ? ": " + error_message : "");
         } else if (p_tool_name == "search_across_project") {
@@ -6848,7 +7031,7 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             return "Could not delete: " + path;
         } else if (p_tool_name == "scene_manager" && actual_op == "scene.open") {
             String path = p_args.get("scene_path", p_args.get("path", ""));
-            return "Could not open scene: " + _convert_to_godot_path(path);
+            return "Could not open scene: " + AIChatPathFormatter::format_path_for_display(path);
         } else if (p_tool_name == "runtime_manager" && actual_op == "game.start") {
             return "Could not start game" + (!error_message.is_empty() ? ": " + error_message : "");
         } else if (p_tool_name == "runtime_manager" && actual_op == "game.stop") {
@@ -6897,16 +7080,16 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
             String op = args.get("op", "");
             if (op == "fs.write") {
                 String path = args.get("path", "Unknown file");
-                return "Writing file: " + _convert_to_godot_path(path);
+                return "Writing file: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (op == "fs.write_lines") {
                 String path = args.get("path", "Unknown file");
                 int start_line = args.get("start_line", 0);
                 int end_line = args.get("end_line", 0);
-                return "Editing lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + _convert_to_godot_path(path);
+                return "Editing lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + AIChatPathFormatter::format_path_for_display(path);
             } else if (op == "fs.replace_string") {
                 String path = args.get("path", "Unknown file");
                 String find_str = args.get("find_string", "text");
-                return "Replacing '" + find_str.substr(0, 20) + (find_str.length() > 20 ? "..." : "") + "' in: " + _convert_to_godot_path(path);
+                return "Replacing '" + find_str.substr(0, 20) + (find_str.length() > 20 ? "..." : "") + "' in: " + AIChatPathFormatter::format_path_for_display(path);
             }
         }
         return "Managing project...";
@@ -6945,9 +7128,9 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
 			}
 		}
 		return "Managing runtime...";
-	} else {
-        // Fallback for unknown tools
-        return "Executing: " + p_tool_name + "...";
+    } else {
+        // Fallback for unknown tools - use humanized name
+        return "Executing: " + AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + "...";
     }
 }
 
@@ -6959,37 +7142,13 @@ String AIChatDock::_convert_to_godot_path(const String &p_path) {
         path = path.trim_suffix(".uid");
     }
     
-    // If not an engine path and not absolute, assume project-relative and prefix with res://
-    bool is_engine_path = path.begins_with("res://") || path.begins_with("user://");
-    bool is_windows_abs = (path.length() >= 2 && path[1] == ':');
-    bool is_absolute = path.begins_with("/") || path.begins_with("\\") || is_windows_abs;
-    if (!is_engine_path && !is_absolute) {
-        String normalized_rel = path.replace("\\", "/");
-        if (normalized_rel.begins_with("./")) {
-            normalized_rel = normalized_rel.substr(2);
-        }
-        path = String("res://") + normalized_rel;
-    }
-    
-    // If path is absolute, try to convert to res:// when possible
-    if (path.begins_with("/") || path.begins_with("\\") || is_windows_abs) {
-        String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
-        
-        // Handle both forward and backward slashes
-        String normalized_path = path.replace("\\", "/");
-        String normalized_root = project_root.replace("\\", "/");
-        
-        if (normalized_path.begins_with(normalized_root)) {
-            String rel = normalized_path.substr(normalized_root.length());
-            if (rel.begins_with("/")) rel = rel.substr(1);
-            path = String("res://") + rel;
-        }
-    }
-    
-    return path;
+    // Use path formatter for display (removes res:// prefix)
+    return AIChatPathFormatter::format_path_for_display(path);
 }
 void AIChatDock::_on_tool_file_link_pressed(const String &p_path) {
-    String path = _convert_to_godot_path(p_path);
+    String display_path = AIChatPathFormatter::format_path_for_display(p_path);
+    // For opening files, we need the full path with res:// prefix
+    String path = AIChatPathFormatter::format_path_for_operation(p_path);
     
     print_line("AI Chat: Opening file from search: " + path);
     String ext = path.get_extension().to_lower();
@@ -7060,6 +7219,10 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	// --- Content ---
 	VBoxContainer *message_vbox = memnew(VBoxContainer);
 	message_panel->add_child(message_vbox);
+	
+	// Add left/right padding for better readability (Cursor-style)
+	message_vbox->add_theme_constant_override("margin_left", 16);
+	message_vbox->add_theme_constant_override("margin_right", 16);
 
 	// For user messages: use new handler (no header, clickable bubble)
 	if (p_message.role == "user") {
@@ -7132,7 +7295,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	// Only show content if it's not empty and not <null>
 	String content_to_check = p_message.content.strip_edges();
 	if (!content_to_check.is_empty() && content_to_check != "<null>" && content_to_check != "null") {
-		String bbcode_content = _markdown_to_bbcode(p_message.content);
+		String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(p_message.content);
 		if (!bbcode_content.is_empty() && bbcode_content != "<null>" && bbcode_content != "null") {
 			content_label->set_text(bbcode_content);
 			message_panel->set_visible(true);
@@ -7302,6 +7465,10 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	// --- Content ---
 	VBoxContainer *message_vbox = memnew(VBoxContainer);
 	p_message_panel->add_child(message_vbox);
+	
+	// Add left/right padding for better readability (Cursor-style)
+	message_vbox->add_theme_constant_override("margin_left", 16);
+	message_vbox->add_theme_constant_override("margin_right", 16);
 
 	// For user messages: use new handler (no header, clickable bubble)
 	if (p_message.role == "user") {
@@ -7373,7 +7540,7 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	// Only show content if it's not empty and not <null>
 	String content_to_check = p_message.content.strip_edges();
 	if (!content_to_check.is_empty() && content_to_check != "<null>" && content_to_check != "null") {
-		String bbcode_content = _markdown_to_bbcode(p_message.content);
+		String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(p_message.content);
 		if (!bbcode_content.is_empty() && bbcode_content != "<null>" && bbcode_content != "null") {
 			content_label->set_text(bbcode_content);
 			p_message_panel->set_visible(true);
@@ -7561,7 +7728,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
-	tools_container->add_theme_constant_override("separation", 0); // No spacing between tool results
+	tools_container->add_theme_constant_override("separation", -2); // Negative spacing for tighter layout (Cursor-style)
 	message_vbox->add_child(tools_container);
 
 	// Add a label for the tool calls section
@@ -7627,16 +7794,27 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		placeholder->add_theme_style_override("panel", placeholder_style);
 
 		VBoxContainer *tool_vbox = memnew(VBoxContainer);
+		tool_vbox->add_theme_constant_override("separation", 0); // Tight spacing within each tool
 		placeholder->add_child(tool_vbox);
 
 		HBoxContainer *tool_hbox = memnew(HBoxContainer);
 		tool_vbox->add_child(tool_hbox);
 
-        Label *tool_label = memnew(Label);
-        // CRITICAL FIX: Use descriptive status from the start, not generic "[TOOL]"
-        tool_label->set_text(descriptive_status);
-		// Use monochromatic styling for executing tools
-		AIChatToolStyling::style_executing_tool_label(tool_label, this);
+        RichTextLabel *tool_label = memnew(RichTextLabel);
+        // CRITICAL FIX: Use descriptive status with Cursor-style emphasis (action bright, details faded)
+		String formatted_status = AIChatToolStyling::format_tool_status_with_emphasis(descriptive_status);
+		tool_label->set_use_bbcode(true);
+		tool_label->set_fit_content(true);
+        tool_label->set_text(formatted_status);
+		tool_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+		tool_label->set_selection_enabled(false);
+		// Apply transparent background and sizing
+		Color base_color = get_theme_color(SNAME("font_color"), SNAME("Editor"));
+		Color faded_color = base_color * Color(1.0, 1.0, 1.0, 0.7); // 70% opacity for overall tool text
+		tool_label->add_theme_color_override("default_color", faded_color);
+		tool_label->add_theme_color_override("font_selected_color", Color(1, 1, 1, 1)); // White when selected
+		int default_size = get_theme_font_size(SNAME("font_size"), SNAME("Label"));
+		tool_label->add_theme_font_size_override("normal_font_size", default_size - 1); // Slightly smaller
 		tool_hbox->add_child(tool_label);
 
 		// Note: Don't add accept/reject buttons here as they get destroyed when the tool completes
@@ -7665,14 +7843,20 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	
 	// NOW re-add the indicator_container at the very end (AFTER all tool placeholders are created)
 	// BUT only show it if we're actively waiting for a response (not during conversation loading)
+	// AND only if no tool calls are currently executing (indicator should hide during tool execution)
 	if (indicator_container && found_indicator) {
 		message_vbox->add_child(indicator_container);
-		// Only show the indicator if we're actively streaming (not loading a saved conversation)
-		if (is_waiting_for_response && !found_indicator->is_visible()) {
-			print_line("AI Chat: Showing streaming indicator at end (after ALL tool calls created) - more content may be coming");
+		// Only show the indicator if we're actively waiting for response AND no tool calls are executing
+		// The indicator should only appear when waiting for final response (no content streaming, no tool calls)
+		bool should_show_indicator = AIChatStreamingManager::should_show_indicator(is_waiting_for_response, false, pending_tool_tasks);
+		if (should_show_indicator && !found_indicator->is_visible()) {
+			print_line("AI Chat: Showing streaming indicator at end (waiting for final response, no tool calls executing)");
 			found_indicator->start_animation();
-		} else if (!is_waiting_for_response) {
-			print_line("AI Chat: NOT showing indicator - not waiting for response (loading saved conversation)");
+		} else if (!should_show_indicator) {
+			if (found_indicator->is_visible()) {
+				print_line("AI Chat: Hiding streaming indicator (tool calls executing or not waiting for response)");
+				found_indicator->stop_animation();
+			}
 		}
 		print_line("AI Chat: Moved indicator_container to end (after all tool calls)");
 	}
@@ -8023,7 +8207,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 
 		// Get the file path from the original arguments
         String file_path = p_args.get("path", p_result.get("file_path", "Unknown file"));
-		String display_path = _convert_to_godot_path(file_path);
+		String display_path = AIChatPathFormatter::format_path_for_display(file_path);
 		
 		Button *file_link = memnew(Button);
 		file_link->set_text(display_path);
@@ -8713,7 +8897,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
         
         // File path label - bold and larger
         Label *file_label = memnew(Label);
-        String display_path = _convert_to_godot_path(file_path);
+        String display_path = AIChatPathFormatter::format_path_for_display(file_path);
         file_label->set_text(display_path);
         file_label->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
         file_label->add_theme_font_size_override("font_size", 14);
@@ -9429,7 +9613,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				
 				// File link button
 				Button *file_link = memnew(Button);
-				file_link->set_text(_convert_to_godot_path(file_path));
+				file_link->set_text(AIChatPathFormatter::format_path_for_display(file_path));
 				file_link->set_flat(true);
 				file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 				file_link->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -9629,7 +9813,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 				
 				// File link button
 				Button *file_link = memnew(Button);
-				file_link->set_text(_convert_to_godot_path(file_path));
+				file_link->set_text(AIChatPathFormatter::format_path_for_display(file_path));
 				file_link->set_flat(true);
 				file_link->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 				file_link->set_h_size_flags(Control::SIZE_EXPAND_FILL);
@@ -9892,7 +10076,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			
 			Label *ready_label = memnew(Label);
 			String intended_path = installation_info.get("intended_path", installed_to);
-			ready_label->set_text("[DIR] Ready to install to: " + _convert_to_godot_path(intended_path));
+			ready_label->set_text("[DIR] Ready to install to: " + AIChatPathFormatter::format_path_for_display(intended_path));
 			info_vbox->add_child(ready_label);
 			
 			Label *action_needed_label = memnew(Label);
@@ -9901,7 +10085,7 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			info_vbox->add_child(action_needed_label);
 		} else {
 			Label *location_label = memnew(Label);
-			location_label->set_text("[DIR] Installed to: " + _convert_to_godot_path(installed_to));
+			location_label->set_text("[DIR] Installed to: " + AIChatPathFormatter::format_path_for_display(installed_to));
 			info_vbox->add_child(location_label);
 			
 			Label *files_label = memnew(Label);
@@ -12202,64 +12386,8 @@ String AIChatDock::_process_inline_markdown(String p_line) {
 	return line;
 }
 String AIChatDock::_markdown_to_bbcode(const String &p_markdown) {
-	// Safety check for empty strings
-	if (p_markdown.is_empty()) {
-		return String();
-	}
-
-	Vector<String> lines = p_markdown.split("\n");
-	String result = "";
-	bool in_code_block = false;
-
-	for (int i = 0; i < lines.size(); i++) {
-		String line = lines[i];
-
-		if (line.strip_edges().begins_with("```")) {
-			in_code_block = !in_code_block;
-			if (in_code_block) {
-				result += "[code]";
-			} else {
-				result += "[/code]";
-			}
-		} else if (in_code_block) {
-			result += line.xml_escape(); // Escape to prevent BBCode parsing inside code blocks.
-		} else {
-			if (line.strip_edges().is_empty()) {
-				// Preserve blank lines between paragraphs.
-				result += "";
-			} else {
-				String processed_line = line;
-				String trimmed_line = processed_line.lstrip(" \t");
-
-				// Headers
-				if (trimmed_line.begins_with("#")) {
-					int header_level = 0;
-					while (header_level < trimmed_line.length() && trimmed_line[header_level] == '#') {
-						header_level++;
-					}
-					String header_content = trimmed_line.substr(header_level).strip_edges();
-					if (!header_content.is_empty()) {
-						int font_size = 22 - (header_level * 2);
-						processed_line = "[font_size=" + String::num_int64(font_size) + "][b]" + _process_inline_markdown(header_content) + "[/b][/font_size]";
-					}
-					// Lists
-				} else if (trimmed_line.begins_with("- ") || trimmed_line.begins_with("* ")) {
-					String item_content = trimmed_line.substr(trimmed_line.find(" ") + 1);
-					processed_line = "[indent]* " + _process_inline_markdown(item_content) + "[/indent]";
-				} else {
-					// Regular paragraph
-					processed_line = _process_inline_markdown(processed_line);
-				}
-				result += processed_line;
-			}
-		}
-
-		if (i < lines.size() - 1) {
-			result += "\n";
-		}
-	}
-
-	return result;
+	// Use the new markdown renderer module
+	return AIChatMarkdownRenderer::markdown_to_bbcode(p_markdown);
 }
 
 void AIChatDock::clear_chat_history() {
@@ -14563,7 +14691,7 @@ void AIChatDock::_on_asset_folder_open_requested(const String &p_path) {
 	print_line("AI Chat: Opening asset folder: " + p_path);
 	
 	// Convert to Godot path format and navigate to it in FileSystem dock
-	String godot_path = _convert_to_godot_path(p_path);
+	String godot_path = AIChatPathFormatter::format_path_for_display(p_path);
 	
 	// Try to select the folder in the FileSystem dock
 	EditorInterface *editor = EditorInterface::get_singleton();
@@ -14788,11 +14916,11 @@ void AIChatDock::_update_tool_placeholder_status(const String &p_tool_id, const 
 			Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
 		if (tool_label) {
 			if (p_status == "starting") {
-				tool_label->set_text("Executing: " + p_tool_name + "...");
+				tool_label->set_text("Executing: " + AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + "...");
 			} else if (p_status == "running") {
-				tool_label->set_text("Running: " + p_tool_name + "...");
+				tool_label->set_text("Running: " + AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + "...");
 			} else if (p_status == "completed") {
-				tool_label->set_text("Completed: " + p_tool_name);
+				tool_label->set_text("Completed: " + AIChatToolNameFormatter::humanize_tool_name(p_tool_name));
 			}
 			// Use monochromatic styling for all states
 			AIChatToolStyling::style_executing_tool_label(tool_label, this);
@@ -14877,22 +15005,22 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 	if (p_tool_name == "project_manager") {
 		if (op == "fs.write") {
 			String path = args.get("path", "Unknown file");
-			return "Writing file: " + _convert_to_godot_path(path);
+			return "Writing file: " + AIChatPathFormatter::format_path_for_display(path);
 		} else if (op == "fs.write_lines") {
 			String path = args.get("path", "Unknown file");
 			int start_line = args.get("start_line", 0);
 			int end_line = args.get("end_line", 0);
-			return "Editing lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + _convert_to_godot_path(path);
+			return "Editing lines " + String::num_int64(start_line) + "-" + String::num_int64(end_line) + " in: " + AIChatPathFormatter::format_path_for_display(path);
 		} else if (op == "fs.replace_string") {
 			String path = args.get("path", "Unknown file");
 			String find_str = args.get("find_string", "text");
-			return "Replacing '" + find_str.substr(0, 20) + (find_str.length() > 20 ? "..." : "") + "' in: " + _convert_to_godot_path(path);
+			return "Replacing '" + find_str.substr(0, 20) + (find_str.length() > 20 ? "..." : "") + "' in: " + AIChatPathFormatter::format_path_for_display(path);
 		} else if (op == "fs.read") {
 			String path = args.get("path", "Unknown file");
-			return "Reading file: " + _convert_to_godot_path(path);
+			return "Reading file: " + AIChatPathFormatter::format_path_for_display(path);
 		} else if (op == "fs.list") {
 			String dir = args.get("dir", args.get("path", "res://"));
-			return "Listing files in: " + _convert_to_godot_path(dir);
+			return "Listing files in: " + AIChatPathFormatter::format_path_for_display(dir);
 		} else if (op == "context.get") {
 			// PERFORMANCE: Show what we're scanning to give users context
 			String context_mode = args.get("context_mode", "structure");
@@ -14920,10 +15048,10 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 			return "Creating " + String::num_int64(count) + " node" + (count > 1 ? "s" : "");
 		} else if (op == "scene.open") {
 			String scene_path = args.get("scene_path", "Unknown scene");
-			return "Opening scene: " + _convert_to_godot_path(scene_path);
+			return "Opening scene: " + AIChatPathFormatter::format_path_for_display(scene_path);
 		} else if (op == "scene.save_as") {
 			String path = args.get("path", "Unknown path");
-			return "Saving scene as: " + _convert_to_godot_path(path);
+			return "Saving scene as: " + AIChatPathFormatter::format_path_for_display(path);
 		} else if (op == "scene.nodes.get_all") {
 			return "Loading all scene nodes...";
 		} else if (op == "node.mesh.set_properties") {
@@ -14935,18 +15063,18 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 		if (op == "image.save") {
 			String path = args.get("path", "Unknown path");
 			String image_id = args.get("image_id", "image");
-			return "Saving " + image_id + " to: " + _convert_to_godot_path(path);
+			return "Saving " + image_id + " to: " + AIChatPathFormatter::format_path_for_display(path);
 		} else if (op == "res.create") {
 			String type = args.get("type", "Resource");
 			String save_path = args.get("save_path", "");
 			if (!save_path.is_empty()) {
-				return "Creating " + type + " at: " + _convert_to_godot_path(save_path);
+				return "Creating " + type + " at: " + AIChatPathFormatter::format_path_for_display(save_path);
 			} else {
 				return "Creating " + type + " resource";
 			}
 		} else if (op == "res.modify") {
 			String target = args.get("target", "Unknown resource");
-			return "Modifying resource: " + _convert_to_godot_path(target);
+			return "Modifying resource: " + AIChatPathFormatter::format_path_for_display(target);
 		} else if (op == "image.generate_or_edit") {
 			String description = args.get("description", "image");
 			return "Processing image: " + description.substr(0, 40) + (description.length() > 40 ? "..." : "");
@@ -14965,11 +15093,11 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 		if (op == "script.attach") {
 			String path = args.get("path", "Unknown node");
 			String script_path = args.get("script_path", "Unknown script");
-			return "Attaching script " + _convert_to_godot_path(script_path) + " to: " + path;
+			return "Attaching script " + AIChatPathFormatter::format_path_for_display(script_path) + " to: " + path;
 		} else if (op == "compile.check") {
 			String check_path = args.get("check_path", "");
 			if (!check_path.is_empty()) {
-				return "Checking compilation: " + _convert_to_godot_path(check_path);
+				return "Checking compilation: " + AIChatPathFormatter::format_path_for_display(check_path);
 			} else {
 				return "Checking all script compilation...";
 			}
@@ -14994,7 +15122,7 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 		}
 	} else if (p_tool_name == "apply_edit") {
 		String file_path = args.get("path", args.get("file_path", "Unknown file"));
-		return "Applying AI edit to: " + _convert_to_godot_path(file_path);
+		return "Applying AI edit to: " + AIChatPathFormatter::format_path_for_display(file_path);
 	}
 	
 	// Return empty string for generic fallback
@@ -15003,7 +15131,7 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 
 void AIChatDock::_create_assistant_message_for_backend_tool(const String &p_tool_name) {
     // Create a proper assistant message bubble that can later receive content
-    _add_message_to_chat("assistant", "Executing: " + p_tool_name + "...");
+    _add_message_to_chat("assistant", "Executing: " + AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + "...");
 }
 
 
@@ -16346,99 +16474,22 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 	Array models = response.get("models", Array());
 	print_line("AI Chat: Received " + String::num_int64(models.size()) + " models from backend");
 	
-	// Clear all existing models and rebuild from backend data
+	// Store all models for "Add Models" dialog
+	all_available_models = models;
+	
+	// Clear all existing models and rebuild with filtered list
 	model_dropdown->clear();
 	
-	// Organize models by type for proper display order
-	Array base_models;
-	Array thinking_models;  
-	Array fast_models;
-	Array fast_thinking_models;
-	
-	for (int i = 0; i < models.size(); i++) {
-		Dictionary model_info = models[i];
-		String model_name = model_info.get("name", "");
-		String provider = model_info.get("provider", "");
-		bool is_thinking = model_info.get("is_thinking_variant", false);
-		bool is_fast = model_name.begins_with("[FAST]");
-		
-		if (is_fast) {
-			if (is_thinking) {
-				fast_thinking_models.push_back(model_info);
-			} else {
-				fast_models.push_back(model_info);
-			}
-		} else {
-			if (is_thinking) {
-				thinking_models.push_back(model_info);
-			} else {
-				base_models.push_back(model_info);
-			}
-		}
+	// Get user-selected additional models from settings
+	Array user_selected_models;
+	if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/user_selected_models")) {
+		user_selected_models = EditorSettings::get_singleton()->get_setting("ai_chat/user_selected_models");
 	}
 	
-	// Add models in logical groups: base models, thinking variants, then fast models
-	int added_models = 0;
+	// Use model manager to populate dropdown with filtered models
+	int added_models = AIChatModelManager::populate_dropdown(model_dropdown, models, user_selected_models);
 	
-	// Add base models first, prioritizing claude-4
-	// First add claude-4 if it exists
-	for (int i = 0; i < base_models.size(); i++) {
-		Dictionary model_info = base_models[i];
-		String model_name = model_info.get("name", "");
-		if (model_name == "claude-4") {
-			model_dropdown->add_item(model_name);
-			added_models++;
-			break;
-		}
-	}
-	// Then add other base models
-	for (int i = 0; i < base_models.size(); i++) {
-		Dictionary model_info = base_models[i];
-		String model_name = model_info.get("name", "");
-		if (model_name != "claude-4") {  // Skip claude-4 since we already added it
-			model_dropdown->add_item(model_name);
-			added_models++;
-		}
-	}
-	
-	// Add thinking variants, prioritizing claude-4 (thinking)
-	// First add claude-4 (thinking) if it exists
-	for (int i = 0; i < thinking_models.size(); i++) {
-		Dictionary model_info = thinking_models[i];
-		String model_name = model_info.get("name", "");
-		if (model_name == "claude-4 (thinking)") {
-			model_dropdown->add_item(model_name);
-			added_models++;
-			break;
-		}
-	}
-	// Then add other thinking variants
-	for (int i = 0; i < thinking_models.size(); i++) {
-		Dictionary model_info = thinking_models[i];
-		String model_name = model_info.get("name", "");
-		if (model_name != "claude-4 (thinking)") {  // Skip claude-4 (thinking) since we already added it
-			model_dropdown->add_item(model_name);
-			added_models++;
-		}
-	}
-	
-	// Add fast models
-	for (int i = 0; i < fast_models.size(); i++) {
-		Dictionary model_info = fast_models[i];
-		String model_name = model_info.get("name", "");
-		model_dropdown->add_item(model_name);
-		added_models++;
-	}
-	
-	// Add fast thinking models  
-	for (int i = 0; i < fast_thinking_models.size(); i++) {
-		Dictionary model_info = fast_thinking_models[i];
-		String model_name = model_info.get("name", "");
-		model_dropdown->add_item(model_name);
-		added_models++;
-	}
-	
-	print_line("AI Chat: Added " + String::num_int64(added_models) + " models to dropdown from backend");
+	print_line("AI Chat: Added " + String::num_int64(added_models) + " filtered models to dropdown");
 	
 	// If no models were added from backend (failed request), add fallback models
 	if (added_models == 0) {
@@ -16446,6 +16497,8 @@ void AIChatDock::_on_models_request_completed(int p_result, int p_code, const Pa
 		model_dropdown->add_item("claude-4");
 		model_dropdown->add_item("gpt-5");
 		model_dropdown->add_item("gemini-2.5");
+		model_dropdown->add_separator();
+		model_dropdown->add_item("Add Models...");
 	}
 	
 	// After populating models, ensure claude-4 is selected by default if no saved preference
@@ -17248,7 +17301,7 @@ void AIChatDock::_handle_apply_edit_accepted(const String &p_file_path, const St
 					if (grandparent) {
 						for (int j = 0; j < grandparent->get_child_count(); j++) {
 							Label *lbl = Object::cast_to<Label>(grandparent->get_child(j));
-							if (lbl && lbl->get_text().contains(_convert_to_godot_path(p_file_path))) {
+							if (lbl && lbl->get_text().contains(AIChatPathFormatter::format_path_for_display(p_file_path))) {
 								String t = lbl->get_text();
 								if (!t.ends_with(" - Accepted")) {
 									lbl->set_text(t + " - Accepted");
@@ -17387,7 +17440,7 @@ void AIChatDock::_handle_apply_edit_rejected(const String &p_file_path) {
 					if (grandparent) {
 						for (int j = 0; j < grandparent->get_child_count(); j++) {
 							Label *lbl = Object::cast_to<Label>(grandparent->get_child(j));
-							if (lbl && lbl->get_text().contains(_convert_to_godot_path(p_file_path))) {
+							if (lbl && lbl->get_text().contains(AIChatPathFormatter::format_path_for_display(p_file_path))) {
 								String t = lbl->get_text();
 								if (!t.ends_with(" - Discarded")) {
 									lbl->set_text(t + " - Discarded");
@@ -18431,7 +18484,7 @@ void AIChatDock::_create_truncated_tool_ui(VBoxContainer *p_content_vbox, const 
 String AIChatDock::_generate_tool_result_summary(const String &p_tool_name, const Dictionary &p_result, bool p_success) {
 	if (!p_success) {
 		String error_msg = p_result.get("message", "Tool failed");
-		return p_tool_name + " failed: " + (error_msg.length() > 50 ? error_msg.substr(0, 47) + "..." : error_msg);
+		return AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + " failed: " + (error_msg.length() > 50 ? error_msg.substr(0, 47) + "..." : error_msg);
 	}
 	
 	// Generate concise summaries for different tool types
@@ -18466,7 +18519,7 @@ String AIChatDock::_generate_tool_result_summary(const String &p_tool_name, cons
 	
 	// Generic success message
 	String message = p_result.get("message", "Tool completed successfully");
-	return p_tool_name + ": " + (message.length() > 40 ? message.substr(0, 37) + "..." : message);
+	return AIChatToolNameFormatter::humanize_tool_name(p_tool_name) + ": " + (message.length() > 40 ? message.substr(0, 37) + "..." : message);
 }
 
 void AIChatDock::_expand_truncated_tool_result(Button *p_expand_button, VBoxContainer *p_content_vbox) {

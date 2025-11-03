@@ -6,6 +6,7 @@
 
 #include "ai_chat_dock_user_messages.h"
 #include "ai_chat_dock.h"
+#include "ai_chat_markdown_renderer.h"
 #include "scene/gui/rich_text_label.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/text_edit.h"
@@ -86,8 +87,8 @@ void UserMessageHandler::create_user_message_bubble(VBoxContainer *p_message_vbo
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	content_label->set_mouse_filter(Control::MOUSE_FILTER_IGNORE); // Let clicks pass through to bubble
 	
-	// Use friend access to call private markdown converter
-	String bbcode_content = chat_dock->_markdown_to_bbcode(p_content);
+	// Use friend access to call the markdown renderer module
+	String bbcode_content = AIChatMarkdownRenderer::markdown_to_bbcode(p_content);
 	if (!bbcode_content.is_empty()) {
 		content_label->set_text(bbcode_content);
 	}

@@ -88,3 +88,40 @@ Color AIChatToolStyling::get_tool_status_color(bool p_success, Control *p_theme_
 	return base_color * Color(1.0, 1.0, 1.0, 0.5);
 }
 
+String AIChatToolStyling::format_tool_status_with_emphasis(const String &p_status) {
+	// Split on common separators to identify action vs details
+	// Examples:
+	//   "Writing file: path.gd" -> "Writing file" + ": path.gd"
+	//   "Creating Node node: MyNode" -> "Creating Node node" + ": MyNode"
+	//   "Searching project (grep): query" -> "Searching project (grep)" + ": query"
+	
+	int colon_pos = p_status.find(":");
+	
+	if (colon_pos != -1) {
+		// Found a colon - split into action and details
+		String action = p_status.substr(0, colon_pos + 1); // Include the colon with action
+		String details = p_status.substr(colon_pos + 1).strip_edges();
+		
+		// Action part: normal brightness (100%)
+		// Details part: faded (50% opacity)
+		return action + " [color=#ffffff80]" + details + "[/color]";
+	}
+	
+	// No colon found - check for patterns like "word word word..." to split at last word
+	// For "Creating 5 nodes", make "nodes" faded
+	Vector<String> words = p_status.split(" ", false);
+	if (words.size() >= 3) {
+		// Make the last word/segment slightly faded
+		String main_part = "";
+		for (int i = 0; i < words.size() - 1; i++) {
+			if (i > 0) main_part += " ";
+			main_part += words[i];
+		}
+		String last_word = words[words.size() - 1];
+		return main_part + " [color=#ffffff80]" + last_word + "[/color]";
+	}
+	
+	// Fallback - return as-is
+	return p_status;
+}
+

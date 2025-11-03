@@ -38,6 +38,12 @@
 #include "diff_viewer.h"
 #include "ai_pending_edits_banner.h"
 #include "ai_conversation_persistence.h"
+#include "ai_chat_path_formatter.h"
+#include "ai_chat_tool_name_formatter.h"
+#include "ai_chat_streaming_manager.h"
+#include "ai_chat_markdown_renderer.h"
+#include "ai_chat_model_manager.h"
+#include "ai_chat_input_handler.h"
 #include "scene/gui/box_container.h"
 #include "scene/gui/dialogs.h"
 #include "scene/gui/tab_container.h"
@@ -184,6 +190,11 @@ private:
 	Button *send_button = nullptr;
 	Button *stop_button = nullptr;
 	MenuButton *attach_button = nullptr;
+	
+	// Model selection state
+	Array all_available_models; // Store all models from backend for "Add Models" dialog
+	AcceptDialog *add_models_dialog = nullptr; // Dialog for adding models
+	Tree *add_models_tree = nullptr; // Tree view for available models
 	
 	// Token indicator for conversation length tracking
 	Label *token_indicator = nullptr;
@@ -366,6 +377,10 @@ private:
 	void _on_mode_changed(const String &p_mode);
 	void _populate_all_models();
 	void _on_models_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_add_models_pressed();
+	void _show_add_models_dialog();
+	void _on_add_models_item_selected();
+	void _on_add_models_dialog_confirmed();
 	String _get_api_base_url();
 	void _on_index_button_pressed();
     void _on_editor_resource_saved(Object *p_res);
@@ -476,6 +491,7 @@ private:
 	void _on_tool_file_link_pressed(const String &p_path);
 	String _convert_to_godot_path(const String &p_path);
 	String _generate_descriptive_tool_status(const String &p_tool_name, const Dictionary &p_args, const Dictionary &p_result, bool p_success);
+	String _humanize_tool_name(const String &p_tool_name);
 	String _generate_executing_tool_message(const String &p_tool_name, const String &p_arguments_str = "");
 
 	void _save_layout_to_config(Ref<ConfigFile> p_layout, const String &p_section) const;
