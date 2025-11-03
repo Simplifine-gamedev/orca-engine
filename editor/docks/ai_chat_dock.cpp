@@ -7734,17 +7734,8 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
-	tools_container->add_theme_constant_override("separation", -6); // Negative spacing for tighter layout (Cursor-style) - reduced spacing between tool calls
+	tools_container->add_theme_constant_override("separation", -10); // Negative spacing for tighter layout - reduced spacing between tool calls
 	message_vbox->add_child(tools_container);
-
-	// Add a label for the tool calls section
-	if (p_tool_calls.size() > 1) {
-		Label *tools_header = memnew(Label);
-		tools_header->set_text("Tools (" + String::num_int64(p_tool_calls.size()) + "):");
-		tools_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
-		tools_header->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.8));
-		tools_container->add_child(tools_header);
-	}
 
 	// Create individual tool placeholders within the grouped container
 	for (int i = 0; i < p_tool_calls.size(); i++) {
@@ -7800,7 +7791,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		placeholder->add_theme_style_override("panel", placeholder_style);
 
 		VBoxContainer *tool_vbox = memnew(VBoxContainer);
-		tool_vbox->add_theme_constant_override("separation", 0); // Tight spacing within each tool
+		tool_vbox->add_theme_constant_override("separation", -2); // Negative spacing for tighter layout within each tool
 		placeholder->add_child(tool_vbox);
 
 		HBoxContainer *tool_hbox = memnew(HBoxContainer);
