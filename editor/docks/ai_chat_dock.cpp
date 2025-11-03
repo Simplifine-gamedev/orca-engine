@@ -7734,7 +7734,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
-	tools_container->add_theme_constant_override("separation", -10); // Negative spacing for tighter layout - reduced spacing between tool calls
+	tools_container->add_theme_constant_override("separation", -14); // More negative spacing for tighter layout between tool calls
 	message_vbox->add_child(tools_container);
 
 	// Create individual tool placeholders within the grouped container
@@ -7791,10 +7791,12 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		placeholder->add_theme_style_override("panel", placeholder_style);
 
 		VBoxContainer *tool_vbox = memnew(VBoxContainer);
-		tool_vbox->add_theme_constant_override("separation", -2); // Negative spacing for tighter layout within each tool
+		tool_vbox->add_theme_constant_override("separation", -4); // More negative spacing for tighter layout within each tool
 		placeholder->add_child(tool_vbox);
 
 		HBoxContainer *tool_hbox = memnew(HBoxContainer);
+		// Add left margin to align tool calls with AI text (same 8px margin)
+		tool_hbox->add_theme_constant_override("margin_left", 8);
 		tool_vbox->add_child(tool_hbox);
 
         RichTextLabel *tool_label = memnew(RichTextLabel);
