@@ -4734,6 +4734,13 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					// Attach tool calls to the existing assistant message
 					last.tool_calls = tool_calls;
 					print_line("AI Chat: executing_tools - Attaching " + String::num_int64(tool_calls.size()) + " tool calls to existing assistant message");
+					
+					// CRITICAL: Hide streaming indicator before creating tool calls (it will be repositioned after)
+					if (streaming_indicator && streaming_indicator->is_visible()) {
+						print_line("AI Chat: executing_tools - Hiding streaming indicator before creating tool calls");
+						streaming_indicator->stop_animation();
+					}
+					
 					_create_tool_call_bubbles(tool_calls);
 					
 					// CRITICAL FIX: Make the parent message bubble visible after attaching tools
@@ -7242,7 +7249,7 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	content_label->set_text(""); // Ensure empty text by default - prevents <null> from showing
 	
 	// Add left margin to align AI text with tool calls (indented like tool calls)
-	content_label->add_theme_constant_override("margin_left", 8);
+	content_label->add_theme_constant_override("margin_left", 16); // Increased to match tool call indentation better
 	
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
@@ -7270,10 +7277,12 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		}
 		
 		// Create streaming indicator container for assistant messages
+		// BUT DON'T add it yet - it will be added AFTER tool calls if they exist
+		// Store it for later positioning
 		HBoxContainer *indicator_container = memnew(HBoxContainer);
 		indicator_container->set_h_size_flags(Control::SIZE_SHRINK_BEGIN);
-		message_vbox->add_child(indicator_container);
-		print_line("AI Chat: Created streaming indicator_container");
+		// DO NOT add to message_vbox yet - will be added after tool calls
+		print_line("AI Chat: Created streaming indicator_container (will be positioned after tool calls)");
 		
 		// Don't add "Streaming" label - just show dots
 		// Label *streaming_label = memnew(Label);
@@ -7293,8 +7302,11 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		streaming_indicator->set_meta("indicator_container", indicator_container);
 		print_line("AI Chat: Set indicator_container meta and hid container by default");
 		print_line("AI Chat: - streaming_indicator is_inside_tree: " + String(streaming_indicator->is_inside_tree() ? "YES" : "NO"));
+		
+		// Store the indicator container for later positioning (after tool calls)
+		current_assistant_message_label->set_meta("indicator_container", indicator_container);
 	}
-
+	
 	// Only show content if it's not empty and not <null>
 	String content_to_check = p_message.content.strip_edges();
 	if (!content_to_check.is_empty() && content_to_check != "<null>" && content_to_check != "null") {
@@ -7315,10 +7327,36 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 		message_panel->set_visible(true);
 		// Recreate tool call placeholders when loading saved conversations
 		_create_tool_call_bubbles(p_message.tool_calls);
+		// CRITICAL: After creating tool calls, ensure indicator is positioned correctly
+		// If indicator exists but wasn't added yet, add it after tool calls
+		if (current_assistant_message_label && current_assistant_message_label->has_meta("indicator_container")) {
+			Variant meta = current_assistant_message_label->get_meta("indicator_container");
+			HBoxContainer *stored_indicator = Object::cast_to<HBoxContainer>(meta);
+			if (stored_indicator && !stored_indicator->is_inside_tree()) {
+				VBoxContainer *msg_vbox = Object::cast_to<VBoxContainer>(message_panel->get_child(0));
+				if (msg_vbox) {
+					msg_vbox->add_child(stored_indicator);
+					print_line("AI Chat: Added indicator_container after tool calls (saved message)");
+				}
+			}
+		}
 		// CRITICAL: Force immediate redraw when showing tool placeholders
 		message_panel->queue_redraw();
 		if (chat_container) {
 			chat_container->queue_redraw();
+		}
+	} else {
+		// No tool calls - add indicator immediately after content
+		if (current_assistant_message_label && current_assistant_message_label->has_meta("indicator_container")) {
+			Variant meta = current_assistant_message_label->get_meta("indicator_container");
+			HBoxContainer *stored_indicator = Object::cast_to<HBoxContainer>(meta);
+			if (stored_indicator && !stored_indicator->is_inside_tree()) {
+				VBoxContainer *msg_vbox = Object::cast_to<VBoxContainer>(message_panel->get_child(0));
+				if (msg_vbox) {
+					msg_vbox->add_child(stored_indicator);
+					print_line("AI Chat: Added indicator_container after content (no tool calls)");
+				}
+			}
 		}
 	}
 	
@@ -7491,7 +7529,7 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	content_label->set_text(""); // Ensure empty text by default - prevents <null> from showing
 	
 	// Add left margin to align AI text with tool calls (indented like tool calls)
-	content_label->add_theme_constant_override("margin_left", 8);
+	content_label->add_theme_constant_override("margin_left", 16); // Increased to match tool call indentation better
 	
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
@@ -7709,32 +7747,51 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	
 	print_line("AI Chat: Successfully found bubble panel and message vbox, creating tool placeholders");
 	
-	// Find and temporarily remove the indicator_container so we can add it at the end
+	// Find indicator container from meta (stored when message was created)
 	HBoxContainer *indicator_container = nullptr;
 	StreamingIndicator *found_indicator = nullptr;
-	for (int i = 0; i < message_vbox->get_child_count(); i++) {
-		Node *child = message_vbox->get_child(i);
-		HBoxContainer *hbox = Object::cast_to<HBoxContainer>(child);
-		if (hbox) {
-			// Check if this HBoxContainer contains a StreamingIndicator
-			for (int j = 0; j < hbox->get_child_count(); j++) {
-				StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(hbox->get_child(j));
+	if (current_assistant_message_label && current_assistant_message_label->has_meta("indicator_container")) {
+		Variant meta = current_assistant_message_label->get_meta("indicator_container");
+		indicator_container = Object::cast_to<HBoxContainer>(meta);
+		if (indicator_container) {
+			// Find the StreamingIndicator inside
+			for (int j = 0; j < indicator_container->get_child_count(); j++) {
+				StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(indicator_container->get_child(j));
 				if (indicator) {
-					indicator_container = hbox;
 					found_indicator = indicator;
-					message_vbox->remove_child(indicator_container);
-					print_line("AI Chat: Temporarily removed indicator_container to reposition at end");
 					break;
 				}
 			}
-			if (indicator_container) break;
+			print_line("AI Chat: Found indicator_container from meta");
+		}
+	}
+	
+	// Also check if indicator is already in message_vbox (fallback for older code paths)
+	if (!indicator_container) {
+		for (int i = 0; i < message_vbox->get_child_count(); i++) {
+			Node *child = message_vbox->get_child(i);
+			HBoxContainer *hbox = Object::cast_to<HBoxContainer>(child);
+			if (hbox) {
+				// Check if this HBoxContainer contains a StreamingIndicator
+				for (int j = 0; j < hbox->get_child_count(); j++) {
+					StreamingIndicator *indicator = Object::cast_to<StreamingIndicator>(hbox->get_child(j));
+					if (indicator) {
+						indicator_container = hbox;
+						found_indicator = indicator;
+						message_vbox->remove_child(indicator_container);
+						print_line("AI Chat: Found and removed indicator_container from message_vbox to reposition");
+						break;
+					}
+				}
+				if (indicator_container) break;
+			}
 		}
 	}
 
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
-	tools_container->add_theme_constant_override("separation", -14); // More negative spacing for tighter layout between tool calls
+	tools_container->add_theme_constant_override("separation", -18); // Even more negative spacing for tighter layout between tool calls
 	message_vbox->add_child(tools_container);
 
 	// Create individual tool placeholders within the grouped container
@@ -7844,7 +7901,10 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// BUT only show it if we're actively waiting for a response (not during conversation loading)
 	// AND only if no tool calls are currently executing (indicator should hide during tool execution)
 	if (indicator_container && found_indicator) {
+		// Ensure indicator is added AFTER tools_container
 		message_vbox->add_child(indicator_container);
+		print_line("AI Chat: Added indicator_container AFTER tool calls");
+		
 		// Only show the indicator if we're actively waiting for response AND no tool calls are executing
 		// The indicator should only appear when waiting for final response (no content streaming, no tool calls)
 		bool should_show_indicator = AIChatStreamingManager::should_show_indicator(is_waiting_for_response, false, pending_tool_tasks);
@@ -7858,6 +7918,10 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 			}
 		}
 		print_line("AI Chat: Moved indicator_container to end (after all tool calls)");
+	} else if (indicator_container && !found_indicator) {
+		// Indicator container exists but indicator not found - add it anyway (for when no tool calls)
+		message_vbox->add_child(indicator_container);
+		print_line("AI Chat: Added indicator_container (no tool calls, indicator will be managed separately)");
 	}
 	
 	print_line("AI Chat: _create_tool_call_bubbles completed successfully");
