@@ -7241,6 +7241,9 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	content_label->set_text(""); // Ensure empty text by default - prevents <null> from showing
 	
+	// Add left margin to align AI text with tool calls (indented like tool calls)
+	content_label->add_theme_constant_override("margin_left", 8);
+	
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
 		content_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
@@ -7487,6 +7490,9 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	content_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	content_label->set_text(""); // Ensure empty text by default - prevents <null> from showing
 	
+	// Add left margin to align AI text with tool calls (indented like tool calls)
+	content_label->add_theme_constant_override("margin_left", 8);
+	
 	// Make assistant message text backgrounds transparent
 	if (p_message.role == "assistant") {
 		content_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
@@ -7728,7 +7734,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
-	tools_container->add_theme_constant_override("separation", -2); // Negative spacing for tighter layout (Cursor-style)
+	tools_container->add_theme_constant_override("separation", -6); // Negative spacing for tighter layout (Cursor-style) - reduced spacing between tool calls
 	message_vbox->add_child(tools_container);
 
 	// Add a label for the tool calls section
