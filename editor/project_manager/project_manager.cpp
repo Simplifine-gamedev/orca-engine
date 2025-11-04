@@ -526,13 +526,22 @@ void ProjectManager::_open_selected_projects() {
 			args.push_back("--verbose");
 		}
 
+		// Debug: Print command being executed
+		String cmd_debug = "Creating editor instance with args: ";
+		for (const String &arg : args) {
+			cmd_debug += arg + " ";
+		}
+		print_line(cmd_debug);
+
 		Error err = OS::get_singleton()->create_instance(args);
+		print_line("create_instance returned error code: " + String::num_int64(err));
 		if (err != OK) {
 			loading_label->hide();
 			_show_error(vformat(TTR("Can't open project at '%s'.\nFailed to start the editor."), path));
 			ERR_PRINT(vformat("Failed to start an editor instance for the project at '%s', error code %d.", path, err));
 			return;
 		}
+		print_line("Successfully created editor instance for project: " + path);
 	}
 
 	project_list->project_opening_initiated = true;
