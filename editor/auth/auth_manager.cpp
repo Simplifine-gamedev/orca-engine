@@ -112,6 +112,26 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 }
 
 bool AuthManager::try_auto_login() {
+	// DEV MODE BYPASS: Skip keychain access in debug builds or when ORCA_DEV_MODE env var is set
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false; // Explicitly disabled via env var
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true; // Enabled via env var in release builds
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		print_line("ORCA AUTH: DEV MODE - Skipping auto-login (bypassing keychain access)");
+		return false; // Return false so we skip authentication but don't try to load from keychain
+	}
+
 	if (load_stored_tokens()) {
 		// TODO: Verify tokens are still valid by making a test API call
 		is_authenticated = true;
@@ -372,6 +392,26 @@ void AuthManager::store_tokens(const String &p_access_token, const String &p_ref
 	user_email = p_email;
 	user_name = p_name;
 
+	// DEV MODE BYPASS: Skip keychain storage in debug builds or when ORCA_DEV_MODE env var is set
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false; // Explicitly disabled via env var
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true; // Enabled via env var in release builds
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		print_line("ORCA AUTH: DEV MODE - Skipping keychain token storage");
+		return; // Skip keychain storage in dev mode
+	}
+
 	// Store securely in keychain
 	_store_token_secure("orca_access_token", p_access_token);
 	_store_token_secure("orca_refresh_token", p_refresh_token);
@@ -381,6 +421,26 @@ void AuthManager::store_tokens(const String &p_access_token, const String &p_ref
 }
 
 bool AuthManager::load_stored_tokens() {
+	// DEV MODE BYPASS: Skip keychain access in debug builds or when ORCA_DEV_MODE env var is set
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false; // Explicitly disabled via env var
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true; // Enabled via env var in release builds
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		print_line("ORCA AUTH: DEV MODE - Skipping keychain token load");
+		return false; // Return false to skip keychain access
+	}
+
 	access_token = _retrieve_token_secure("orca_access_token");
 	refresh_token = _retrieve_token_secure("orca_refresh_token");
 	user_id = _retrieve_token_secure("orca_user_id");
@@ -391,6 +451,33 @@ bool AuthManager::load_stored_tokens() {
 }
 
 void AuthManager::clear_stored_tokens() {
+	// DEV MODE BYPASS: Skip keychain access in debug builds or when ORCA_DEV_MODE env var is set
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false; // Explicitly disabled via env var
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true; // Enabled via env var in release builds
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		print_line("ORCA AUTH: DEV MODE - Skipping keychain token clear");
+		// Still clear in-memory values
+		access_token = "";
+		refresh_token = "";
+		user_id = "";
+		user_email = "";
+		user_name = "";
+		is_authenticated = false;
+		return; // Skip keychain deletion in dev mode
+	}
+
 	_delete_token_secure("orca_access_token");
 	_delete_token_secure("orca_refresh_token");
 	_delete_token_secure("orca_user_id");
@@ -595,6 +682,98 @@ void AuthManager::_delete_token_secure(const String &p_key) {
 	}
 }
 #endif
+
+bool AuthManager::get_is_authenticated() const {
+	// DEV MODE BYPASS: Return true in dev mode
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false;
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true;
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		return true; // Always authenticated in dev mode
+	}
+	
+	return is_authenticated;
+}
+
+String AuthManager::get_user_name() const {
+	// DEV MODE BYPASS: Return dev user name
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false;
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true;
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		return "Dev User"; // Return dev user name
+	}
+	
+	return user_name;
+}
+
+String AuthManager::get_user_email() const {
+	// DEV MODE BYPASS: Return dev user email
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false;
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true;
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		return "dev@example.com"; // Return dev user email
+	}
+	
+	return user_email;
+}
+
+String AuthManager::get_user_id() const {
+	// DEV MODE BYPASS: Return dev user ID
+#ifdef DEBUG_ENABLED
+	bool dev_mode_bypass = true;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+		dev_mode_bypass = false;
+	}
+#else
+	bool dev_mode_bypass = false;
+	String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+	if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+		dev_mode_bypass = true;
+	}
+#endif
+
+	if (dev_mode_bypass) {
+		return "dev_user_123"; // Return dev user ID
+	}
+	
+	return user_id;
+}
 
 Error AuthManager::make_supabase_request(const String &p_endpoint, const String &p_method, const String &p_body, String &r_response) {
 	Ref<HTTPClient> http_client = HTTPClient::create();

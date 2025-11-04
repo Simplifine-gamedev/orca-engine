@@ -69,12 +69,12 @@ public:
 	void clear_stored_tokens();
 
 	// Getters
-	bool get_is_authenticated() const { return is_authenticated; }
+	bool get_is_authenticated() const;
 	String get_access_token() const { return access_token; }
 	String get_refresh_token() const { return refresh_token; }
-	String get_user_id() const { return user_id; }
-	String get_user_email() const { return user_email; }
-	String get_user_name() const { return user_name; }
+	String get_user_id() const;
+	String get_user_email() const;
+	String get_user_name() const;
 
 	// HTTP utilities for Supabase API
 	Error make_supabase_request(const String &p_endpoint, const String &p_method, const String &p_body, String &r_response);

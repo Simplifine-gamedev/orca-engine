@@ -4722,7 +4722,22 @@ int Main::start() {
 			sml->get_root()->add_child(pmanager);
 			
 			// Show auth dialog if not authenticated
-			bool needs_auth_dialog = !auth_manager->get_is_authenticated();
+			// DEV MODE BYPASS: Skip auth in debug builds or when ORCA_DEV_MODE env var is set
+#ifdef DEBUG_ENABLED
+			bool dev_mode_bypass = true;
+			String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+			if (!dev_mode_env.is_empty() && dev_mode_env != "1" && dev_mode_env.to_lower() != "true") {
+				dev_mode_bypass = false; // Explicitly disabled via env var
+			}
+#else
+			bool dev_mode_bypass = false;
+			String dev_mode_env = OS::get_singleton()->get_environment("ORCA_DEV_MODE");
+			if (!dev_mode_env.is_empty() && (dev_mode_env == "1" || dev_mode_env.to_lower() == "true")) {
+				dev_mode_bypass = true; // Enabled via env var in release builds
+			}
+#endif
+			
+			bool needs_auth_dialog = !auth_manager->get_is_authenticated() && !dev_mode_bypass;
 			
 			if (needs_auth_dialog) {
 				print_line("ORCA AUTH: User not authenticated, hiding ProjectManager and showing login dialog");
@@ -4735,7 +4750,11 @@ int Main::start() {
 				// Store reference for showing ProjectManager after auth
 				auth_dialog->set_meta("project_manager", pmanager);
 			} else {
-				print_line("ORCA AUTH: User already authenticated, showing ProjectManager");
+				if (dev_mode_bypass) {
+					print_line("ORCA AUTH: DEV MODE - Skipping authentication, showing ProjectManager");
+				} else {
+					print_line("ORCA AUTH: User already authenticated, showing ProjectManager");
+				}
 			}
 			
 			OS::get_singleton()->benchmark_end_measure("Startup", "Project Manager");
