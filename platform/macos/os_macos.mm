@@ -844,6 +844,7 @@ Error OS_MacOS::create_instance(const List<String> &p_arguments, ProcessID *r_ch
 	NSString *nsappname = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleName"];
 	if (nsappname != nil) {
 		String path = String::utf8([[[NSBundle mainBundle] bundlePath] UTF8String]);
+		print_line("ORCA DEBUG: create_instance detected bundle: " + path);
 #ifdef TOOLS_ENABLED
 		if (Engine::get_singleton() && !Engine::get_singleton()->is_project_manager_hint() && !Engine::get_singleton()->is_editor_hint()) {
 			// Project started from the editor - use executable instead of bundle to prevent duplicate dock icons
@@ -853,13 +854,17 @@ Error OS_MacOS::create_instance(const List<String> &p_arguments, ProcessID *r_ch
 				List<String> arguments = p_arguments;
 				arguments.push_back("--path");
 				arguments.push_back(String::utf8(cwd));
+				print_line("ORCA DEBUG: create_instance using executable path: " + exec_path);
 				return OS_Unix::create_process(exec_path, arguments, r_child_id, false);
 			}
 		}
 #endif
+		print_line("ORCA DEBUG: create_instance using bundle path: " + path);
 		return create_process(path, p_arguments, r_child_id, false);
 	} else {
-		return create_process(get_executable_path(), p_arguments, r_child_id, false);
+		String exec_path = get_executable_path();
+		print_line("ORCA DEBUG: create_instance no bundle detected, using executable path: " + exec_path);
+		return create_process(exec_path, p_arguments, r_child_id, false);
 	}
 }
 
