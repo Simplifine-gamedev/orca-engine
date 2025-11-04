@@ -7207,11 +7207,11 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	Color role_color;
 
 	if (p_message.role == "user") {
-		// User messages: transparent with no padding
-		panel_style->set_content_margin_all(0); // No padding
-		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
-		panel_style->set_border_width_all(0); // No border
-		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
+		// User messages: dark background with rounded corners and white outline (similar to input box)
+		panel_style->set_content_margin_all(12); // Padding inside bubble
+		panel_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor"))); // Dark background like input box
+		panel_style->set_border_width_all(1); // White outline
+		panel_style->set_border_color(Color(1, 1, 1, 0.5)); // White border with some transparency
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
 		// Assistant messages: transparent background with no padding
@@ -7228,8 +7228,11 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	message_panel->add_child(message_vbox);
 	
 	// Add left/right padding for better readability (Cursor-style)
-	message_vbox->add_theme_constant_override("margin_left", 16);
-	message_vbox->add_theme_constant_override("margin_right", 16);
+	// For user messages, padding is handled by panel, so no extra margin needed
+	if (p_message.role != "user") {
+		message_vbox->add_theme_constant_override("margin_left", 16);
+		message_vbox->add_theme_constant_override("margin_right", 16);
+	}
 
 	// For user messages: use new handler (no header, clickable bubble)
 	if (p_message.role == "user") {
@@ -7487,11 +7490,11 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	Color role_color;
 
 	if (p_message.role == "user") {
-		// User messages: transparent with no padding
-		panel_style->set_content_margin_all(0); // No padding
-		panel_style->set_bg_color(Color(0, 0, 0, 0)); // Fully transparent background
-		panel_style->set_border_width_all(0); // No border
-		panel_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border
+		// User messages: dark background with rounded corners and white outline (similar to input box)
+		panel_style->set_content_margin_all(12); // Padding inside bubble
+		panel_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor"))); // Dark background like input box
+		panel_style->set_border_width_all(1); // White outline
+		panel_style->set_border_color(Color(1, 1, 1, 0.5)); // White border with some transparency
 		role_color = get_theme_color(SNAME("accent_color"), SNAME("Editor"));
 	} else { // Assistant and System
 		// Assistant messages: transparent background with no padding
@@ -7508,8 +7511,11 @@ void AIChatDock::_build_message_content(PanelContainer *p_message_panel, const A
 	p_message_panel->add_child(message_vbox);
 	
 	// Add left/right padding for better readability (Cursor-style)
-	message_vbox->add_theme_constant_override("margin_left", 16);
-	message_vbox->add_theme_constant_override("margin_right", 16);
+	// For user messages, padding is handled by panel, so no extra margin needed
+	if (p_message.role != "user") {
+		message_vbox->add_theme_constant_override("margin_left", 16);
+		message_vbox->add_theme_constant_override("margin_right", 16);
+	}
 
 	// For user messages: use new handler (no header, clickable bubble)
 	if (p_message.role == "user") {

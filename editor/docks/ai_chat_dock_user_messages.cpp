@@ -246,14 +246,13 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	
 	print_line("AI Chat: Cleared bubble children, creating edit UI");
 	
-	// Update bubble styling - transparent with no padding
+	// Update bubble styling - keep rounded corners, white outline, and padding, but change background to chat background gray
 	Ref<StyleBoxFlat> edit_panel_style = memnew(StyleBoxFlat);
-	edit_panel_style->set_content_margin_all(0);
-	edit_panel_style->set_corner_radius_all(8);
-	// Fully transparent
-	edit_panel_style->set_bg_color(Color(0, 0, 0, 0));
-	edit_panel_style->set_border_width_all(0);
-	edit_panel_style->set_border_color(Color(0, 0, 0, 0));
+	edit_panel_style->set_content_margin_all(12); // Same padding as normal bubble
+	edit_panel_style->set_corner_radius_all(8); // Same rounded corners
+	edit_panel_style->set_bg_color(chat_dock->get_theme_color(SNAME("base_color"), SNAME("Editor"))); // Chat background gray
+	edit_panel_style->set_border_width_all(1); // White outline
+	edit_panel_style->set_border_color(Color(1, 1, 1, 0.5)); // White border with some transparency
 	p_bubble->add_theme_style_override("panel", edit_panel_style);
 	
 	// Create edit UI
