@@ -134,6 +134,8 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_process_send_request_async"), &AIChatDock::_process_send_request_async);
 	ClassDB::bind_method(D_METHOD("_save_conversations_async"), &AIChatDock::_save_conversations_async);
 	ClassDB::bind_method(D_METHOD("_on_input_text_changed"), &AIChatDock::_on_input_text_changed);
+	ClassDB::bind_method(D_METHOD("_adjust_input_field_height"), &AIChatDock::_adjust_input_field_height);
+	ClassDB::bind_method(D_METHOD("_adjust_input_field_height_deferred"), &AIChatDock::_adjust_input_field_height_deferred);
 	
 	// Token counting method bindings
 	ClassDB::bind_method(D_METHOD("_update_token_indicator"), &AIChatDock::_update_token_indicator);
@@ -2938,6 +2940,9 @@ void AIChatDock::_on_input_text_changed() {
 	
 	// Update token indicator when input changes
 	_update_token_indicator();
+	
+	// Dynamic height adjustment for input field
+	_adjust_input_field_height();
 }
 
 void AIChatDock::_update_token_indicator() {
@@ -3040,56 +3045,93 @@ void AIChatDock::_on_token_count_response(int p_result, int p_code, const Packed
 		}
 		token_indicator->add_theme_color_override("font_color", indicator_color);
 	}
-	
-	// Dynamic height adjustment for up to 6 lines
-	if (input_field && input_field->is_inside_tree()) {
-		String text = input_field->get_text();
-		int line_count = 1; // Start with 1 line minimum
-		
-		// Count actual lines in the text
-		for (int i = 0; i < text.length(); i++) {
-			if (text[i] == '\n') {
-				line_count++;
-			}
-		}
-		
-		// Add wrapped lines based on text width (approximate)
-		// This is a simplified calculation - actual wrapping is more complex
-		if (!text.is_empty()) {
-			Ref<Font> font = input_field->get_theme_font(SNAME("font"));
-			int font_size = input_field->get_theme_font_size(SNAME("font_size"));
-			if (font.is_valid()) {
-				float content_width = input_field->get_size().width - 40; // Account for margins
-				if (content_width > 0) {
-					Vector<String> lines = text.split("\n");
-					line_count = 0;
-					for (const String &line : lines) {
-						if (line.is_empty()) {
-							line_count++;
-						} else {
-							float line_width = font->get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).width;
-							int wrapped_lines = MAX(1, (int)Math::ceil(line_width / content_width));
-							line_count += wrapped_lines;
-						}
-					}
-				}
-			}
-		}
-		
-		// Clamp to maximum 6 lines
-		line_count = MIN(line_count, 6);
-		
-		// Calculate height: base padding + (line_count * line_height)
-		int line_height = input_field->get_theme_font_size(SNAME("font_size")) + 4; // Font size + some spacing
-		int base_padding = 32; // Top and bottom padding from style
-		int target_height = base_padding + (line_count * line_height);
-		
-		// Ensure minimum height
-		target_height = MAX(target_height, 80);
-		
-		// Update the input field height
-		input_field->set_custom_minimum_size(Size2(0, target_height));
+}
+
+void AIChatDock::_adjust_input_field_height() {
+	if (!input_field || !input_field->is_inside_tree()) {
+		return;
 	}
+	
+	// Use TextEdit's API to get accurate visible line count (including wrapped lines)
+	// Need to wait a frame for TextEdit to update its internal line wrapping calculation
+	call_deferred("_adjust_input_field_height_deferred");
+}
+
+void AIChatDock::_adjust_input_field_height_deferred() {
+	if (!input_field || !input_field->is_inside_tree()) {
+		return;
+	}
+	
+	String text = input_field->get_text();
+	
+	// Get total visible lines (including wrapped lines) using TextEdit's API
+	// For a single-line input, check wrap count; for multi-line, use visible count
+	int visible_line_count = 1; // Minimum 1 line
+	
+	if (text.is_empty()) {
+		visible_line_count = 1;
+	} else {
+		int line_count = input_field->get_line_count();
+		if (line_count == 1) {
+			// Single line: check if it wraps
+			int wrap_count = input_field->get_line_wrap_count(0);
+			visible_line_count = wrap_count + 1; // +1 for the line itself
+		} else {
+			// Multiple lines: get visible line count for all lines
+			visible_line_count = input_field->get_visible_line_count_in_range(0, line_count - 1);
+		}
+	}
+	
+	// Check if chat history is empty to determine max lines
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	bool is_empty_chat = chat_history.is_empty();
+	
+	// Set max lines: 4 when chat is empty, 2 when chat has messages
+	int max_lines = is_empty_chat ? 4 : 2;
+	
+	// Clamp visible line count to max_lines
+	// Ensure at least 1 line is visible, but expand to show at least 2 lines when wrapping occurs
+	int target_line_count = visible_line_count;
+	if (text.is_empty()) {
+		target_line_count = 1;
+	} else {
+		// When text wraps to second line, ensure we show at least 2 lines
+		if (visible_line_count > 1) {
+			target_line_count = MAX(visible_line_count, 2); // Always show at least 2 lines when wrapping
+		} else {
+			target_line_count = 1;
+		}
+		target_line_count = MIN(target_line_count, max_lines);
+	}
+	
+	// Use TextEdit's actual line height calculation
+	int line_height = input_field->get_line_height();
+	if (line_height <= 0) {
+		// Fallback if get_line_height() returns invalid value
+		Ref<Font> font = input_field->get_theme_font(SNAME("font"));
+		int font_size = input_field->get_theme_font_size(SNAME("font_size"));
+		if (font.is_valid()) {
+			line_height = font->get_height(font_size);
+		} else {
+			line_height = font_size + 4; // Fallback calculation
+		}
+	}
+	
+	// Add line spacing if available
+	int line_spacing = input_field->get_theme_constant(SNAME("line_spacing"), SNAME("TextEdit"));
+	if (line_spacing == 0) {
+		line_spacing = 4; // Default spacing
+	}
+	
+	// Calculate height: base padding + (line_count * (line_height + line_spacing))
+	int base_padding = 32; // Top and bottom padding from style
+	int target_height = base_padding + (target_line_count * line_height) + ((target_line_count - 1) * line_spacing);
+	
+	// Ensure minimum height
+	target_height = MAX(target_height, 80);
+	
+	// Update the input field height
+	input_field->set_custom_minimum_size(Size2(0, target_height));
 }
 // --- At-Mention Implementation ---
 // This is actually not working rn! :/ 
@@ -13248,6 +13290,9 @@ void AIChatDock::_on_conversation_selected(int p_index) {
 	}
 	
 	_update_ui_state();
+	
+	// Adjust input field height based on new conversation state (empty vs. has messages)
+	_adjust_input_field_height();
 }
 
 void AIChatDock::_on_new_conversation_pressed() {
@@ -13282,6 +13327,9 @@ void AIChatDock::_on_new_conversation_pressed() {
 	_create_new_conversation_instant();
 	_update_conversation_dropdown();
 	_update_ui_state();
+	
+	// Adjust input field height for new empty conversation (should expand to 4 lines)
+	_adjust_input_field_height();
 
 	// Use delayed save to avoid UI blocking
 	_queue_delayed_save();

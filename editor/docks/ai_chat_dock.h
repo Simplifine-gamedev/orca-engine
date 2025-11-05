@@ -361,6 +361,8 @@ private:
 	void _create_edit_message_bubble(const ChatMessage &p_message, int p_message_index);
 	void _save_conversations_async();
 	void _on_input_text_changed();
+	void _adjust_input_field_height();
+	void _adjust_input_field_height_deferred();
 	void _on_input_field_gui_input(const Ref<InputEvent> &p_event);
 	
 	// Token counting methods
