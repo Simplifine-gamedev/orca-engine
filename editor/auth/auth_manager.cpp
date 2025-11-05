@@ -721,7 +721,7 @@ String AuthManager::get_user_name() const {
 #endif
 
 	if (dev_mode_bypass) {
-		return "Dev User"; // Return dev user name
+		return "Local User"; // Return neutral local user name
 	}
 	
 	return user_name;
@@ -744,7 +744,7 @@ String AuthManager::get_user_email() const {
 #endif
 
 	if (dev_mode_bypass) {
-		return "dev@example.com"; // Return dev user email
+		return "local@orca.com"; // Return neutral local user email
 	}
 	
 	return user_email;
@@ -767,7 +767,13 @@ String AuthManager::get_user_id() const {
 #endif
 
 	if (dev_mode_bypass) {
-		return "dev_user_123"; // Return dev user ID
+		// Use "dev_{machine_id}" format to match backend behavior for pre-auth conversations
+		String machine_id = OS::get_singleton()->get_unique_id();
+		if (machine_id.is_empty()) {
+			machine_id = OS::get_singleton()->get_processor_name() + "_" + OS::get_singleton()->get_name();
+			machine_id = machine_id.replace(" ", "_").replace("(", "").replace(")", "");
+		}
+		return "dev_" + machine_id;
 	}
 	
 	return user_id;
