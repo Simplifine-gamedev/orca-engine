@@ -9,6 +9,8 @@
 #include "auth_dialog.h"
 
 #include "core/config/project_settings.h"
+#include "core/io/dir_access.h"
+#include "core/io/file_access.h"
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
@@ -631,22 +633,20 @@ bool AuthManager::_store_token_secure(const String &p_key, const String &p_value
 	String config_dir = OS::get_singleton()->get_user_data_dir();
 	String secure_dir = config_dir.path_join(".orca_auth");
 	
-	DirAccess *dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
 	if (!dir->dir_exists(secure_dir)) {
 		dir->make_dir(secure_dir);
 	}
-	memdelete(dir);
 	
 	String file_path = secure_dir.path_join(_get_secure_storage_key(p_key));
-	FileAccess *file = FileAccess::open(file_path, FileAccess::WRITE);
-	if (!file) {
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
+	if (!file.is_valid()) {
 		print_error("Failed to store token in file: " + file_path);
 		return false;
 	}
 	
 	file->store_string(p_value);
 	file->close();
-	memdelete(file);
 	
 	return true;
 }
@@ -659,14 +659,13 @@ String AuthManager::_retrieve_token_secure(const String &p_key) {
 		return String();
 	}
 	
-	FileAccess *file = FileAccess::open(file_path, FileAccess::READ);
-	if (!file) {
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::READ);
+	if (!file.is_valid()) {
 		return String();
 	}
 	
 	String value = file->get_as_text();
 	file->close();
-	memdelete(file);
 	
 	return value;
 }
@@ -676,9 +675,8 @@ void AuthManager::_delete_token_secure(const String &p_key) {
 	String file_path = config_dir.path_join(".orca_auth").path_join(_get_secure_storage_key(p_key));
 	
 	if (FileAccess::exists(file_path)) {
-		DirAccess *dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
 		dir->remove(file_path);
-		memdelete(dir);
 	}
 }
 #endif
