@@ -735,6 +735,11 @@ void GameView::_debug_mute_audio_button_pressed() {
 void GameView::set_ai_testing(bool p_enabled) {
 	if (ai_testing_watermark) {
 		if (p_enabled) {
+			// Ensure watermark is on top by moving it to the end of children list
+			if (ai_testing_watermark->get_parent()) {
+				ai_testing_watermark->get_parent()->move_child(ai_testing_watermark, -1);
+			}
+			ai_testing_watermark->move_to_front();
 			ai_testing_watermark->show();
 		} else {
 			ai_testing_watermark->hide();
@@ -1232,6 +1237,7 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 
 	panel->add_child(embedded_process);
 	embedded_process->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+	embedded_process->set_z_index(0); // Ensure game content is below overlays
 	embedded_process->connect("embedding_failed", callable_mp(this, &GameView::_embedding_failed));
 	embedded_process->connect("embedding_completed", callable_mp(this, &GameView::_embedding_completed));
 	embedded_process->connect("embedded_process_updated", callable_mp(this, &GameView::_embedded_process_updated));
@@ -1257,6 +1263,8 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 	// Create AI testing watermark overlay
 	ai_testing_watermark = memnew(Label);
 	panel->add_child(ai_testing_watermark);
+	// Ensure watermark is always rendered on top by moving it to the end of children list
+	panel->move_child(ai_testing_watermark, -1);
 	ai_testing_watermark->set_text("🤖 AI Testing...");
 	ai_testing_watermark->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	ai_testing_watermark->set_vertical_alignment(VERTICAL_ALIGNMENT_TOP);
@@ -1264,6 +1272,7 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 	ai_testing_watermark->set_offset(SIDE_TOP, 20 * EDSCALE); // Add top margin to avoid toolbar
 	ai_testing_watermark->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
 	ai_testing_watermark->set_z_index(1000); // Above game content
+	ai_testing_watermark->set_z_as_relative(false); // Use absolute z-index
 	ai_testing_watermark->hide();
 
 	// Style the watermark with semi-transparent background
