@@ -171,6 +171,7 @@ class GameView : public VBoxContainer {
 	Panel *panel = nullptr;
 	EmbeddedProcessBase *embedded_process = nullptr;
 	Label *state_label = nullptr;
+	Label *ai_testing_watermark = nullptr;
 
 	void _sessions_changed();
 
@@ -230,6 +231,10 @@ public:
 
 	void set_window_layout(Ref<ConfigFile> p_layout);
 	void get_window_layout(Ref<ConfigFile> p_layout);
+
+	void set_ai_testing(bool p_enabled);
+
+	static GameView *get_singleton() { return singleton; }
 
 	GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process, WindowWrapper *p_wrapper);
 };

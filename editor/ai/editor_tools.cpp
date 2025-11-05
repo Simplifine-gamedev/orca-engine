@@ -38,6 +38,7 @@
 #include "editor/docks/scene_tree_dock.h"
 #include "editor/docks/ai_chat_dock.h"
 #include "editor/run/editor_run_bar.h"
+#include "editor/run/game_view_plugin.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/script/script_text_editor.h"
 #include "scene/main/node.h"
@@ -57,6 +58,7 @@
 // Key: absolute or res:// path; Value: edited content string
 static Dictionary s_preview_overlays;
 static Array s_runtime_errors; // Array of Dictionary: { type, time_ms, message, file, line, is_warning, stack, stack_str, source_func, error_code, error_descr }
+static bool s_ai_testing_game = false;
 
 void EditorTools::set_preview_overlay(const String &p_path, const String &p_content) {
 	if (p_path.is_empty()) {
@@ -12566,9 +12568,22 @@ Dictionary EditorTools::runtime_manager(const Dictionary &p_args) {
     }
     
     if (op == "game.start") {
+        // Mark as AI-initiated test
+        s_ai_testing_game = true;
+        // Notify GameView to show watermark
+        if (GameView::get_singleton()) {
+            GameView::get_singleton()->set_ai_testing(true);
+        }
         return run_scene(p_args);
     } else if (op == "game.stop") {
-        return stop_game(p_args);
+        Dictionary stop_result = stop_game(p_args);
+        // Clear AI testing flag
+        s_ai_testing_game = false;
+        // Notify GameView to hide watermark
+        if (GameView::get_singleton()) {
+            GameView::get_singleton()->set_ai_testing(false);
+        }
+        return stop_result;
     } else if (op == "game.status") {
         return get_game_status(p_args);
     } else if (op == "errors.summary") {

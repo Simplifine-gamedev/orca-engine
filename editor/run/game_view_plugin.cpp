@@ -52,6 +52,7 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/panel.h"
 #include "scene/gui/separator.h"
+#include "scene/resources/style_box_flat.h"
 
 void GameViewDebugger::_session_started(Ref<EditorDebuggerSession> p_session) {
 	if (!is_feature_enabled) {
@@ -434,6 +435,9 @@ void GameView::_stop_pressed() {
 		return;
 	}
 
+	// Clear AI testing watermark if game was stopped manually
+	set_ai_testing(false);
+
 	_detach_script_debugger();
 	paused = false;
 
@@ -726,6 +730,16 @@ void GameView::_debug_mute_audio_button_pressed() {
 	debug_mute_audio_button->set_button_icon(get_editor_theme_icon(debug_mute_audio ? SNAME("AudioMute") : SNAME("AudioStreamPlayer")));
 	debug_mute_audio_button->set_tooltip_text(debug_mute_audio ? TTRC("Unmute game audio.") : TTRC("Mute game audio."));
 	debugger->set_debug_mute_audio(debug_mute_audio);
+}
+
+void GameView::set_ai_testing(bool p_enabled) {
+	if (ai_testing_watermark) {
+		if (p_enabled) {
+			ai_testing_watermark->show();
+		} else {
+			ai_testing_watermark->hide();
+		}
+	}
 }
 
 void GameView::_camera_override_button_toggled(bool p_pressed) {
@@ -1239,6 +1253,32 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 	state_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
 	state_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD);
 	state_label->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
+
+	// Create AI testing watermark overlay
+	ai_testing_watermark = memnew(Label);
+	panel->add_child(ai_testing_watermark);
+	ai_testing_watermark->set_text("🤖 AI Testing...");
+	ai_testing_watermark->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	ai_testing_watermark->set_vertical_alignment(VERTICAL_ALIGNMENT_TOP);
+	ai_testing_watermark->set_anchors_and_offsets_preset(PRESET_TOP_WIDE);
+	ai_testing_watermark->set_offset(SIDE_TOP, 20 * EDSCALE); // Add top margin to avoid toolbar
+	ai_testing_watermark->set_mouse_filter(Control::MOUSE_FILTER_IGNORE);
+	ai_testing_watermark->set_z_index(1000); // Above game content
+	ai_testing_watermark->hide();
+
+	// Style the watermark with semi-transparent background
+	Ref<StyleBoxFlat> watermark_style = memnew(StyleBoxFlat);
+	watermark_style->set_bg_color(Color(0.0, 0.0, 0.0, 0.6)); // Semi-transparent black
+	watermark_style->set_corner_radius_all(8);
+	watermark_style->set_content_margin_all(12 * EDSCALE);
+	ai_testing_watermark->add_theme_style_override("normal", watermark_style);
+
+	// Set text styling
+	ai_testing_watermark->add_theme_font_size_override("font_size", 18 * EDSCALE);
+	ai_testing_watermark->add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.9));
+	ai_testing_watermark->add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.5));
+	ai_testing_watermark->add_theme_constant_override("shadow_offset_x", 2);
+	ai_testing_watermark->add_theme_constant_override("shadow_offset_y", 2);
 
 	_update_debugger_buttons();
 
