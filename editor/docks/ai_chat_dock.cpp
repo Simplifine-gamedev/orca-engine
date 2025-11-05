@@ -1060,11 +1060,18 @@ void AIChatDock::_notification(int p_notification) {
 		resource_dialog->connect("files_selected", callable_mp(this, &AIChatDock::_on_files_selected));
 		add_child(resource_dialog);
 
-			// Chat history area - expand to fill available space
-			chat_scroll = memnew(ScrollContainer);
-			chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
-			chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
-			add_child(chat_scroll);
+		// Chat history area - expand to fill available space
+		// Wrap in MarginContainer to add padding on left and right
+		MarginContainer *chat_scroll_wrapper = memnew(MarginContainer);
+		chat_scroll_wrapper->add_theme_constant_override("margin_left", 18);
+		chat_scroll_wrapper->add_theme_constant_override("margin_right", 18);
+		chat_scroll_wrapper->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		add_child(chat_scroll_wrapper);
+		
+		chat_scroll = memnew(ScrollContainer);
+		chat_scroll->set_v_size_flags(Control::SIZE_EXPAND_FILL);
+		chat_scroll->set_horizontal_scroll_mode(ScrollContainer::SCROLL_MODE_DISABLED);
+		chat_scroll_wrapper->add_child(chat_scroll);
 			
 			// Connect scroll change event
 			chat_scroll->get_v_scroll_bar()->connect("value_changed", callable_mp(this, &AIChatDock::_on_chat_scroll_changed), CONNECT_DEFERRED);
@@ -1078,9 +1085,10 @@ void AIChatDock::_notification(int p_notification) {
 
 			chat_container->connect("minimum_size_changed", callable_mp(this, &AIChatDock::_on_chat_content_min_size_changed), CONNECT_DEFERRED);
 
-		// Add a container for banner, attachments and input at the bottom (under chat)
-		VBoxContainer *bottom_panel = memnew(VBoxContainer);
-		add_child(bottom_panel);
+	// Add a container for banner, attachments and input at the bottom (under chat)
+	// Note: Input box has its own padding, so we don't wrap bottom_panel in MarginContainer
+	VBoxContainer *bottom_panel = memnew(VBoxContainer);
+	add_child(bottom_panel);
 
 		// Pending edits banner: placed at very top of bottom panel (just below chat area)
 		pending_edits_banner = memnew(AIPendingEditsBanner);
@@ -7797,7 +7805,7 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 	// Create a single container for all tool calls to group them together
 	VBoxContainer *tools_container = memnew(VBoxContainer);
 	tools_container->set_name("tools_container");
-	tools_container->add_theme_constant_override("separation", -18); // Even more negative spacing for tighter layout between tool calls
+	tools_container->add_theme_constant_override("separation", -45); // Much more negative spacing for very tight layout between tool calls
 	message_vbox->add_child(tools_container);
 
 	// Create individual tool placeholders within the grouped container
@@ -7858,8 +7866,8 @@ void AIChatDock::_create_tool_call_bubbles(const Array &p_tool_calls) {
 		placeholder->add_child(tool_vbox);
 
 		HBoxContainer *tool_hbox = memnew(HBoxContainer);
-		// Add left margin to align tool calls with AI text (same 8px margin)
-		tool_hbox->add_theme_constant_override("margin_left", 8);
+		// Add left margin to align tool calls with AI text (same 16px margin)
+		tool_hbox->add_theme_constant_override("margin_left", 16);
 		tool_vbox->add_child(tool_hbox);
 
         RichTextLabel *tool_label = memnew(RichTextLabel);
