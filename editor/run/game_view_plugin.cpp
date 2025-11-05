@@ -1261,11 +1261,10 @@ GameView::GameView(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embe
 	state_label->set_anchors_and_offsets_preset(PRESET_FULL_RECT);
 
 	// Create AI testing watermark overlay
+	// Add directly to GameView (not panel) so it renders above embedded_process native window
 	ai_testing_watermark = memnew(Label);
-	panel->add_child(ai_testing_watermark);
-	// Ensure watermark is always rendered on top by moving it to the end of children list
-	panel->move_child(ai_testing_watermark, -1);
-	ai_testing_watermark->set_text("🤖 AI Testing...");
+	add_child(ai_testing_watermark); // Add to GameView, not panel
+	ai_testing_watermark->set_text("AI Testing...");
 	ai_testing_watermark->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	ai_testing_watermark->set_vertical_alignment(VERTICAL_ALIGNMENT_TOP);
 	ai_testing_watermark->set_anchors_and_offsets_preset(PRESET_TOP_WIDE);
