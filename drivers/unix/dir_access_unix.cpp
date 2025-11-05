@@ -341,15 +341,7 @@ Error DirAccessUnix::change_dir(String p_dir) {
 
 	p_dir = fix_path(p_dir);
 
-	// prev_dir is the directory we are changing out of
-	String prev_dir;
-	char real_current_dir_name[2048];
-	ERR_FAIL_NULL_V(getcwd(real_current_dir_name, 2048), ERR_BUG);
-	if (prev_dir.append_utf8(real_current_dir_name) != OK) {
-		prev_dir = real_current_dir_name; //no utf8, maybe latin?
-	}
-
-	// try_dir is the directory we are trying to change into
+	// Resolve the target directory path
 	String try_dir = "";
 	if (p_dir.is_relative_path()) {
 		String next_dir = current_dir.path_join(p_dir);
@@ -359,25 +351,24 @@ Error DirAccessUnix::change_dir(String p_dir) {
 		try_dir = p_dir;
 	}
 
-	bool worked = (chdir(try_dir.utf8().get_data()) == 0); // we can only give this utf8
-	if (!worked) {
+	// Validate against root path
+	String base = _get_root_path();
+	if (!base.is_empty() && !try_dir.begins_with(base)) {
 		return ERR_INVALID_PARAMETER;
 	}
 
-	String base = _get_root_path();
-	if (!base.is_empty() && !try_dir.begins_with(base)) {
-		ERR_FAIL_NULL_V(getcwd(real_current_dir_name, 2048), ERR_BUG);
-		String new_dir;
-		new_dir.append_utf8(real_current_dir_name);
-
-		if (!new_dir.begins_with(base)) {
-			try_dir = current_dir; //revert
-		}
+	// Verify directory exists using stat() instead of chdir()
+	struct stat flags = {};
+	if (stat(try_dir.utf8().get_data(), &flags) != 0) {
+		return ERR_INVALID_PARAMETER;
 	}
 
-	// the directory exists, so set current_dir to try_dir
+	if (!S_ISDIR(flags.st_mode)) {
+		return ERR_INVALID_PARAMETER;
+	}
+
+	// Only update internal state - NO chdir() call!
 	current_dir = try_dir;
-	ERR_FAIL_COND_V(chdir(prev_dir.utf8().get_data()) != 0, ERR_BUG);
 	return OK;
 }
 
@@ -730,15 +721,17 @@ DirAccessUnix::DirAccessUnix() {
 
 	/* determine drive count */
 
-	// set current directory to an absolute path of the current directory
+	// Set current directory to an absolute path of the current directory
+	// WITHOUT changing the process CWD
 	char real_current_dir_name[2048];
 	ERR_FAIL_NULL(getcwd(real_current_dir_name, 2048));
 	current_dir.clear();
 	if (current_dir.append_utf8(real_current_dir_name) != OK) {
 		current_dir = real_current_dir_name;
 	}
-
-	change_dir(current_dir);
+	
+	// Normalize the path without calling change_dir()
+	current_dir = current_dir.simplify_path();
 }
 
 DirAccessUnix::RemoveNotificationFunc DirAccessUnix::remove_notification_func = nullptr;

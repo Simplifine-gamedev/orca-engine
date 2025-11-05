@@ -153,36 +153,34 @@ Error DirAccessWindows::change_dir(String p_dir) {
 
 	String dir = fix_path(p_dir);
 
-	Char16String real_current_dir_name;
-	size_t str_len = GetCurrentDirectoryW(0, nullptr);
-	real_current_dir_name.resize_uninitialized(str_len + 1);
-	GetCurrentDirectoryW(real_current_dir_name.size(), (LPWSTR)real_current_dir_name.ptrw());
-	String prev_dir = String::utf16((const char16_t *)real_current_dir_name.get_data());
+	// Resolve the target directory path
+	String try_dir = "";
+	if (p_dir.is_relative_path()) {
+		try_dir = current_dir.path_join(p_dir);
+		try_dir = fix_path(try_dir);
+	} else {
+		try_dir = dir;
+	}
 
-	SetCurrentDirectoryW((LPCWSTR)(current_dir.utf16().get_data()));
-	bool worked = (SetCurrentDirectoryW((LPCWSTR)(dir.utf16().get_data())) != 0);
-
+	// Validate against root path
 	String base = _get_root_path();
-	if (!base.is_empty()) {
-		str_len = GetCurrentDirectoryW(0, nullptr);
-		real_current_dir_name.resize_uninitialized(str_len + 1);
-		GetCurrentDirectoryW(real_current_dir_name.size(), (LPWSTR)real_current_dir_name.ptrw());
-		String new_dir = String::utf16((const char16_t *)real_current_dir_name.get_data()).trim_prefix(R"(\\?\)").replace_char('\\', '/');
-		if (!new_dir.begins_with(base)) {
-			worked = false;
-		}
+	if (!base.is_empty() && !try_dir.begins_with(base)) {
+		return ERR_INVALID_PARAMETER;
 	}
 
-	if (worked) {
-		str_len = GetCurrentDirectoryW(0, nullptr);
-		real_current_dir_name.resize_uninitialized(str_len + 1);
-		GetCurrentDirectoryW(real_current_dir_name.size(), (LPWSTR)real_current_dir_name.ptrw());
-		current_dir = String::utf16((const char16_t *)real_current_dir_name.get_data());
+	// Verify directory exists without changing process CWD
+	DWORD attrs = GetFileAttributesW((LPCWSTR)(try_dir.utf16().get_data()));
+	if (attrs == INVALID_FILE_ATTRIBUTES) {
+		return ERR_INVALID_PARAMETER;
 	}
 
-	SetCurrentDirectoryW((LPCWSTR)(prev_dir.utf16().get_data()));
+	if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+		return ERR_INVALID_PARAMETER;
+	}
 
-	return worked ? OK : ERR_INVALID_PARAMETER;
+	// Only update internal state - NO SetCurrentDirectoryW() call!
+	current_dir = try_dir;
+	return OK;
 }
 
 Error DirAccessWindows::make_dir(String p_dir) {
@@ -496,7 +494,8 @@ DirAccessWindows::DirAccessWindows() {
 		}
 	}
 
-	change_dir(".");
+	// Normalize the path without calling change_dir()
+	current_dir = current_dir.replace_char('\\', '/').simplify_path();
 }
 
 DirAccessWindows::~DirAccessWindows() {
