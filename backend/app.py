@@ -1025,25 +1025,33 @@ else:
     raise ValueError("FLASK_SECRET_KEY must be set in production")
 
 # Multi-provider model configuration using LiteLLM
-# Base models with dual Claude support (Vertex AI default, Anthropic direct as option)
+# Claude automatically uses Vertex AI (leverages your GCP credits)
 def _get_claude_model():
-    """Get Claude model - Vertex AI by default, Anthropic direct as fallback"""
+    """
+    Get Claude model - Vertex AI by default (uses your GCP credits).
+    
+    The frontend will only see 'claude-4' as an option, but the backend
+    automatically uses Vertex AI for Claude to leverage your GCP credits.
+    
+    To switch to direct Anthropic API later, set: CLAUDE_PROVIDER=anthropic
+    """
     # Check if user explicitly wants direct Anthropic
     if os.getenv("CLAUDE_PROVIDER", "").lower() == "anthropic":
+        print("CLAUDE_CONFIG: Using direct Anthropic API (CLAUDE_PROVIDER=anthropic)")
         return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
     
-    # Default to Vertex AI if project is configured
+    # Default to Vertex AI if project is configured (uses GCP credits)
     if os.getenv('VERTEXAI_PROJECT'):
+        print(f"CLAUDE_CONFIG: Using Vertex AI for Claude (Project: {os.getenv('VERTEXAI_PROJECT')})")
         return os.getenv("CLAUDE_MODEL", "vertex_ai/claude-sonnet-4@20250514")
     
     # Fallback to direct Anthropic if no Vertex project
+    print("CLAUDE_CONFIG: No VERTEXAI_PROJECT found, falling back to direct Anthropic API")
     return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
 
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": _get_claude_model(),  # Dynamic Claude selection
-    "claude-4-anthropic": "anthropic/claude-sonnet-4-20250514",  # Direct Anthropic option
-    "claude-4-vertex": "vertex_ai/claude-sonnet-4@20250514",     # Direct Vertex option
+    "claude-4": _get_claude_model(),  # Dynamic Claude selection (Vertex AI by default)
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
@@ -9019,6 +9027,19 @@ else:
 
 # Initialize auto-update system
 print(f"AUTO_UPDATE: Orca Engine v{auto_update_manager.current_version} - Update system initialized")
+
+# Print Claude configuration on startup
+claude_model_id = BASE_MODEL_MAP.get("claude-4", "unknown")
+if "vertex_ai" in claude_model_id:
+    print(f"✅ CLAUDE_CONFIG: Using Vertex AI for Claude (leveraging your GCP credits)")
+    print(f"   Model ID: {claude_model_id}")
+    print(f"   Frontend shows: 'claude-4' (simplified)")
+elif "anthropic" in claude_model_id:
+    print(f"CLAUDE_CONFIG: Using direct Anthropic API")
+    print(f"   Model ID: {claude_model_id}")
+    print(f"   Frontend shows: 'claude-4' (simplified)")
+else:
+    print(f"CLAUDE_CONFIG: Unknown provider - Model ID: {claude_model_id}")
 
 # Start background update checker in production
 if not _dev_mode:
