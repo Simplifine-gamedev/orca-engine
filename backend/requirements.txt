@@ -28,6 +28,7 @@ supabase>=2.0.0  # For crash reporting and analytics storage
 # Google Cloud dependencies for vector search and Vertex AI
 google-cloud-bigquery  # For BigQuery vector storage
 google-cloud-aiplatform>=1.38  # For Vertex AI models (required by litellm)
+google-genai  # For Google Veo 3.1 video generation
 
 # Auto-update system
 semantic-version>=2.10.0  # For version comparison

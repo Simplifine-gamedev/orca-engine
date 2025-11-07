@@ -40,14 +40,15 @@ void AuthDialog::_notification(int p_what) {
 AuthDialog::AuthDialog() {
 	set_title("Sign in to Orca");
 	set_min_size(Size2(500, 400) * EDSCALE);
-	set_max_size(Size2(600, 500) * EDSCALE);
+	set_max_size(Size2(800, 700) * EDSCALE);
 	set_size(Size2(550, 450) * EDSCALE);
 	set_ok_button_text("Close");
 	set_hide_on_ok(false);
 	get_ok_button()->set_visible(false);
 	set_exclusive(true);
 	set_flag(Window::FLAG_POPUP, false);
-	set_flag(Window::FLAG_RESIZE_DISABLED, true);
+	// Allow resizing so users can see all content, especially in email mode
+	set_flag(Window::FLAG_RESIZE_DISABLED, false);
 	
 	// Main container
 	main_container = memnew(VBoxContainer);
@@ -186,6 +187,9 @@ void AuthDialog::show_waiting() {
 	create_account_button->set_visible(false);
 	email_sign_in_button->set_visible(false);
 	email_sign_up_button->set_visible(false);
+	if (toggle_signup_mode_button) {
+		toggle_signup_mode_button->set_visible(false);
+	}
 	
 	set_process(true);
 }
@@ -205,9 +209,35 @@ void AuthDialog::show_success() {
 	status_label->set_text("Welcome, " + user_name + "!");
 	status_label->set_visible(true);
 	
+	// Hide all buttons and input fields
 	sign_in_button->set_visible(false);
 	create_account_button->set_visible(false);
+	email_sign_in_button->set_visible(false);
+	email_sign_up_button->set_visible(false);
+	toggle_auth_mode_button->set_visible(false);
+	if (toggle_signup_mode_button) {
+		toggle_signup_mode_button->set_visible(false);
+	}
+	
+	// Hide email input fields
+	Control *email_container = Object::cast_to<Control>(email_input->get_parent()->get_parent());
+	if (email_container) {
+		email_container->set_visible(false);
+	}
+	
 	get_ok_button()->set_visible(true);
+	
+	// Close dialog and show project manager after a short delay
+	should_load_project_manager = true;
+	if (has_meta("project_manager")) {
+		Control *pm = Object::cast_to<Control>(get_meta("project_manager"));
+		if (pm) {
+			pm->show();
+		}
+	}
+	
+	// Close dialog after showing success message briefly
+	call_deferred("hide");
 }
 
 void AuthDialog::show_error(const String &p_message) {
@@ -224,9 +254,35 @@ void AuthDialog::show_error(const String &p_message) {
 		if (show_signup_mode) {
 			email_sign_up_button->set_visible(true);
 		}
+		if (toggle_signup_mode_button) {
+			toggle_signup_mode_button->set_visible(true);
+		}
 	} else {
 		sign_in_button->set_visible(true);
 		create_account_button->set_visible(true);
+	}
+}
+
+void AuthDialog::show_info(const String &p_message) {
+	waiting_for_callback = false;
+	
+	title_label->set_text("Account Created");
+	description_label->set_visible(false);
+	status_label->set_text(p_message);
+	status_label->set_visible(true);
+	
+	// Show sign-in button so user can try signing in after confirming email
+	if (show_email_mode) {
+		// Switch to sign-in mode (hide name field, show sign-in button)
+		_set_signup_mode(false);
+		email_sign_in_button->set_visible(true);
+		email_sign_up_button->set_visible(false);
+		if (toggle_signup_mode_button) {
+			toggle_signup_mode_button->set_visible(true);
+		}
+	} else {
+		sign_in_button->set_visible(true);
+		create_account_button->set_visible(false);
 	}
 }
 
@@ -361,6 +417,21 @@ void AuthDialog::_setup_email_auth_ui() {
 	email_signup_center->add_child(email_sign_up_button);
 	email_container->add_child(email_signup_center);
 	
+	Control *toggle_spacer = memnew(Control);
+	toggle_spacer->set_custom_minimum_size(Size2(0, 10) * EDSCALE);
+	email_container->add_child(toggle_spacer);
+	
+	// Toggle between sign-in and sign-up mode button
+	toggle_signup_mode_button = memnew(Button);
+	toggle_signup_mode_button->set_text("Don't have an account? Create one");
+	toggle_signup_mode_button->set_flat(true);
+	toggle_signup_mode_button->connect("pressed", callable_mp(this, &AuthDialog::_toggle_signup_mode));
+	
+	HBoxContainer *toggle_signup_center = memnew(HBoxContainer);
+	toggle_signup_center->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	toggle_signup_center->add_child(toggle_signup_mode_button);
+	email_container->add_child(toggle_signup_center);
+	
 	// Initially hide email UI
 	email_container->set_visible(false);
 }
@@ -382,15 +453,26 @@ void AuthDialog::_show_auth_mode(bool p_email_mode) {
 	if (p_email_mode) {
 		toggle_auth_mode_button->set_text("Back to Google");
 		description_label->set_text("Sign in with email and password");
-		_toggle_signup_mode(); // Show appropriate email mode
+		// Set to sign-in mode (not signup) when switching to email mode
+		_set_signup_mode(false);
+		// Increase dialog size to accommodate email fields
+		set_size(Size2(550, 600) * EDSCALE);
+		set_min_size(Size2(500, 550) * EDSCALE);
 	} else {
 		toggle_auth_mode_button->set_text("or Sign in with Email");
 		description_label->set_text("Choose your sign in method");
+		// Reset to smaller size for Google OAuth mode
+		set_size(Size2(550, 450) * EDSCALE);
+		set_min_size(Size2(500, 400) * EDSCALE);
 	}
 }
 
 void AuthDialog::_toggle_signup_mode() {
-	show_signup_mode = !show_signup_mode;
+	_set_signup_mode(!show_signup_mode);
+}
+
+void AuthDialog::_set_signup_mode(bool p_signup_mode) {
+	show_signup_mode = p_signup_mode;
 	
 	// Show/hide name field and adjust buttons
 	Control *name_container = Object::cast_to<Control>(name_input->get_parent());
@@ -402,9 +484,21 @@ void AuthDialog::_toggle_signup_mode() {
 		email_sign_in_button->set_visible(false);
 		email_sign_up_button->set_visible(true);
 		email_sign_up_button->set_text("Create Account");
+		if (toggle_signup_mode_button) {
+			toggle_signup_mode_button->set_text("Already have an account? Sign in");
+		}
+		// Increase size further when showing full name field
+		set_size(Size2(550, 650) * EDSCALE);
+		set_min_size(Size2(500, 600) * EDSCALE);
 	} else {
 		email_sign_in_button->set_visible(true);
 		email_sign_up_button->set_visible(false);
+		if (toggle_signup_mode_button) {
+			toggle_signup_mode_button->set_text("Don't have an account? Create one");
+		}
+		// Reset to smaller size for sign in mode
+		set_size(Size2(550, 600) * EDSCALE);
+		set_min_size(Size2(500, 550) * EDSCALE);
 	}
 }
 

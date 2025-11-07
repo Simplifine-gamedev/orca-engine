@@ -62,6 +62,7 @@ public:
 	void set_auth_dialog(class AuthDialog *p_dialog) { auth_dialog = p_dialog; }
 	void _notify_auth_success();
 	void _notify_auth_error(const String &p_message);
+	void _notify_auth_info(const String &p_message);
 
 	// Token management
 	void store_tokens(const String &p_access_token, const String &p_refresh_token, const String &p_user_id, const String &p_email, const String &p_name);

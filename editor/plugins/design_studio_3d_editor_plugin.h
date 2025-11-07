@@ -37,7 +37,7 @@ class DesignStudio3DEditor : public PanelContainer {
 
 	// API Configuration
 	const String API_URL = "https://gpu-proxy-awdwh5ovsa-uc.a.run.app";
-	const String TEXTURE_API_URL = "https://texture-proxy-server-awdwh5ovsa-uc.a.run.app";
+	const String TEXTURE_API_URL = "https://gpu-proxy-976792908107.us-central1.run.app";
 	const String REMESH_API_URL = "https://remesh.orcaengine.ai";
 	
 	// UI Elements - Left Panel
@@ -122,6 +122,12 @@ class DesignStudio3DEditor : public PanelContainer {
 	HTTPRequest *textured_models_request = nullptr;
 	Timer *poll_timer = nullptr;
 	
+	// New Texture System HTTP Requests
+	HTTPRequest *texture_submit_request = nullptr;
+	HTTPRequest *texture_poll_request = nullptr;
+	HTTPRequest *texture_download_request = nullptr;
+	Timer *texture_poll_timer = nullptr;
+	
 	// Texture System
 	DesignStudioTextureSystem *texture_system = nullptr;
 
@@ -129,6 +135,17 @@ class DesignStudio3DEditor : public PanelContainer {
 	HTTPRequest *remesh_request = nullptr;
 	AcceptDialog *remesh_dialog = nullptr;
 	LineEdit *remesh_faces_input = nullptr;
+	
+	// New Texture Generation Dialog
+	AcceptDialog *texture_generation_dialog = nullptr;
+	LineEdit *texture_prompt_input = nullptr;
+	OptionButton *texture_type_selector = nullptr;
+	OptionButton *texture_resolution_selector = nullptr;
+	Button *texture_reference_button = nullptr;
+	TextureRect *texture_reference_preview = nullptr;
+	Label *texture_reference_label = nullptr;
+	Label *texture_type_note = nullptr;
+	EditorFileDialog *texture_file_dialog = nullptr;
 	
 	// State
 	String current_job_id;
@@ -138,12 +155,17 @@ class DesignStudio3DEditor : public PanelContainer {
 	Ref<Mesh> current_loaded_mesh; // Currently loaded mesh in viewer
 	Dictionary current_model_data; // Data of currently loaded model
 	String selected_image_path; // Path to selected image
+	Ref<class ImporterMesh> current_importer_mesh; // For textured GLB models
 	
-	// Textured models tracking
-	Dictionary pending_textured_requests; // Maps base_model_id -> item_index
+	// Textured models tracking - SIMPLIFIED
 	Dictionary textured_models_cache; // Maps base_model_id -> Array of textured models
-	Array textured_request_queue; // Queue of Dictionary requests to process
-	bool is_processing_textured_requests = false;
+	
+	// New Texture Generation State
+	String current_texture_job_id;
+	bool is_generating_texture = false;
+	String texture_prompt;
+	String texture_reference_image; // Base64 encoded image
+	String texture_type = "hybrid"; // text-to-texture, hybrid, pbr, single-view, image-to-texture
 	
 	// Model statistics
 	int current_vertex_count = 0;
@@ -159,6 +181,7 @@ class DesignStudio3DEditor : public PanelContainer {
 		int vertex_count;
 		int face_count;
 		float distance_threshold; // Distance at which this LOD becomes active
+		Ref<class ImporterMesh> importer_mesh; // For textured GLB LODs
 	};
 	
 	Vector<LODLevel> lod_levels;
@@ -205,6 +228,10 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_download_retry_timeout();
 	void _start_download_with_headers(const String &p_url);
 	void _load_imported_mesh(const String &p_path);
+	void _load_glb_directly(const String &p_path);
+	MeshInstance3D *_find_mesh_instance_recursive(Node *p_node);
+	class ImporterMeshInstance3D *_find_importer_mesh_instance_recursive(Node *p_node);
+	void _print_node_hierarchy(Node *p_node, int p_depth);
 	
 	void _on_refresh_models_pressed();
 	void _on_models_list_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
@@ -212,10 +239,10 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_export_pressed();
 	void _load_model_for_viewing(const Dictionary &p_model_data);
 	
-	// Textured models support
-	void _fetch_textured_models_for_base_model(const String &p_base_model_id, int p_item_index);
-	void _process_textured_request_queue();
-	void _on_textured_models_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	// Textured models support - SIMPLIFIED
+	void _fetch_all_user_texture_jobs();
+	void _on_all_texture_jobs_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _match_textures_with_models(const Array &p_texture_jobs);
 	void _on_textured_model_selected(const String &p_textured_model_id);
 	void _show_model_selection_dialog(const Dictionary &p_base_model, const Array &p_textured_models);
 	void _on_model_selection_confirmed();
@@ -249,6 +276,23 @@ class DesignStudio3DEditor : public PanelContainer {
 	void _on_texture_progress(const String &p_status, const Dictionary &p_data = Dictionary());
 	void _on_texture_completed(const PackedByteArray &p_model_data, const String &p_filename);
 	void _on_texture_failed(const String &p_error_message);
+	
+	// New Texture Generation Methods
+	void _setup_texture_dialog();
+	void _show_texture_generation_dialog();
+	void _on_texture_dialog_confirmed();
+	void _on_texture_reference_pressed();
+	void _on_texture_reference_selected(const String &p_path);
+	void _on_texture_type_changed(int p_index);
+	void _update_texture_type_tip();
+	void _start_texture_generation(const String &p_prompt, const String &p_type, int p_resolution, const String &p_reference_image = "");
+	void _on_texture_job_submitted(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_texture_poll_timeout();
+	void _on_texture_status_received(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _on_textured_model_downloaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
+	void _start_texture_polling(const String &p_texture_job_id);
+	void _stop_texture_polling();
+	void _cancel_texture_generation();
 	
 	// LOD operations
 	void _setup_lod_ui();

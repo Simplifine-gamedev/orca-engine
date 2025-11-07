@@ -4467,20 +4467,23 @@ int Main::start() {
 				translation_server->get_editor_domain()->set_pseudolocalization_enabled(true);
 			}
 
+			// AUTHENTICATION DISABLED: Skip auth system for now
 			// Initialize authentication system for editor
-			print_line("=== ORCA AUTH: Initializing authentication system for editor ===");
-			AuthManager *auth_manager = memnew(AuthManager);
-			
-			// Check for auth URL from deep link
-			String auth_url = OS::get_singleton()->get_environment("ORCA_AUTH_URL");
-			if (!auth_url.is_empty()) {
-				print_line("ORCA AUTH: Found deep link URL in editor");
-				auth_manager->handle_deep_link(auth_url);
-				OS::get_singleton()->unset_environment("ORCA_AUTH_URL");
-			} else {
-				print_line("ORCA AUTH: No deep link, trying auto-login");
-				auth_manager->try_auto_login();
-			}
+			// print_line("=== ORCA AUTH: Initializing authentication system for editor ===");
+			// AuthManager *auth_manager = memnew(AuthManager);
+			// 
+			// // Check for auth URL from deep link
+			// String auth_url = OS::get_singleton()->get_environment("ORCA_AUTH_URL");
+			// if (!auth_url.is_empty()) {
+			// 	print_line("ORCA AUTH: Found deep link URL in editor");
+			// 	auth_manager->handle_deep_link(auth_url);
+			// 	OS::get_singleton()->unset_environment("ORCA_AUTH_URL");
+			// } else {
+			// 	print_line("ORCA AUTH: No deep link, trying auto-login");
+			// 	auth_manager->try_auto_login();
+			// }
+
+			print_line("ORCA AUTH: Authentication disabled - starting editor without auth");
 
 			editor_node = memnew(EditorNode);
 			sml->get_root()->add_child(editor_node);
@@ -4700,20 +4703,21 @@ int Main::start() {
 				translation_server->get_editor_domain()->set_pseudolocalization_enabled(true);
 			}
 
+			// AUTHENTICATION DISABLED: Skip auth system for now
 			// Initialize authentication system
-			print_line("=== ORCA AUTH: Initializing authentication system ===");
-			AuthManager *auth_manager = memnew(AuthManager);
+			// print_line("=== ORCA AUTH: Initializing authentication system ===");
+			// AuthManager *auth_manager = memnew(AuthManager);
 			
 			// Check for auth URL from deep link
-			String auth_url = OS::get_singleton()->get_environment("ORCA_AUTH_URL");
-			if (!auth_url.is_empty()) {
-				print_line("ORCA AUTH: Found deep link URL");
-				auth_manager->handle_deep_link(auth_url);
-				OS::get_singleton()->unset_environment("ORCA_AUTH_URL");
-			} else {
-				print_line("ORCA AUTH: No deep link, trying auto-login");
-				auth_manager->try_auto_login();
-			}
+			// String auth_url = OS::get_singleton()->get_environment("ORCA_AUTH_URL");
+			// if (!auth_url.is_empty()) {
+			// 	print_line("ORCA AUTH: Found deep link URL");
+			// 	auth_manager->handle_deep_link(auth_url);
+			// 	OS::get_singleton()->unset_environment("ORCA_AUTH_URL");
+			// } else {
+			// 	print_line("ORCA AUTH: No deep link, trying auto-login");
+			// 	auth_manager->try_auto_login();
+			// }
 			
 			// Create ProjectManager (required for initialization)
 			ProjectManager *pmanager = memnew(ProjectManager);
@@ -4721,22 +4725,25 @@ int Main::start() {
 			pmanager->add_child(progress_dialog);
 			sml->get_root()->add_child(pmanager);
 			
+			// AUTHENTICATION DISABLED: Always show ProjectManager directly
 			// Show auth dialog if not authenticated
-			bool needs_auth_dialog = !auth_manager->get_is_authenticated();
+			// bool needs_auth_dialog = !auth_manager->get_is_authenticated();
 			
-			if (needs_auth_dialog) {
-				print_line("ORCA AUTH: User not authenticated, hiding ProjectManager and showing login dialog");
-				pmanager->hide(); // Hide ProjectManager until auth completes
-				
-				AuthDialog *auth_dialog = memnew(AuthDialog);
-				sml->get_root()->add_child(auth_dialog);
-				auth_dialog->show_login();
-				
-				// Store reference for showing ProjectManager after auth
-				auth_dialog->set_meta("project_manager", pmanager);
-			} else {
-				print_line("ORCA AUTH: User already authenticated, showing ProjectManager");
-			}
+			// if (needs_auth_dialog) {
+			// 	print_line("ORCA AUTH: User not authenticated, hiding ProjectManager and showing login dialog");
+			// 	pmanager->hide(); // Hide ProjectManager until auth completes
+			// 	
+			// 	AuthDialog *auth_dialog = memnew(AuthDialog);
+			// 	sml->get_root()->add_child(auth_dialog);
+			// 	auth_dialog->show_login();
+			// 	
+			// 	// Store reference for showing ProjectManager after auth
+			// 	auth_dialog->set_meta("project_manager", pmanager);
+			// } else {
+			// 	print_line("ORCA AUTH: User already authenticated, showing ProjectManager");
+			// }
+			
+			print_line("ORCA AUTH: Authentication disabled - showing ProjectManager directly");
 			
 			OS::get_singleton()->benchmark_end_measure("Startup", "Project Manager");
 		}

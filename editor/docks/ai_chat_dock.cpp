@@ -2307,8 +2307,37 @@ void AIChatDock::_on_auth_request_completed(int p_result, int p_code, const Pack
 	}
 }
 void AIChatDock::_update_user_status() {
+	if (!user_status_label || !login_button) {
+		return; // UI not initialized yet
+	}
+	
+	// AUTHENTICATION DISABLED: Show as authenticated without checking AuthManager
 	if (_is_user_authenticated()) {
-		user_status_label->set_text(current_user_name);
+		// Get user name from AuthManager if available (but auth is disabled)
+		// AuthManager *auth = AuthManager::get_singleton();
+		String display_name = current_user_name;
+		
+		// AUTHENTICATION DISABLED: Don't check AuthManager since it's not initialized
+		// if (auth && auth->get_is_authenticated()) {
+		// 	String auth_name = auth->get_user_name();
+		// 	if (!auth_name.is_empty()) {
+		// 		display_name = auth_name;
+		// 		current_user_name = auth_name; // Sync for consistency
+		// 	} else {
+		// 		String auth_email = auth->get_user_email();
+		// 		if (!auth_email.is_empty()) {
+		// 			display_name = auth_email;
+		// 			current_user_name = auth_email;
+		// 		}
+		// 	}
+		// }
+		
+		// Ensure we have a valid string
+		if (display_name.is_empty()) {
+			display_name = "Guest User"; // Default to Guest when auth is disabled
+		}
+		
+		user_status_label->set_text(display_name);
 		login_button->set_text("Logout");
 		login_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Unlock"), SNAME("EditorIcons")));
 	} else {
@@ -2337,9 +2366,13 @@ void AIChatDock::_logout_user() {
 	print_line("AI Chat: User logged out - embedding system reset");
 }
 bool AIChatDock::_is_user_authenticated() const {
+	// AUTHENTICATION DISABLED: Always return true to bypass login requirement
+	return true;
+	
+	// Original auth code (disabled):
 	// Use AuthManager for authentication
-	AuthManager *auth = AuthManager::get_singleton();
-	return auth && auth->get_is_authenticated();
+	// AuthManager *auth = AuthManager::get_singleton();
+	// return auth && auth->get_is_authenticated();
 }
 
 void AIChatDock::_auto_verify_saved_credentials() {
@@ -2422,11 +2455,12 @@ void AIChatDock::_ensure_project_indexing() {
 	print_line("AI Chat: DEBUG - embedding_system_initialized: " + String(embedding_system_initialized ? "true" : "false"));
 	print_line("AI Chat: DEBUG - initial_indexing_done: " + String(initial_indexing_done ? "true" : "false"));
 	
-    // Guest mode removed - users must be authenticated to use AI chat
-    if (!_is_user_authenticated()) {
-        print_line("AI Chat: User not authenticated - skipping indexing. Please sign in.");
-        return;
-    }
+	// AUTHENTICATION DISABLED: Skip auth check for indexing
+	// Guest mode removed - users must be authenticated to use AI chat
+	// if (!_is_user_authenticated()) {
+	//     print_line("AI Chat: User not authenticated - skipping indexing. Please sign in.");
+	//     return;
+	// }
 	
 	// Initialize embedding system if needed
 	if (!embedding_system_initialized) {
@@ -15372,13 +15406,14 @@ void AIChatDock::_initialize_embedding_system() {
     // Keep status UI hidden by default
     _set_embedding_status("", false);
 
-    if (!_is_user_authenticated()) {
+	// AUTHENTICATION DISABLED: Always set up guest credentials
+    // if (!_is_user_authenticated()) {
         current_user_id = "guest:" + get_machine_id();
-        current_user_name = "Guest";
+        current_user_name = "Guest User";
         auth_token = "";
         _update_user_status();
-        print_line("AI Chat: Embedding system ready; indexing as guest session");
-    }
+        print_line("AI Chat: Embedding system ready; running as guest (auth disabled)");
+    // }
 
     // Defer status/indexing to avoid overlapping requests right after init
     print_line("AI Chat: Embedding system initialized successfully");
@@ -17962,11 +17997,20 @@ void AIChatDock::_add_version_headers_to_request(PackedStringArray &p_headers) {
 	p_headers.push_back("X-Frontend-Version: " + FRONTEND_VERSION);
 	p_headers.push_back("X-Frontend-API-Version: " + API_VERSION);
 	
+	// AUTHENTICATION DISABLED: Skip AuthManager headers
 	// Add authentication headers from AuthManager
-	AuthManager *auth = AuthManager::get_singleton();
-	if (auth && auth->get_is_authenticated()) {
-		p_headers.push_back("Authorization: Bearer " + auth->get_access_token());
-		p_headers.push_back("X-User-ID: " + auth->get_user_id());
+	// AuthManager *auth = AuthManager::get_singleton();
+	// if (auth && auth->get_is_authenticated()) {
+	// 	p_headers.push_back("Authorization: Bearer " + auth->get_access_token());
+	// 	p_headers.push_back("X-User-ID: " + auth->get_user_id());
+	// }
+	
+	// Use fallback guest credentials when auth is disabled
+	if (!auth_token.is_empty()) {
+		p_headers.push_back("Authorization: Bearer " + auth_token);
+	}
+	if (!current_user_id.is_empty()) {
+		p_headers.push_back("X-User-ID: " + current_user_id);
 	}
 }
 

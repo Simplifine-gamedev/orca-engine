@@ -12,11 +12,9 @@
 #include "core/io/http_client.h"
 #include "core/io/json.h"
 #include "core/os/os.h"
+#include "core/io/file_access.h"
+#include "core/io/dir_access.h"
 #include "editor/settings/editor_settings.h"
-
-#ifdef MACOS_ENABLED
-#include <Security/Security.h>
-#endif
 
 #ifdef WINDOWS_ENABLED
 #include <windows.h>
@@ -112,12 +110,15 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 }
 
 bool AuthManager::try_auto_login() {
+	// Try to load stored tokens, but fail silently if keychain access is denied
+	// This prevents keychain prompts from blocking app startup
 	if (load_stored_tokens()) {
 		// TODO: Verify tokens are still valid by making a test API call
 		is_authenticated = true;
 		print_line("Auto-login successful for user: " + user_email);
 		return true;
 	}
+	// Don't print error - this is expected if user hasn't logged in yet or denied keychain access
 	return false;
 }
 
@@ -196,20 +197,57 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 		String response_text = String::utf8((const char *)rb.ptr(), rb.size());
 		print_line("Email sign-in response: " + response_text);
 		
+		// Check HTTP status code
+		int status_code = http->get_response_code();
+		if (status_code >= 400) {
+			// Parse error response
+			JSON json;
+			Error parse_err = json.parse(response_text);
+			if (parse_err == OK) {
+				Dictionary error_response = json.get_data();
+				String error_msg = "Sign-in failed";
+				
+				// Handle different error response formats
+				if (error_response.has("msg")) {
+					error_msg = error_response["msg"];
+				} else if (error_response.has("error_code")) {
+					String error_code = error_response["error_code"];
+					if (error_code == "email_not_confirmed") {
+						error_msg = "Email not confirmed. Please check your email and click the confirmation link before signing in.";
+					} else {
+						error_msg = error_response.get("msg", error_code);
+					}
+				} else if (error_response.has("error")) {
+					error_msg = error_response.get("error_description", error_response.get("error", "Unknown error"));
+				} else {
+					error_msg = "Sign-in failed (HTTP " + String::num(status_code) + ")";
+				}
+				
+				print_error("Sign-in failed: " + error_msg);
+				_notify_auth_error(error_msg);
+				return;
+			} else {
+				_notify_auth_error("Sign-in failed (HTTP " + String::num(status_code) + ")");
+				return;
+			}
+		}
+		
 		// Parse JSON response
 		JSON json;
 		Error parse_err = json.parse(response_text);
 		if (parse_err != OK) {
 			print_error("Failed to parse sign-in response");
+			_notify_auth_error("Invalid response from server");
 			return;
 		}
 		
 		Dictionary response = json.get_data();
 		
-		// Check for error
+		// Check for error in response (legacy format)
 		if (response.has("error")) {
 			String error_msg = response.get("error_description", response.get("error", "Unknown error"));
 			print_error("Sign-in failed: " + error_msg);
+			_notify_auth_error(error_msg);
 			return;
 		}
 		
@@ -316,17 +354,49 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 		String response_text = String::utf8((const char *)rb.ptr(), rb.size());
 		print_line("Email sign-up response: " + response_text);
 		
+		// Check HTTP status code
+		int status_code = http->get_response_code();
+		if (status_code >= 400) {
+			// Parse error response
+			JSON json;
+			Error parse_err = json.parse(response_text);
+			if (parse_err == OK) {
+				Dictionary error_response = json.get_data();
+				String error_msg = "Sign-up failed";
+				
+				// Handle different error response formats
+				if (error_response.has("msg")) {
+					error_msg = error_response["msg"];
+				} else if (error_response.has("error_code")) {
+					String error_code = error_response["error_code"];
+					error_msg = error_response.get("msg", error_code);
+				} else if (error_response.has("error")) {
+					error_msg = error_response.get("error_description", error_response.get("error", "Unknown error"));
+				} else {
+					error_msg = "Sign-up failed (HTTP " + String::num(status_code) + ")";
+				}
+				
+				print_error("Sign-up failed: " + error_msg);
+				_notify_auth_error("Sign-up failed: " + error_msg);
+				return;
+			} else {
+				_notify_auth_error("Sign-up failed (HTTP " + String::num(status_code) + ")");
+				return;
+			}
+		}
+		
 		// Parse JSON response
 		JSON json;
 		Error parse_err = json.parse(response_text);
 		if (parse_err != OK) {
 			print_error("Failed to parse sign-up response");
+			_notify_auth_error("Invalid response from server");
 			return;
 		}
 		
 		Dictionary response = json.get_data();
 		
-		// Check for error
+		// Check for error in response (legacy format)
 		if (response.has("error")) {
 			String error_msg = response.get("error_description", response.get("error", "Unknown error"));
 			print_error("Sign-up failed: " + error_msg);
@@ -337,7 +407,7 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 		// Check if email confirmation is required
 		if (!response.has("session") || response["session"] == Variant()) {
 			print_line("Account created! Please check your email to confirm your account.");
-			_notify_auth_error("Account created! Please check your email to confirm, then sign in.");
+			_notify_auth_info("Account created successfully!\n\nPlease check your email (" + p_email + ") and click the confirmation link.\n\nAfter confirming, you can sign in with your email and password.");
 			return;
 		}
 		
@@ -414,82 +484,73 @@ void AuthManager::_notify_auth_error(const String &p_message) {
 	}
 }
 
+void AuthManager::_notify_auth_info(const String &p_message) {
+	if (auth_dialog) {
+		auth_dialog->show_info(p_message);
+	} else {
+		print_line("Auth info (no dialog): " + p_message);
+	}
+}
+
 String AuthManager::_get_secure_storage_key(const String &p_key) const {
 	return "ai.orcaengine." + p_key;
 }
 
 #ifdef MACOS_ENABLED
+// Simple file-based storage - no keychain prompts!
+// Stored in ~/Library/Application Support/Orca/auth/
 bool AuthManager::_store_token_secure(const String &p_key, const String &p_value) {
-	String service_name = _get_secure_storage_key(p_key);
+	String config_dir = OS::get_singleton()->get_user_data_dir();
+	String auth_dir = config_dir.path_join("auth");
 	
-	// Delete existing item first
-	_delete_token_secure(p_key);
+	// Create auth directory if it doesn't exist
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	if (dir.is_valid() && !dir->dir_exists(auth_dir)) {
+		dir->make_dir_recursive(auth_dir);
+	}
 	
-	// Add new item to keychain
-	OSStatus status = SecKeychainAddGenericPassword(
-		nullptr, // Default keychain
-		service_name.utf8().length(),
-		service_name.utf8().get_data(),
-		strlen("Orca"),
-		"Orca",
-		p_value.utf8().length(),
-		p_value.utf8().get_data(),
-		nullptr
-	);
-	
-	if (status != errSecSuccess) {
-		print_error("Failed to store token in keychain: " + String::num_int64(status));
+	// Store in file
+	String file_path = auth_dir.path_join(_get_secure_storage_key(p_key));
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
+	if (!file.is_valid()) {
+		print_error("Failed to store token in file: " + file_path);
 		return false;
 	}
+	
+	file->store_string(p_value);
+	file->close();
 	
 	return true;
 }
 
 String AuthManager::_retrieve_token_secure(const String &p_key) {
-	String service_name = _get_secure_storage_key(p_key);
+	String config_dir = OS::get_singleton()->get_user_data_dir();
+	String file_path = config_dir.path_join("auth").path_join(_get_secure_storage_key(p_key));
 	
-	UInt32 password_length = 0;
-	void *password_data = nullptr;
-	
-	OSStatus status = SecKeychainFindGenericPassword(
-		nullptr, // Default keychain
-		service_name.utf8().length(),
-		service_name.utf8().get_data(),
-		strlen("Orca"),
-		"Orca",
-		&password_length,
-		&password_data,
-		nullptr
-	);
-	
-	if (status != errSecSuccess) {
+	if (!FileAccess::exists(file_path)) {
 		return String();
 	}
 	
-	String result = String::utf8((const char *)password_data, password_length);
-	SecKeychainItemFreeContent(nullptr, password_data);
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::READ);
+	if (!file.is_valid()) {
+		return String();
+	}
 	
-	return result;
+	String value = file->get_as_text();
+	file->close();
+	
+	return value;
 }
 
 void AuthManager::_delete_token_secure(const String &p_key) {
-	String service_name = _get_secure_storage_key(p_key);
+	String config_dir = OS::get_singleton()->get_user_data_dir();
+	String file_path = config_dir.path_join("auth").path_join(_get_secure_storage_key(p_key));
 	
-	SecKeychainItemRef item_ref = nullptr;
-	OSStatus status = SecKeychainFindGenericPassword(
-		nullptr,
-		service_name.utf8().length(),
-		service_name.utf8().get_data(),
-		strlen("Orca"),
-		"Orca",
-		nullptr,
-		nullptr,
-		&item_ref
-	);
-	
-	if (status == errSecSuccess && item_ref != nullptr) {
-		SecKeychainItemDelete(item_ref);
-		CFRelease(item_ref);
+	if (FileAccess::exists(file_path)) {
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (dir.is_valid()) {
+			dir->remove(file_path);
+		}
 	}
 }
 #endif

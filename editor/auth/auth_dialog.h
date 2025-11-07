@@ -35,6 +35,7 @@ private:
 	Button *email_sign_in_button = nullptr;
 	Button *email_sign_up_button = nullptr;
 	Button *toggle_auth_mode_button = nullptr;
+	Button *toggle_signup_mode_button = nullptr;
 	
 	// Mode control
 	bool show_email_mode = false;
@@ -54,6 +55,7 @@ private:
 	void _on_email_sign_up_pressed();
 	void _on_toggle_auth_mode_pressed();
 	void _toggle_signup_mode();
+	void _set_signup_mode(bool p_signup_mode);
 	
 	// UI helpers
 	void _setup_google_oauth_ui();
@@ -69,6 +71,7 @@ public:
 	void show_waiting();
 	void show_success();
 	void show_error(const String &p_message);
+	void show_info(const String &p_message); // For informational messages (not errors)
 	
 	bool is_waiting_for_callback() const { return waiting_for_callback; }
 	bool is_auth_successful() const { return auth_successful; }
