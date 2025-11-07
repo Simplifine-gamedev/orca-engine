@@ -263,8 +263,8 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 			// Get name from user metadata
 			String new_name = "";
 			if (user_data.has("user_metadata")) {
-				Dictionary metadata = user_data["user_metadata"];
-				new_name = metadata.get("name", p_email.get_slice("@", 0));
+				Dictionary user_metadata = user_data["user_metadata"];
+				new_name = user_metadata.get("name", p_email.get_slice("@", 0));
 			} else {
 				new_name = p_email.get_slice("@", 0);
 			}
@@ -307,14 +307,14 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 	}
 	
 	// Prepare request body with user metadata
-	Dictionary metadata;
-	metadata["name"] = p_name;
-	metadata["source"] = "desktop_app";
+	Dictionary user_metadata;
+	user_metadata["name"] = p_name;
+	user_metadata["source"] = "desktop_app";
 	
 	Dictionary body_dict;
 	body_dict["email"] = p_email;
 	body_dict["password"] = p_password;
-	body_dict["data"] = metadata;
+	body_dict["data"] = user_metadata;
 	
 	String body_json = JSON::stringify(body_dict);
 	
@@ -605,22 +605,20 @@ bool AuthManager::_store_token_secure(const String &p_key, const String &p_value
 	String config_dir = OS::get_singleton()->get_user_data_dir();
 	String secure_dir = config_dir.path_join(".orca_auth");
 	
-	DirAccess *dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-	if (!dir->dir_exists(secure_dir)) {
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	if (dir.is_valid() && !dir->dir_exists(secure_dir)) {
 		dir->make_dir(secure_dir);
 	}
-	memdelete(dir);
 	
 	String file_path = secure_dir.path_join(_get_secure_storage_key(p_key));
-	FileAccess *file = FileAccess::open(file_path, FileAccess::WRITE);
-	if (!file) {
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
+	if (file.is_null()) {
 		print_error("Failed to store token in file: " + file_path);
 		return false;
 	}
 	
 	file->store_string(p_value);
 	file->close();
-	memdelete(file);
 	
 	return true;
 }
@@ -633,14 +631,13 @@ String AuthManager::_retrieve_token_secure(const String &p_key) {
 		return String();
 	}
 	
-	FileAccess *file = FileAccess::open(file_path, FileAccess::READ);
-	if (!file) {
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::READ);
+	if (file.is_null()) {
 		return String();
 	}
 	
 	String value = file->get_as_text();
 	file->close();
-	memdelete(file);
 	
 	return value;
 }
@@ -650,9 +647,10 @@ void AuthManager::_delete_token_secure(const String &p_key) {
 	String file_path = config_dir.path_join(".orca_auth").path_join(_get_secure_storage_key(p_key));
 	
 	if (FileAccess::exists(file_path)) {
-		DirAccess *dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-		dir->remove(file_path);
-		memdelete(dir);
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (dir.is_valid()) {
+			dir->remove(file_path);
+		}
 	}
 }
 #endif
