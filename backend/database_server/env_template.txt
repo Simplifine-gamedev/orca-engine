@@ -1,0 +1,25 @@
+# Godot AI Database Server Environment Configuration
+# Copy this file to .env and fill in the values
+
+# Development mode (set to false for production)
+DEV_MODE=true
+
+# Supabase Configuration
+# These are required to connect to the Supabase instance where 3D models are stored
+SUPABASE_URL=your_supabase_url_here
+SUPABASE_SERVICE_KEY=your_supabase_service_key_here
+SUPABASE_PROJECT_ID=your_supabase_project_id_here
+
+# Database table names (optional - defaults provided)
+MODELS_TABLE=three_d_models
+TEXTURE_JOBS_TABLE=texture_jobs
+
+# Server Configuration
+PORT=8080
+
+# Optional: Logging configuration
+LOG_LEVEL=INFO
+
+# Note: The Supabase URL and project ID are already configured for the Orca project
+# You only need to provide the SUPABASE_KEY (service role key) which has access to read
+# from the three_d_models table and download files from storage

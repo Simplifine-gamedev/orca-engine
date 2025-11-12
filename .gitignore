@@ -14,6 +14,10 @@ Orca*.exe
 distribution/
 production_downloads/
 backend/dashboard/
+
+# GPU server repositories (prevent accidental commits)
+shape-gen-gpu-server/
+gpu-proxy-server-3d-texture/
 #
 # Aims to encompass the most commonly found files that we don't want committed
 # to Git, such as compilation output, IDE specific files, etc.

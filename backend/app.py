@@ -8885,6 +8885,148 @@ def list_user_3d_models(user_id: str):
         'message': 'Model listing not supported by Point-E service'
     })
 
+@app.route('/api/3d/frontend-log', methods=['POST'])
+def log_frontend_error():
+    """
+    Receive and store frontend error logs from the 3D editor plugin.
+    Logs are appended to the frontend_logs column in the jobs table.
+    """
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+    
+    try:
+        data = request.json or {}
+        
+        # Extract log data
+        job_id = data.get('job_id', '')
+        user_id = data.get('user_id', '')
+        level = data.get('level', 'error')  # error, warning, info
+        message = data.get('message', '')
+        context = data.get('context', {})
+        stack_trace = data.get('stack_trace', '')
+        timestamp = data.get('timestamp', time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
+        
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
+        
+        # Validate level
+        if level not in ['error', 'warning', 'info', 'debug']:
+            level = 'error'
+        
+        # Create log entry
+        log_entry = {
+            'timestamp': timestamp,
+            'level': level,
+            'message': message,
+            'context': context,
+        }
+        
+        if stack_trace:
+            log_entry['stack_trace'] = stack_trace
+        
+        # Store in Supabase if enabled
+        if SUPABASE_CRASH_REPORTING_ENABLED and job_id:
+            try:
+                # Try both tables since job_id could be in either three_d_models or texture_jobs
+                headers = {
+                    'apikey': SUPABASE_SERVICE_KEY,
+                    'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=representation'
+                }
+                
+                # Helper function to try updating a table
+                def try_update_table(table_name, job_id_field="id"):
+                    try:
+                        table_url = f"{SUPABASE_URL}/rest/v1/{table_name}"
+                        
+                        # Get current job to retrieve existing logs
+                        get_response = requests.get(
+                            f"{table_url}?{job_id_field}=eq.{job_id}&select=frontend_logs",
+                            headers=headers,
+                            timeout=5
+                        )
+                        
+                        if get_response.status_code != 200:
+                            return False, f"HTTP {get_response.status_code}"
+                        
+                        jobs = get_response.json()
+                        if not jobs or len(jobs) == 0:
+                            return False, "Job not found"
+                        
+                        existing_logs = jobs[0].get('frontend_logs', [])
+                        if not isinstance(existing_logs, list):
+                            existing_logs = []
+                        
+                        # Append new log entry (keep last 100 entries to prevent bloat)
+                        existing_logs.append(log_entry)
+                        if len(existing_logs) > 100:
+                            existing_logs = existing_logs[-100:]  # Keep last 100 entries
+                        
+                        # Update the job with new logs
+                        update_data = {'frontend_logs': existing_logs}
+                        update_response = requests.patch(
+                            f"{table_url}?{job_id_field}=eq.{job_id}",
+                            json=update_data,
+                            headers=headers,
+                            timeout=5
+                        )
+                        
+                        if update_response.status_code in [200, 204]:
+                            return True, f"Updated {table_name}"
+                        else:
+                            return False, f"HTTP {update_response.status_code}: {update_response.text[:200]}"
+                            
+                    except Exception as e:
+                        return False, str(e)
+                
+                # Try three_d_models table first (main 3D jobs)
+                success, result = try_update_table("three_d_models", "id")
+                if success:
+                    print(f"FRONTEND_LOG: ✅ Stored log in three_d_models for job {job_id[:8]}... ({level}): {message[:100]}")
+                else:
+                    # Try texture_jobs table
+                    success, result = try_update_table("texture_jobs", "id")
+                    if success:
+                        print(f"FRONTEND_LOG: ✅ Stored log in texture_jobs for job {job_id[:8]}... ({level}): {message[:100]}")
+                    else:
+                        # Try with job_id field instead of id field (different table schema)
+                        success, result = try_update_table("three_d_models", "job_id")
+                        if success:
+                            print(f"FRONTEND_LOG: ✅ Stored log in three_d_models (by job_id) for job {job_id[:8]}... ({level}): {message[:100]}")
+                        else:
+                            print(f"FRONTEND_LOG: ⚠️ Failed to store log in any table: {result}")
+                    
+            except Exception as e:
+                print(f"FRONTEND_LOG_ERROR: Failed to store log in Supabase: {e}")
+                # Don't fail the request if logging fails - just print error
+        
+        # Also print to console for immediate debugging
+        log_prefix = f"[FRONTEND_LOG/{level.upper()}]"
+        if job_id:
+            log_prefix += f" Job:{job_id[:8]}..."
+        if user_id:
+            log_prefix += f" User:{user_id[:8]}..."
+        
+        print(f"{log_prefix} {message}")
+        if context:
+            print(f"  Context: {json.dumps(context, indent=2)}")
+        if stack_trace:
+            print(f"  Stack: {stack_trace[:500]}")  # Truncate long stack traces
+        
+        return jsonify({
+            'success': True,
+            'message': 'Log stored successfully'
+        }), 200
+        
+    except Exception as e:
+        print(f"FRONTEND_LOG_ERROR: Exception in log endpoint: {e}")
+        return jsonify({
+            'error': 'Failed to process log',
+            'message': str(e)
+        }), 500
+
 # --- JSON RPC Router for deterministic, idempotent tools ---
 @app.route('/rpc', methods=['POST'])
 def json_rpc_router():
