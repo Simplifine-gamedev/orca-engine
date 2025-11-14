@@ -31,3 +31,6 @@ google-cloud-aiplatform>=1.38  # For Vertex AI models (required by litellm)
 
 # Auto-update system
 semantic-version>=2.10.0  # For version comparison
+
+# Pricing and billing system
+autumn-py  # For Autumn pricing integration

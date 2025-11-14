@@ -104,6 +104,7 @@ if env.editor_build:
     SConscript("inspector/SCsub")
     SConscript("import/SCsub")
     SConscript("plugins/SCsub")
+    SConscript("pricing/SCsub")
     SConscript("project_manager/SCsub")
     SConscript("project_upgrade/SCsub")
     SConscript("update/SCsub")

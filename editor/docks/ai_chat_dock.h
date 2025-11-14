@@ -44,6 +44,7 @@
 #include "scene/gui/texture_rect.h"
 #include "scene/gui/progress_bar.h"
 #include "scene/main/http_request.h"
+#include "editor/pricing/pricing_dialog.h"
 
 class Button;
 class MenuButton;
@@ -656,6 +657,12 @@ private:
 	void _hide_popup_after_delay(float p_delay_seconds);
 	void _hide_rate_limit_popup();
 	AcceptDialog *rate_limit_popup = nullptr;
+	
+	// Pricing system
+	PricingDialog *pricing_dialog = nullptr;
+	void _show_pricing_dialog();
+	void _on_rate_limit_exceeded(const Dictionary &error_data);
+	void _on_rate_limit_upgrade_pressed(const String &action);
 	
 	// Status notification system
 	void _show_status_notification(const String &p_type, const String &p_message, const String &p_icon = "", float p_duration = 3.0);

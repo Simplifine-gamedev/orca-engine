@@ -4006,7 +4006,13 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		
 		// Show appropriate notification based on error category
 		if (error_category == "rate_limit") {
-			_show_status_notification("rate_limit", user_message, "[WARN]", 5.0);
+			// Check if this is an Autumn pricing rate limit with pricing info
+			if (response_data.has("pricing_info")) {
+				Dictionary pricing_info = response_data.get("pricing_info", Dictionary());
+				_on_rate_limit_exceeded(pricing_info);
+			} else {
+				_show_status_notification("rate_limit", user_message, "[WARN]", 5.0);
+			}
 		} else if (error_category == "tool_call_error") {
 			_show_status_notification("recovery", user_message, "[TOOL]", 6.0);
 		} else if (error_category == "connection_error") {
@@ -16669,6 +16675,49 @@ void AIChatDock::_hide_popup_after_delay(float p_delay_seconds) {
 void AIChatDock::_hide_rate_limit_popup() {
 	if (rate_limit_popup && rate_limit_popup->is_visible()) {
 		rate_limit_popup->hide();
+	}
+}
+
+void AIChatDock::_show_pricing_dialog() {
+	if (!pricing_dialog) {
+		pricing_dialog = memnew(PricingDialog);
+		add_child(pricing_dialog);
+	}
+	pricing_dialog->show_dialog();
+}
+
+void AIChatDock::_on_rate_limit_exceeded(const Dictionary &error_data) {
+	String message = "Monthly request limit exceeded!\n\n";
+	message += "You've reached your plan limit. Upgrade to continue using Orca Engine.";
+	
+	// Show rate limit popup with upgrade option
+	if (!rate_limit_popup) {
+		rate_limit_popup = memnew(AcceptDialog);
+		add_child(rate_limit_popup);
+		rate_limit_popup->set_title("Request Limit Exceeded");
+		rate_limit_popup->set_flag(Window::FLAG_RESIZE_DISABLED, true);
+	}
+	
+	rate_limit_popup->set_text(message);
+	rate_limit_popup->clear_buttons();
+	rate_limit_popup->add_button("Upgrade Plan", false, "upgrade");
+	rate_limit_popup->add_cancel_button("OK");
+	
+	// Connect upgrade button if not already connected
+	if (!rate_limit_popup->is_connected("custom_action", callable_mp(this, &AIChatDock::_on_rate_limit_upgrade_pressed))) {
+		rate_limit_popup->connect("custom_action", callable_mp(this, &AIChatDock::_on_rate_limit_upgrade_pressed));
+	}
+	
+	rate_limit_popup->popup_centered();
+}
+
+void AIChatDock::_on_rate_limit_upgrade_pressed(const String &action) {
+	if (action == "upgrade") {
+		if (!pricing_dialog) {
+			pricing_dialog = memnew(PricingDialog);
+			add_child(pricing_dialog);
+		}
+		pricing_dialog->show_rate_limit_dialog(Dictionary());
 	}
 }
 
