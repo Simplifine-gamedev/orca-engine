@@ -96,9 +96,40 @@ class AutumnPricingService:
             logger.error(f"Autumn track exception: {e}")
             return False
     
+    def attach_free_tier(self, user_id: str) -> bool:
+        """
+        Attach the free tier to a new user
+        Returns True if successful
+        """
+        if not self._is_enabled():
+            return True
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}/attach",
+                headers=self.headers,
+                json={
+                    "customer_id": user_id,
+                    "product_id": "free"
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Successfully attached free tier to user {user_id}")
+                return True
+            else:
+                logger.error(f"Failed to attach free tier: {response.status_code} - {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Autumn attach exception: {e}")
+            return False
+    
     def check_and_track_usage(self, user_id: str, feature_id: str = "ai-requests") -> Tuple[bool, Dict]:
         """
         Check if user can make request and track usage atomically
+        Auto-assigns free tier to new users
         Returns (allowed, info_dict)
         """
         if not self._is_enabled():
@@ -107,6 +138,16 @@ class AutumnPricingService:
         try:
             # First check access
             allowed, check_info = self.check_usage(user_id, feature_id)
+            
+            # Auto-assign free tier to brand new users with no product
+            # Note: If balance is None, user has no product attached yet
+            has_no_balance = check_info.get("balance") is None
+            
+            if has_no_balance and check_info.get("code") == "feature_found":
+                logger.info(f"New user {user_id} detected - assigning free tier")
+                self.attach_free_tier(user_id)
+                # Re-check after assignment
+                allowed, check_info = self.check_usage(user_id, feature_id)
             
             if not allowed:
                 # Extract useful information for the client
