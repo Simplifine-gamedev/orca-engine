@@ -22,6 +22,7 @@
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/node_3d.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/3d/world_3d.h"
 #include "scene/resources/material.h"
@@ -38,6 +39,9 @@
 #include "scene/gui/option_button.h"
 #include "scene/gui/scroll_container.h"
 #include "scene/gui/separator.h"
+#include "scene/gui/spin_box.h"
+#include "modules/gltf/gltf_document.h"
+#include "modules/gltf/gltf_state.h"
 #include "scene/gui/split_container.h"
 #include "scene/gui/subviewport_container.h"
 #include "scene/gui/tab_container.h"
@@ -116,6 +120,30 @@ void DesignStudio3DEditor::_setup_ui() {
 	export_button->set_disabled(true);
 	export_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_export_pressed));
 	left_panel->add_child(export_button);
+
+	export_segments_button = memnew(Button);
+	export_segments_button->set_text("Export Segmented Parts");
+	export_segments_button->set_disabled(true);
+	export_segments_button->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_export_segments_pressed));
+	left_panel->add_child(export_segments_button);
+
+	// Segmented export dialog
+	export_segments_dialog = memnew(AcceptDialog);
+	export_segments_dialog->set_title("Export Segmented Parts");
+	export_segments_dialog->set_ok_button_text("Export");
+	add_child(export_segments_dialog);
+
+	VBoxContainer *export_vbox = memnew(VBoxContainer);
+	export_segments_dialog->add_child(export_vbox);
+
+	Label *path_label = memnew(Label);
+	path_label->set_text("Folder name inside assets/ (e.g. segmented_helmet):");
+	export_vbox->add_child(path_label);
+
+	export_segments_name_input = memnew(LineEdit);
+	export_vbox->add_child(export_segments_name_input);
+
+	export_segments_dialog->connect("confirmed", callable_mp(this, &DesignStudio3DEditor::_on_export_segments_dialog_confirmed));
 	
 	Label *export_hint = memnew(Label);
 	export_hint->set_text("Load a model first, then export to save to workspace");
@@ -327,11 +355,21 @@ void DesignStudio3DEditor::_setup_viewer_tab() {
 	
 	_setup_remesh_dialog();
 	
+	segmentation_btn = memnew(Button);
+	segmentation_btn->set_text("Segment Parts");
+	segmentation_btn->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_show_segmentation_dialog));
+	viewer_tab->add_child(segmentation_btn);
+	
+	_setup_segmentation_dialog();
+	
 	lod_placeholder_btn = memnew(Button);
 	lod_placeholder_btn->set_text("Create LOD (Coming Soon)");
 	lod_placeholder_btn->set_disabled(true);
 	lod_placeholder_btn->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_lod_placeholder));
 	viewer_tab->add_child(lod_placeholder_btn);
+	
+	// Setup segmented parts UI
+	_setup_segmented_parts_ui();
 }
 
 void DesignStudio3DEditor::_show_viewer_tab() {
@@ -557,6 +595,25 @@ void DesignStudio3DEditor::_setup_3d_viewer() {
 	remesh_request->set_body_size_limit(200 * 1024 * 1024); // 200MB for large models
 	remesh_request->set_use_threads(true);
 	add_child(remesh_request);
+	
+	// Segmentation HTTP Request
+	segmentation_request = memnew(HTTPRequest);
+	segmentation_request->set_timeout(120); // 2 minutes for segmentation
+	segmentation_request->set_use_threads(true);
+	add_child(segmentation_request);
+	
+	// Segments fetch HTTP Request
+	segments_fetch_request = memnew(HTTPRequest);
+	segments_fetch_request->set_timeout(30);
+	segments_fetch_request->set_use_threads(true);
+	add_child(segments_fetch_request);
+	
+	// Segment download HTTP Request
+	segment_download_request = memnew(HTTPRequest);
+	segment_download_request->set_timeout(60);
+	segment_download_request->set_body_size_limit(50 * 1024 * 1024); // 50MB for individual parts
+	segment_download_request->set_use_threads(true);
+	add_child(segment_download_request);
 	
 	// Setup texture dialog
 	_setup_texture_dialog();
@@ -897,8 +954,8 @@ void DesignStudio3DEditor::_on_refresh_models() {
 	browse_status_label->set_text("[LOADING] Loading your models with texture information...");
 	models_tree->clear();
 	
-	// Request models with texture job information included
-	String url = DATABASE_SERVER_URL + "/models/" + current_user_id + "?status=completed&limit=50&include_textured=true";
+	// Request models with texture job and segmentation information included
+	String url = DATABASE_SERVER_URL + "/models/" + current_user_id + "?status=completed&limit=50&include_textured=true&include_segmented=true";
 	
 	browse_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_models_loaded), CONNECT_ONE_SHOT);
 	browse_request->request(url);
@@ -936,6 +993,9 @@ void DesignStudio3DEditor::_on_models_loaded(int result, int code, const PackedS
 		bool has_textures = model.get("has_completed_textures", false);
 		int texture_count = model.get("texture_job_count", 0);
 		Array texture_jobs = model.get("texture_jobs", Array());
+		bool has_segmentation = model.get("has_completed_segmentation", false);
+		int segmentation_count = model.get("segmentation_job_count", 0);
+		Array segmentation_jobs = model.get("segmentation_jobs", Array());
 		
 		// Create display text with type indicator
 		String type_prefix = "[Text] "; // Default for text-to-3d
@@ -954,13 +1014,20 @@ void DesignStudio3DEditor::_on_models_loaded(int result, int code, const PackedS
 			textured_count++;
 		}
 		
+		// Add segmentation indicator if available
+		if (has_segmentation) {
+			display_text += " [" + itos(segmentation_count) + " segmented]";
+		}
+		
 		// Create main model item
 		TreeItem *model_item = models_tree->create_item(root);
 		model_item->set_text(0, display_text);
 		
-		// Set color - blue/light blue for models with textures
-		if (has_textures) {
-			model_item->set_custom_color(0, Color(0.5, 0.7, 1.0)); // Light blue
+		// Set color - prioritize segmentation (purple), then textures (blue), then default (gray)
+		if (has_segmentation) {
+			model_item->set_custom_color(0, Color(0.8, 0.6, 1.0)); // Light purple for segmentation
+		} else if (has_textures) {
+			model_item->set_custom_color(0, Color(0.5, 0.7, 1.0)); // Light blue for textures
 		} else {
 			model_item->set_custom_color(0, Color(0.9, 0.9, 0.9)); // Light gray
 		}
@@ -1003,9 +1070,60 @@ void DesignStudio3DEditor::_on_models_loaded(int result, int code, const PackedS
 				}
 			}
 		}
+		
+		// Add segmentation job children if available
+		if (has_segmentation && segmentation_jobs.size() > 0) {
+			for (int j = 0; j < segmentation_jobs.size(); j++) {
+				Dictionary seg_job = segmentation_jobs[j];
+				String seg_status = seg_job.get("segmentation_status", "unknown");
+				
+				// Show completed segmentation jobs
+				if (seg_status == "completed") {
+					int num_parts = seg_job.get("num_parts", 0);
+					String seg_created = seg_job.get("segmentation_created_at", "");
+					
+					String seg_text = "  + Segmented (" + itos(num_parts) + " parts)";
+					if (!seg_created.is_empty()) {
+						seg_text += " - " + seg_created.substr(0, 10);
+					}
+					
+					TreeItem *seg_item = models_tree->create_item(model_item);
+					seg_item->set_text(0, seg_text);
+					seg_item->set_custom_color(0, Color(0.9, 0.7, 1.0)); // Light purple for segmentation
+					
+					// Store segmentation job data for segmented model loading
+					Dictionary seg_model_data;
+					seg_model_data["type"] = "segmented_model";
+					seg_model_data["user_id"] = current_user_id;
+					seg_model_data["segmentation_job_id"] = seg_job.get("segmentation_job_id", "");
+					seg_model_data["base_model"] = model;
+					seg_model_data["segmentation_job"] = seg_job;
+					seg_item->set_metadata(0, seg_model_data);
+				}
+			}
+		}
 	}
 	
-	browse_status_label->set_text("[SUCCESS] Loaded " + itos(count) + " models (" + itos(textured_count) + " with AI textures)");
+	int segmented_count = 0;
+	for (int i = 0; i < models.size(); i++) {
+		Dictionary model = models[i];
+		if (model.get("has_completed_segmentation", false)) {
+			segmented_count++;
+		}
+	}
+	
+	String status_msg = "[SUCCESS] Loaded " + itos(count) + " models";
+	if (textured_count > 0) {
+		status_msg += " (" + itos(textured_count) + " with AI textures)";
+	}
+	if (segmented_count > 0) {
+		if (textured_count > 0) {
+			status_msg += ", " + itos(segmented_count) + " segmented";
+		} else {
+			status_msg += " (" + itos(segmented_count) + " segmented)";
+		}
+	}
+	browse_status_label->set_text(status_msg);
 }
 
 void DesignStudio3DEditor::_on_model_selected() {
@@ -1039,6 +1157,28 @@ void DesignStudio3DEditor::_on_model_selected() {
 		
 		download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_browse_model_downloaded), CONNECT_ONE_SHOT);
 		download_request->request(model_url);
+		
+	} else if (item_type == "segmented_model") {
+		// Handle segmented model selection
+		String user_id = item_data.get("user_id", "");
+		String segmentation_job_id = item_data.get("segmentation_job_id", "");
+		Dictionary segmentation_job = item_data.get("segmentation_job", Dictionary());
+		Dictionary base_model = item_data.get("base_model", Dictionary());
+		String model_id = base_model.get("id", "");
+		int num_parts = segmentation_job.get("num_parts", 0);
+		
+		browse_status_label->set_text("[LOADING] Loading " + itos(num_parts) + " segmented parts...");
+		
+		// Store current job ID for fetching parts
+		current_job_id = model_id;
+		
+		// Clear the 3D viewer first
+		if (mesh_instance) {
+			mesh_instance->set_mesh(Ref<Mesh>());
+		}
+		
+		// Fetch and display segmented parts instead of base model
+		_fetch_segmented_parts();
 		
 	} else if (item_type == "textured_model") {
 		// Handle textured model selection
@@ -1581,6 +1721,10 @@ void DesignStudio3DEditor::_finish_chunked_processing(bool is_generated_model) {
 	}
 	
 	export_button->set_disabled(false);
+	// Normal model load clears segmented export.
+	if (export_segments_button) {
+		export_segments_button->set_disabled(true);
+	}
 	
 	// Show the viewer tab with model details
 	_show_viewer_tab();
@@ -1761,6 +1905,83 @@ void DesignStudio3DEditor::_on_export_pressed() {
 	if (browse_status_label) {
 		browse_status_label->set_text(export_msg);
 	}
+}
+
+void DesignStudio3DEditor::_on_export_segments_pressed() {
+	if (segmentation_parts.size() == 0) {
+		if (browse_status_label) {
+			browse_status_label->set_text("[ERROR] No segmented parts to export");
+		}
+		return;
+	}
+
+	// Suggest a default folder name based on prompt or job id
+	String default_name = "segmented_parts";
+	if (!current_prompt.is_empty()) {
+		int prompt_len = current_prompt.length();
+		if (prompt_len >= 8) {
+			default_name = current_prompt.substr(prompt_len - 8).strip_edges();
+		} else {
+			default_name = current_prompt.strip_edges();
+		}
+	}
+	default_name = default_name.replace(" ", "_").replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_");
+	if (default_name.is_empty()) {
+		default_name = "segmented_parts";
+	}
+
+	if (export_segments_name_input) {
+		export_segments_name_input->set_text(default_name);
+	}
+
+	if (export_segments_dialog) {
+		export_segments_dialog->popup_centered(Size2(350 * EDSCALE, 120 * EDSCALE));
+	}
+}
+
+void DesignStudio3DEditor::_on_export_segments_dialog_confirmed() {
+	if (segmentation_parts.size() == 0) {
+		return;
+	}
+
+	String folder_name = export_segments_name_input ? export_segments_name_input->get_text().strip_edges() : String();
+	if (folder_name.is_empty()) {
+		folder_name = "segmented_parts";
+	}
+	folder_name = folder_name.replace(" ", "_").replace("/", "_").replace("\\", "_").replace(":", "_").replace("*", "_").replace("?", "_").replace("\"", "_").replace("<", "_").replace(">", "_").replace("|", "_");
+
+	// Build export directory inside assets/
+	String job_suffix = current_job_id.is_empty() ? "" : "_" + current_job_id.substr(0, 8);
+	String job_folder = folder_name + job_suffix;
+	String export_dir = "res://assets/" + job_folder + "/";
+
+	Ref<DirAccess> dir = DirAccess::open("res://");
+	if (!dir.is_valid()) {
+		if (browse_status_label) {
+			browse_status_label->set_text("[ERROR] Cannot access project directory for segmented export");
+		}
+		return;
+	}
+
+	// Create directories similar to _on_export_pressed
+	if (!dir->dir_exists("assets")) {
+		dir->make_dir("assets");
+	}
+	dir->change_dir("assets");
+
+	if (!dir->dir_exists(job_folder)) {
+		dir->make_dir(job_folder);
+	}
+
+	export_segments_dir = export_dir;
+	is_exporting_segments = true;
+	segmentation_part_index = 0; // reset to export all parts again
+
+	if (browse_status_label) {
+		browse_status_label->set_text("[EXPORT] Exporting segmented parts to: " + export_dir);
+	}
+
+	_download_next_segment_part_obj();
 }
 
 void DesignStudio3DEditor::_on_viewport_input(const Ref<InputEvent> &event) {
@@ -2002,22 +2223,7 @@ void DesignStudio3DEditor::_setup_texture_dialog() {
 	VBoxContainer *dialog_vbox = memnew(VBoxContainer);
 	texture_dialog->add_child(dialog_vbox);
 	
-	// Texture type selector
-	Label *type_label = memnew(Label);
-	type_label->set_text("Texture Generation Type:");
-	dialog_vbox->add_child(type_label);
-	
-	texture_type_selector = memnew(OptionButton);
-	texture_type_selector->add_item("Text-to-Texture (Text only)", 0);
-	texture_type_selector->add_item("Hybrid (Text + Image)", 1);
-	texture_type_selector->add_item("PBR Materials", 2);
-	texture_type_selector->add_item("Single-View (Image only)", 3);
-	texture_type_selector->add_item("Image-to-Texture", 4);
-	texture_type_selector->select(0); // Default to text-to-texture
-	texture_type_selector->connect("item_selected", callable_mp(this, &DesignStudio3DEditor::_on_texture_type_changed));
-	dialog_vbox->add_child(texture_type_selector);
-	
-	dialog_vbox->add_child(memnew(HSeparator));
+	// Simple texture generation: automatically detects if using text-only or hybrid based on provided inputs
 	
 	// Text prompt input
 	Label *prompt_label = memnew(Label);
@@ -2054,25 +2260,70 @@ void DesignStudio3DEditor::_setup_texture_dialog() {
 	
 	dialog_vbox->add_child(memnew(HSeparator));
 	
+	// Settings section with improved styling
+	Label *settings_title = memnew(Label);
+	settings_title->set_text("Generation Settings");
+	settings_title->add_theme_font_size_override("font_size", 14 * EDSCALE);
+	settings_title->set_modulate(Color(0.8, 0.9, 1.0)); // Light blue accent
+	dialog_vbox->add_child(settings_title);
+	
+	// Add some spacing
+	Control *spacer1 = memnew(Control);
+	spacer1->set_custom_minimum_size(Size2(0, 8 * EDSCALE));
+	dialog_vbox->add_child(spacer1);
+	
+	// Target faces input
+	HBoxContainer *faces_container = memnew(HBoxContainer);
+	dialog_vbox->add_child(faces_container);
+	
+	Label *faces_label = memnew(Label);
+	faces_label->set_text("Target Faces:");
+	faces_label->set_custom_minimum_size(Size2(120 * EDSCALE, 0));
+	faces_container->add_child(faces_label);
+	
+	texture_target_faces_input = memnew(SpinBox);
+	texture_target_faces_input->set_min(1000);
+	texture_target_faces_input->set_max(30000);
+	texture_target_faces_input->set_step(1000);
+	texture_target_faces_input->set_value(15000); // Default to 15k faces
+	texture_target_faces_input->set_custom_minimum_size(Size2(100 * EDSCALE, 0));
+	faces_container->add_child(texture_target_faces_input);
+	
 	// Resolution selector
+	HBoxContainer *res_container = memnew(HBoxContainer);
+	dialog_vbox->add_child(res_container);
+	
 	Label *res_label = memnew(Label);
-	res_label->set_text("Texture Resolution:");
-	dialog_vbox->add_child(res_label);
+	res_label->set_text("Resolution:");
+	res_label->set_custom_minimum_size(Size2(120 * EDSCALE, 0));
+	res_container->add_child(res_label);
 	
 	texture_resolution_selector = memnew(OptionButton);
 	texture_resolution_selector->add_item("512px (Fast)", 512);
 	texture_resolution_selector->add_item("1024px (Recommended)", 1024);
 	texture_resolution_selector->add_item("2048px (High Quality)", 2048);
 	texture_resolution_selector->select(1); // Default to 1024px
-	dialog_vbox->add_child(texture_resolution_selector);
+	texture_resolution_selector->set_custom_minimum_size(Size2(200 * EDSCALE, 0));
+	res_container->add_child(texture_resolution_selector);
 	
-	// Add face count warning
+	// Add some spacing
+	Control *spacer2 = memnew(Control);
+	spacer2->set_custom_minimum_size(Size2(0, 8 * EDSCALE));
+	dialog_vbox->add_child(spacer2);
+	
+	// Important note with nice styling
+	Label *note_title = memnew(Label);
+	note_title->set_text("NOTE:");
+	note_title->add_theme_font_size_override("font_size", 12 * EDSCALE);
+	note_title->set_modulate(Color(1.0, 0.8, 0.4)); // Warm yellow
+	dialog_vbox->add_child(note_title);
+	
 	Label *face_warning = memnew(Label);
-	face_warning->set_name("face_warning_label");
-	face_warning->set_text("IMPORTANT: Texture generation max is 30K faces");
-	face_warning->add_theme_font_size_override("font_size", 10 * EDSCALE);
-	face_warning->set_modulate(Color(1.0, 0.7, 0.0)); // Orange warning color
+	face_warning->set_text("Target faces are currently maxed at 30k.");
+	face_warning->add_theme_font_size_override("font_size", 11 * EDSCALE);
+	face_warning->set_modulate(Color(0.9, 0.9, 0.9)); // Light gray
 	face_warning->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	face_warning->set_custom_minimum_size(Size2(500 * EDSCALE, 0)); // Give it enough width
 	dialog_vbox->add_child(face_warning);
 	
 	// Create file dialog for texture reference images
@@ -2127,46 +2378,35 @@ void DesignStudio3DEditor::_show_texture_dialog() {
 	texture_image_label->set_text("No image selected");
 	texture_image_preview->hide();
 	texture_reference_image = "";
-	texture_type_selector->select(0);
+	// No type selector to reset anymore
 	
-	texture_dialog->popup_centered(Size2(500 * EDSCALE, 0));
+	texture_dialog->popup_centered(Size2(550 * EDSCALE, 0));
 }
 
 void DesignStudio3DEditor::_on_texture_dialog_confirmed() {
 	String prompt = texture_prompt_input->get_text().strip_edges();
-	int type_index = texture_type_selector->get_selected();
 	int resolution = texture_resolution_selector->get_selected_id();
+	int target_faces = texture_target_faces_input->get_value();
 	
-	// Map type index to API job type
+	
+	// Simple logic: automatically determine job type based on what user provided
 	String job_type;
-	switch (type_index) {
-		case 0: job_type = "text-to-texture"; break;
-		case 1: job_type = "hybrid"; break;
-		case 2: job_type = "pbr"; break;
-		case 3: job_type = "single-view"; break;
-		case 4: job_type = "image-to-texture"; break;
-		default: job_type = "text-to-texture"; break;
-	}
+	bool has_image = !texture_reference_image.is_empty();
+	bool has_text = !prompt.is_empty();
 	
-	// Validate requirements based on job type
-	bool needs_text = (job_type == "text-to-texture" || job_type == "hybrid" || job_type == "pbr");
-	bool needs_image = (job_type == "single-view" || job_type == "hybrid" || job_type == "image-to-texture");
-	
-	if (needs_text && prompt.is_empty()) {
+	if (has_image && has_text) {
+		job_type = "text-to-texture"; // Use text-to-texture with reference image
+	} else if (has_text) {
+		job_type = "text-to-texture"; // Text only
+	} else {
+		// Need at least text description
 		if (viewer_model_info) {
-			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] This texture type requires a text description");
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Please provide a texture description");
 		}
 		return;
 	}
 	
-	if (needs_image && texture_reference_image.is_empty()) {
-		if (viewer_model_info) {
-			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] This texture type requires a reference image");
-		}
-		return;
-	}
-	
-	_start_texture_generation(prompt, job_type, texture_reference_image, resolution);
+	_start_texture_generation(prompt, job_type, texture_reference_image, resolution, target_faces);
 }
 
 void DesignStudio3DEditor::_on_texture_image_button() {
@@ -2195,11 +2435,8 @@ void DesignStudio3DEditor::_on_texture_image_selected(const String &path) {
 	}
 }
 
-void DesignStudio3DEditor::_on_texture_type_changed(int index) {
-	// Could add hints about what each type needs here
-}
 
-void DesignStudio3DEditor::_start_texture_generation(const String &prompt, const String &job_type, const String &reference_image, int resolution) {
+void DesignStudio3DEditor::_start_texture_generation(const String &prompt, const String &job_type, const String &reference_image, int resolution, int target_faces) {
 	if (is_generating_texture) {
 		return;
 	}
@@ -2213,6 +2450,7 @@ void DesignStudio3DEditor::_start_texture_generation(const String &prompt, const
 	
 	is_generating_texture = true;
 	
+	
 	// Build request body according to API docs
 	Dictionary body;
 	body["job_type"] = job_type;
@@ -2222,15 +2460,13 @@ void DesignStudio3DEditor::_start_texture_generation(const String &prompt, const
 	body["hunyuan_version"] = "2.1";
 	body["download_mode"] = "supabase";
 	
-	// Add target_faces if model was remeshed (use actual final face count)
-	if (remeshed_target_faces > 0) {
-		body["target_faces"] = remeshed_target_faces;
-		
-		// Warn user if face count exceeds texture generation limit
-		if (remeshed_target_faces > 30000) {
-			if (viewer_model_info) {
-				viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[WARNING] Model has " + itos(remeshed_target_faces) + " faces.\nTexture generation max is 30K faces - texture may fail or be downgraded.");
-			}
+	// Add target_faces from user input
+	body["target_faces"] = target_faces;
+	
+	// Warn user if face count exceeds texture generation limit
+	if (target_faces > 30000) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[WARNING] Target faces set to " + itos(target_faces) + " faces.\nTexture generation max is 30K faces - may be clamped.");
 		}
 	}
 	
@@ -2240,20 +2476,22 @@ void DesignStudio3DEditor::_start_texture_generation(const String &prompt, const
 	
 	// Add reference image data if provided
 	if (!reference_image.is_empty()) {
-		// For the texture API, we might need to handle image differently
-		// For now, let's add it as base64 data
-		body["reference_image"] = reference_image;
+		// Use image_data field as specified in API docs (base64 array - RECOMMENDED)
+		Array image_array;
+		image_array.push_back(reference_image);
+		body["image_data"] = image_array;
 	}
 	
 	String json_body = JSON::stringify(body);
 	String url = TEXTURE_API_URL + "/texture/submit";
+	
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
 	
 	// Update UI
 	if (viewer_model_info) {
-		viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[TEXTURE] Starting texture generation...\nType: " + job_type);
+		viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[TEXTURE] Starting texture generation...\nType: " + job_type + "\nTarget faces: " + itos(target_faces));
 	}
 	texture_placeholder_btn->set_disabled(true);
 	
@@ -2868,6 +3106,896 @@ void DesignStudio3DEditor::_on_remesh_completed(int result, int code, const Pack
 
 // Note: _on_remesh_placeholder removed - replaced with _show_remesh_dialog
 // Note: _on_texture_placeholder removed - replaced with real texture functionality
+
+void DesignStudio3DEditor::_setup_segmentation_dialog() {
+	segmentation_dialog = memnew(AcceptDialog);
+	segmentation_dialog->set_title("Segment Model Parts");
+	segmentation_dialog->set_min_size(Size2(450 * EDSCALE, 0));
+	segmentation_dialog->connect("confirmed", callable_mp(this, &DesignStudio3DEditor::_on_segmentation_dialog_confirmed));
+	add_child(segmentation_dialog);
+	
+	VBoxContainer *dialog_vbox = memnew(VBoxContainer);
+	segmentation_dialog->add_child(dialog_vbox);
+	
+	Label *info_label = memnew(Label);
+	info_label->set_text("Use AI to automatically segment your 3D model into semantic parts\n(head, torso, arms, legs, etc.)");
+	info_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	dialog_vbox->add_child(info_label);
+	
+	dialog_vbox->add_child(memnew(HSeparator));
+	
+	Label *details_label = memnew(Label);
+	details_label->set_text("What this does:");
+	details_label->add_theme_font_size_override("font_size", 12 * EDSCALE);
+	details_label->set_modulate(Color(0.8, 0.9, 1.0));
+	dialog_vbox->add_child(details_label);
+	
+	Label *features_label = memnew(Label);
+	features_label->set_text("• Splits model into logical parts (head, body, limbs)\n• Each part saved as separate OBJ file\n• Maintains texture coordinates\n• Results saved to Supabase storage");
+	features_label->add_theme_font_size_override("font_size", 10 * EDSCALE);
+	features_label->set_modulate(Color(0.7, 0.7, 0.7));
+	features_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	dialog_vbox->add_child(features_label);
+	
+	dialog_vbox->add_child(memnew(HSeparator));
+	
+	Label *note_label = memnew(Label);
+	note_label->set_text("NOTE: Processing time: 30-60 seconds depending on model complexity\nProcessed on texture.orcaengine.ai using P3-SAM AI");
+	note_label->add_theme_font_size_override("font_size", 10 * EDSCALE);
+	note_label->set_modulate(Color(1.0, 0.8, 0.4));
+	note_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	dialog_vbox->add_child(note_label);
+}
+
+void DesignStudio3DEditor::_show_segmentation_dialog() {
+	if (!segmentation_dialog || current_model_path.is_empty()) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] No model loaded for segmentation");
+		}
+		return;
+	}
+	
+	if (current_job_id.is_empty()) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] No model ID available for segmentation");
+		}
+		return;
+	}
+	
+	segmentation_dialog->popup_centered(Size2(450 * EDSCALE, 0));
+}
+
+void DesignStudio3DEditor::_on_segmentation_dialog_confirmed() {
+	_start_segmentation();
+}
+
+void DesignStudio3DEditor::_start_segmentation() {
+	if (current_job_id.is_empty() || current_user_id.is_empty()) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Missing user ID or model ID for segmentation");
+		}
+		return;
+	}
+	
+	// Determine filename from current model path
+	String filename = current_model_path.get_file();
+	
+	// Build request body according to new API format
+	Dictionary body;
+	body["user_id"] = current_user_id;
+	body["job_id"] = current_job_id;
+	body["filename"] = filename;
+	
+	// Add optional fields if available
+	if (!current_job_id.is_empty()) {
+		body["base_model_id"] = current_job_id;
+		body["base_model_job_id"] = current_job_id;
+	}
+	
+	String json_body = JSON::stringify(body);
+	String url = SEGMENTATION_API_URL + "/segment";
+	
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	
+	// Update UI
+	if (viewer_model_info) {
+		viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[SEGMENTATION] Starting model segmentation...\nEndpoint: texture.orcaengine.ai\nModel: " + filename);
+	}
+	segmentation_btn->set_disabled(true);
+	
+	// Submit request
+	segmentation_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segmentation_completed), CONNECT_ONE_SHOT);
+	
+	Error err = segmentation_request->request(url, headers, HTTPClient::METHOD_POST, json_body);
+	if (err != OK) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to start segmentation request");
+		}
+		segmentation_btn->set_disabled(false);
+	}
+}
+
+void DesignStudio3DEditor::_on_segmentation_completed(int result, int code, const PackedStringArray &headers, const PackedByteArray &body) {
+	segmentation_btn->set_disabled(false);
+	
+	if (result != HTTPRequest::RESULT_SUCCESS || code != 200) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Segmentation failed (HTTP " + itos(code) + ")");
+		}
+		return;
+	}
+	
+	String response_text = String::utf8((const char *)body.ptr(), body.size());
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	if (err != OK) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to parse segmentation response");
+		}
+		return;
+	}
+	
+	Dictionary response = json.get_data();
+	String job_id = response.get("job_id", "");
+	String segmentation_job_id = response.get("segmentation_job_id", "");
+	String status = response.get("status", "");
+	int parts_count = response.get("parts_count", 0);
+	String manifest_url = response.get("manifest_url", "");
+	
+	if (job_id.is_empty()) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Invalid segmentation response - missing job_id");
+		}
+		return;
+	}
+	
+	// Handle different statuses
+	if (status == "queued" || status == "processing") {
+		// Job is queued/processing - show status and start polling
+		String status_msg = "\n\n[SEGMENTATION] Status: " + status.to_upper();
+		if (!segmentation_job_id.is_empty()) {
+			status_msg += "\nSegmentation Job ID: " + segmentation_job_id.substr(0, 8) + "...";
+		}
+		status_msg += "\nProcessing in background...";
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + status_msg);
+		}
+		// Start polling for completion (similar to texture polling)
+		// For now, just fetch parts - if they're not ready, user will see message
+		_fetch_segmented_parts();
+		return;
+	}
+	
+	if (status == "completed" && parts_count > 0) {
+		// Success message with new response format details
+		String success_msg = "\n\n[SUCCESS] Model segmented into " + itos(parts_count) + " parts!";
+		if (!segmentation_job_id.is_empty()) {
+			success_msg += "\nSegmentation Job ID: " + segmentation_job_id.substr(0, 8) + "...";
+		}
+		success_msg += "\nStatus: " + status;
+		success_msg += "\nFetching parts list...";
+		
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + success_msg);
+		}
+		
+		// Fetch the segmented parts list from database server
+		_fetch_segmented_parts();
+	} else if (status == "failed") {
+		String error_msg = response.get("detail", "Segmentation failed");
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Segmentation failed: " + error_msg);
+		}
+	} else {
+		// Unknown status or no parts
+		String info_msg = "\n\n[INFO] Segmentation status: " + status;
+		if (parts_count > 0) {
+			info_msg += "\nParts count: " + itos(parts_count);
+		}
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + info_msg);
+		}
+		// Try to fetch parts anyway - might be available
+		_fetch_segmented_parts();
+	}
+}
+
+void DesignStudio3DEditor::_fetch_segmented_parts() {
+	if (current_user_id.is_empty() || current_job_id.is_empty()) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Missing user ID or job ID for fetching parts");
+		}
+		return;
+	}
+	
+	// Use database server to get segmented parts
+	String url = DATABASE_SERVER_URL + "/segments/" + current_user_id + "/" + current_job_id;
+	
+	print_line("DEBUG: Fetching segmented parts from URL: " + url);
+	print_line("DEBUG: User ID: " + current_user_id);
+	print_line("DEBUG: Job ID: " + current_job_id);
+	
+	browse_status_label->set_text("[LOADING] Fetching parts list from server...");
+	
+	segments_fetch_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segments_fetched), CONNECT_ONE_SHOT);
+	
+	Error err = segments_fetch_request->request(url);
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to start parts fetch request");
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to fetch segmented parts");
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_segments_fetched(int result, int code, const PackedStringArray &headers, const PackedByteArray &body) {
+	print_line("DEBUG: Segments fetch response - Result: " + itos(result) + ", Code: " + itos(code));
+	print_line("DEBUG: Response body size: " + itos(body.size()));
+	
+	if (result != HTTPRequest::RESULT_SUCCESS || code != 200) {
+		String error_text = String::utf8((const char *)body.ptr(), body.size());
+		print_line("DEBUG: Error response body: " + error_text);
+		
+		browse_status_label->set_text("[ERROR] Failed to fetch parts (HTTP " + itos(code) + "): " + error_text);
+		if (viewer_model_info) {
+			if (code == 404) {
+				viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[INFO] Segmented parts not yet available: " + error_text);
+			} else {
+				viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to fetch parts (HTTP " + itos(code) + "): " + error_text);
+			}
+		}
+		return;
+	}
+	
+	String response_text = String::utf8((const char *)body.ptr(), body.size());
+	print_line("DEBUG: Response text: " + response_text);
+	
+	JSON json;
+	Error err = json.parse(response_text);
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to parse segments response");
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to parse segments response");
+		}
+		return;
+	}
+	
+	Dictionary response = json.get_data();
+	Dictionary segmentation_data = response.get("segmentation_data", Dictionary());
+	Array parts = segmentation_data.get("parts", Array());
+	int parts_count = response.get("parts_count", 0);
+	
+	print_line("DEBUG: Parts count: " + itos(parts_count));
+	print_line("DEBUG: Parts array size: " + itos(parts.size()));
+	
+	if (parts_count == 0) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[INFO] No segmented parts found");
+		}
+		return;
+	}
+	
+	// Show the parts list UI (for per-part loading / downloading)
+	_show_segmented_parts(parts);
+
+	// Store parts and start loading all OBJ parts into a combined scene
+	segmentation_parts = parts;
+	segmentation_part_index = 0;
+	segmentation_has_bounds = false;
+	segmentation_bounds = AABB();
+
+	// Remove previous segmentation scene if any
+	if (segmentation_scene && segmentation_scene->is_inside_tree()) {
+		segmentation_scene->queue_free();
+		segmentation_scene = nullptr;
+	}
+
+	// Clear main mesh_instance so only segmented parts are visible
+	if (mesh_instance) {
+		mesh_instance->set_mesh(Ref<Mesh>());
+	}
+	current_loaded_mesh = Ref<Mesh>();
+
+	// Create a new root for all segmented parts
+	segmentation_scene = memnew(Node3D);
+	segmentation_scene->set_name("SegmentationRoot");
+	if (viewport) {
+		viewport->add_child(segmentation_scene);
+	}
+
+	// Start sequential download & loading of all parts
+	_download_next_segment_part_obj();
+	
+	if (viewer_model_info) {
+		viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[PARTS] Found " + itos(parts_count) + " segmented parts");
+	}
+}
+
+void DesignStudio3DEditor::_setup_segmented_parts_ui() {
+	// Create segmented parts section (initially hidden)
+	segmented_parts_container = memnew(VBoxContainer);
+	segmented_parts_container->set_name("SegmentedPartsContainer");
+	segmented_parts_container->hide(); // Hidden by default
+	viewer_tab->add_child(segmented_parts_container);
+	
+	viewer_tab->add_child(memnew(HSeparator));
+	
+	segmented_parts_title = memnew(Label);
+	segmented_parts_title->set_text("Segmented Parts");
+	segmented_parts_title->add_theme_font_size_override("font_size", 14 * EDSCALE);
+	segmented_parts_container->add_child(segmented_parts_title);
+	
+	segmented_parts_scroll = memnew(ScrollContainer);
+	segmented_parts_scroll->set_custom_minimum_size(Size2(0, 150 * EDSCALE));
+	segmented_parts_container->add_child(segmented_parts_scroll);
+	
+	segmented_parts_list = memnew(VBoxContainer);
+	segmented_parts_scroll->add_child(segmented_parts_list);
+}
+
+void DesignStudio3DEditor::_show_segmented_parts(const Array &parts) {
+	print_line("DEBUG: _show_segmented_parts called with " + itos(parts.size()) + " parts");
+	
+	if (parts.size() == 0) {
+		browse_status_label->set_text("[ERROR] No segmented parts found");
+		return;
+	}
+	
+	// Viewer loading is now handled by the multi-part OBJ pipeline;
+	// this function only updates the UI list.
+	browse_status_label->set_text("[SUCCESS] Segmented parts loaded. Use the buttons below to inspect individual parts.");
+	
+	// Also show the parts list for switching between parts
+	if (!segmented_parts_container || !segmented_parts_list) {
+		return;
+	}
+	
+	// Clear existing parts
+	for (int i = segmented_parts_list->get_child_count() - 1; i >= 0; i--) {
+		Node *child = segmented_parts_list->get_child(i);
+		segmented_parts_list->remove_child(child);
+		child->queue_free();
+	}
+	
+	// Add each part as a "Load" button to switch between parts
+	for (int i = 0; i < parts.size(); i++) {
+		Dictionary part = parts[i];
+		String filename = String(part.get("filename", ""));
+		String download_url = String(part.get("download_url", ""));
+		
+		if (filename.is_empty() || download_url.is_empty()) {
+			continue;
+		}
+		
+		HBoxContainer *part_container = memnew(HBoxContainer);
+		segmented_parts_list->add_child(part_container);
+		
+		Label *part_label = memnew(Label);
+		part_label->set_text(filename);
+		part_label->set_custom_minimum_size(Size2(150 * EDSCALE, 0));
+		part_container->add_child(part_label);
+		
+		Button *load_btn = memnew(Button);
+		load_btn->set_text("Load");
+		load_btn->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_load_segment).bind(download_url, filename));
+		part_container->add_child(load_btn);
+		
+		Button *download_btn = memnew(Button);
+		download_btn->set_text("Download");
+		download_btn->connect("pressed", callable_mp(this, &DesignStudio3DEditor::_on_download_segment).bind(filename));
+		part_container->add_child(download_btn);
+	}
+	
+	// Show the container
+	segmented_parts_container->show();
+}
+
+void DesignStudio3DEditor::_on_download_segment(const String &part_filename) {
+	if (current_user_id.is_empty() || current_job_id.is_empty() || part_filename.is_empty()) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Missing information for part download");
+		}
+		return;
+	}
+	
+	String url = DATABASE_SERVER_URL + "/download-segment/" + current_user_id + "/" + current_job_id + "/" + part_filename;
+	
+	if (viewer_model_info) {
+		viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[DOWNLOAD] Starting download: " + part_filename);
+	}
+	
+	segment_download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_downloaded), CONNECT_ONE_SHOT);
+	
+	Error err = segment_download_request->request(url);
+	if (err != OK) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to start part download");
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_segment_downloaded(int result, int code, const PackedStringArray &headers, const PackedByteArray &body) {
+	if (result != HTTPRequest::RESULT_SUCCESS || code != 200) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Part download failed (HTTP " + itos(code) + ")");
+		}
+		return;
+	}
+	
+	if (body.size() == 0) {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Downloaded part is empty");
+		}
+		return;
+	}
+	
+	// Save the part to a temporary file and offer to user
+	String temp_dir = OS::get_singleton()->get_user_data_dir() + "/segmented_parts/";
+	
+	// Create directory if it doesn't exist
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_USERDATA);
+	if (!dir->dir_exists("segmented_parts")) {
+		dir->make_dir("segmented_parts");
+	}
+	
+	// Generate filename with timestamp
+	String timestamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "-");
+	String filename = "segmented_part_" + timestamp + ".glb";
+	String file_path = temp_dir + filename;
+	
+	// Save file
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
+	if (file.is_valid()) {
+		file->store_buffer(body);
+		file->close();
+		
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[SUCCESS] Part saved to: " + file_path);
+		}
+	} else {
+		if (viewer_model_info) {
+			viewer_model_info->set_text(viewer_model_info->get_text() + "\n\n[ERROR] Failed to save part file");
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_first_segment_loaded(int result, int code, const PackedStringArray &headers, const PackedByteArray &body) {
+	print_line("DEBUG: _on_first_segment_loaded called - Result: " + itos(result) + ", Code: " + itos(code) + ", Size: " + itos(body.size()));
+	
+	if (result != HTTPRequest::RESULT_SUCCESS || code != 200) {
+		browse_status_label->set_text("[ERROR] Failed to load first segment (HTTP " + itos(code) + ")");
+		return;
+	}
+	
+	if (body.size() == 0) {
+		browse_status_label->set_text("[ERROR] First segment is empty");
+		return;
+	}
+	
+	// Save the GLB file temporarily 
+	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String filename = "loaded_segment_" + timestamp + ".glb";
+	String temp_path = "user://" + filename;
+	
+	Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
+	if (!file.is_valid()) {
+		browse_status_label->set_text("[ERROR] Failed to save segment file");
+		return;
+	}
+	
+	file->store_buffer(body);
+	file->close();
+	
+	print_line("DEBUG: GLB file saved to: " + temp_path);
+	
+	// Try to load GLB file using Godot's GLTFDocument
+	browse_status_label->set_text("[PROCESSING] Loading GLB segmented part into 3D viewer...");
+	
+	Ref<GLTFDocument> gltf_doc;
+	gltf_doc.instantiate();
+	
+	Ref<GLTFState> gltf_state;
+	gltf_state.instantiate();
+	
+	Error err = gltf_doc->append_from_file(temp_path, gltf_state);
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to parse GLB file (Error: " + itos(err) + ")");
+		print_line("DEBUG: GLB parsing failed with error: " + itos(err));
+		return;
+	}
+	
+	Node *gltf_scene = gltf_doc->generate_scene(gltf_state);
+	if (!gltf_scene) {
+		browse_status_label->set_text("[ERROR] Failed to generate scene from GLB");
+		return;
+	}
+	
+	print_line("DEBUG: GLB scene generated successfully");
+	
+	// Find the first MeshInstance3D in the scene
+	_load_gltf_scene_into_viewer(gltf_scene, gltf_state);
+	
+	// Switch to viewer tab and make it visible (same as regular models)
+	_show_viewer_tab();
+	
+	browse_status_label->set_text("[SUCCESS] Segmented part loaded in 3D viewer! Use buttons to switch between parts.");
+	
+	// Update viewer info with part details
+	if (viewer_model_info) {
+		String info = "Segmented Model Part\n\n";
+		info += "File: GLB format\n";
+		info += "Size: " + String::humanize_size(body.size()) + "\n\n";
+		info += "This is one part of the segmented model.\n";
+		info += "Use 'Load' buttons to view other parts.\n";
+		info += "Use 'Download' buttons to save parts.";
+		viewer_model_info->set_text(info);
+	}
+}
+
+void DesignStudio3DEditor::_load_gltf_scene_into_viewer(Node *gltf_scene, Ref<GLTFState> gltf_state) {
+	// New, simpler approach: attach the generated GLB scene directly under the 3D viewport
+	// instead of trying to extract a Mesh into our single MeshInstance.
+	(void)gltf_state; // Unused for now
+
+	if (!gltf_scene || !viewport) {
+		print_line("DEBUG: Invalid GLTF scene or viewport");
+		return;
+	}
+
+	// Clear any previous segmented scene
+	if (segmentation_scene && segmentation_scene->is_inside_tree()) {
+		segmentation_scene->queue_free();
+		segmentation_scene = nullptr;
+	}
+
+	// Clear the single mesh_instance so it doesn't conflict visually
+	if (mesh_instance) {
+		mesh_instance->set_mesh(Ref<Mesh>());
+	}
+
+	// Attach new segmented scene under the viewport's world
+	Node3D *scene3d = Object::cast_to<Node3D>(gltf_scene);
+	if (scene3d) {
+		segmentation_scene = scene3d;
+		viewport->add_child(segmentation_scene);
+	} else {
+		// Fallback: add as generic node (won't be used by OBJ-based segmentation scene)
+		viewport->add_child(gltf_scene);
+	}
+
+	print_line("DEBUG: Segmented GLB scene attached to viewport");
+
+	// Enable export button
+	if (export_button) {
+		export_button->set_disabled(false);
+	}
+}
+
+Ref<Mesh> DesignStudio3DEditor::_find_mesh_in_scene(Node *node) {
+	if (!node) {
+		return Ref<Mesh>();
+	}
+	
+	// Many GLTF importers (ImporterMeshInstance3D, MeshInstance3D, etc.) expose a get_mesh() method.
+	if (node->has_method("get_mesh")) {
+		Variant mesh_var = node->call("get_mesh");
+		if (mesh_var.get_type() == Variant::OBJECT) {
+			Ref<Mesh> mesh = mesh_var;
+			if (mesh.is_valid()) {
+				print_line("DEBUG: Found mesh via get_mesh() on node: " + node->get_class() + " - " + node->get_name());
+				return mesh;
+			}
+		}
+	}
+	
+	// Traverse children to find any node with a mesh
+	for (int i = 0; i < node->get_child_count(); i++) {
+		Node *child = node->get_child(i);
+		Ref<Mesh> child_mesh = _find_mesh_in_scene(child);
+		if (child_mesh.is_valid()) {
+			return child_mesh;
+		}
+	}
+	
+	return Ref<Mesh>();
+}
+
+void DesignStudio3DEditor::_load_segmentation_assembly(const String &assembly_url, const String &segmented_mesh_url) {
+	// Prefer assembly_scene.glb (multiple nodes/parts) then fallback to segmented_mesh.glb
+	String url = assembly_url;
+	if (url.is_empty()) {
+		url = segmented_mesh_url;
+	}
+	
+	if (url.is_empty()) {
+		print_line("DEBUG: No assembly/segmented mesh URL provided for segmentation");
+		return;
+	}
+	
+	print_line("DEBUG: Loading segmentation assembly from URL: " + url);
+	
+	if (!segment_download_request) {
+		return;
+	}
+	
+	// Download GLB and display it as a full scene
+	segment_download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_first_segment_loaded), CONNECT_ONE_SHOT);
+	Error err = segment_download_request->request(url);
+	if (err != OK) {
+		if (browse_status_label) {
+			browse_status_label->set_text("[ERROR] Failed to start assembly download");
+		}
+	}
+}
+
+void DesignStudio3DEditor::_download_next_segment_part_obj() {
+	// Sequentially download and load each OBJ part into segmentation_scene,
+	// and optionally export them to project if is_exporting_segments is true.
+	if (segmentation_part_index >= segmentation_parts.size()) {
+		if (is_exporting_segments) {
+			// Export finished
+			is_exporting_segments = false;
+			// Refresh file system
+			EditorFileSystem::get_singleton()->scan_changes();
+			if (browse_status_label) {
+				browse_status_label->set_text("[SUCCESS] Exported segmented parts to: " + export_segments_dir);
+			}
+		} else {
+			_finalize_segmentation_scene();
+		}
+		return;
+	}
+
+	Dictionary part = segmentation_parts[segmentation_part_index];
+	String filename = String(part.get("filename", ""));
+	String url = String(part.get("download_url", ""));
+
+	if (filename.is_empty() || url.is_empty()) {
+		segmentation_part_index++;
+		_download_next_segment_part_obj();
+		return;
+	}
+
+	print_line("DEBUG: Downloading segmented OBJ part " + itos(segmentation_part_index) + ": " + filename + (is_exporting_segments ? " (export)" : ""));
+
+	if (!segment_download_request) {
+		return;
+	}
+
+	segment_download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_segment_part_obj_downloaded), CONNECT_ONE_SHOT);
+	Error err = segment_download_request->request(url);
+	if (err != OK) {
+		print_line("DEBUG: Failed to start segmented OBJ download, err=" + itos(err));
+		segmentation_part_index++;
+		_download_next_segment_part_obj();
+	}
+}
+
+void DesignStudio3DEditor::_on_segment_part_obj_downloaded(int result, int code, const PackedStringArray &headers, const PackedByteArray &body) {
+	if (result != HTTPRequest::RESULT_SUCCESS || code != 200) {
+		print_line("DEBUG: Segmented OBJ download failed: result=" + itos(result) + ", code=" + itos(code));
+		segmentation_part_index++;
+		_download_next_segment_part_obj();
+		return;
+	}
+
+	if (body.size() == 0) {
+		print_line("DEBUG: Segmented OBJ body empty");
+		segmentation_part_index++;
+		_download_next_segment_part_obj();
+		return;
+	}
+
+	Dictionary part = segmentation_parts[segmentation_part_index];
+	String filename = String(part.get("filename", ""));
+
+	// If we're exporting, write the raw OBJ to the export directory
+	if (is_exporting_segments) {
+		String file_path = export_segments_dir + filename;
+		String full_file_path = ProjectSettings::get_singleton()->globalize_path(file_path);
+
+		Ref<FileAccess> file = FileAccess::open(full_file_path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_buffer(body);
+			file->close();
+		} else {
+			print_line("DEBUG: Failed to save segmented OBJ to " + full_file_path);
+		}
+	} else {
+		// Normal path: create mesh instances in segmentation_scene
+		if (!segmentation_scene) {
+			print_line("DEBUG: No segmentation_scene to attach parts to");
+			return;
+		}
+
+		String obj_content = String::utf8((const char *)body.ptr(), body.size());
+		Ref<ArrayMesh> mesh = _parse_obj_to_mesh(obj_content);
+		if (!mesh.is_valid()) {
+			print_line("DEBUG: Failed to parse OBJ for part: " + filename);
+			segmentation_part_index++;
+			_download_next_segment_part_obj();
+			return;
+		}
+
+		MeshInstance3D *part_instance = memnew(MeshInstance3D);
+		part_instance->set_mesh(mesh);
+		part_instance->set_name(filename);
+
+		// Assign a distinct color per part
+		static const Color colors[] = {
+			Color(1.0, 0.4, 0.4),
+			Color(0.4, 1.0, 0.4),
+			Color(0.4, 0.6, 1.0),
+			Color(1.0, 1.0, 0.4),
+			Color(1.0, 0.6, 1.0),
+			Color(0.4, 1.0, 1.0)
+		};
+		Color c = colors[segmentation_part_index % (sizeof(colors) / sizeof(Color))];
+
+		Ref<StandardMaterial3D> mat = memnew(StandardMaterial3D);
+		mat->set_cull_mode(BaseMaterial3D::CULL_DISABLED);
+		mat->set_albedo(c);
+		part_instance->set_material_override(mat);
+
+		segmentation_scene->add_child(part_instance);
+
+		// Update combined bounds
+		AABB local_aabb = mesh->get_aabb();
+		if (!segmentation_has_bounds) {
+			segmentation_bounds = local_aabb;
+			segmentation_has_bounds = true;
+		} else {
+			segmentation_bounds = segmentation_bounds.merge(local_aabb);
+		}
+	}
+
+	segmentation_part_index++;
+	_download_next_segment_part_obj();
+}
+
+void DesignStudio3DEditor::_finalize_segmentation_scene() {
+	if (!segmentation_scene || !camera) {
+		return;
+	}
+
+	if (!segmentation_has_bounds) {
+		print_line("DEBUG: No bounds for segmentation scene");
+		return;
+	}
+
+	// Center segmentation root at origin so camera orbit works as usual
+	Vector3 center = segmentation_bounds.get_center();
+	segmentation_scene->set_position(-center);
+
+	float size = MAX(segmentation_bounds.get_longest_axis_size(), 0.001f);
+	orbit_distance = size * 1.5f;
+	orbit_yaw = 45.0f;
+	orbit_pitch = -20.0f;
+	_update_camera_orbit();
+
+	// Switch to the viewer tab so the user immediately sees the segmented model.
+	_show_viewer_tab();
+
+	// Enable segmented export button now that all parts are loaded.
+	if (export_segments_button) {
+		export_segments_button->set_disabled(false);
+	}
+
+	if (browse_status_label) {
+		browse_status_label->set_text("[SUCCESS] Segmented model loaded with all parts.");
+	}
+
+	print_line("DEBUG: Finalized segmentation scene, size=" + rtos(size));
+}
+
+void DesignStudio3DEditor::_find_mesh_instance_recursive(Node *node, MeshInstance3D *&found_mesh) {
+	// Kept for debugging if we ever need MeshInstance3D specifically
+	if (found_mesh) {
+		return; // Already found
+	}
+	
+	print_line("DEBUG: Checking node (MeshInstance search): " + node->get_class() + " - " + node->get_name());
+	
+	MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(node);
+	if (mesh) {
+		print_line("DEBUG: Found MeshInstance3D: " + mesh->get_name());
+		found_mesh = mesh;
+		return;
+	}
+	
+	for (int i = 0; i < node->get_child_count(); i++) {
+		_find_mesh_instance_recursive(node->get_child(i), found_mesh);
+		if (found_mesh) {
+			return;
+		}
+	}
+}
+
+void DesignStudio3DEditor::_on_load_segment(const String &download_url, const String &filename) {
+	if (download_url.is_empty()) {
+		browse_status_label->set_text("[ERROR] No download URL for segment");
+		return;
+	}
+	
+	browse_status_label->set_text("[LOADING] Loading segmented part: " + filename + "...");
+	
+	// Use the same download pipeline as browsing base models (expects OBJ content)
+	download_request->connect("request_completed", callable_mp(this, &DesignStudio3DEditor::_on_browse_model_downloaded), CONNECT_ONE_SHOT);
+	Error err = download_request->request(download_url);
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to start segmented part download");
+	}
+}
+
+void DesignStudio3DEditor::_on_segment_loaded_for_viewing(int result, int code, const PackedStringArray &headers, const PackedByteArray &body) {
+	print_line("DEBUG: _on_segment_loaded_for_viewing called - Result: " + itos(result) + ", Code: " + itos(code) + ", Size: " + itos(body.size()));
+	
+	if (result != HTTPRequest::RESULT_SUCCESS || code != 200) {
+		browse_status_label->set_text("[ERROR] Failed to load segment (HTTP " + itos(code) + ")");
+		return;
+	}
+	
+	if (body.size() == 0) {
+		browse_status_label->set_text("[ERROR] Segment is empty");
+		return;
+	}
+	
+	// Save the GLB file temporarily 
+	String timestamp = String::num_int64(OS::get_singleton()->get_ticks_msec());
+	String filename = "loaded_segment_switch_" + timestamp + ".glb";
+	String temp_path = "user://" + filename;
+	
+	Ref<FileAccess> file = FileAccess::open(temp_path, FileAccess::WRITE);
+	if (!file.is_valid()) {
+		browse_status_label->set_text("[ERROR] Failed to save segment file");
+		return;
+	}
+	
+	file->store_buffer(body);
+	file->close();
+	
+	// Load GLB file using same method as first segment
+	browse_status_label->set_text("[PROCESSING] Loading segmented part...");
+	
+	Ref<GLTFDocument> gltf_doc;
+	gltf_doc.instantiate();
+	
+	Ref<GLTFState> gltf_state;
+	gltf_state.instantiate();
+	
+	Error err = gltf_doc->append_from_file(temp_path, gltf_state);
+	if (err != OK) {
+		browse_status_label->set_text("[ERROR] Failed to parse GLB file (Error: " + itos(err) + ")");
+		return;
+	}
+	
+	Node *gltf_scene = gltf_doc->generate_scene(gltf_state);
+	if (!gltf_scene) {
+		browse_status_label->set_text("[ERROR] Failed to generate scene from GLB");
+		return;
+	}
+	
+	// Load the segment into the viewer
+	_load_gltf_scene_into_viewer(gltf_scene, gltf_state);
+	
+	// Make sure viewer tab is visible (in case user was on different tab)
+	_show_viewer_tab();
+	
+	browse_status_label->set_text("[SUCCESS] Segmented part switched! Use buttons to view other parts.");
+	
+	// Update viewer info
+	if (viewer_model_info) {
+		String info = "Segmented Model Part\n\n";
+		info += "File: GLB format\n";
+		info += "Size: " + String::humanize_size(body.size()) + "\n\n";
+		info += "Viewing individual part of segmented model.\n";
+		info += "Use 'Load' buttons to switch between parts.\n";
+		info += "Use 'Download' buttons to save parts locally.";
+		viewer_model_info->set_text(info);
+	}
+}
 
 void DesignStudio3DEditor::_on_lod_placeholder() {
 	if (viewer_model_info) {

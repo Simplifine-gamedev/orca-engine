@@ -3359,6 +3359,10 @@ def search_conversation_history():
 
 @app.route('/chat', methods=['POST'])
 def chat():
+    # DEBUGGING: Log chat requests  
+    from datetime import datetime
+    print(f"🔥 CHAT_DEBUG: /chat endpoint hit - {datetime.now()}")
+    
     # Optional server key gate
     gate = verify_server_key_if_required()
     if gate is not None:
@@ -6049,6 +6053,53 @@ def chat():
                     })
                 except Exception:
                     pass
+                
+                print(f"🔍 CALLBACK_TRACE: About to check manual callback trigger, litellm_logger={litellm_logger is not None}")
+                
+                # CRITICAL FIX: Manually log streaming responses (bypass LiteLLM callbacks)
+                # Direct logging to prevent duplicates and ensure reliability
+                try:
+                    if litellm_logger and full_text_response:
+                        # Check if already logged to prevent duplicates
+                        if not completion_params.get('_godot_callback_triggered', False):
+                            completion_params['_godot_callback_triggered'] = True
+                            
+                            # Get timing
+                            start_time = completion_params.get('_godot_start_time')
+                            end_time = time.time()
+                            duration_ms = int((end_time - start_time) * 1000) if start_time else 0
+                            
+                            # Get stored context
+                            stored_context = getattr(litellm_logger, '_stored_context', {})
+                            
+                            # Create user input log
+                            user_log = litellm_logger._create_user_input_log(
+                                completion_params, 
+                                completion_params.get('_godot_request_id', str(uuid.uuid4())), 
+                                duration_ms, 
+                                stored_context
+                            )
+                            
+                            # Create assistant response log
+                            assistant_log = litellm_logger._create_assistant_response_log(
+                                completion_params, 
+                                type('MockResponse', (), {'choices': [type('Choice', (), {'message': type('Message', (), {'content': full_text_response})()})()]})(),
+                                full_text_response,
+                                completion_params.get('_godot_request_id', str(uuid.uuid4())), 
+                                duration_ms, 
+                                stored_context
+                            )
+                            
+                            print(f"🔄 STREAMING_LOG: Logging user input and assistant response ({len(full_text_response)} chars)")
+                            
+                            # Send both logs
+                            litellm_logger._queue_log(user_log)
+                            litellm_logger._queue_log(assistant_log)
+                        else:
+                            print(f"⚠️  DUPLICATE_PREVENTION: Callback already triggered for this request")
+                except Exception as callback_err:
+                    print(f"⚠️  STREAMING_LOG_ERROR: Failed to log streaming response: {callback_err}")
+                
                 print(f"BACKEND_DEBUG: About to send final status: completed")
                 yield json.dumps({"status": "completed"}) + '\n'
                 print(f"BACKEND_DEBUG: Final status completed sent")

@@ -29,3 +29,4 @@ COMMENT ON COLUMN jobs.frontend_logs IS 'Array of frontend log entries. Each ent
 --   }
 -- ]
 
+

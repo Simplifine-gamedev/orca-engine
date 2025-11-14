@@ -60,19 +60,23 @@ SUPABASE_PROJECT_ID = os.getenv('SUPABASE_PROJECT_ID')
 # Get table names and strip any whitespace/newlines
 MODELS_TABLE = os.getenv('MODELS_TABLE', 'three_d_models')
 TEXTURE_JOBS_TABLE = os.getenv('TEXTURE_JOBS_TABLE', 'texture_jobs')
+SEGMENTATION_JOBS_TABLE = os.getenv('SEGMENTATION_JOBS_TABLE', 'three_d_segmentation')
 
 # Clean up table names - remove all whitespace, newlines, quotes
 if MODELS_TABLE:
     MODELS_TABLE = MODELS_TABLE.strip().strip('\'"').replace(' ', '').replace('\n', '').replace('\r', '')
 if TEXTURE_JOBS_TABLE:
     TEXTURE_JOBS_TABLE = TEXTURE_JOBS_TABLE.strip().strip('\'"').replace(' ', '').replace('\n', '').replace('\r', '')
+if SEGMENTATION_JOBS_TABLE:
+    SEGMENTATION_JOBS_TABLE = SEGMENTATION_JOBS_TABLE.strip().strip('\'"').replace(' ', '').replace('\n', '').replace('\r', '')
 
 # Set defaults if empty after cleaning
 MODELS_TABLE = MODELS_TABLE or 'three_d_models'
 TEXTURE_JOBS_TABLE = TEXTURE_JOBS_TABLE or 'texture_jobs'
+SEGMENTATION_JOBS_TABLE = SEGMENTATION_JOBS_TABLE or 'three_d_segmentation'
 
 # Debug logging for table names
-logger.info(f"📋 Using table names: MODELS_TABLE='{MODELS_TABLE}', TEXTURE_JOBS_TABLE='{TEXTURE_JOBS_TABLE}'")
+logger.info(f"📋 Using table names: MODELS_TABLE='{MODELS_TABLE}', TEXTURE_JOBS_TABLE='{TEXTURE_JOBS_TABLE}', SEGMENTATION_JOBS_TABLE='{SEGMENTATION_JOBS_TABLE}'")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     logger.error("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required")
@@ -600,6 +604,7 @@ def list_user_models(user_id: str):
         limit = min(int(request.args.get('limit', 50)), 100)  # Max 100
         offset = int(request.args.get('offset', 0))
         include_textured = request.args.get('include_textured', 'true').lower() == 'true'
+        include_segmented = request.args.get('include_segmented', 'true').lower() == 'true'
         
         # Get models first
         query = supabase.table(MODELS_TABLE).select('*').eq('user_id', user_id)
@@ -650,13 +655,53 @@ def list_user_models(user_id: str):
                 model['has_completed_textures'] = any(tj.get('texture_status') == 'completed' for tj in texture_jobs)
                 model['latest_texture_status'] = texture_jobs[0].get('texture_status') if texture_jobs else None
         
+        # If including segmentation information, fetch segmentation jobs for each model
+        if include_segmented and models:
+            # Get model IDs from models (segmentation uses base_model_id which matches model id)
+            model_ids = [model.get('id') for model in models if model.get('id')]
+            
+            if model_ids:
+                # Get segmentation jobs for these models (match by base_model_id)
+                segmentation_query = supabase.table(SEGMENTATION_JOBS_TABLE).select('*').eq('user_id', user_id).in_('base_model_id', model_ids)
+                segmentation_result = segmentation_query.execute()
+                
+                # Group segmentation jobs by base_model_id
+                segmentation_jobs_by_model_id = {}
+                for seg_job in segmentation_result.data:
+                    base_model_id = seg_job.get('base_model_id')
+                    if base_model_id not in segmentation_jobs_by_model_id:
+                        segmentation_jobs_by_model_id[base_model_id] = []
+                    segmentation_jobs_by_model_id[base_model_id].append({
+                        'segmentation_job_id': seg_job['id'],
+                        'segmentation_status': seg_job['status'],
+                        'num_parts': seg_job.get('num_parts', 0),
+                        'parts_data': seg_job.get('parts_data'),
+                        'part_urls': seg_job.get('part_urls'),
+                        'segmentation_created_at': seg_job['created_at'],
+                        'segmentation_updated_at': seg_job.get('updated_at')
+                    })
+                
+                # Add segmentation job information to each model
+                for model in models:
+                    model_id = model.get('id')
+                    if model_id:
+                        seg_jobs = segmentation_jobs_by_model_id.get(model_id, [])
+                        # Sort by created_at desc
+                        seg_jobs.sort(key=lambda x: x['segmentation_created_at'] if x['segmentation_created_at'] else '', reverse=True)
+                        
+                        model['segmentation_jobs'] = seg_jobs
+                        model['segmentation_job_count'] = len(seg_jobs)
+                        model['has_completed_segmentation'] = any(sj.get('segmentation_status') == 'completed' for sj in seg_jobs)
+                        model['latest_segmentation_status'] = seg_jobs[0].get('segmentation_status') if seg_jobs else None
+        
         return jsonify({
             'models': models,
             'count': len(models),
             'offset': offset,
             'limit': limit,
             'has_more': len(models) == limit,
-            'include_textured': include_textured
+            'include_textured': include_textured,
+            'include_segmented': include_segmented
         })
         
     except Exception as e:
@@ -956,6 +1001,200 @@ def get_recent_models():
         return jsonify({'error': sanitize_error_message(str(e))}), 500
 
 
+@app.route('/segments/<user_id>/<model_id>', methods=['GET'])
+def get_model_segments(user_id: str, model_id: str):
+    """Get segmentation parts for a specific model"""
+    try:
+        # Validate inputs
+        if not validate_user_id(user_id):
+            return jsonify({'error': 'Invalid user_id format'}), 400
+            
+        if not validate_model_id(model_id):
+            return jsonify({'error': 'Invalid model_id format'}), 400
+            
+        if not supabase:
+            return jsonify({'error': 'Supabase client not available'}), 503
+        
+        # Check if model exists and belongs to user
+        model_result = supabase.table(MODELS_TABLE).select('*').eq('user_id', user_id).eq('id', model_id).execute()
+        
+        if not model_result.data:
+            return jsonify({'error': 'Model not found'}), 404
+        
+        model = model_result.data[0]
+
+        # Find latest completed segmentation record for this model (if any)
+        seg_result = supabase.table(SEGMENTATION_JOBS_TABLE) \
+            .select('*') \
+            .eq('user_id', user_id) \
+            .eq('base_model_id', model_id) \
+            .eq('status', 'completed') \
+            .order('created_at', desc=True) \
+            .limit(1) \
+            .execute()
+
+        segmentation_job = seg_result.data[0] if seg_result.data else None
+        segmentation_job_id = segmentation_job['id'] if segmentation_job else None
+
+        # Build candidate base paths for parts:
+        # 1) Legacy layout: user_id/model_id/parts/...
+        # 2) New layout:    user_id/segmentation_job_id/parts/...
+        candidate_paths = []
+        candidate_paths.append(f"{user_id}/{model_id}/parts")
+        if segmentation_job_id:
+            candidate_paths.append(f"{user_id}/{segmentation_job_id}/parts")
+
+        parts = []
+        bucket = supabase.storage.from_('3d-models')
+
+        # Try each candidate path until we find .obj parts
+        for base_path in candidate_paths:
+            try:
+                objs = bucket.list(base_path)
+            except Exception as e:
+                logger.warning(f"Error listing segmentation parts at {base_path}: {e}")
+                continue
+
+            for obj in objs:
+                name = obj.get('name') or obj.get('name'.encode())  # defensive
+                if not name:
+                    continue
+
+                name_str = str(name)
+                # Prefer OBJ parts for frontend loading (we use the same OBJ loader as full models)
+                if not name_str.lower().endswith('.obj'):
+                    continue
+
+                filename = name_str.split('/')[-1]
+                file_path = f"{base_path}/{filename}"
+                download_url = bucket.get_public_url(file_path)
+
+                parts.append({
+                    'filename': filename,
+                    'download_url': download_url,
+                })
+
+            if parts:
+                # Stop after the first path that yields parts
+                break
+
+        if not parts:
+            return jsonify({'error': 'No segmentation data available'}), 404
+
+        # Optional: full segmented assembly / colored mesh (GLB) for "show all parts" view
+        assembly_scene_url = None
+        segmented_mesh_url = None
+        try:
+            if segmentation_job_id:
+                assembly_scene_path = f"{user_id}/{segmentation_job_id}/assembly_scene.glb"
+                segmented_mesh_path = f"{user_id}/{segmentation_job_id}/segmented_mesh.glb"
+                assembly_scene_url = bucket.get_public_url(assembly_scene_path)
+                segmented_mesh_url = bucket.get_public_url(segmented_mesh_path)
+        except Exception as e:
+            logger.warning(f"Error building assembly/segmented mesh URLs for {model_id}: {e}")
+
+        segmentation_data = {
+            'user_id': user_id,
+            'job_id': segmentation_job_id or model_id,
+            'parts': parts,
+            'total_parts': len(parts),
+        }
+
+        if assembly_scene_url:
+            segmentation_data['assembly_scene_url'] = assembly_scene_url
+        if segmented_mesh_url:
+            segmentation_data['segmented_mesh_url'] = segmented_mesh_url
+
+        return jsonify({
+            'model_id': model_id,
+            'user_id': user_id,
+            'segmentation_data': segmentation_data,
+            'parts_count': len(parts),
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting model segments {model_id} for user {user_id}: {e}")
+        return jsonify({'error': sanitize_error_message(str(e))}), 500
+
+
+@app.route('/download-segment/<user_id>/<model_id>/<part_filename>', methods=['GET'])
+def download_model_segment(user_id: str, model_id: str, part_filename: str):
+    """Download a specific segmented part file"""
+    try:
+        # Validate inputs
+        if not validate_user_id(user_id):
+            return jsonify({'error': 'Invalid user_id format'}), 400
+            
+        if not validate_model_id(model_id):
+            return jsonify({'error': 'Invalid model_id format'}), 400
+            
+        # Validate filename (prevent directory traversal)
+        if not part_filename or '..' in part_filename or '/' in part_filename:
+            return jsonify({'error': 'Invalid part filename'}), 400
+            
+        if not part_filename.endswith(('.obj', '.glb')):
+            return jsonify({'error': 'Only .obj and .glb part files are supported'}), 400
+            
+        if not supabase:
+            return jsonify({'error': 'Supabase client not available'}), 503
+        
+        # Check cache first
+        cache_key = get_cache_key(user_id, model_id, f"segment_{part_filename}")
+        cached_data = get_cached_file(cache_key)
+        
+        if cached_data:
+            logger.info(f"Serving cached segment: {cache_key}")
+            # Determine content type based on file extension
+            if part_filename.endswith('.glb'):
+                content_type = 'model/gltf-binary'
+            else:
+                content_type = 'application/octet-stream'
+            return Response(
+                cached_data,
+                content_type=content_type,
+                headers={'Content-Disposition': f'attachment; filename={part_filename}'}
+            )
+        
+        # Check if model exists and belongs to user
+        model_result = supabase.table(MODELS_TABLE).select('*').eq('user_id', user_id).eq('id', model_id).execute()
+        
+        if not model_result.data:
+            return jsonify({'error': 'Model not found'}), 404
+        
+        # Build part file path
+        part_path = f"{user_id}/{model_id}/parts/{part_filename}"
+        
+        try:
+            # Get part file URL from Supabase storage
+            part_url = supabase.storage.from_('3d-models').get_public_url(part_path)
+            
+            # Download part file
+            file_data = download_file_from_url(part_url)
+            
+            # Cache the downloaded file
+            cache_file(cache_key, file_data)
+            
+            # Determine content type based on file extension
+            if part_filename.endswith('.glb'):
+                content_type = 'model/gltf-binary'
+            else:
+                content_type = 'application/octet-stream'
+            
+            # Return file
+            return Response(
+                file_data,
+                content_type=content_type,
+                headers={'Content-Disposition': f'attachment; filename={part_filename}'}
+            )
+            
+        except DatabaseServerError as e:
+            return jsonify({'error': sanitize_error_message(str(e))}), 500
+        
+    except Exception as e:
+        logger.error(f"Error downloading segment {part_filename} for model {model_id}: {e}")
+        return jsonify({'error': sanitize_error_message(str(e))}), 500
+
+
 @app.route('/', methods=['GET'])
 def root():
     """Root endpoint with API information"""
@@ -982,7 +1221,9 @@ def root():
             '/download-texture/{user_id}/{texture_job_id}/albedo': 'Download albedo texture',
             '/download-texture/{user_id}/{texture_job_id}/metallic': 'Download metallic texture',
             '/download-texture/{user_id}/{texture_job_id}/roughness': 'Download roughness texture',
-            '/download-texture/{user_id}/{texture_job_id}/combined': 'Download PBR combined texture'
+            '/download-texture/{user_id}/{texture_job_id}/combined': 'Download PBR combined texture',
+            '/segments/{user_id}/{model_id}': 'Get model segmentation parts',
+            '/download-segment/{user_id}/{model_id}/{part_filename}': 'Download segmented part file'
         },
         'features': {
             'texture_integration': 'Models linked to texture jobs',

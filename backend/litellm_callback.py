@@ -33,27 +33,44 @@ class GodotLiteLLMLogger(CustomLogger):
     
     def _start_background_logger(self):
         """Start background thread for async HTTP requests"""
+        print(f"🔧 THREAD_DEBUG: Starting background logger thread")
         def run_async_logger():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._process_log_queue())
+            try:
+                print(f"🔧 THREAD_DEBUG: Background thread started")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                print(f"🔧 THREAD_DEBUG: Event loop created, starting queue processing")
+                loop.run_until_complete(self._process_log_queue())
+            except Exception as e:
+                print(f"❌ THREAD_ERROR: Background thread crashed: {e}")
+                import traceback
+                traceback.print_exc()
         
         thread = Thread(target=run_async_logger, daemon=True)
         thread.start()
+        print(f"🔧 THREAD_DEBUG: Background thread launched")
     
     async def _process_log_queue(self):
         """Process log queue in background"""
+        print(f"🔧 THREAD_DEBUG: Queue processing loop started")
+        queue_check_count = 0
         while True:
             try:
                 # Get log from queue (non-blocking with timeout)
                 try:
+                    queue_check_count += 1
+                    if queue_check_count % 10 == 0:  # Log every 10th check
+                        print(f"🔧 THREAD_DEBUG: Queue check #{queue_check_count}, size: {self.log_queue.qsize()}")
                     log_data = self.log_queue.get(timeout=1.0)
+                    print(f"🔧 THREAD_DEBUG: Got log from queue: {log_data.get('event_type', 'unknown')} for {log_data.get('request_id', 'unknown')}")
                 except queue.Empty:
                     continue
                 
                 # Send to logging server
+                print(f"🔧 THREAD_DEBUG: Sending log to server...")
                 success = await self._send_log_async(log_data)
                 if success:
+                    print(f"🔧 THREAD_DEBUG: Log sent successfully, marking task done")
                     self.log_queue.task_done()
                 else:
                     # Log locally on failure but don't break
@@ -65,29 +82,38 @@ class GodotLiteLLMLogger(CustomLogger):
                 await asyncio.sleep(1)
     
     async def _send_log_async(self, log_data: dict) -> bool:
-        """Send log data to logging server asynchronously"""
+        """Send log data to logging server using simple requests (sync in async wrapper)"""
         if not self.logging_server_url:
+            print("⚠️  LOGGING_DEBUG: No logging server URL configured")
             return False
         
         try:
-            if not self.session:
-                self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
+            import requests
             
             url = f"{self.logging_server_url.rstrip('/')}/webhook/litellm"
             
-            async with self.session.post(url, json=log_data) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    error_text = await response.text()
-                    print(f"❌ Logging server error ({response.status}): {error_text}")
-                    return False
+            # Debug logging
+            event_type = log_data.get('event_type', 'unknown')
+            request_id = log_data.get('request_id', 'unknown')
+            print(f"📤 LOGGING_DEBUG: Sending {event_type} log for {request_id} to {url}")
+            
+            # Use simple requests to avoid aiohttp issues
+            response = requests.post(url, json=log_data, timeout=5)
+            
+            if response.status_code == 200:
+                print(f"✅ LOGGING_DEBUG: Successfully sent {event_type} log for {request_id}")
+                return True
+            else:
+                print(f"❌ Logging server error ({response.status_code}) for {event_type}: {response.text[:200]}")
+                print(f"📋 LOGGING_DEBUG: Failed log data keys: {list(log_data.keys())}")
+                return False
                     
-        except asyncio.TimeoutError:
-            print("⏱️  Logging server timeout (skipping)")
+        except requests.exceptions.Timeout:
+            print(f"⏱️  Logging server timeout (skipping {event_type})")
             return False
         except Exception as e:
-            print(f"❌ Error sending log: {e}")
+            print(f"❌ Error sending log ({event_type}): {e}")
+            print(f"🔗 LOGGING_DEBUG: URL was {self.logging_server_url}")
             return False
     
     def _extract_user_context(self, kwargs: dict) -> dict:
@@ -543,14 +569,30 @@ class GodotLiteLLMLogger(CustomLogger):
         }
     
     def _queue_log(self, log_data: dict):
-        """Add log to queue for async processing"""
+        """Send log directly (synchronously) - bypassing queue for testing"""
         if not self.logging_server_url:
+            print("⚠️  QUEUE_DEBUG: No logging server URL, skipping")
             return
         
         try:
-            self.log_queue.put_nowait(log_data)
-        except queue.Full:
-            print("⚠️  Log queue full, dropping log entry")
+            import requests
+            
+            event_type = log_data.get('event_type', 'unknown')
+            request_id = log_data.get('request_id', 'unknown')
+            url = f"{self.logging_server_url.rstrip('/')}/webhook/litellm"
+            
+            print(f"🚀 DIRECT_SEND: Sending {event_type} log for {request_id} directly")
+            
+            # Send directly instead of queuing
+            response = requests.post(url, json=log_data, timeout=3)
+            
+            if response.status_code == 200:
+                print(f"✅ DIRECT_SEND: Successfully sent {event_type} log for {request_id}")
+            else:
+                print(f"❌ DIRECT_SEND: Failed ({response.status_code}) for {event_type}: {response.text[:100]}")
+                
+        except Exception as e:
+            print(f"❌ DIRECT_SEND: Error sending {event_type}: {e}")
     
     # LiteLLM hook implementations
     
@@ -561,6 +603,7 @@ class GodotLiteLLMLogger(CustomLogger):
             # Store request_id in kwargs for tracking
             kwargs['_godot_request_id'] = request_id
             kwargs['_godot_start_time'] = time.time()
+            kwargs['_godot_callback_triggered'] = False  # Prevent duplicate callbacks
             
             # IMPORTANT: Store context now while Flask context is available
             user_context = self._extract_user_context(kwargs)
@@ -601,36 +644,13 @@ class GodotLiteLLMLogger(CustomLogger):
             print(f"❌ Error in post_api_call logging: {e}")
     
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
-        """Log successful API call - ONLY LOG 2 ENTRIES: user input + assistant response"""
+        """Log successful API call - SKIP THIS, we handle manually for streaming"""
         try:
             request_id = kwargs.get('_godot_request_id', str(uuid.uuid4()))
+            print(f"⚠️  DUPLICATE_PREVENTION: Skipping automatic callback for {request_id} (handled manually for streaming)")
             
-            # Get stored duration from post_call
-            duration_ms = kwargs.get('_godot_duration_ms', 0)
-            if duration_ms == 0 and start_time and end_time:
-                try:
-                    duration_ms = int((end_time - start_time).total_seconds() * 1000)
-                except Exception:
-                    duration_ms = 0
-            
-            # Use stored context from pre_call (when Flask context was available)
-            stored_context = getattr(self, '_stored_context', {})
-            
-            # 1. LOG USER INPUT (only one entry for the user's message)
-            user_log = self._create_user_input_log(kwargs, request_id, duration_ms, stored_context)
-            self._queue_log(user_log)
-            
-            # 2. LOG ASSISTANT RESPONSE (if we got a response)
-            if response_obj and hasattr(response_obj, 'choices') and response_obj.choices:
-                try:
-                    assistant_content = response_obj.choices[0].message.content
-                    if assistant_content:
-                        assistant_log = self._create_assistant_response_log(
-                            kwargs, response_obj, assistant_content, request_id, duration_ms, stored_context
-                        )
-                        self._queue_log(assistant_log)
-                except Exception as e:
-                    print(f"⚠️  Error logging assistant response: {e}")
+            # SKIP - we handle this manually in the streaming completion
+            return
             
         except Exception as e:
             print(f"❌ Error in success_event logging: {e}")
