@@ -138,8 +138,8 @@ class TestAutumnPricingService(unittest.TestCase):
                 "requests_per_month": 500,
                 "features": ["Priority support", "Advanced features"]
             },
-            "pro_plus": {
-                "product_id": "pro_plus",
+            "proplus": {
+                "product_id": "proplus",
                 "name": "Pro+", 
                 "price": 60,
                 "requests_per_month": 1500,
@@ -150,7 +150,7 @@ class TestAutumnPricingService(unittest.TestCase):
         # This validates our tier configuration matches the plan requirements
         self.assertEqual(expected_tiers["free"]["requests_per_month"], 200)
         self.assertEqual(expected_tiers["pro"]["requests_per_month"], 500)
-        self.assertEqual(expected_tiers["pro_plus"]["requests_per_month"], 1500)
+        self.assertEqual(expected_tiers["proplus"]["requests_per_month"], 1500)
 
 def run_tests():
     """Run all pricing integration tests"""

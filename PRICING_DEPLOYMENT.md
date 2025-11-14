@@ -25,7 +25,7 @@ Create these exact products:
   - Feature: `ai-requests` (500 limit, monthly reset)
 
 - [ ] **Pro+ Tier**
-  - Product ID: `pro_plus`
+  - Product ID: `proplus`
   - Price: $60/month
   - Feature: `ai-requests` (1500 limit, monthly reset)
 

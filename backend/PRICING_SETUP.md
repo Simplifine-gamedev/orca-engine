@@ -35,7 +35,7 @@ Create these three products in your Autumn dashboard:
 - Feature: `ai-requests` with 500 monthly limit (resets monthly)
 
 **Pro+ Tier:**
-- Product ID: `pro_plus`
+- Product ID: `proplus`
 - Price: $60/month
 - Feature: `ai-requests` with 1500 monthly limit (resets monthly)
 

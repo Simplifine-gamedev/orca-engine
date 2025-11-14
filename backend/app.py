@@ -9078,8 +9078,8 @@ def get_pricing_tiers():
                 "requests_per_month": 500,
                 "features": ["Priority support", "Advanced features"]
             },
-            "pro_plus": {
-                "product_id": "pro_plus",
+            "proplus": {
+                "product_id": "proplus",
                 "name": "Pro+", 
                 "price": 60,
                 "requests_per_month": 1500,
