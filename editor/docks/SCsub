@@ -18,6 +18,7 @@ dock_sources = [
     "ai_conversation_persistence.cpp",
     "ai_image_lazy_loader.cpp",
     "ai_manual_snapshots.cpp",
+    "ai_auto_snapshots.cpp",
     "ai_pending_edits_banner.cpp",
     "ai_terminal_ui.cpp",
     "ai_tool_server.cpp",

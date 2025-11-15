@@ -70,6 +70,7 @@ class HFlowContainer;
 class UserMessageHandler;
 class StreamingIndicator;
 class AIManualSnapshots;
+class AIAutoSnapshots;
 // Missing forward declarations for types referenced as pointers
 class Timer;
 class Thread;
@@ -88,9 +89,10 @@ public:
 	static AIChatDock *singleton;
 	static AIChatDock *get_singleton() { return singleton; }
 	
-	// Friend class for user message handling
+	// Friend classes for helpers that need internal access
 	friend class UserMessageHandler;
 	friend class AIChatInputBox;
+	friend class AIAutoSnapshots;
 
 private:
 	// Version Management - These should match version.py values
@@ -101,6 +103,7 @@ private:
 	Ref<AIToolServer> tool_server;
 	UserMessageHandler *user_message_handler = nullptr;
 	Ref<AIManualSnapshots> manual_snapshots;
+	Ref<AIAutoSnapshots> auto_snapshots;
 	// Helper to find RichTextLabel recursively.
 	static RichTextLabel *find_rich_text_label_in_children(Node *p_node) {
 		if (!p_node) {
@@ -228,6 +231,7 @@ private:
 	Button *export_button = nullptr;
 	Button *snapshot_button = nullptr;
 	Button *restore_snapshot_button = nullptr;
+	Button *auto_snapshots_button = nullptr;
 	Label *user_status_label = nullptr;
 	String current_user_id;
 	String current_user_name;
@@ -617,6 +621,7 @@ private:
 	void _on_view_snapshots_pressed();
 	void _on_snapshot_restore_requested(const String &p_snapshot_tag);
 	void _on_snapshot_delete_requested(const String &p_snapshot_tag);
+	void _on_view_auto_snapshots_pressed();
 	
 	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_auth_dialog_action(const StringName &p_action);

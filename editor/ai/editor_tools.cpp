@@ -2914,6 +2914,10 @@ Dictionary EditorTools::create_new_scene_with_root(const Dictionary &p_args) {
 
     // Set as edited scene root and save
     EditorNode::get_singleton()->set_edited_scene_root(new_root, true);
+    if (EditorNode::get_singleton()) {
+        EditorNode::get_singleton()->set_skip_next_scene_thumbnail(true);
+        EditorNode::get_singleton()->set_skip_next_scene_progress(true);
+    }
     EditorInterface::get_singleton()->save_scene_as(scene_path);
     result["success"] = true; result["scene_path"] = scene_path; result["message"] = "New scene created and save requested"; return result;
 }
@@ -2938,7 +2942,10 @@ Dictionary EditorTools::create_directory(const Dictionary &p_args) {
     if (!_is_within_project(path)) { result["success"] = false; result["message"] = "Path must be within project"; return result; }
     Error e = DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(path));
     if (e != OK) { result["success"] = false; result["message"] = "Failed to create directory"; return result; }
-    if (EditorFileSystem::get_singleton()) EditorFileSystem::get_singleton()->scan_changes();
+    if (EditorFileSystem::get_singleton()) {
+        EditorFileSystem::get_singleton()->scan_changes();
+        EditorFileSystem::get_singleton()->scan();
+    }
     result["success"] = true; return result;
 }
 
@@ -5439,6 +5446,10 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 				}
 				
 				// Save the scene to disk
+				if (EditorNode::get_singleton()) {
+					EditorNode::get_singleton()->set_skip_next_scene_thumbnail(true);
+					EditorNode::get_singleton()->set_skip_next_scene_progress(true);
+				}
 				EditorInterface::get_singleton()->save_scene_as(scene_path);
 				
 				// Verify the file was created
@@ -5474,6 +5485,10 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 			return result;
 		}
 		String path = p_args["path"];
+		if (EditorNode::get_singleton()) {
+			EditorNode::get_singleton()->set_skip_next_scene_thumbnail(true);
+			EditorNode::get_singleton()->set_skip_next_scene_progress(true);
+		}
 		EditorInterface::get_singleton()->save_scene_as(path);
 		result["success"] = true;
 		result["message"] = "Scene saved as " + path;

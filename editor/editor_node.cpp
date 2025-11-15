@@ -1464,6 +1464,9 @@ void EditorNode::_remove_lock_file() {
 }
 
 void EditorNode::_scan_external_changes() {
+	if (suppress_external_changes) {
+		return;
+	}
 	disk_changed_list->clear();
 	TreeItem *r = disk_changed_list->create_item();
 	disk_changed_list->set_hide_root(true);
@@ -1503,6 +1506,13 @@ void EditorNode::_scan_external_changes() {
 
 	if (need_reload) {
 		callable_mp((Window *)disk_changed, &Window::popup_centered_ratio).call_deferred(0.3);
+	}
+}
+
+void EditorNode::set_external_changes_suppressed(bool p_suppressed) {
+	suppress_external_changes = p_suppressed;
+	if (!suppress_external_changes) {
+		_scan_external_changes();
 	}
 }
 
@@ -1991,26 +2001,42 @@ void EditorNode::_find_node_types(Node *p_node, int &count_2d, int &count_3d) {
 }
 
 void EditorNode::_save_scene_with_preview(String p_file, int p_idx) {
-	save_scene_progress = memnew(EditorProgress("save", TTR("Saving Scene"), 4));
+	bool skip_preview = skip_next_scene_thumbnail;
+	skip_next_scene_thumbnail = false;
 
-	if (editor_data.get_edited_scene_root() != nullptr) {
-		save_scene_progress->step(TTR("Analyzing"), 0);
+	bool skip_progress = skip_next_scene_progress;
+	skip_next_scene_progress = false;
+
+	if (!skip_progress) {
+		save_scene_progress = memnew(EditorProgress("save", TTR("Saving Scene"), 4));
+	}
+
+	if (!skip_preview && editor_data.get_edited_scene_root() != nullptr) {
+		if (!skip_progress) {
+			save_scene_progress->step(TTR("Analyzing"), 0);
+		}
 
 		int c2d = 0;
 		int c3d = 0;
 
 		_find_node_types(editor_data.get_edited_scene_root(), c2d, c3d);
 
-		save_scene_progress->step(TTR("Creating Thumbnail"), 1);
+		if (!skip_progress) {
+			save_scene_progress->step(TTR("Creating Thumbnail"), 1);
+		}
 		// Current view?
 
 		Ref<Image> img;
 		// If neither 3D or 2D nodes are present, make a 1x1 black texture.
 		// We cannot fallback on the 2D editor, because it may not have been used yet,
 		// which would result in an invalid texture.
-		if (c3d == 0 && c2d == 0) {
+		auto create_dummy_preview = [&img]() {
 			img.instantiate();
 			img->initialize_data(1, 1, false, Image::FORMAT_RGB8);
+		};
+
+		if (c3d == 0 && c2d == 0) {
+			create_dummy_preview();
 		} else if (c3d < c2d) {
 			Ref<ViewportTexture> viewport_texture = scene_root->get_texture();
 			if (viewport_texture->get_width() > 0 && viewport_texture->get_height() > 0) {
@@ -2022,14 +2048,30 @@ void EditorNode::_save_scene_with_preview(String p_file, int p_idx) {
 			// The preview will be generated if no feature profile is set (as the 3D editor is enabled by default).
 			Ref<EditorFeatureProfile> profile = feature_profile_manager->get_current_profile();
 			if (profile.is_null() || !profile->is_feature_disabled(EditorFeatureProfile::FEATURE_3D)) {
-				img = Node3DEditor::get_singleton()->get_editor_viewport(0)->get_viewport_node()->get_texture()->get_image();
+				Node3DEditor *node3d = Node3DEditor::get_singleton();
+				if (node3d) {
+					Node3DEditorViewport *viewport = node3d->get_editor_viewport(0);
+					if (viewport && viewport->get_viewport_node() && viewport->get_viewport_node()->get_texture().is_valid()) {
+						img = viewport->get_viewport_node()->get_texture()->get_image();
+					} else {
+						print_line("EditorNode: 3D editor viewport texture unavailable, skipping preview capture");
+						create_dummy_preview();
+					}
+				} else {
+					print_line("EditorNode: 3D editor viewport not available, skipping preview capture");
+					create_dummy_preview();
+				}
+			} else {
+				create_dummy_preview();
 			}
 		}
 
 		if (img.is_valid() && img->get_width() > 0 && img->get_height() > 0) {
 			img = img->duplicate();
 
-			save_scene_progress->step(TTR("Creating Thumbnail"), 3);
+			if (!skip_progress) {
+				save_scene_progress->step(TTR("Creating Thumbnail"), 3);
+			}
 
 			int preview_size = EDITOR_GET("filesystem/file_dialog/thumbnail_size");
 			preview_size *= EDSCALE;
@@ -2065,14 +2107,18 @@ void EditorNode::_save_scene_with_preview(String p_file, int p_idx) {
 		}
 	}
 
-	save_scene_progress->step(TTR("Saving Scene"), 4);
+	if (!skip_progress) {
+		save_scene_progress->step(TTR("Saving Scene"), 4);
+	}
 	_save_scene(p_file, p_idx);
 
 	if (!singleton->cmdline_mode) {
 		EditorResourcePreview::get_singleton()->check_for_invalidation(p_file);
 	}
 
-	_close_save_scene_progress();
+	if (!skip_progress) {
+		_close_save_scene_progress();
+	}
 }
 
 void EditorNode::_close_save_scene_progress() {

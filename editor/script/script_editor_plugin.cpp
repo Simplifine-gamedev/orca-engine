@@ -1176,6 +1176,10 @@ void ScriptEditor::_live_auto_reload_running_scripts() {
 }
 
 bool ScriptEditor::_test_script_times_on_disk(Ref<Resource> p_for_script) {
+	if (EditorNode::get_singleton() && EditorNode::get_singleton()->is_external_changes_suppressed()) {
+		return false;
+	}
+
 	disk_changed_list->clear();
 	TreeItem *r = disk_changed_list->create_item();
 

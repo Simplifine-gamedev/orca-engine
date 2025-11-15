@@ -451,6 +451,10 @@ private:
 	ConfirmationDialog *disk_changed = nullptr;
 	ConfirmationDialog *project_data_missing = nullptr;
 
+	bool suppress_external_changes = false;
+	bool skip_next_scene_thumbnail = false;
+	bool skip_next_scene_progress = false;
+
 	bool scene_distraction_free = false;
 	bool script_distraction_free = false;
 
@@ -978,6 +982,12 @@ public:
 	void open_export_template_manager();
 
 	void reload_scene(const String &p_path);
+
+public:
+	void set_external_changes_suppressed(bool p_suppressed);
+	bool is_external_changes_suppressed() const { return suppress_external_changes; }
+	void set_skip_next_scene_thumbnail(bool p_skip) { skip_next_scene_thumbnail = p_skip; }
+	void set_skip_next_scene_progress(bool p_skip) { skip_next_scene_progress = p_skip; }
 
 	void find_all_instances_inheriting_path_in_node(Node *p_root, Node *p_node, const String &p_instance_path, HashSet<Node *> &p_instance_list);
 	void preload_reimporting_with_path_in_edited_scenes(const List<String> &p_scenes);

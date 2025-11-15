@@ -11,6 +11,7 @@
 #include "ai_chat_tool_styling.h"
 #include "ai_checkpoint_manager.h"
 #include "ai_manual_snapshots.h"
+#include "ai_auto_snapshots.h"
 #include "ai_conversation_persistence.h"
 #include "ai_chat_save_coordinator.h"
 #include "editor/auth/auth_manager.h"
@@ -256,6 +257,7 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_view_snapshots_pressed"), &AIChatDock::_on_view_snapshots_pressed);
 	ClassDB::bind_method(D_METHOD("_on_snapshot_restore_requested", "snapshot_tag"), &AIChatDock::_on_snapshot_restore_requested);
 	ClassDB::bind_method(D_METHOD("_on_snapshot_delete_requested", "snapshot_tag"), &AIChatDock::_on_snapshot_delete_requested);
+	ClassDB::bind_method(D_METHOD("_on_view_auto_snapshots_pressed"), &AIChatDock::_on_view_auto_snapshots_pressed);
 	
 	// Pagination and performance methods (only bind simple callback methods)
 	ClassDB::bind_method(D_METHOD("_on_load_more_pressed"), &AIChatDock::_on_load_more_pressed);
@@ -2125,13 +2127,21 @@ void AIChatDock::_setup_authentication_ui() {
 	snapshot_button->set_tooltip_text("Save a named snapshot of your entire project");
 	toolbar_container->add_child(snapshot_button);
 	
-	// Restore Snapshot button
+	// Restore Snapshot button (manual snapshots)
 	restore_snapshot_button = memnew(Button);
 	restore_snapshot_button->set_text("Snapshots");
 	restore_snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
 	restore_snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_snapshots_pressed));
 	restore_snapshot_button->set_tooltip_text("View and restore manual snapshots");
 	toolbar_container->add_child(restore_snapshot_button);
+
+	// AI Auto Snapshots button (read‑only view of per‑message checkpoints)
+	auto_snapshots_button = memnew(Button);
+	auto_snapshots_button->set_text("AI Snapshots");
+	auto_snapshots_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
+	auto_snapshots_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_auto_snapshots_pressed));
+	auto_snapshots_button->set_tooltip_text("View automatic snapshots created before each AI response");
+	toolbar_container->add_child(auto_snapshots_button);
 	
 	// Create HTTP request for authentication
 	auth_request = memnew(HTTPRequest);
@@ -13426,6 +13436,10 @@ AIChatDock::AIChatDock() {
 	// Initialize manual snapshots
 	manual_snapshots.instantiate();
 	manual_snapshots->initialize(this);
+
+	// Initialize AI auto snapshots viewer
+	auto_snapshots.instantiate();
+	auto_snapshots->initialize(this);
 	print_line("AI Chat: Manual snapshots system initialized");
 }
 
@@ -17805,11 +17819,21 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     // Delegate to AICheckpointManager for comprehensive restoration
     String project_root = _get_project_root_path();
     
+	EditorNode *editor_node = EditorNode::get_singleton();
+	bool external_changes_suppressed = false;
+	if (editor_node) {
+		editor_node->set_external_changes_suppressed(true);
+		external_changes_suppressed = true;
+	}
+
     AICheckpointManager::RestoreResult restore_result = 
         AICheckpointManager::restore_to_checkpoint(project_root, p_message_index);
     
     if (!restore_result.success) {
         print_line("AI Chat: ❌ Restore failed: " + restore_result.message);
+		if (external_changes_suppressed && editor_node) {
+			editor_node->set_external_changes_suppressed(false);
+		}
         return false;
     }
     
@@ -17869,6 +17893,10 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     }
     
     print_line("AI Chat: ✅ Checkpoint restoration complete - editor refresh in progress");
+
+	if (external_changes_suppressed && editor_node) {
+		editor_node->set_external_changes_suppressed(false);
+	}
     
     return true;
 }
@@ -19169,6 +19197,14 @@ AIChatDock::~AIChatDock() {
 	// Clean up mutex
 	if (save_mutex) {
 		memdelete(save_mutex);
+	}
+}
+
+void AIChatDock::_on_view_auto_snapshots_pressed() {
+	if (auto_snapshots.is_valid()) {
+		auto_snapshots->show_auto_snapshots_dialog();
+	} else {
+		print_line("AI Chat: ERROR - auto_snapshots not initialized");
 	}
 }
 

@@ -47,6 +47,7 @@
 #include "scene/main/window.h"
 #include "editor/editor_node.h"
 #include "editor/editor_interface.h"
+#include "editor/file_system/editor_paths.h"
 #include "editor/docks/filesystem_dock.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/script/script_editor_plugin.h"
@@ -238,15 +239,29 @@ void AICheckpointManager::refresh_editor_completely(const String &p_restored_sce
 // ============================================================================
 
 String AICheckpointManager::_get_checkpoint_directory(const String &p_project_root) {
-	String checkpoint_dir = p_project_root.path_join(".ai-checkpoints");
+	// Prefer storing checkpoints OUTSIDE the project tree so Godot's FileSystem
+	// and importers never try to treat them as regular project resources.
+	String checkpoint_dir;
+
+	if (EditorPaths::get_singleton() && EditorPaths::get_singleton()->are_paths_valid()) {
+		// Project settings dir is a RESOURCES path (e.g. "res://.godot/editor").
+		// Globalize it to an OS filesystem path before using it with Git/DirAccess.
+		String settings_dir_res = EditorPaths::get_singleton()->get_project_settings_dir();
+		String settings_dir_fs = ProjectSettings::get_singleton()->globalize_path(settings_dir_res);
+		checkpoint_dir = settings_dir_fs.path_join("ai_checkpoints");
+	} else {
+		// Fallback: old behavior (inside the project root on disk).
+		checkpoint_dir = p_project_root.path_join(".ai-checkpoints");
+	}
 	
 	// Create checkpoint directory if it doesn't exist
 	if (!DirAccess::exists(checkpoint_dir)) {
 		print_line("AI Checkpoint: Creating isolated checkpoint directory: " + checkpoint_dir);
-		Ref<DirAccess> da = DirAccess::create_for_path(p_project_root);
+		
+		Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
 		if (da.is_valid()) {
-			Error err = da->make_dir(".ai-checkpoints");
-			if (err != OK) {
+			Error err = da->make_dir_recursive(checkpoint_dir);
+			if (err != OK && err != ERR_ALREADY_EXISTS) {
 				print_line("AI Checkpoint: ❌ Failed to create checkpoint directory: " + String::num_int64(err));
 				return String(); // Return empty string on failure
 			}
@@ -302,6 +317,12 @@ bool AICheckpointManager::_remove_directory_contents_recursive(const String &p_d
 			}
 			
 			if (!should_preserve) {
+				if (!p_preserve_git_only && file_name == "project.godot") {
+					should_preserve = true;
+				}
+			}
+
+			if (!should_preserve) {
 				String full_path = p_directory.path_join(file_name);
 				
 				if (da->current_is_dir()) {
@@ -334,12 +355,6 @@ bool AICheckpointManager::_copy_directory_recursive(const String &p_source, cons
 		return false;
 	}
 	
-	Ref<DirAccess> dest_da = DirAccess::create_for_path(p_destination);
-	if (!dest_da.is_valid()) {
-		print_line("AI Checkpoint: ❌ Cannot access destination directory: " + p_destination);
-		return false;
-	}
-	
 	source_da->list_dir_begin();
 	String file_name = source_da->get_next();
 	int files_copied = 0;
@@ -351,24 +366,43 @@ bool AICheckpointManager::_copy_directory_recursive(const String &p_source, cons
 			
 			if (p_is_to_checkpoint) {
 				// When copying TO checkpoint, skip .godot, .ai-checkpoints, .git
-				should_skip = (file_name == ".godot" || file_name == ".ai-checkpoints" || file_name == ".git");
+				// Also skip project.godot to avoid fighting the running editor's project state.
+				should_skip = (file_name == ".godot" || file_name == ".ai-checkpoints" || file_name == ".git" || file_name == "project.godot");
 			} else {
-				// When copying FROM checkpoint, skip .git (don't copy checkpoint git to project)
-				should_skip = (file_name == ".git");
+				// When copying FROM checkpoint back into the project, skip .git and project.godot.
+				// We intentionally do NOT restore project.godot to avoid reload prompts and editor state drift.
+				should_skip = (file_name == ".git" || file_name == "project.godot");
 			}
 			
 			if (!should_skip) {
 				String source_path = p_source.path_join(file_name);
 				String dest_path = p_destination.path_join(file_name);
+				bool is_dir = source_da->current_is_dir();
 				
-				if (source_da->current_is_dir()) {
-					// Create directory and recurse
-					dest_da->make_dir(file_name);
+				if (is_dir) {
+					Ref<DirAccess> fs_dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+					if (fs_dir.is_valid()) {
+						Error make_dir_err = fs_dir->make_dir_recursive(dest_path);
+						if (make_dir_err != OK && make_dir_err != ERR_ALREADY_EXISTS) {
+							print_line("AI Checkpoint: ❌ Failed to create directory: " + dest_path + " (err " + String::num_int64(make_dir_err) + ")");
+						}
+					}
 					_copy_directory_recursive(source_path, dest_path, p_is_to_checkpoint);
 				} else {
-					// Copy file
-					source_da->copy(source_path, dest_path);
-					files_copied++;
+					Ref<DirAccess> fs_dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+					if (fs_dir.is_valid()) {
+						Error ensure_dir_err = fs_dir->make_dir_recursive(dest_path.get_base_dir());
+						if (ensure_dir_err != OK && ensure_dir_err != ERR_ALREADY_EXISTS) {
+							print_line("AI Checkpoint: ❌ Failed to create parent directory: " + dest_path.get_base_dir() + " (err " + String::num_int64(ensure_dir_err) + ")");
+						}
+					}
+					
+					Error copy_err = DirAccess::copy_absolute(source_path, dest_path);
+					if (copy_err != OK) {
+						print_line("AI Checkpoint: ❌ Failed to copy file: " + source_path + " -> " + dest_path + " (err " + String::num_int64(copy_err) + ")");
+					} else {
+						files_copied++;
+					}
 				}
 			}
 		}
@@ -417,14 +451,24 @@ void AICheckpointManager::_ensure_project_gitignore_excludes_checkpoints(const S
 }
 
 bool AICheckpointManager::_git_exec(const String &p_project_root, const List<String> &p_args, String &r_output, int &r_exitcode) {
-    List<String> args;
-    args.push_back("-C");
-    args.push_back(p_project_root);
-    for (const List<String>::Element *E = p_args.front(); E; E = E->next()) {
-        args.push_back(E->get());
-    }
-    Error err = OS::get_singleton()->execute("git", args, &r_output, &r_exitcode, false, nullptr, false);
-    return err == OK && r_exitcode == 0;
+	List<String> args;
+	args.push_back("-C");
+	args.push_back(p_project_root);
+	for (const List<String>::Element *E = p_args.front(); E; E = E->next()) {
+		args.push_back(E->get());
+	}
+
+	// read_stderr=true so we capture Git's error messages into r_output as well.
+	Error err = OS::get_singleton()->execute("git", args, &r_output, &r_exitcode, true, nullptr, false);
+
+	if (err != OK) {
+		print_line("AI Checkpoint: ❌ Git exec OS error: " + String::num_int64(err) + " (cwd: " + p_project_root + ")");
+	}
+	if (r_exitcode != 0) {
+		print_line("AI Checkpoint: ❌ Git exec exit code: " + String::num_int64(r_exitcode) + " (cwd: " + p_project_root + ")");
+	}
+
+	return err == OK && r_exitcode == 0;
 }
 
 bool AICheckpointManager::_init_checkpoint_git_repo(const String &p_checkpoint_dir) {
