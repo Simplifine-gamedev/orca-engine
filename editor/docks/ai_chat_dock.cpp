@@ -1178,6 +1178,14 @@ void AIChatDock::_notification(int p_notification) {
             // Initialize robust conversation persistence
             conversation_persistence = memnew(AIConversationPersistence);
             conversation_persistence->initialize(conversations_file_path);
+			if (FileAccess::exists(conversations_file_path) && !conversation_persistence->validate_conversations_file()) {
+				print_line("AI Chat: Conversation file corrupted - attempting recovery from backups");
+				if (!conversation_persistence->recover_from_corruption()) {
+					print_line("AI Chat: Recovery failed - conversation data may be incomplete");
+				} else {
+					print_line("AI Chat: Conversation file successfully recovered from backup");
+				}
+			}
             
             // Initialize safe save coordinator to prevent data loss
             save_coordinator = memnew(AIChatSaveCoordinator);
@@ -2674,6 +2682,10 @@ void AIChatDock::_queue_delayed_save() {
 		save_timer->stop();
 		save_timer->start(3.0); // wait 3 seconds of idle time before saving
 	}
+
+	// Also schedule an immediate save attempt on the next idle frame.
+	// This minimizes the data-loss window if the editor crashes before the timer fires.
+	call_deferred("_execute_delayed_save");
 }
 
 void AIChatDock::_execute_delayed_save() {
@@ -2799,55 +2811,49 @@ void AIChatDock::_background_save(void *p_data_ptr) {
 	json.instantiate();
 	String json_string = json->stringify(data, "  ");
 	
-    // File I/O (heavy operation) with safe write via temp + rename
-    Error err;
-    String final_path = save_data->file_path;
-    String base_dir = final_path.get_base_dir();
-    String final_name = final_path.get_file();
-    String temp_name = final_name + ".tmp";
-    String temp_path = base_dir.path_join(temp_name);
-
-    // Ensure destination directory exists
-    {
-        Ref<DirAccess> da_mk = DirAccess::create_for_path(base_dir);
-        if (da_mk.is_valid() && !da_mk->dir_exists(base_dir)) {
-            da_mk->make_dir_recursive(base_dir);
-        }
-    }
-    // Write to temp
-    {
-        Ref<FileAccess> tmp = FileAccess::open(temp_path, FileAccess::WRITE, &err);
-        if (err == OK) {
-            tmp->store_string(json_string);
-            tmp->close();
-        }
-    }
-    if (err == OK) {
-        // Rename temp to final (best-effort atomic within same dir)
-        Ref<DirAccess> da = DirAccess::open(base_dir);
-        if (da.is_valid()) {
-            // Remove existing file if present (rename should overwrite but be safe cross-platform)
-            if (da->file_exists(final_name)) {
-                da->remove(final_name);
-            }
-            da->rename(temp_name, final_name);
-        } else {
-            // SAFE fallback: Use safe coordinator instead of dangerous direct write
-            print_line("AI Chat: Chunked save directory operations failed, using safe coordinator for fallback");
-            AIChatDock *instance = save_data->instance;
-            if (instance && instance->save_coordinator && instance->save_coordinator->is_ready()) {
-                AIChatSaveCoordinator::SaveStatus status = instance->save_coordinator->save_conversations_chunked_safe(json_string);
-                if (status != AIChatSaveCoordinator::SAVE_SUCCESS_SYNC) {
-                    print_line("AI Chat: Safe coordinator chunked fallback failed: " + instance->save_coordinator->get_status_message());
-                }
-            } else {
-                print_line("AI Chat: CRITICAL ERROR - No safe coordinator available for chunked fallback, save aborted to prevent data loss");
-            }
-        }
-    }
-	
-	// Signal back to main thread
 	AIChatDock *instance = save_data->instance;
+	bool save_success = false;
+
+	if (instance && instance->save_coordinator && instance->save_coordinator->is_ready()) {
+		AIChatSaveCoordinator::SaveStatus status = instance->save_coordinator->save_conversations_safe_sync(json_string);
+		save_success = (status == AIChatSaveCoordinator::SAVE_SUCCESS_SYNC || status == AIChatSaveCoordinator::SAVE_SUCCESS_ASYNC);
+	} else if (instance && instance->conversation_persistence) {
+		AIConversationPersistence::SaveResult result = instance->conversation_persistence->save_conversations_with_validation(json_string);
+		save_success = (result == AIConversationPersistence::SAVE_SUCCESS);
+	} else {
+		// Fallback: use legacy temp-file save to avoid losing data entirely
+		String final_path = save_data->file_path;
+		String base_dir = final_path.get_base_dir();
+		String final_name = final_path.get_file();
+		String temp_name = final_name + ".tmp";
+		String temp_path = base_dir.path_join(temp_name);
+
+		Ref<DirAccess> da_mk = DirAccess::create_for_path(base_dir);
+		if (da_mk.is_valid() && !da_mk->dir_exists(base_dir)) {
+			da_mk->make_dir_recursive(base_dir);
+		}
+
+		Error err;
+		Ref<FileAccess> tmp = FileAccess::open(temp_path, FileAccess::WRITE, &err);
+		if (err == OK) {
+			tmp->store_string(json_string);
+			tmp->close();
+
+			Ref<DirAccess> da = DirAccess::open(base_dir);
+			if (da.is_valid()) {
+				if (da->file_exists(final_name)) {
+					da->remove(final_name);
+				}
+				if (da->rename(temp_name, final_name) == OK) {
+					save_success = true;
+				}
+			}
+		}
+	}
+	
+	if (!save_success) {
+		print_line("AI Chat: WARNING - Conversation save fallback failed; data may be stale.");
+	}
 	
 	// Clean up
 	memdelete(save_data->snapshot);

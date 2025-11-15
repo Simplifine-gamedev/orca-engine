@@ -25,7 +25,7 @@ public:
 private:
     OptionButton *mode_dropdown = nullptr;
     AIChatDock *chat_dock = nullptr;
-    void _apply_mode_colors();
+    void _apply_mode_colors(int p_index = -1);
     void _apply_mode_style();
 
 protected:

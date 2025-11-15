@@ -73,7 +73,7 @@ elif LOGGING_SERVER_URL and detailed_logging_enabled in ['true', 'auto']:
     try:
         from litellm_callback import GodotLiteLLMLogger
         litellm_logger = GodotLiteLLMLogger(LOGGING_SERVER_URL)
-        litellm.drop_params = True  # CRITICAL: Fix GPT-5 temperature errors
+        litellm.drop_params = True  # CRITICAL: Fix GPT-5.x temperature errors
         litellm.callbacks = [litellm_logger]
         mode = "DEV" if _dev_mode else "PROD"
         logging_mode = "FORCED" if detailed_logging_enabled == 'true' else "AUTO"
@@ -83,7 +83,7 @@ elif LOGGING_SERVER_URL and detailed_logging_enabled in ['true', 'auto']:
         litellm_logger = None
 else:
     print("ℹ️  LiteLLM logging disabled: no server URL available or DETAILED_LOGGING=false")
-    litellm.drop_params = True  # CRITICAL: Fix GPT-5 temperature errors even without logging
+    litellm.drop_params = True  # CRITICAL: Fix GPT-5.x temperature errors even without logging
     litellm_logger = None
 
 # Print final logging status
@@ -255,6 +255,7 @@ def _get_model_token_limit(model: str) -> int:
         "vertex_ai/claude-3-opus@20240229": 180000,
         
         # OpenAI models - 120k with 8k safety margin
+        "openai/gpt-5.1": 120000,
         "openai/gpt-5": 120000,
         "openai/gpt-4o": 120000,
         "openai/gpt-4o-mini": 120000,
@@ -583,7 +584,7 @@ Conversation ({len(messages)} messages):
             model=summary_model,
             messages=[{"role": "user", "content": summary_prompt}],
             max_tokens=5000,  # INCREASED: Much larger budget for comprehensive context preservation
-            temperature=0.1,  # Minimum precision (GPT-5 doesn't support 0.0)
+            temperature=0.1,  # Minimum precision (GPT-5.x doesn't support 0.0)
             timeout=120,  # INCREASED: 2 minutes for comprehensive summaries in GCP
             request_timeout=120  # CRITICAL: Explicit request timeout for GCP Cloud Run
         )
@@ -1052,6 +1053,7 @@ def _get_claude_model():
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
     "claude-4": _get_claude_model(),  # Dynamic Claude selection (Vertex AI by default)
+    "gpt-5.1": os.getenv("GPT51_MODEL", "openai/gpt-5.1"),
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
 }
@@ -1151,7 +1153,30 @@ else:
     print("WARNING: ANTHROPIC_API_KEY not found in environment - Anthropic models will fail")
 
 # Default model and allowed models
-DEFAULT_MODEL = "gpt-5"
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-5.1")
+if DEFAULT_MODEL not in MODEL_MAP:
+    if "gpt-5" in MODEL_MAP:
+        fallback_default = "gpt-5"
+    else:
+        fallback_default = next(iter(MODEL_MAP), None)
+    if fallback_default is None:
+        raise RuntimeError("MODEL_MAP is empty; no models available for DEFAULT_MODEL")
+    print(f"WARNING: DEFAULT_MODEL '{DEFAULT_MODEL}' not found in MODEL_MAP; falling back to '{fallback_default}'")
+    DEFAULT_MODEL = fallback_default
+
+
+def _get_openai_preferred_model() -> tuple[str, str]:
+    """Return (friendly_name, provider_id) for the preferred OpenAI-tier model."""
+    for candidate in ("gpt-5.1", "gpt-5", DEFAULT_MODEL):
+        model_id = MODEL_MAP.get(candidate)
+        if model_id:
+            return candidate, model_id
+    fallback_name, fallback_id = next(iter(MODEL_MAP.items()), (None, None))
+    if fallback_name is None or fallback_id is None:
+        raise RuntimeError("MODEL_MAP is empty; no models configured")
+    return fallback_name, fallback_id
+
+
 ALLOWED_CHAT_MODELS = set(MODEL_MAP.keys())
 
 # Keep OpenAI client for image operations (LiteLLM doesn't support images yet)
@@ -4251,7 +4276,7 @@ def chat():
                     print(f"⚠️ LARGE_CONVERSATION: {len(openai_messages_send)} messages, {total_chars} chars")
                     print("ℹ️ Backend conversation management will handle via intelligent summarization")
                 
-                # Resilient model call with 5 retries (1 second each) then fallback to GPT-5
+                # Resilient model call with 5 retries (1 second each) then fallback to a preferred OpenAI model
                 attempts = 0
                 max_attempts = 5  # 5 retry attempts as requested
                 providers_tried = set()
@@ -4678,26 +4703,27 @@ def chat():
                             time.sleep(1.0)  # Fixed 1 second delay as requested
                             continue
 
-                        # After 5 retries, fallback to GPT-5 if not already tried
+                        # After 5 retries, fallback to preferred OpenAI model if not already tried
                         providers_tried.add(model_try)
                         
+                        fallback_friendly, fallback_model_id = _get_openai_preferred_model()
+
                         # Notify about model switching if it's due to rate limits
-                        if is_rate_limit and model_try != 'openai/gpt-5':
+                        if is_rate_limit and model_try != fallback_model_id:
                             yield json.dumps({
                                 "status": "provider_switched",
                                 "from_provider": model_friendly_name,
-                                "to_provider": "OpenAI GPT-5",
+                                "to_provider": fallback_friendly,
                                 "reason": "Rate limit exceeded",
-                                "message": f"Switching from {model_friendly_name} to OpenAI GPT-5 due to rate limits"
+                                "message": f"Switching from {model_friendly_name} to {fallback_friendly} due to rate limits"
                             }) + '\n'
                         
-                        # Always try GPT-5 after retries exhausted
-                        fallback_model_id = MODEL_MAP.get("gpt-5 (fast)") or MODEL_MAP.get("gpt-5") or "openai/gpt-5"
+                        # Always try preferred OpenAI model after retries exhausted
                         if fallback_model_id not in providers_tried:
                             yield json.dumps({
                                 "status": "switching_model",
                                 "from": model_friendly_name,
-                                "to": "gpt-5",
+                                "to": fallback_friendly,
                                 "reason": f"Provider overloaded after {max_attempts} retries"
                             }) + '\n'
                             print(f"SWITCHING: From {model_try} to {fallback_model_id} after {max_attempts} failed attempts")
@@ -6252,6 +6278,7 @@ def generate_script():
         attempts = 0
         max_attempts = 5
         model_for_script = data.get('model', DEFAULT_MODEL)
+        openai_fallback_friendly, _ = _get_openai_preferred_model()
 
         while True:
             try:
@@ -6293,10 +6320,10 @@ def generate_script():
                     time.sleep(1.0)
                     continue
 
-                # After 5 retries, try GPT-5
-                if attempts >= max_attempts and model_for_script != 'gpt-5':
-                    print(f"GENERATE_SCRIPT: Switching to GPT-5 after {max_attempts} failed attempts")
-                    model_for_script = 'gpt-5'
+                # After 5 retries, try preferred OpenAI fallback
+                if attempts >= max_attempts and model_for_script != openai_fallback_friendly:
+                    print(f"GENERATE_SCRIPT: Switching to {openai_fallback_friendly} after {max_attempts} failed attempts")
+                    model_for_script = openai_fallback_friendly
                     attempts = 0
                     continue
 
@@ -6737,6 +6764,7 @@ def predict_code_edit():
         # OPTIMIZATION: Add temperature and timeout settings
         # Use claude-4 by default for apply_edit as it's often faster
         model_for_edit = data.get('model', 'claude-4')
+        openai_fallback_friendly, _ = _get_openai_preferred_model()
         
         # Add retry logic for apply_edit as well
         attempts = 0
@@ -6775,7 +6803,7 @@ def predict_code_edit():
                 # Apply reasoning params first, then set temperature if not in thinking mode
                 completion_params.update(reasoning_params)
                 if not reasoning_params:  # Only set lower temp if NOT in thinking mode
-                    completion_params["temperature"] = 0.2  # Lower temperature for precise indentation (GPT-5 min is 0.1)
+                    completion_params["temperature"] = 0.2  # Lower temperature for precise indentation (GPT-5.x min is 0.1)
                 
                 try:
                     response = completion(**completion_params)
@@ -6802,10 +6830,10 @@ def predict_code_edit():
                     time.sleep(1.0)  # 1 second delay
                     continue
                 
-                # After 5 retries, try GPT-5
-                if attempts >= max_attempts and model_for_edit != 'gpt-5':
-                    print(f"APPLY_EDIT: Switching to GPT-5 after {max_attempts} failed attempts")
-                    model_for_edit = 'gpt-5'
+                # After 5 retries, try preferred OpenAI fallback
+                if attempts >= max_attempts and model_for_edit != openai_fallback_friendly:
+                    print(f"APPLY_EDIT: Switching to {openai_fallback_friendly} after {max_attempts} failed attempts")
+                    model_for_edit = openai_fallback_friendly
                     attempts = 0  # Reset for new provider
                     continue
                 

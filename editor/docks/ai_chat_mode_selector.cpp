@@ -15,11 +15,14 @@ void AIChatModeSelector::_bind_methods() {
     ADD_SIGNAL(MethodInfo("mode_changed", PropertyInfo(Variant::STRING, "mode")));
 }
 
-void AIChatModeSelector::_apply_mode_colors() {
+void AIChatModeSelector::_apply_mode_colors(int p_index) {
     if (!mode_dropdown || !chat_dock) {
         return;
     }
-    const int idx = mode_dropdown->get_selected();
+    int idx = p_index;
+    if (idx < 0) {
+        idx = mode_dropdown->get_selected();
+    }
     // Colors: Ask = greenish; Agent = light orange
     const Color base_font = chat_dock->get_theme_color(SNAME("font_color"), SNAME("Editor"));
     Color ask_color = Color(0.45, 0.9, 0.45);      // soft green
@@ -74,8 +77,9 @@ void AIChatModeSelector::_on_mode_selected(int p_index) {
     if (!chat_dock) {
         return;
     }
-    _apply_mode_colors();
-    emit_signal("mode_changed", get_mode_string());
+    _apply_mode_colors(p_index);
+    const String mode = (p_index == MODE_AGENT) ? "agent" : "ask";
+    emit_signal("mode_changed", mode);
 }
 
 String AIChatModeSelector::get_mode_string() const {
@@ -100,15 +104,12 @@ void AIChatModeSelector::set_mode_by_string(const String &p_mode) {
     if (!mode_dropdown) {
         return;
     }
-    if (p_mode == "agent") {
-        mode_dropdown->select(MODE_AGENT);
-    } else {
-        mode_dropdown->select(MODE_ASK);
-    }
+    const bool is_agent = (p_mode == "agent");
+    mode_dropdown->select(is_agent ? MODE_AGENT : MODE_ASK);
     
     // Apply visual styling and emit signal to notify AIChatDock of the mode change
-    _apply_mode_colors();
-    emit_signal("mode_changed", get_mode_string());
+    _apply_mode_colors(is_agent ? MODE_AGENT : MODE_ASK);
+    emit_signal("mode_changed", is_agent ? "agent" : "ask");
 }
 
 
