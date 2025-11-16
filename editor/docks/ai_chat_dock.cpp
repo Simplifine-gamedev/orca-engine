@@ -11155,7 +11155,6 @@ void AIChatDock::_send_chat_request_chunked(int p_start_index) {
 		
 		if (current_ui_count > summarized_ui_count) {
 			// CRITICAL FIX: Add messages but DEDUPLICATE tool results to prevent API errors
-			int new_messages_count = current_ui_count - summarized_ui_count;
 			
 			// Build set of existing tool_call_ids in summarized messages to prevent duplicates
 			HashSet<String> existing_tool_ids;
@@ -16699,7 +16698,6 @@ void AIChatDock::_on_rate_limit_exceeded(const Dictionary &error_data) {
 	}
 	
 	rate_limit_popup->set_text(message);
-	rate_limit_popup->clear_buttons();
 	rate_limit_popup->add_button("Upgrade Plan", false, "upgrade");
 	rate_limit_popup->add_cancel_button("OK");
 	

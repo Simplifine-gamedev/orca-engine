@@ -11,7 +11,7 @@
 #include "core/os/os.h"
 #include "scene/gui/separator.h"
 #include "scene/gui/margin_container.h"
-#include "editor/editor_settings.h"
+#include "editor/settings/editor_settings.h"
 
 void PricingDialog::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_upgrade_pressed"), &PricingDialog::_on_upgrade_pressed);
@@ -39,7 +39,7 @@ void PricingDialog::_setup_ui() {
 	header_label = memnew(RichTextLabel);
 	header_label->set_custom_minimum_size(Size2(0, 80));
 	header_label->set_fit_content(true);
-	header_label->set_bbcode_enabled(true);
+	header_label->set_use_bbcode(true);
 	header_label->set_text("[center][font_size=18][b]Upgrade Your Orca Engine Plan[/b][/font_size][/center]\n[center]Choose the plan that fits your needs[/center]");
 	main_container->add_child(header_label);
 	
@@ -179,7 +179,7 @@ void PricingDialog::_on_pricing_response(int result, int response_code, const Pa
 		return;
 	}
 	
-	String response_text = body.get_string_from_utf8();
+	String response_text = String::utf8((const char *)body.ptr(), body.size());
 	JSON json;
 	Error parse_result = json.parse(response_text);
 	
@@ -188,7 +188,7 @@ void PricingDialog::_on_pricing_response(int result, int response_code, const Pa
 		return;
 	}
 	
-	Dictionary response_data = json.data;
+	Dictionary response_data = json.get_data();
 	if (!response_data.has("success") || !response_data.get("success", false)) {
 		print_line("Pricing API returned error");
 		return;
@@ -227,7 +227,7 @@ void PricingDialog::_on_pricing_response(int result, int response_code, const Pa
 }
 
 void PricingDialog::_on_checkout_response(int result, int response_code, const PackedStringArray &headers, const PackedByteArray &body) {
-	String response_text = body.get_string_from_utf8();
+	String response_text = String::utf8((const char *)body.ptr(), body.size());
 	
 	if (response_code != 200) {
 		print_line("Checkout request failed: " + String::num(response_code) + " - " + response_text);
@@ -242,9 +242,10 @@ void PricingDialog::_on_checkout_response(int result, int response_code, const P
 		return;
 	}
 	
-	Dictionary response_data = json.data;
+	Dictionary response_data = json.get_data();
 	if (!response_data.has("success") || !response_data.get("success", false)) {
-		print_line("Checkout API returned error: " + response_data.get("error", "Unknown error").as<String>());
+		String error_msg = response_data.get("error", "Unknown error");
+		print_line("Checkout API returned error: " + error_msg);
 		return;
 	}
 	
