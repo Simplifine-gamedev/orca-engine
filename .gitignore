@@ -450,3 +450,7 @@ bin/
 # Exclude test/example projects
 backend/orca-web/
 backend/dodge_the_creeps/
+
+# Exclude sensitive backend update files
+backend/backend_update.tar.gz
+backend/*.tar.gz
