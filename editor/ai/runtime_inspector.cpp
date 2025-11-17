@@ -579,7 +579,6 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 				if (child_window && child_window != root_window) {
 					// This could be the game window - try to get its main viewport
 					viewport = child_window;
-					print_line("AI Chat: Found potential game window: " + child_window->get_name());
 					break;
 				}
 			}
@@ -589,7 +588,6 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 	// Fallback to root viewport if no game viewport found
 	if (!viewport) {
 		viewport = scene_tree->get_root();
-		print_line("AI Chat: Using root viewport as fallback");
 	}
 	
 	if (!viewport) {
@@ -607,7 +605,6 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 	}
 	
 	// NON-BLOCKING: Get image from viewport with yield to prevent freeze
-	print_line("AI Chat: Capturing viewport image...");
 	
 	// Brief yield before expensive image capture
 	OS::get_singleton()->delay_usec(1000);
@@ -631,13 +628,11 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 	
 	if (p_return_base64) {
 		// NON-BLOCKING: Convert to PNG and encode as base64 with yields
-		print_line("AI Chat: Converting to PNG buffer...");
 		Vector<uint8_t> png_buffer = img->save_png_to_buffer();
 		
 		// Yield during base64 encoding (expensive operation)
 		OS::get_singleton()->delay_usec(2000); // 2ms yield
 		
-		print_line("AI Chat: Encoding to base64...");
 		String base64 = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_buffer);
 		
 		// Generate unique ID for screenshot
@@ -654,7 +649,6 @@ Dictionary RuntimeInspector::capture_viewport_screenshot(const String &p_target,
 		result["target"] = p_target;
 		result["model"] = "Viewport Capture";  // For lazy loader display
 		
-		print_line("AI Chat: Screenshot ready - " + String::num_int64(img->get_width()) + "x" + String::num_int64(img->get_height()) + " pixels");
 	}
 	
 	// DISABLED: Don't automatically save screenshots to disk - they're for AI analysis only

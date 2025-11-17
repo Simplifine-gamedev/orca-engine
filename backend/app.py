@@ -10,6 +10,7 @@ from litellm import completion, token_counter, get_max_tokens
 import litellm
 import json
 import os
+from typing import Optional
 from dotenv import load_dotenv
 import base64
 from PIL import Image
@@ -22,6 +23,8 @@ import tempfile
 import hashlib
 import logging
 import copy
+import jwt
+from jwt import PyJWKClient, InvalidTokenError, PyJWKClientError
 from Godot_tools import godot_tools
 try:
     from weaviate_vector_manager import WeaviateVectorManager
@@ -35,6 +38,7 @@ from auth_manager import AuthManager
 from auto_update_manager import auto_update_manager
 from tool_logger import log_tool_call, log_tool_result
 from version_checker import version_checker
+from todo_store import TodoStore
 
 # app = Flask(__name__)
 # CORS(app)
@@ -1012,6 +1016,12 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')  # Use service key for backend writes
 CRASH_REPORTS_TABLE = os.getenv('CRASH_REPORTS_TABLE', 'crash_reports')
 SUPABASE_CRASH_REPORTING_ENABLED = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+ENFORCE_SUPABASE_IDENTITY = os.getenv(
+    'ENFORCE_SUPABASE_IDENTITY',
+    'true' if DEPLOYMENT_MODE == 'cloud' else 'false'
+).lower() == 'true'
+SUPABASE_JWKS_URL = f"{SUPABASE_URL}/auth/v1/jwks" if SUPABASE_URL else None
+SUPABASE_JWK_CLIENT = PyJWKClient(SUPABASE_JWKS_URL) if SUPABASE_JWKS_URL else None
 
 if SUPABASE_CRASH_REPORTING_ENABLED:
     print(f"SUPABASE_CRASH_REPORTING: Enabled - storing to '{CRASH_REPORTS_TABLE}' table at {SUPABASE_URL}")
@@ -1322,12 +1332,12 @@ def verify_authentication():
         if user_id or machine_id_dev:
             effective_user = user_id or f"dev_{machine_id_dev}"
             print(f"🧪 DEV MODE: Bypassing auth for user {effective_user}")
-            return {
+            return _enforce_supabase_identity({
                 "id": effective_user,
                 "name": "Dev User",
                 "email": "dev@example.com",
                 "provider": "dev_mode"
-            }, None, None
+            })
     
     auth_header = request.headers.get('Authorization', '')
     machine_id = request.headers.get('X-Machine-ID') or (request.json.get('machine_id') if request.json else None)
@@ -1339,9 +1349,30 @@ def verify_authentication():
         token = auth_header[7:]
         user = auth_manager.verify_session(machine_id, token)
         if user:
-            return user, None, None
+            return _enforce_supabase_identity(user)
     
-    # Guest fallback if allowed
+    # If Supabase is configured, require Supabase authentication (no guest fallback)
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        supabase_user_id = request.headers.get('X-Supabase-User-ID')
+        if not supabase_user_id:
+            return None, {"error": "You need to login to the app", "success": False}, 401
+        # Validate the Supabase user ID
+        supabase_email = request.headers.get('X-Supabase-Email')
+        ok, profile, error_message = verify_supabase_user_id(supabase_user_id.split(',')[0].strip() if supabase_user_id else None, supabase_email)
+        if not ok:
+            print(f"SUPABASE_AUTH_REQUIRED: Validation failed - {error_message}")
+            return None, {"error": "You need to login to the app", "success": False}, 401
+        # Create a user dict from Supabase profile
+        supabase_user = {
+            "id": profile.get('id', supabase_user_id.split(',')[0].strip()),
+            "name": profile.get('email', supabase_email) or "Supabase User",
+            "email": profile.get('email', supabase_email) or "",
+            "provider": "supabase"
+        }
+        print(f"SUPABASE_AUTH_SUCCESS: Authenticated as {supabase_user['email']}")
+        return supabase_user, None, None
+    
+    # Guest fallback if Supabase not configured and guests are allowed
     # Default: OSS mode allows guests; cloud mode disables by default unless explicitly enabled
     default_allow = (DEPLOYMENT_MODE != 'cloud')
     allow_guests = os.getenv('ALLOW_GUESTS', 'true' if default_allow else 'false').lower() == 'true'
@@ -1355,6 +1386,95 @@ def verify_authentication():
             return None, {"error": f"Guest session failed: {guest_result.get('error','unknown')}", "success": False}, 401
     
     return None, {"error": "Authentication required", "success": False}, 401
+
+
+def verify_supabase_user_id(user_id: str | None, email: str | None = None) -> tuple[bool, dict | None, str | None]:
+    """Confirm that a Supabase auth user exists using the Admin API."""
+    if not user_id:
+        return False, None, "Supabase user_id required"
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return False, None, "Supabase admin credentials are not configured"
+
+    admin_url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
+    headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+    }
+
+    print(f"SUPABASE_CHECK: Checking user_id='{user_id}' at {admin_url}")
+    try:
+        response = requests.get(admin_url, headers=headers, timeout=5)
+        print(f"SUPABASE_CHECK: Response status={response.status_code}, body={response.text[:200]}")
+    except requests.RequestException as exc:
+        print(f"SUPABASE_CHECK_ERROR: {exc}")
+        return False, None, f"Supabase verification error: {exc}"
+
+    if response.status_code == 200:
+        profile = response.json()
+        profile_email = profile.get('email')
+        if email and profile_email and profile_email.lower() != email.lower():
+            return False, None, "Supabase email mismatch"
+        return True, profile, None
+
+    if response.status_code == 404:
+        return False, None, f"Supabase user not found (user_id: {user_id})"
+
+    snippet = response.text[:200] if response.text else ""
+    return False, None, f"Supabase verification failed (HTTP {response.status_code}) {snippet}"
+
+
+def verify_supabase_jwt(token: str) -> tuple[bool, dict | None, str | None]:
+    """Validate a Supabase access token using the project's JWKS."""
+    if not SUPABASE_JWK_CLIENT:
+        return False, None, "Supabase JWKS URL not configured"
+    try:
+        signing_key = SUPABASE_JWK_CLIENT.get_signing_key_from_jwt(token)
+    except (PyJWKClientError, InvalidTokenError) as exc:
+        return False, None, f"Supabase JWKS error: {exc}"
+    try:
+        decoded = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+        )
+        return True, decoded, None
+    except InvalidTokenError as exc:
+        return False, None, f"Supabase token decode error: {exc}"
+
+
+def _enforce_supabase_identity(user: dict):
+    """
+    Simple validation: if X-Supabase-User-ID header is present, verify the user exists in Supabase.
+    Returns (user, None, None) on success or (None, error_body, status_code) on failure.
+    """
+    supabase_user_id_raw = request.headers.get('X-Supabase-User-ID')
+    if not supabase_user_id_raw:
+        return user, None, None
+    
+    # Handle duplicate user IDs (take first one if comma-separated)
+    supabase_user_id = supabase_user_id_raw.split(',')[0].strip()
+    if supabase_user_id != supabase_user_id_raw:
+        print(f"SUPABASE_CLEANUP: Fixed duplicated user_id '{supabase_user_id_raw}' -> '{supabase_user_id}'")
+    
+    # Simple check: verify user exists in Supabase
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        supabase_email = request.headers.get('X-Supabase-Email')
+        ok, profile, error_message = verify_supabase_user_id(supabase_user_id, supabase_email)
+        if not ok:
+            print(f"SUPABASE_VALIDATION_FAILED: {error_message}")
+            return None, {"success": False, "error": error_message or "Supabase user verification failed"}, 401
+        print(f"SUPABASE_VALIDATION_SUCCESS: User {supabase_user_id} verified")
+        # Enrich user with Supabase info
+        enriched_user = dict(user)
+        enriched_user['supabase_user_id'] = supabase_user_id
+        enriched_user['supabase_email'] = profile.get('email', supabase_email) if profile else supabase_email
+        return enriched_user, None, None
+    else:
+        # If Supabase not configured, skip validation
+        print("SUPABASE_VALIDATION_SKIPPED: SUPABASE_URL or SUPABASE_SERVICE_KEY not set")
+        return user, None, None
 
 
 def verify_server_key_if_required():
@@ -1957,6 +2077,21 @@ def slice_spritesheet_internal(arguments: dict) -> dict:
         print(f"SLICE_SPRITESHEET_ERROR: {e}")
         return {"success": False, "error": str(e)}
 # --- Graph-Enhanced Search Intelligence ---
+def _trim_graph_context(graph_context: dict, max_nodes: int = 12, max_edges: int = 24) -> dict:
+    """Return a lightweight graph snapshot to avoid overwhelming clients."""
+    trimmed = {}
+    for file_path, payload in (graph_context or {}).items():
+        nodes = payload.get('nodes', [])
+        edges = payload.get('edges', [])
+        trimmed[file_path] = {
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
+            "nodes": nodes[:max_nodes],
+            "edges": edges[:max_edges],
+        }
+    return trimmed
+
+
 def _enhance_search_with_graph(initial_results: list, query: str, user_id: str, project_id: str, 
                               max_results: int, vector_manager, include_graph: bool) -> dict:
     """
@@ -2324,6 +2459,7 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         search_mode = arguments.get('search_mode', 'semantic')
         project_root = arguments.get('project_root')
         project_id = arguments.get('project_id')
+        graph_preview = bool(arguments.get('graph_preview', False))
         
         # Get authentication
         if current_user is None:
@@ -2407,11 +2543,15 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         graph_context = {}
         if include_graph and enhanced_results['similar_files']:
             files = [r['file_path'] for r in enhanced_results['similar_files']]
-            graph_context = cloud_vector_manager.get_graph_context_for_files(files, user['id'], project_id)
+            graph_context = cloud_vector_manager.get_graph_context_for_files(
+                files, user['id'], project_id
+            )
         
-        # CRITICAL FREEZE FIX: Don't send massive graph data to frontend
-        # Graph context can be hundreds of KB of nested JSON which freezes the UI
-        # The frontend doesn't need it anyway - it just displays file lists
+        if graph_preview and graph_context:
+            graph_payload = _trim_graph_context(graph_context)
+        else:
+            graph_payload = {}
+        
         return {
             "success": True,
             "query": query,
@@ -2419,7 +2559,7 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
             "results": formatted_results,
             "include_graph": include_graph,
             "trace_dependencies": trace_dependencies,
-            "graph": {},  # STRIPPED: Sending graph freezes frontend UI for several seconds
+            "graph": graph_payload,
             "file_count": len(enhanced_results['similar_files']),
             "message": f"Found {len(enhanced_results['similar_files'])} relevant files using {detected_mode.upper()} search for query: {query}"
         }
@@ -2775,6 +2915,220 @@ def project_manager_internal(arguments: dict) -> dict:
         print(f"PROJECT_MANAGER_ERROR: {e}")
         return {"success": False, "error": f"Project manager operation failed: {str(e)}"}
 
+def graph_manager_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Handle graph_manager tool operations"""
+    try:
+        def _normalize_graph_path(path_value: str, project_root_value: Optional[str]) -> str:
+            if not path_value:
+                return ""
+            normalized = str(path_value).strip().replace("\\", "/")
+            if normalized.startswith("res://"):
+                normalized = normalized[6:]
+            if normalized.startswith("./"):
+                normalized = normalized[2:]
+            if project_root_value:
+                try:
+                    pr_norm = os.path.abspath(project_root_value)
+                    candidate = normalized
+                    if os.path.isabs(candidate):
+                        candidate_abs = os.path.abspath(candidate)
+                    else:
+                        candidate_abs = os.path.abspath(os.path.join(pr_norm, candidate))
+                    if os.path.commonprefix([candidate_abs, pr_norm]) == pr_norm:
+                        normalized = os.path.relpath(candidate_abs, pr_norm).replace("\\", "/")
+                except Exception:
+                    pass
+                base_name = os.path.basename(project_root_value.rstrip("/\\"))
+                if base_name and base_name in normalized:
+                    idx = normalized.find(base_name)
+                    trimmed = normalized[idx + len(base_name):].lstrip("/\\")
+                    if trimmed:
+                        normalized = trimmed
+            return normalized.strip("/")
+
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+
+        if cloud_vector_manager is None:
+            return {"success": False, "error": "Graph intelligence unavailable (vector manager not configured)"}
+
+        user_obj = current_user
+        if user_obj is None:
+            user_obj, error_response, status_code = verify_authentication()
+            if error_response:
+                return {"success": False, "error": "Authentication required to access graph data"}
+
+        user_id = user_obj.get('id') or 'guest'
+
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id')
+        if not project_id and project_root:
+            project_id = hashlib.md5(project_root.encode()).hexdigest()
+        if not project_id:
+            return {"success": False, "error": "project_id or project_root required for graph operations"}
+
+        if op == "graph.neighbors":
+            raw_paths = []
+            primary_path = arguments.get('file_path')
+            if primary_path:
+                raw_paths.append(primary_path)
+            extra_files = arguments.get('file_paths') or []
+            if isinstance(extra_files, list):
+                raw_paths.extend([fp for fp in extra_files if fp])
+            normalized_map = {}
+            ordered_originals = []
+            for raw in raw_paths:
+                if raw not in normalized_map:
+                    normalized_map[raw] = _normalize_graph_path(raw, project_root)
+                    ordered_originals.append(raw)
+            # Ensure at least one target
+            normalized_values = [norm for norm in normalized_map.values() if norm]
+            if not normalized_values:
+                return {"success": False, "error": "Provide 'file_path' or 'file_paths' for graph.neighbors"}
+
+            depth = max(1, int(arguments.get('depth', 1)))
+            edge_types = arguments.get('edge_types') or arguments.get('kinds')
+            max_nodes = max(1, min(int(arguments.get('max_nodes', 12)), 100))
+            max_edges = max(1, min(int(arguments.get('max_edges', 24)), 400))
+            include_summary = bool(arguments.get('include_summary', True))
+            include_raw = bool(arguments.get('include_raw', False))
+
+            if depth > 1 and hasattr(cloud_vector_manager, 'get_graph_context_expanded'):
+                raw_context = cloud_vector_manager.get_graph_context_expanded(
+                    normalized_values,
+                    user_id,
+                    project_id,
+                    depth=depth - 1,  # depth includes starting nodes
+                    kinds=edge_types,
+                    max_nodes=max_nodes,
+                    max_edges=max_edges,
+                )
+            else:
+                raw_context = cloud_vector_manager.get_graph_context_for_files(
+                    normalized_values, user_id, project_id
+                )
+
+            rekeyed_context = {}
+            for original, normalized in normalized_map.items():
+                if not normalized:
+                    continue
+                rekeyed_context[original] = raw_context.get(normalized, {"nodes": [], "edges": []})
+
+            trimmed = _trim_graph_context(rekeyed_context, max_nodes=max_nodes, max_edges=max_edges)
+
+            response = {
+                "success": True,
+                "graph": trimmed,
+                "requested_files": ordered_originals,
+                "returned_files": [f for f in ordered_originals if trimmed.get(f, {}).get("total_nodes")],
+                "depth": depth
+            }
+
+            if include_summary:
+                total_nodes = sum(entry.get("total_nodes", len(entry.get("nodes", []))) for entry in trimmed.values())
+                total_edges = sum(entry.get("total_edges", len(entry.get("edges", []))) for entry in trimmed.values())
+                response["summary"] = {
+                    "requested_files": len(ordered_originals),
+                    "returned_files": len([f for f in trimmed if trimmed[f].get("total_nodes")]),
+                    "total_nodes": total_nodes,
+                    "total_edges": total_edges,
+                    "edge_types": edge_types or "all"
+                }
+
+            if include_raw:
+                response["graph_full"] = rekeyed_context
+
+            return response
+
+        elif op == "graph.walk":
+            raw_paths = (
+                arguments.get('start_files')
+                or arguments.get('file_paths')
+                or []
+            )
+            if not raw_paths:
+                single = arguments.get('start_file') or arguments.get('file_path')
+                if single:
+                    raw_paths = [single]
+
+            normalized_map = {}
+            for raw in raw_paths:
+                normalized = _normalize_graph_path(raw, project_root)
+                if normalized:
+                    normalized_map[raw] = normalized
+
+            if not normalized_map:
+                return {"success": False, "error": "Provide at least one 'start_file' or 'file_path' for graph.walk"}
+
+            normalized_values = list(dict.fromkeys(normalized_map.values()))
+            depth = max(0, int(arguments.get('depth', 2)))
+            edge_types = arguments.get('edge_types') or arguments.get('kinds')
+            max_nodes = max(1, min(int(arguments.get('max_nodes', 50)), 500))
+            max_edges = max(1, min(int(arguments.get('max_edges', 200)), 1000))
+            include_summary = bool(arguments.get('include_summary', True))
+            include_raw = bool(arguments.get('include_raw', False))
+
+            expanded_context = cloud_vector_manager.get_graph_context_expanded(
+                normalized_values,
+                user_id,
+                project_id,
+                depth=depth,
+                kinds=edge_types,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+            )
+
+            trimmed = _trim_graph_context(expanded_context, max_nodes=max_nodes, max_edges=max_edges)
+
+            inverse_map = {}
+            for original, normalized in normalized_map.items():
+                if normalized not in inverse_map:
+                    inverse_map[normalized] = original
+
+            display_graph = {}
+            for norm_key, payload in trimmed.items():
+                display_key = inverse_map.get(norm_key)
+                if not display_key:
+                    display_key = norm_key if norm_key.startswith("res://") else f"res://{norm_key}"
+                display_graph[display_key] = payload
+
+            response = {
+                "success": True,
+                "graph": display_graph,
+                "requested_files": list(normalized_map.keys()),
+                "visited_files": list(display_graph.keys()),
+                "depth": depth,
+            }
+
+            if include_summary:
+                total_nodes = sum(entry.get("total_nodes", len(entry.get("nodes", []))) for entry in display_graph.values())
+                total_edges = sum(entry.get("total_edges", len(entry.get("edges", []))) for entry in display_graph.values())
+                response["summary"] = {
+                    "requested_files": len(normalized_map),
+                    "returned_files": len(display_graph),
+                    "total_nodes": total_nodes,
+                    "total_edges": total_edges,
+                    "edge_types": edge_types or "all",
+                }
+
+            if include_raw:
+                raw_display = {}
+                for norm_key, payload in expanded_context.items():
+                    display_key = inverse_map.get(norm_key)
+                    if not display_key:
+                        display_key = norm_key if norm_key.startswith("res://") else f"res://{norm_key}"
+                    raw_display[display_key] = payload
+                response["graph_full"] = raw_display
+
+            return response
+
+        return {"success": False, "error": f"Unknown graph_manager operation: {op}"}
+
+    except Exception as e:
+        print(f"GRAPH_MANAGER_ERROR: {e}")
+        return {"success": False, "error": f"Graph manager operation failed: {str(e)}"}
+
 def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
     """Handle search_manager tool operations"""
     try:
@@ -3099,6 +3453,70 @@ def terminal_manager_internal(arguments: dict) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def _resolve_project_root_argument(arguments: dict) -> Optional[str]:
+    project_root = arguments.get("project_root")
+    if project_root:
+        return project_root
+    try:
+        return getattr(g, "project_root", None)
+    except RuntimeError:
+        return None
+
+def todo_manager_internal(arguments: dict, current_user: Optional[dict] = None) -> dict:
+    """Lightweight todo management shared by agent + UI."""
+    op = arguments.get("op")
+    if not op:
+        return {"success": False, "error": "Missing 'op' parameter"}
+
+    project_root = _resolve_project_root_argument(arguments)
+    created_by = (current_user or {}).get("id") or "agent"
+
+    if op == "todo.list":
+        todos = TodoStore.list(project_root)
+        return {"success": True, "todos": todos, "project_root": project_root}
+
+    if op == "todo.add":
+        content = (arguments.get("content") or "").strip()
+        if not content:
+            return {"success": False, "error": "content parameter required"}
+        status = arguments.get("status", "pending")
+        todo = TodoStore.add(project_root, content, status=status, created_by=created_by)
+        return {"success": True, "todo": todo, "project_root": project_root}
+
+    if op == "todo.add_batch":
+        items = arguments.get("items") or []
+        if not isinstance(items, list):
+            return {"success": False, "error": "items must be an array"}
+        created = TodoStore.add_batch(project_root, items, created_by=created_by)
+        return {"success": True, "todos": created, "project_root": project_root}
+
+    if op == "todo.update":
+        todo_id = arguments.get("todo_id")
+        if not todo_id:
+            return {"success": False, "error": "todo_id parameter required"}
+        updated = TodoStore.update(
+            project_root,
+            todo_id,
+            content=arguments.get("content"),
+            status=arguments.get("status"),
+        )
+        if not updated:
+            return {"success": False, "error": f"Todo '{todo_id}' not found"}
+        return {"success": True, "todo": updated, "project_root": project_root}
+
+    if op == "todo.remove":
+        todo_id = arguments.get("todo_id")
+        if not todo_id:
+            return {"success": False, "error": "todo_id parameter required"}
+        removed = TodoStore.remove(project_root, todo_id)
+        return {"success": removed, "removed": removed, "project_root": project_root}
+
+    if op == "todo.clear":
+        TodoStore.clear(project_root)
+        return {"success": True, "project_root": project_root}
+
+    return {"success": False, "error": f"Unsupported todo_manager op: {op}"}
+
 def capture_screenshot_internal(arguments: dict) -> dict:
     """Capture screenshot from editor or running game"""
     return {
@@ -3139,12 +3557,16 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return settings_manager_internal(arguments)
     elif function_name == "search_manager":
         return search_manager_internal(arguments, None)
+    elif function_name == "graph_manager":
+        return graph_manager_internal(arguments, None)
     elif function_name == "runtime_manager":
         return runtime_manager_internal(arguments)
     elif function_name == "runtime_inspector":
         return runtime_inspector_internal(arguments)
     elif function_name == "terminal_manager":
         return terminal_manager_internal(arguments)
+    elif function_name == "todo_manager":
+        return todo_manager_internal(arguments, None)
     # Legacy individual tools (maintain backward compatibility)
     elif function_name == "image_operation":
         return image_operation_internal(arguments)
@@ -3206,6 +3628,28 @@ def clear_conversation():
         "message": "Conversation clear signal received",
         "note": "Conversation clearing is handled by the frontend"
     })
+
+@app.route('/todo_manager', methods=['POST'])
+def todo_manager_endpoint():
+    gate = verify_server_key_if_required()
+    if gate is not None:
+        return gate
+
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "Invalid JSON payload"}), 400
+
+    prj_hdr = request.headers.get('X-Project-Root')
+    if prj_hdr:
+        g.project_root = prj_hdr
+
+    result = todo_manager_internal(data, user)
+    status = 200 if result.get("success", False) else 400
+    return jsonify(result), status
 
 @app.route('/memory_stats', methods=['GET'])
 def get_memory_stats():
@@ -4774,6 +5218,10 @@ def chat():
                         elif func_name == "resource_manager":
                             return op in ["image.generate_or_edit", "image.slice_spritesheet"]
                         
+                        # graph_manager: neighbors require backend graph data
+                        elif func_name == "graph_manager":
+                            return True
+                        
                         # runtime_manager: all operations are frontend-only
                         elif func_name == "runtime_manager":
                             return False
@@ -4785,6 +5233,10 @@ def chat():
                         # terminal_manager: all operations are frontend-only (need local machine access)
                         elif func_name == "terminal_manager":
                             return False
+                        
+                        # todo_manager: always backend (uses in-memory store)
+                        elif func_name == "todo_manager":
+                            return True
                         
                         # All other tools are frontend-only
                         return False
@@ -5828,6 +6280,120 @@ def chat():
                                 "role": "tool",
                                 "name": "search_manager",
                                 "content": json.dumps(sm_result_for_history)
+                            })
+                        
+                        elif func["name"] == "graph_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            print("=" * 80)
+                            print(f"🕸️ BACKEND TOOL CALLED: graph_manager")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            try:
+                                arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
+                            except json.JSONDecodeError:
+                                arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            
+                            yield json.dumps({"tool_starting": "graph_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            if not arguments.get('project_root') and hasattr(g, 'project_root') and g.project_root:
+                                arguments['project_root'] = g.project_root
+                                print(f"GRAPH_MANAGER: Injected project_root from Flask context: {g.project_root}")
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_graph_manager():
+                                try:
+                                    _tool_result_holder["result"] = graph_manager_internal(arguments, user)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_graph_manager, daemon=True)
+                            t.start()
+                            timeout_start = time.time()
+                            max_timeout = 60
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during graph_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: graph_manager exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Graph manager operation timed out after {max_timeout} seconds"}) + '\n'
+                                    return
+                                time.sleep(0.05)
+                            graph_result = _tool_result_holder["result"] or {"success": False, "error": "graph_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            graph_result_for_frontend = dict(graph_result)
+                            graph_result_for_frontend.pop("graph_full", None)
+                            
+                            yield json.dumps({
+                                "tool_executed": "graph_manager",
+                                "tool_result": graph_result_for_frontend,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "graph_manager",
+                                "content": json.dumps(graph_result)
+                            })
+                        
+                        elif func["name"] == "todo_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            print("=" * 80)
+                            print(f"📝 BACKEND TOOL CALLED: todo_manager")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            try:
+                                arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    print(f"   {key}: {value}")
+                            except json.JSONDecodeError:
+                                arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            
+                            yield json.dumps({"tool_starting": "todo_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            todo_result = todo_manager_internal(arguments, user)
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "todo_manager",
+                                "tool_result": todo_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "todo_manager",
+                                "content": json.dumps(todo_result)
                             })
                         
                         elif func["name"] == "resource_manager":
@@ -7430,10 +7996,15 @@ def embed_endpoint():
             
             batch_info = data.get('batch_info', {})
             max_workers = data.get('max_workers')
+            force_reindex = bool(data.get('force_reindex') or batch_info.get('force_reindex'))
             try:
-                stats = cloud_vector_manager.index_files_with_content(files, user['id'], project_id, max_workers=max_workers)
+                stats = cloud_vector_manager.index_files_with_content(
+                    files, user['id'], project_id, max_workers=max_workers, force_reindex=force_reindex
+                )
             except TypeError:
-                stats = cloud_vector_manager.index_files_with_content(files, user['id'], project_id)
+                stats = cloud_vector_manager.index_files_with_content(
+                    files, user['id'], project_id, force_reindex=force_reindex
+                )
             
             return jsonify({
                 "success": True,
@@ -7562,44 +8133,20 @@ def search_project():
         if not project_id:
             project_id = hashlib.md5(project_root.encode()).hexdigest()
 
-        # Get search parameters
-        max_results = data.get('max_results', 5)
-
-        # Search using cloud vector manager
-        if cloud_vector_manager is None:
-            return jsonify({
-                "success": False,
-                "error": "Vector search unavailable (configure Weaviate or ensure local index + OPENAI_API_KEY)"
-            }), 501
-        results = cloud_vector_manager.search(query, user['id'], project_id, max_results)
-        # Filter out Godot sidecar UID files
-        results = [r for r in results if not str(r.get('file_path','')).endswith('.uid')]
-
-        # Format results
-        formatted_results = {
-            "similar_files": [
-                {
-                    "file_path": r['file_path'],
-                    "similarity": r['similarity'],
-                    "modality": "text",
-                    "chunk_index": r['chunk']['chunk_index'] if r.get('chunk') else 0,
-                    "chunk_start": r['chunk']['start_line'] if r.get('chunk') else None,
-                    "chunk_end": r['chunk']['end_line'] if r.get('chunk') else None,
-                    # If backend provides file_line_count, pass it through; else leave None
-                    "line_count": r.get('file_line_count')
-                }
-                for r in results
-            ],
-            "central_files": [],
-            "graph_summary": {}
-        }
-
-        return jsonify({
-            "success": True,
+        arguments = {
             "query": query,
-            "results": formatted_results,
-            "include_graph": False
-        })
+            "project_root": project_root,
+            "project_id": project_id,
+            "max_results": data.get('max_results', 5),
+            "include_graph": data.get('include_graph', False),
+            "graph_preview": data.get('graph_preview', False),
+            "trace_dependencies": data.get('trace_dependencies', False),
+            "search_mode": data.get('search_mode', 'semantic'),
+            "graph_depth": data.get('graph_depth', 1),
+            "graph_edge_kinds": data.get('graph_edge_kinds') or [],
+        }
+        result = search_across_project_internal(arguments, current_user=user)
+        return jsonify(result)
 
     except Exception as e:
         print(f"SEARCH_PROJECT_ERROR: {e}")

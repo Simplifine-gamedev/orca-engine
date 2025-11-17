@@ -71,6 +71,7 @@ class UserMessageHandler;
 class StreamingIndicator;
 class AIManualSnapshots;
 class AIAutoSnapshots;
+class AIChatTodoPanel;
 // Missing forward declarations for types referenced as pointers
 class Timer;
 class Thread;
@@ -232,12 +233,16 @@ private:
 	Button *snapshot_button = nullptr;
 	Button *restore_snapshot_button = nullptr;
 	Button *auto_snapshots_button = nullptr;
+	Button *todo_button = nullptr;
 	Label *user_status_label = nullptr;
 	String current_user_id;
 	String current_user_name;
+	String supabase_user_id;
+	String supabase_email;
 	String auth_token;
 	String pending_login_provider;
 	String provider_pending_login;
+	AIChatTodoPanel *todo_panel = nullptr;
 
 	// Guard to avoid rebuilding UI on re-dock (NOTIFICATION_POST_ENTER_TREE fired again)
 	bool ui_initialized = false;
@@ -422,6 +427,7 @@ private:
 	void _render_full_node_props(VBoxContainer *p_target_vbox, const Dictionary &p_full_result);
 	void _toggle_expand_label(RichTextLabel *p_label, Button *p_button, const String &p_full_text, const String &p_snippet_text);
 	void _toggle_docs_card(Control *p_snippet_node, Control *p_full_node, Button *p_button, VBoxContainer *p_holder);
+	String _format_duration_label(double p_seconds) const;
 	void _rebuild_conversation_ui(const Vector<ChatMessage> &p_messages);
 	void _apply_tool_result_deferred(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, const Array &p_tool_results);
 	void _build_hierarchy_tree_item(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_node_data);
@@ -622,6 +628,8 @@ private:
 	void _on_snapshot_restore_requested(const String &p_snapshot_tag);
 	void _on_snapshot_delete_requested(const String &p_snapshot_tag);
 	void _on_view_auto_snapshots_pressed();
+	void _on_todo_button_pressed();
+	void _update_todo_panel_config();
 	
 	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_auth_dialog_action(const StringName &p_action);
@@ -634,7 +642,9 @@ private:
 	void _stop_login_polling();
 	void _ensure_project_indexing();
 	void _update_user_status();
-	void _logout_user();
+	void _sync_auth_from_manager();
+	void _logout_user(bool p_notify_auth_manager = true);
+	void _on_auth_state_changed();
 	bool _is_user_authenticated() const;
 
 	// Asset Library callbacks
@@ -677,11 +687,13 @@ private:
 	void _handle_thinking_content_delta(const String &p_reasoning_delta);
 	void _handle_thinking_blocks_delta(const Array &p_thinking_blocks_delta);
 	void _create_thinking_section_for_current_message();
-	void _create_saved_thinking_section(VBoxContainer *p_message_vbox, const ChatMessage &p_message);
+	void _render_interleaved_reasoning_blocks(ChatMessage &p_message, int p_message_index);
+	void _render_pending_reasoning_blocks();
 	void _on_thinking_section_toggled(Control *p_content_panel);
 	VBoxContainer *current_thinking_section = nullptr;
 	RichTextLabel *current_thinking_label = nullptr;
 	String current_thinking_content;
+	int current_streaming_assistant_index = -1;
 	
 	// Apply edit tool call button handling
 	void _on_tool_call_accept_pressed(const String &p_tool_call_id, const String &p_file_path, const String &p_content);
@@ -724,8 +736,6 @@ private:
 	void _on_load_more_pressed(int p_older_messages_count);
 	void _scroll_to_position_after_load_more(int p_loaded_messages_count);
 	void _rebuild_conversation_ui_full();
-	void _apply_simplified_tool_result(const String &p_tool_call_id, const String &p_tool_name, const String &p_content);
-	void _expand_simplified_tool_result(const String &p_tool_call_id, const String &p_tool_name, const String &p_content, PanelContainer *p_placeholder);
 	bool _should_truncate_tool_result(const String &p_tool_name, const Dictionary &p_result);
 	void _create_truncated_tool_ui(VBoxContainer *p_content_vbox, const String &p_tool_name, const Dictionary &p_result);
 	String _generate_tool_result_summary(const String &p_tool_name, const Dictionary &p_result, bool p_success);

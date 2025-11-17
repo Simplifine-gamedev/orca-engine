@@ -19,20 +19,16 @@ void AIAutoSnapshots::_bind_methods() {
 }
 
 AIAutoSnapshots::AIAutoSnapshots() {
-	// print_line("AIAutoSnapshots: Constructor called");
 }
 
 AIAutoSnapshots::~AIAutoSnapshots() {
-	// print_line("AIAutoSnapshots: Destructor called");
 }
 
 void AIAutoSnapshots::initialize(AIChatDock *p_chat_dock) {
 	chat_dock = p_chat_dock;
 	if (!chat_dock) {
-		// print_line("AIAutoSnapshots: ERROR - chat_dock is null");
 		return;
 	}
-	// print_line("AIAutoSnapshots: Initialized successfully");
 }
 
 void AIAutoSnapshots::_ensure_dialog_created() {
@@ -144,7 +140,6 @@ void AIAutoSnapshots::_ensure_dialog_created() {
 
 void AIAutoSnapshots::show_auto_snapshots_dialog() {
 	if (!chat_dock) {
-		// print_line("AIAutoSnapshots: ERROR - Cannot show dialog, chat_dock is null");
 		return;
 	}
 
@@ -161,7 +156,6 @@ Vector<AIAutoSnapshots::AutoSnapshot> AIAutoSnapshots::_get_all_auto_snapshots()
 
 	String checkpoint_dir = _get_checkpoint_directory();
 	if (checkpoint_dir.is_empty() || !DirAccess::exists(checkpoint_dir)) {
-		// print_line("AIAutoSnapshots: No checkpoint directory found: " + checkpoint_dir);
 		return snapshots;
 	}
 
@@ -179,7 +173,6 @@ Vector<AIAutoSnapshots::AutoSnapshot> AIAutoSnapshots::_get_all_auto_snapshots()
 	Error err = OS::get_singleton()->execute("git", args, &output, &exitcode, false, nullptr, false);
 
 	if (err != OK || exitcode != 0 || output.strip_edges().is_empty()) {
-		// print_line("AIAutoSnapshots: No auto snapshots found or git command failed");
 		return snapshots;
 	}
 
@@ -205,7 +198,6 @@ Vector<AIAutoSnapshots::AutoSnapshot> AIAutoSnapshots::_get_all_auto_snapshots()
 		snapshots.push_back(snapshot);
 	}
 
-	// print_line("AIAutoSnapshots: Found " + String::num_int64(snapshots.size()) + " auto snapshots");
 	return snapshots;
 }
 
@@ -321,7 +313,6 @@ void AIAutoSnapshots::_on_restore_selected_snapshot_confirmed() {
 		return;
 	}
 
-	// print_line("AIAutoSnapshots: Restore requested for message index " + String::num_int64(selected_message_index) + " (tag: " + selected_tag_name + ")");
 
 	bool success = chat_dock->_restore_from_checkpoint((int)selected_message_index);
 

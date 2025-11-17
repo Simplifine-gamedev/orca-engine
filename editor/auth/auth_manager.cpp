@@ -36,6 +36,7 @@ void AuthManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_user_id"), &AuthManager::get_user_id);
 	ClassDB::bind_method(D_METHOD("get_user_email"), &AuthManager::get_user_email);
 	ClassDB::bind_method(D_METHOD("get_user_name"), &AuthManager::get_user_name);
+	ADD_SIGNAL(MethodInfo("auth_state_changed"));
 }
 
 AuthManager::AuthManager() {
@@ -43,12 +44,24 @@ AuthManager::AuthManager() {
 }
 
 AuthManager::~AuthManager() {
+	_stop_loopback_server();
 	singleton = nullptr;
 }
 
 void AuthManager::open_web_login() {
-	print_line("Opening web login at: " + LOGIN_URL);
-	OS::get_singleton()->shell_open(LOGIN_URL);
+	String login_url = LOGIN_URL;
+
+	if (_start_loopback_server()) {
+		String redirect = vformat("http://127.0.0.1:%d/auth/callback", loopback_port);
+		String redirect_param = "redirect=" + redirect.uri_encode();
+		login_url += login_url.contains("?") ? "&" + redirect_param : "?" + redirect_param;
+		print_line(vformat("ORCA AUTH: Loopback redirect active on %s", redirect));
+	} else {
+		print_line("ORCA AUTH: Loopback redirect unavailable, falling back to custom scheme only");
+	}
+
+	print_line("Opening web login at: " + login_url);
+	OS::get_singleton()->shell_open(login_url);
 }
 
 bool AuthManager::handle_deep_link(const String &p_url) {
@@ -100,6 +113,7 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	
 	is_authenticated = true;
 	print_line("Authentication successful for user: " + user_email);
+	_stop_loopback_server();
 	
 	// Notify the auth dialog if it exists
 	if (auth_dialog) {
@@ -130,7 +144,9 @@ void AuthManager::sign_out() {
 	user_id = "";
 	user_email = "";
 	user_name = "";
+	_stop_loopback_server();
 	print_line("User signed out");
+	emit_signal("auth_state_changed");
 }
 
 void AuthManager::sign_in_with_email(const String &p_email, const String &p_password) {
@@ -448,6 +464,8 @@ void AuthManager::store_tokens(const String &p_access_token, const String &p_ref
 	_store_token_secure("orca_user_id", p_user_id);
 	_store_token_secure("orca_user_email", p_email);
 	_store_token_secure("orca_user_name", p_name);
+
+	emit_signal("auth_state_changed");
 }
 
 bool AuthManager::load_stored_tokens() {
@@ -492,22 +510,81 @@ void AuthManager::_notify_auth_info(const String &p_message) {
 	}
 }
 
+void AuthManager::poll_loopback_server() {
+	if (!loopback_server.is_valid()) {
+		return;
+	}
+
+	if (!loopback_server->is_listening()) {
+		_stop_loopback_server();
+		return;
+	}
+
+	if (loopback_deadline_msec > 0 && OS::get_singleton()->get_ticks_msec() > loopback_deadline_msec) {
+		print_line("ORCA AUTH: Loopback login timed out, closing listener");
+		_stop_loopback_server();
+		return;
+	}
+
+	if (!loopback_server->is_connection_available()) {
+		return;
+	}
+
+	Ref<StreamPeerTCP> client = loopback_server->take_connection();
+	if (client.is_null()) {
+		return;
+	}
+
+	_handle_loopback_connection(client);
+}
+
 String AuthManager::_get_secure_storage_key(const String &p_key) const {
 	return "ai.orcaengine." + p_key;
+}
+
+String AuthManager::_get_auth_storage_dir() const {
+#ifdef MACOS_ENABLED
+	return OS::get_singleton()->get_config_path().path_join("Orca").path_join("auth");
+#elif defined(LINUXBSD_ENABLED)
+	return OS::get_singleton()->get_home_path().path_join(".orca_auth");
+#else
+	return OS::get_singleton()->get_user_data_dir().path_join("auth");
+#endif
+}
+
+String AuthManager::_get_legacy_auth_storage_dir() const {
+	return OS::get_singleton()->get_user_data_dir().path_join("auth");
+}
+
+void AuthManager::_ensure_auth_storage_dir_exists(const String &p_dir) const {
+	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+	if (dir.is_valid() && !dir->dir_exists(p_dir)) {
+		dir->make_dir_recursive(p_dir);
+	}
+}
+
+void AuthManager::_remove_token_file(const String &p_dir, const String &p_key) const {
+	if (p_dir.is_empty()) {
+		return;
+	}
+
+	String file_path = p_dir.path_join(_get_secure_storage_key(p_key));
+	if (FileAccess::exists(file_path)) {
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (dir.is_valid()) {
+			dir->remove(file_path);
+		}
+	}
 }
 
 #ifdef MACOS_ENABLED
 // Simple file-based storage - no keychain prompts!
 // Stored in ~/Library/Application Support/Orca/auth/
 bool AuthManager::_store_token_secure(const String &p_key, const String &p_value) {
-	String config_dir = OS::get_singleton()->get_user_data_dir();
-	String auth_dir = config_dir.path_join("auth");
-	
-	// Create auth directory if it doesn't exist
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-	if (dir.is_valid() && !dir->dir_exists(auth_dir)) {
-		dir->make_dir_recursive(auth_dir);
-	}
+	String auth_dir = _get_auth_storage_dir();
+	_ensure_auth_storage_dir_exists(auth_dir);
+	FileAccess::set_unix_permissions(auth_dir,
+			FileAccess::UNIX_READ_OWNER | FileAccess::UNIX_WRITE_OWNER | FileAccess::UNIX_EXECUTE_OWNER);
 	
 	// Store in file
 	String file_path = auth_dir.path_join(_get_secure_storage_key(p_key));
@@ -519,15 +596,39 @@ bool AuthManager::_store_token_secure(const String &p_key, const String &p_value
 	
 	file->store_string(p_value);
 	file->close();
-	
+
+	FileAccess::set_unix_permissions(file_path, FileAccess::UNIX_READ_OWNER | FileAccess::UNIX_WRITE_OWNER);
+
+	// Remove any legacy copies once we successfully write to the new location.
+	String legacy_dir = _get_legacy_auth_storage_dir();
+	if (legacy_dir != auth_dir) {
+		_remove_token_file(legacy_dir, p_key);
+	}
+
 	return true;
 }
 
 String AuthManager::_retrieve_token_secure(const String &p_key) {
-	String config_dir = OS::get_singleton()->get_user_data_dir();
-	String file_path = config_dir.path_join("auth").path_join(_get_secure_storage_key(p_key));
-	
+	String auth_dir = _get_auth_storage_dir();
+	String file_path = auth_dir.path_join(_get_secure_storage_key(p_key));
+
 	if (!FileAccess::exists(file_path)) {
+		// Attempt legacy location migration.
+		String legacy_path = _get_legacy_auth_storage_dir().path_join(_get_secure_storage_key(p_key));
+		if (FileAccess::exists(legacy_path)) {
+			String legacy_value;
+			Ref<FileAccess> legacy_file = FileAccess::open(legacy_path, FileAccess::READ);
+			if (legacy_file.is_valid()) {
+				legacy_value = legacy_file->get_as_text();
+				legacy_file->close();
+			}
+
+			if (!legacy_value.is_empty()) {
+				_store_token_secure(p_key, legacy_value);
+				return legacy_value;
+			}
+		}
+
 		return String();
 	}
 	
@@ -543,14 +644,11 @@ String AuthManager::_retrieve_token_secure(const String &p_key) {
 }
 
 void AuthManager::_delete_token_secure(const String &p_key) {
-	String config_dir = OS::get_singleton()->get_user_data_dir();
-	String file_path = config_dir.path_join("auth").path_join(_get_secure_storage_key(p_key));
-	
-	if (FileAccess::exists(file_path)) {
-		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-		if (dir.is_valid()) {
-			dir->remove(file_path);
-		}
+	_remove_token_file(_get_auth_storage_dir(), p_key);
+
+	String legacy_dir = _get_legacy_auth_storage_dir();
+	if (legacy_dir != _get_auth_storage_dir()) {
+		_remove_token_file(legacy_dir, p_key);
 	}
 }
 #endif
@@ -602,13 +700,10 @@ void AuthManager::_delete_token_secure(const String &p_key) {
 // Simple file-based storage for Linux
 // In production, you should use libsecret
 bool AuthManager::_store_token_secure(const String &p_key, const String &p_value) {
-	String config_dir = OS::get_singleton()->get_user_data_dir();
-	String secure_dir = config_dir.path_join(".orca_auth");
-	
-	Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-	if (dir.is_valid() && !dir->dir_exists(secure_dir)) {
-		dir->make_dir(secure_dir);
-	}
+	String secure_dir = _get_auth_storage_dir();
+	_ensure_auth_storage_dir_exists(secure_dir);
+	FileAccess::set_unix_permissions(secure_dir,
+			FileAccess::UNIX_READ_OWNER | FileAccess::UNIX_WRITE_OWNER | FileAccess::UNIX_EXECUTE_OWNER);
 	
 	String file_path = secure_dir.path_join(_get_secure_storage_key(p_key));
 	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
@@ -619,15 +714,29 @@ bool AuthManager::_store_token_secure(const String &p_key, const String &p_value
 	
 	file->store_string(p_value);
 	file->close();
+
+	FileAccess::set_unix_permissions(file_path, FileAccess::UNIX_READ_OWNER | FileAccess::UNIX_WRITE_OWNER);
 	
 	return true;
 }
 
 String AuthManager::_retrieve_token_secure(const String &p_key) {
-	String config_dir = OS::get_singleton()->get_user_data_dir();
-	String file_path = config_dir.path_join(".orca_auth").path_join(_get_secure_storage_key(p_key));
+	String file_path = _get_auth_storage_dir().path_join(_get_secure_storage_key(p_key));
 	
 	if (!FileAccess::exists(file_path)) {
+		String legacy_path = _get_legacy_auth_storage_dir().path_join(_get_secure_storage_key(p_key));
+		if (FileAccess::exists(legacy_path)) {
+			String legacy_value;
+			Ref<FileAccess> legacy_file = FileAccess::open(legacy_path, FileAccess::READ);
+			if (legacy_file.is_valid()) {
+				legacy_value = legacy_file->get_as_text();
+				legacy_file->close();
+			}
+			if (!legacy_value.is_empty()) {
+				_store_token_secure(p_key, legacy_value);
+				return legacy_value;
+			}
+		}
 		return String();
 	}
 	
@@ -643,8 +752,7 @@ String AuthManager::_retrieve_token_secure(const String &p_key) {
 }
 
 void AuthManager::_delete_token_secure(const String &p_key) {
-	String config_dir = OS::get_singleton()->get_user_data_dir();
-	String file_path = config_dir.path_join(".orca_auth").path_join(_get_secure_storage_key(p_key));
+	String file_path = _get_auth_storage_dir().path_join(_get_secure_storage_key(p_key));
 	
 	if (FileAccess::exists(file_path)) {
 		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
@@ -733,5 +841,113 @@ Error AuthManager::make_supabase_request(const String &p_endpoint, const String 
 	}
 	
 	return OK;
+}
+
+bool AuthManager::_start_loopback_server() {
+	_stop_loopback_server();
+
+	loopback_server.instantiate();
+	IPAddress bind_addr("127.0.0.1");
+
+	for (int port = 42100; port <= 42200; port++) {
+		if (loopback_server->listen(port, bind_addr) == OK) {
+			loopback_port = port;
+			loopback_deadline_msec = OS::get_singleton()->get_ticks_msec() + 120000; // 2 minutes
+			return true;
+		}
+	}
+
+	print_error("ORCA AUTH: Unable to start loopback server on localhost");
+	loopback_server.unref();
+	loopback_port = 0;
+	loopback_deadline_msec = 0;
+	return false;
+}
+
+void AuthManager::_stop_loopback_server() {
+	if (loopback_server.is_valid()) {
+		loopback_server->stop();
+		loopback_server.unref();
+	}
+
+	loopback_port = 0;
+	loopback_deadline_msec = 0;
+}
+
+String AuthManager::_read_http_request(const Ref<StreamPeerTCP> &p_client) {
+	String request;
+	const uint64_t start = OS::get_singleton()->get_ticks_msec();
+
+	while (OS::get_singleton()->get_ticks_msec() - start < 5000) {
+		int available = p_client->get_available_bytes();
+		if (available > 0) {
+			PackedByteArray buffer;
+			Error resize_err = buffer.resize(available);
+			if (resize_err != OK) {
+				break;
+			}
+			Error read_err = p_client->get_data(buffer.ptrw(), available);
+			if (read_err != OK) {
+				break;
+			}
+			request += String::utf8((const char *)buffer.ptr(), buffer.size());
+
+			if (request.find("\r\n\r\n") != -1 || request.find("\n\n") != -1) {
+				break;
+			}
+		} else {
+			OS::get_singleton()->delay_usec(1000);
+		}
+	}
+
+	return request;
+}
+
+void AuthManager::_send_loopback_response(const Ref<StreamPeerTCP> &p_client, bool p_success) {
+	String body;
+	body = p_success
+			? "<html><body><h2>Login successful</h2><p>You can close this tab.</p></body></html>"
+			: "<html><body><h2>Login failed</h2><p>Please try again.</p></body></html>";
+
+	PackedByteArray body_bytes = body.to_utf8_buffer();
+	String header = vformat("HTTP/1.1 %s\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+			p_success ? "200 OK" : "400 Bad Request",
+			body_bytes.size());
+
+	PackedByteArray header_bytes = header.to_utf8_buffer();
+	p_client->put_data(header_bytes.ptr(), header_bytes.size());
+	p_client->put_data(body_bytes.ptr(), body_bytes.size());
+	p_client->disconnect_from_host();
+}
+
+bool AuthManager::_handle_loopback_connection(const Ref<StreamPeerTCP> &p_client) {
+	String request = _read_http_request(p_client);
+	bool success = false;
+
+	if (!request.is_empty()) {
+		int line_end = request.find("\r\n");
+		if (line_end == -1) {
+			line_end = request.find("\n");
+		}
+
+		if (line_end != -1) {
+			String first_line = request.substr(0, line_end);
+			PackedStringArray parts = first_line.split(" ");
+			if (parts.size() >= 2) {
+				String method = parts[0];
+				String path = parts[1];
+				if (method == "GET" && path.begins_with("/auth/callback")) {
+					int query_pos = path.find("?");
+					if (query_pos != -1 && query_pos + 1 < path.length()) {
+						String query = path.substr(query_pos + 1);
+						success = handle_deep_link("orca://auth?" + query);
+					}
+				}
+			}
+		}
+	}
+
+	_send_loopback_response(p_client, success);
+	return success;
 }
 

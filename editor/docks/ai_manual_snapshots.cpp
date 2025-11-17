@@ -27,28 +27,23 @@ void AIManualSnapshots::_bind_methods() {
 }
 
 AIManualSnapshots::AIManualSnapshots() {
-	print_line("AIManualSnapshots: Constructor called");
 }
 
 AIManualSnapshots::~AIManualSnapshots() {
-	print_line("AIManualSnapshots: Destructor called");
 }
 
 void AIManualSnapshots::initialize(AIChatDock *p_chat_dock) {
 	chat_dock = p_chat_dock;
 	
 	if (!chat_dock) {
-		print_line("AIManualSnapshots: ERROR - chat_dock is null");
 		return;
 	}
 	
-	print_line("AIManualSnapshots: Initialized successfully");
 }
 
 void AIManualSnapshots::show_create_snapshot_dialog() {
 	if (!chat_dock) return;
 	
-	print_line("AIManualSnapshots: Showing create snapshot dialog");
 	
 	// Create dialog if it doesn't exist
 	if (!create_snapshot_dialog) {
@@ -119,7 +114,6 @@ void AIManualSnapshots::show_create_snapshot_dialog() {
 void AIManualSnapshots::show_snapshots_list_dialog() {
 	if (!chat_dock) return;
 	
-	print_line("AIManualSnapshots: Showing snapshots list dialog");
 	
 	// Create dialog if it doesn't exist
 	if (!snapshots_list_window) {
@@ -224,17 +218,14 @@ void AIManualSnapshots::show_snapshots_list_dialog() {
 
 bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const String &p_description) {
 	if (!chat_dock) {
-		print_line("AIManualSnapshots: ERROR - chat_dock is null");
 		return false;
 	}
 	
 	String name = p_name.strip_edges();
 	if (name.is_empty()) {
-		print_line("AIManualSnapshots: ERROR - snapshot name is empty");
 		return false;
 	}
 	
-	print_line("AIManualSnapshots: Creating manual snapshot: " + name);
 	
 	// Get project root
 	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
@@ -245,7 +236,6 @@ bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const Strin
 		AICheckpointManager::create_comprehensive_checkpoint(project_root, "Manual Snapshot: " + name, -1);
 	
 	if (!result.success) {
-		print_line("AIManualSnapshots: ERROR - Failed to create checkpoint: " + result.message);
 		return false;
 	}
 	
@@ -273,7 +263,6 @@ bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const Strin
 	Error err = OS::get_singleton()->execute("git", tag_args, &output, &exitcode, false, nullptr, false);
 	
 	if (err != OK || exitcode != 0) {
-		print_line("AIManualSnapshots: ERROR - Failed to create snapshot tag: " + output);
 		return false;
 	}
 	
@@ -287,7 +276,6 @@ bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const Strin
 	
 	OS::get_singleton()->execute("git", delete_temp_args, &output, &exitcode, false, nullptr, false);
 	
-	print_line("AIManualSnapshots: ✅ Manual snapshot created: " + snapshot_tag);
 	return true;
 }
 
@@ -296,7 +284,6 @@ bool AIManualSnapshots::restore_to_snapshot(const String &p_snapshot_tag) {
 		return false;
 	}
 	
-	print_line("AIManualSnapshots: Restoring to snapshot: " + p_snapshot_tag);
 	
 	// Get project root
 	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
@@ -322,12 +309,9 @@ bool AIManualSnapshots::restore_to_snapshot(const String &p_snapshot_tag) {
 	Error err = OS::get_singleton()->execute("git", reset_args, &output, &exitcode, false, nullptr, false);
 	
 	if (err != OK || exitcode != 0) {
-		print_line("AIManualSnapshots: ERROR - Git reset failed: " + output);
 		return false;
 	}
 	
-	print_line("AIManualSnapshots: ✅ Git reset to snapshot complete");
-	print_line("AIManualSnapshots: " + output.strip_edges());
 	
 	// Trigger comprehensive editor refresh
 	if (chat_dock) {
@@ -342,7 +326,6 @@ bool AIManualSnapshots::delete_snapshot(const String &p_snapshot_tag) {
 		return false;
 	}
 	
-	print_line("AIManualSnapshots: Deleting snapshot: " + p_snapshot_tag);
 	
 	// Get project root
 	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
@@ -360,11 +343,9 @@ bool AIManualSnapshots::delete_snapshot(const String &p_snapshot_tag) {
 	Error err = OS::get_singleton()->execute("git", delete_args, &output, &exitcode, false, nullptr, false);
 	
 	if (err != OK || exitcode != 0) {
-		print_line("AIManualSnapshots: ERROR - Failed to delete snapshot: " + output);
 		return false;
 	}
 	
-	print_line("AIManualSnapshots: ✅ Snapshot deleted: " + p_snapshot_tag);
 	return true;
 }
 
@@ -393,7 +374,6 @@ Vector<AIManualSnapshots::Snapshot> AIManualSnapshots::get_all_snapshots() {
 	Error err = OS::get_singleton()->execute("git", list_args, &output, &exitcode, false, nullptr, false);
 	
 	if (err != OK || exitcode != 0 || output.strip_edges().is_empty()) {
-		print_line("AIManualSnapshots: No snapshots found or git command failed");
 		return snapshots;
 	}
 	
@@ -439,7 +419,6 @@ Vector<AIManualSnapshots::Snapshot> AIManualSnapshots::get_all_snapshots() {
 		snapshots.push_back(snapshot);
 	}
 	
-	print_line("AIManualSnapshots: Found " + String::num_int64(snapshots.size()) + " snapshots");
 	return snapshots;
 }
 
@@ -452,21 +431,18 @@ void AIManualSnapshots::_on_create_snapshot_confirmed() {
 	String description = snapshot_description_field->get_text().strip_edges();
 	
 	if (name.is_empty()) {
-		print_line("AIManualSnapshots: Cannot create snapshot with empty name");
 		return;
 	}
 	
 	bool success = create_manual_snapshot(name, description);
 	
 	if (success) {
-		print_line("AIManualSnapshots: Snapshot created successfully");
 		
 		// Show success notification
 		if (chat_dock) {
 			chat_dock->call("_show_status_notification", "success", "Snapshot saved: " + name, "💾", 3.0);
 		}
 	} else {
-		print_line("AIManualSnapshots: Failed to create snapshot");
 		
 		// Show error notification
 		if (chat_dock) {
@@ -476,7 +452,6 @@ void AIManualSnapshots::_on_create_snapshot_confirmed() {
 }
 
 void AIManualSnapshots::_on_create_snapshot_cancelled() {
-	print_line("AIManualSnapshots: Snapshot creation cancelled");
 }
 
 void AIManualSnapshots::_on_snapshot_item_selected() {
@@ -551,12 +526,10 @@ void AIManualSnapshots::_on_delete_selected_snapshot() {
 }
 
 void AIManualSnapshots::_on_snapshot_restore_requested(const String &p_snapshot_tag) {
-	print_line("AIManualSnapshots: Restore confirmed for: " + p_snapshot_tag);
 	
 	bool success = restore_to_snapshot(p_snapshot_tag);
 	
 	if (success) {
-		print_line("AIManualSnapshots: Snapshot restored successfully");
 		
 		// Show success notification
 		if (chat_dock) {
@@ -568,7 +541,6 @@ void AIManualSnapshots::_on_snapshot_restore_requested(const String &p_snapshot_
 			snapshots_list_window->hide();
 		}
 	} else {
-		print_line("AIManualSnapshots: Failed to restore snapshot");
 		
 		// Show error notification
 		if (chat_dock) {
@@ -578,12 +550,10 @@ void AIManualSnapshots::_on_snapshot_restore_requested(const String &p_snapshot_
 }
 
 void AIManualSnapshots::_on_snapshot_delete_requested(const String &p_snapshot_tag) {
-	print_line("AIManualSnapshots: Delete confirmed for: " + p_snapshot_tag);
 	
 	bool success = delete_snapshot(p_snapshot_tag);
 	
 	if (success) {
-		print_line("AIManualSnapshots: Snapshot deleted successfully");
 		
 		// Refresh the snapshots list
 		_refresh_snapshots_list();
@@ -593,7 +563,6 @@ void AIManualSnapshots::_on_snapshot_delete_requested(const String &p_snapshot_t
 			chat_dock->call("_show_status_notification", "success", "Snapshot deleted", "🗑️", 2.0);
 		}
 	} else {
-		print_line("AIManualSnapshots: Failed to delete snapshot");
 		
 		// Show error notification
 		if (chat_dock) {
@@ -622,7 +591,6 @@ String AIManualSnapshots::_get_selected_snapshot_tag() {
 void AIManualSnapshots::_refresh_snapshots_list() {
 	if (!snapshots_tree) return;
 	
-	print_line("AIManualSnapshots: Refreshing snapshots list");
 	
 	// Clear tree
 	snapshots_tree->clear();
@@ -669,6 +637,5 @@ void AIManualSnapshots::_refresh_snapshots_list() {
 		item->set_icon(0, chat_dock->get_theme_icon(SNAME("Favorites"), SNAME("EditorIcons")));
 	}
 	
-	print_line("AIManualSnapshots: List refreshed with " + String::num_int64(snapshots.size()) + " snapshots");
 }
 

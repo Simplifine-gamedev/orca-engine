@@ -31,6 +31,10 @@ void AuthDialog::_notification(int p_what) {
 		
 		case NOTIFICATION_PROCESS: {
 			if (waiting_for_callback) {
+				AuthManager *auth = AuthManager::get_singleton();
+				if (auth) {
+					auth->poll_loopback_server();
+				}
 				_check_auth_status();
 			}
 		} break;

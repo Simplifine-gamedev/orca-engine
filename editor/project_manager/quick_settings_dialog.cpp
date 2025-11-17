@@ -33,6 +33,7 @@
 #include "core/string/translation_server.h"
 #include "editor/auth/auth_dialog.h"
 #include "editor/auth/auth_manager.h"
+#include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
@@ -233,6 +234,22 @@ void QuickSettingsDialog::_request_restart() {
 	emit_signal("restart_required");
 }
 
+void QuickSettingsDialog::_refresh_account_section() {
+	if (!account_label) {
+		return;
+	}
+
+	AuthManager *auth = AuthManager::get_singleton();
+	bool is_signed_in = auth && auth->get_is_authenticated();
+	String account_text = is_signed_in ? auth->get_user_email() : TTRC("Not signed in");
+
+	account_label->set_text(account_text);
+
+	if (sign_out_button) {
+		sign_out_button->set_visible(is_signed_in);
+	}
+}
+
 void QuickSettingsDialog::update_size_limits(const Size2 &p_max_popup_size) {
 #ifndef ANDROID_ENABLED
 	language_option_button->get_popup()->set_max_size(p_max_popup_size);
@@ -251,6 +268,7 @@ void QuickSettingsDialog::_notification(int p_what) {
 		case NOTIFICATION_VISIBILITY_CHANGED: {
 			if (is_visible()) {
 				_update_current_values();
+				_refresh_account_section();
 			}
 		} break;
 	}
@@ -268,7 +286,9 @@ void QuickSettingsDialog::_on_sign_out_pressed() {
 	
 	// Close the settings dialog
 	hide();
-	
+
+	bool project_manager_found = false;
+
 	// Find and hide the ProjectManager
 	Node *root = get_tree()->get_root();
 	if (root) {
@@ -279,26 +299,35 @@ void QuickSettingsDialog::_on_sign_out_pressed() {
 				if (pm) {
 					pm->hide();
 				}
-				break;
-			}
-		}
-	}
-	
-	// Show the auth dialog
-	AuthDialog *auth_dialog = memnew(AuthDialog);
-	root->add_child(auth_dialog);
-	auth_dialog->show_login();
-	
-	// Store reference to ProjectManager for showing it after auth
-	if (root) {
-		for (int i = 0; i < root->get_child_count(); i++) {
-			Node *child = root->get_child(i);
-			if (child->get_class() == "ProjectManager") {
+				project_manager_found = true;
+				
+				// Show the auth dialog
+				AuthDialog *auth_dialog = memnew(AuthDialog);
+				root->add_child(auth_dialog);
+				auth_dialog->show_login();
 				auth_dialog->set_meta("project_manager", child);
 				break;
 			}
 		}
 	}
+
+	if (!project_manager_found) {
+		// We're in the editor, just inform the user and refresh the account UI.
+		EditorNode *editor = EditorNode::get_singleton();
+		if (editor) {
+			editor->refresh_account_button_from_auth();
+		}
+
+		if (root) {
+			AcceptDialog *info_dialog = memnew(AcceptDialog);
+			info_dialog->set_title(TTRC("Signed Out"));
+			info_dialog->set_text(TTRC("You have been signed out.\nRestart Orca to sign in again."));
+			root->add_child(info_dialog);
+			info_dialog->popup_centered(Size2(360, 160) * EDSCALE);
+		}
+	}
+
+	_refresh_account_section();
 }
 
 void QuickSettingsDialog::_bind_methods() {
@@ -325,32 +354,23 @@ QuickSettingsDialog::QuickSettingsDialog() {
 
 	// Account information with sign out button.
 	{
-		AuthManager *auth = AuthManager::get_singleton();
-		String account_email = "Not signed in";
-		bool is_signed_in = auth && auth->get_is_authenticated();
-		
-		if (is_signed_in) {
-			account_email = auth->get_user_email();
-		}
-		
 		HBoxContainer *account_container = memnew(HBoxContainer);
-		
-		Label *account_label = memnew(Label(account_email));
+
+		account_label = memnew(Label);
 		account_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		account_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_LEFT);
 		account_container->add_child(account_label);
-		
-		if (is_signed_in) {
-			sign_out_button = memnew(Button);
-			sign_out_button->set_text(TTRC("Sign Out"));
-			sign_out_button->connect(SceneStringName(pressed), callable_mp(this, &QuickSettingsDialog::_on_sign_out_pressed));
-			account_container->add_child(sign_out_button);
-		}
-		
+
+		sign_out_button = memnew(Button);
+		sign_out_button->set_text(TTRC("Sign Out"));
+		sign_out_button->connect(SceneStringName(pressed), callable_mp(this, &QuickSettingsDialog::_on_sign_out_pressed));
+		account_container->add_child(sign_out_button);
+
 		account_container->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 		account_container->set_stretch_ratio(2.0);
-		
+
 		_add_setting_control(TTRC("Account"), account_container);
+		_refresh_account_section();
 	}
 
 #ifndef ANDROID_ENABLED

@@ -60,15 +60,9 @@ AICheckpointManager::CheckpointResult AICheckpointManager::create_comprehensive_
 	CheckpointResult result;
 	result.success = false;
 	
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: CREATING ISOLATED PROJECT CHECKPOINT");
-	print_line("AI Checkpoint: Project root: " + p_project_root);
-	print_line("AI Checkpoint: Message index: " + String::num_int64(p_message_index));
-	print_line("AI Checkpoint: ========================================");
 	
 	// Get isolated checkpoint directory (separate from project git)
 	String checkpoint_dir = _get_checkpoint_directory(p_project_root);
-	print_line("AI Checkpoint: Checkpoint storage: " + checkpoint_dir);
 	
 	// Ensure project .gitignore excludes .ai-checkpoints directory
 	_ensure_project_gitignore_excludes_checkpoints(p_project_root);
@@ -80,7 +74,6 @@ AICheckpointManager::CheckpointResult AICheckpointManager::create_comprehensive_
 	}
 	
 	// Copy all project files to checkpoint directory
-	print_line("AI Checkpoint: Copying project files to isolated checkpoint storage...");
 	if (!_copy_project_to_checkpoint(p_project_root, checkpoint_dir)) {
 		result.message = "Failed to copy project files to checkpoint directory";
 		return result;
@@ -99,7 +92,6 @@ AICheckpointManager::CheckpointResult AICheckpointManager::create_comprehensive_
 			result.message = "Failed to create checkpoint commit and tag";
 			return result;
 		}
-		print_line("AI Checkpoint: No changes to commit, but checkpoint tag created");
 	} else {
 		// Create tag for easy reference
 		if (!_create_checkpoint_tag(checkpoint_dir, p_message_index)) {
@@ -113,11 +105,6 @@ AICheckpointManager::CheckpointResult AICheckpointManager::create_comprehensive_
 	result.checkpoint_tag = _generate_checkpoint_name(p_message_index);
 	result.message = "Isolated checkpoint created successfully";
 	
-	print_line("AI Checkpoint: ✅✅✅ ISOLATED CHECKPOINT CREATED ✅✅✅");
-	print_line("AI Checkpoint: Tag: " + result.checkpoint_tag);
-	print_line("AI Checkpoint: Location: " + checkpoint_dir);
-	print_line("AI Checkpoint: Your project git is completely untouched!");
-	print_line("AI Checkpoint: ========================================");
 	
 	return result;
 }
@@ -126,61 +113,41 @@ AICheckpointManager::RestoreResult AICheckpointManager::restore_to_checkpoint(co
 	RestoreResult result;
 	result.success = false;
 	
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: RESTORING FROM ISOLATED CHECKPOINT");
-	print_line("AI Checkpoint: Project root: " + p_project_root);
-	print_line("AI Checkpoint: Message index: " + String::num_int64(p_message_index));
-	print_line("AI Checkpoint: ========================================");
 	
 	// Get isolated checkpoint directory
 	String checkpoint_dir = _get_checkpoint_directory(p_project_root);
-	print_line("AI Checkpoint: Checkpoint storage: " + checkpoint_dir);
 	
 	// STEP 1: Capture current editor state (for reopening after restore)
-	print_line("AI Checkpoint: STEP 1: Capturing current editor state...");
 	result.restored_scene_path = _get_current_scene_path();
 	result.restored_scripts = _get_open_scripts();
 	
-	print_line("AI Checkpoint: - Current scene: " + (result.restored_scene_path.is_empty() ? "(none)" : result.restored_scene_path));
-	print_line("AI Checkpoint: - Open scripts: " + String::num_int64(result.restored_scripts.size()));
 	
 	// STEP 2: Clear ALL editor state to prevent crashes during restore
-	print_line("AI Checkpoint: STEP 2: Clearing ALL editor state...");
 	_clear_editor_state();
-	print_line("AI Checkpoint: - Editor state cleared (scripts closed, scene closed, caches cleared)");
 	
 	// STEP 3: Find and validate checkpoint tag in checkpoint directory
-	print_line("AI Checkpoint: STEP 3: Finding checkpoint tag in isolated storage...");
 	String checkpoint_tag = _find_checkpoint_tag(checkpoint_dir, p_message_index);
 	
 	if (checkpoint_tag.is_empty()) {
 		result.message = "No checkpoint found for message index " + String::num_int64(p_message_index);
-		print_line("AI Checkpoint: ❌ " + result.message);
 		return result;
 	}
 	
-	print_line("AI Checkpoint: ✅ Found checkpoint: " + checkpoint_tag);
 	
 	// STEP 4: Reset checkpoint directory to the desired tag
-	print_line("AI Checkpoint: STEP 4: Resetting checkpoint git to tag...");
 	if (!_git_reset_to_tag(checkpoint_dir, checkpoint_tag)) {
 		result.message = "Checkpoint git reset failed";
-		print_line("AI Checkpoint: ❌ Checkpoint git reset failed");
 		return result;
 	}
 	
 	// STEP 5: Copy files from checkpoint directory to project
-	print_line("AI Checkpoint: STEP 5: Restoring project files from checkpoint...");
 	if (!_restore_project_from_checkpoint(checkpoint_dir, p_project_root)) {
 		result.message = "Failed to restore project files from checkpoint";
-		print_line("AI Checkpoint: ❌ Failed to restore project files");
 		return result;
 	}
 	
-	print_line("AI Checkpoint: ✅ All project files restored from isolated checkpoint");
 	
 	// VERIFICATION: List restored files
-	print_line("AI Checkpoint: VERIFICATION - Listing restored files:");
 	Ref<DirAccess> verify_dir = DirAccess::open(p_project_root);
 	if (verify_dir.is_valid()) {
 		verify_dir->list_dir_begin();
@@ -190,39 +157,25 @@ AICheckpointManager::RestoreResult AICheckpointManager::restore_to_checkpoint(co
 		while (!file_name.is_empty()) {
 			if (verify_dir->current_is_dir()) {
 				if (!file_name.begins_with(".")) {
-					print_line("AI Checkpoint:   [DIR]  " + file_name + "/");
 					dir_count++;
 				}
 			} else {
-				print_line("AI Checkpoint:   [FILE] " + file_name);
 				file_count++;
 			}
 			file_name = verify_dir->get_next();
 		}
 		verify_dir->list_dir_end();
-		print_line("AI Checkpoint: VERIFICATION - Found " + String::num_int64(file_count) + " files, " + String::num_int64(dir_count) + " directories");
 	}
 	
 	// Success!
 	result.success = true;
 	result.message = "Isolated checkpoint restored successfully";
 	
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: ✅✅✅ ISOLATED RESTORE COMPLETE ✅✅✅");
-	print_line("AI Checkpoint: Files restored from: " + checkpoint_dir);
-	print_line("AI Checkpoint: Your project git history is untouched!");
-	print_line("AI Checkpoint: .godot/ folder was never affected");
-	print_line("AI Checkpoint: Next: Editor refresh will reload all components");
-	print_line("AI Checkpoint: ========================================");
 
 	return result;
 }
 
 void AICheckpointManager::refresh_editor_completely(const String &p_restored_scene_path, const Vector<String> &p_restored_scripts) {
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: COMPREHENSIVE EDITOR REFRESH");
-	print_line("AI Checkpoint: Reloading ALL editor components from disk");
-	print_line("AI Checkpoint: ========================================");
 	
 	// Phase 1: Resources (immediate)
 	_refresh_phase_1_resources();
@@ -231,7 +184,6 @@ void AICheckpointManager::refresh_editor_completely(const String &p_restored_sce
 	// Note: We can't use SceneTreeTimer here since this is a static class
 	// The caller (ai_chat_dock) should handle the phased delays
 	
-	print_line("AI Checkpoint: Editor refresh initiated - phases will run over next 1 second");
 }
 
 // ============================================================================
@@ -256,16 +208,13 @@ String AICheckpointManager::_get_checkpoint_directory(const String &p_project_ro
 	
 	// Create checkpoint directory if it doesn't exist
 	if (!DirAccess::exists(checkpoint_dir)) {
-		print_line("AI Checkpoint: Creating isolated checkpoint directory: " + checkpoint_dir);
 		
 		Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
 		if (da.is_valid()) {
 			Error err = da->make_dir_recursive(checkpoint_dir);
 			if (err != OK && err != ERR_ALREADY_EXISTS) {
-				print_line("AI Checkpoint: ❌ Failed to create checkpoint directory: " + String::num_int64(err));
 				return String(); // Return empty string on failure
 			}
-			print_line("AI Checkpoint: ✅ Created checkpoint directory");
 		}
 	}
 	
@@ -273,7 +222,6 @@ String AICheckpointManager::_get_checkpoint_directory(const String &p_project_ro
 }
 
 bool AICheckpointManager::_copy_project_to_checkpoint(const String &p_project_root, const String &p_checkpoint_dir) {
-	print_line("AI Checkpoint: Copying project files to checkpoint directory...");
 	
 	// Remove all existing files in checkpoint directory (clean slate)
 	_remove_directory_contents_recursive(p_checkpoint_dir, true); // true = preserve .git
@@ -283,7 +231,6 @@ bool AICheckpointManager::_copy_project_to_checkpoint(const String &p_project_ro
 }
 
 bool AICheckpointManager::_restore_project_from_checkpoint(const String &p_checkpoint_dir, const String &p_project_root) {
-	print_line("AI Checkpoint: Restoring project files from checkpoint...");
 	
 	// Don't remove .godot folder - we need to preserve it!
 	// Only remove project files, not editor state
@@ -296,7 +243,6 @@ bool AICheckpointManager::_restore_project_from_checkpoint(const String &p_check
 bool AICheckpointManager::_remove_directory_contents_recursive(const String &p_directory, bool p_preserve_git_only) {
 	Ref<DirAccess> da = DirAccess::open(p_directory);
 	if (!da.is_valid()) {
-		print_line("AI Checkpoint: ❌ Cannot access directory for cleanup: " + p_directory);
 		return false;
 	}
 	
@@ -330,13 +276,11 @@ bool AICheckpointManager::_remove_directory_contents_recursive(const String &p_d
 					_remove_directory_contents_recursive(full_path, false); // Don't preserve anything in subdirectories
 					Error err = da->remove(file_name);
 					if (err != OK) {
-						print_line("AI Checkpoint: Warning - failed to remove directory: " + file_name);
 					}
 				} else {
 					// Remove file
 					Error err = da->remove(file_name);
 					if (err != OK) {
-						print_line("AI Checkpoint: Warning - failed to remove file: " + file_name);
 					}
 				}
 			}
@@ -351,7 +295,6 @@ bool AICheckpointManager::_remove_directory_contents_recursive(const String &p_d
 bool AICheckpointManager::_copy_directory_recursive(const String &p_source, const String &p_destination, bool p_is_to_checkpoint) {
 	Ref<DirAccess> source_da = DirAccess::open(p_source);
 	if (!source_da.is_valid()) {
-		print_line("AI Checkpoint: ❌ Cannot access source directory: " + p_source);
 		return false;
 	}
 	
@@ -384,7 +327,6 @@ bool AICheckpointManager::_copy_directory_recursive(const String &p_source, cons
 					if (fs_dir.is_valid()) {
 						Error make_dir_err = fs_dir->make_dir_recursive(dest_path);
 						if (make_dir_err != OK && make_dir_err != ERR_ALREADY_EXISTS) {
-							print_line("AI Checkpoint: ❌ Failed to create directory: " + dest_path + " (err " + String::num_int64(make_dir_err) + ")");
 						}
 					}
 					_copy_directory_recursive(source_path, dest_path, p_is_to_checkpoint);
@@ -393,13 +335,11 @@ bool AICheckpointManager::_copy_directory_recursive(const String &p_source, cons
 					if (fs_dir.is_valid()) {
 						Error ensure_dir_err = fs_dir->make_dir_recursive(dest_path.get_base_dir());
 						if (ensure_dir_err != OK && ensure_dir_err != ERR_ALREADY_EXISTS) {
-							print_line("AI Checkpoint: ❌ Failed to create parent directory: " + dest_path.get_base_dir() + " (err " + String::num_int64(ensure_dir_err) + ")");
 						}
 					}
 					
 					Error copy_err = DirAccess::copy_absolute(source_path, dest_path);
 					if (copy_err != OK) {
-						print_line("AI Checkpoint: ❌ Failed to copy file: " + source_path + " -> " + dest_path + " (err " + String::num_int64(copy_err) + ")");
 					} else {
 						files_copied++;
 					}
@@ -411,7 +351,6 @@ bool AICheckpointManager::_copy_directory_recursive(const String &p_source, cons
 	source_da->list_dir_end();
 	
 	if (files_copied > 0) {
-		print_line("AI Checkpoint: Copied " + String::num_int64(files_copied) + " files");
 	}
 	
 	return true;
@@ -435,7 +374,6 @@ void AICheckpointManager::_ensure_project_gitignore_excludes_checkpoints(const S
 	}
 	
 	if (!already_ignored) {
-		print_line("AI Checkpoint: Adding .ai-checkpoints/ to project .gitignore...");
 		
 		// Append to existing .gitignore or create new one
 		Ref<FileAccess> file = FileAccess::open(gitignore_path, FileAccess::WRITE_READ);
@@ -445,7 +383,6 @@ void AICheckpointManager::_ensure_project_gitignore_excludes_checkpoints(const S
 			file->store_line("# AI Chat Checkpoints (isolated storage)");
 			file->store_line(".ai-checkpoints/");
 			file->close();
-			print_line("AI Checkpoint: ✅ Added .ai-checkpoints/ to project .gitignore");
 		}
 	}
 }
@@ -462,10 +399,8 @@ bool AICheckpointManager::_git_exec(const String &p_project_root, const List<Str
 	Error err = OS::get_singleton()->execute("git", args, &r_output, &r_exitcode, true, nullptr, false);
 
 	if (err != OK) {
-		print_line("AI Checkpoint: ❌ Git exec OS error: " + String::num_int64(err) + " (cwd: " + p_project_root + ")");
 	}
 	if (r_exitcode != 0) {
-		print_line("AI Checkpoint: ❌ Git exec exit code: " + String::num_int64(r_exitcode) + " (cwd: " + p_project_root + ")");
 	}
 
 	return err == OK && r_exitcode == 0;
@@ -479,16 +414,13 @@ bool AICheckpointManager::_init_checkpoint_git_repo(const String &p_checkpoint_d
 		return true; // Already initialized
 	}
 	
-	print_line("AI Checkpoint: Initializing dedicated checkpoint Git repository...");
 	
 	List<String> init_args; init_args.push_back("init");
 	String output; int exitcode;
 	if (!_git_exec(p_checkpoint_dir, init_args, output, exitcode)) {
-		print_line("AI Checkpoint: Failed to initialize checkpoint Git repo: " + output);
 		return false;
 	}
 	
-	print_line("AI Checkpoint: ✅ Checkpoint Git repository initialized");
 	
 	// Set git config for AI checkpoints
 	List<String> config_name_args; config_name_args.push_back("config"); config_name_args.push_back("user.name"); config_name_args.push_back("AI Chat Checkpoints");
@@ -496,13 +428,11 @@ bool AICheckpointManager::_init_checkpoint_git_repo(const String &p_checkpoint_d
 	List<String> config_email_args; config_email_args.push_back("config"); config_email_args.push_back("user.email"); config_email_args.push_back("ai-chat@orcaengine.local");
 	_git_exec(p_checkpoint_dir, config_email_args, output, exitcode);
 	
-	print_line("AI Checkpoint: ✅ Checkpoint Git config set");
 	
 	// Create minimal .gitignore for checkpoint directory
 	_create_checkpoint_gitignore(p_checkpoint_dir);
 	_ensure_gitignore_committed(p_checkpoint_dir);
 	
-	print_line("AI Checkpoint: ✅ Isolated checkpoint Git repository ready");
 	
 	return true;
 }
@@ -515,7 +445,6 @@ void AICheckpointManager::_create_checkpoint_gitignore(const String &p_checkpoin
 		return;
 	}
 	
-	print_line("AI Checkpoint: Creating checkpoint .gitignore...");
 	
 	Ref<FileAccess> gitignore = FileAccess::open(gitignore_path, FileAccess::WRITE);
 	if (gitignore.is_valid()) {
@@ -531,7 +460,6 @@ void AICheckpointManager::_create_checkpoint_gitignore(const String &p_checkpoin
 		gitignore->store_line("Thumbs.db");
 		gitignore->close();
 		
-		print_line("AI Checkpoint: ✅ Created checkpoint .gitignore");
 	}
 }
 
@@ -547,11 +475,9 @@ void AICheckpointManager::_ensure_gitignore_committed(const String &p_checkpoint
 	
 	if (!output.strip_edges().is_empty()) {
 		// .gitignore is already tracked
-		print_line("AI Checkpoint: ✅ .gitignore already tracked in checkpoint git");
 		return;
 	}
 	
-	print_line("AI Checkpoint: Adding and committing .gitignore to checkpoint repository...");
 	
 	// Stage .gitignore
 	List<String> add_gitignore_args;
@@ -559,7 +485,6 @@ void AICheckpointManager::_ensure_gitignore_committed(const String &p_checkpoint
 	add_gitignore_args.push_back(".gitignore");
 	
 	if (!_git_exec(p_checkpoint_dir, add_gitignore_args, output, exitcode)) {
-		print_line("AI Checkpoint: Warning - could not add .gitignore: " + output);
 		return;
 	}
 	
@@ -572,16 +497,13 @@ void AICheckpointManager::_ensure_gitignore_committed(const String &p_checkpoint
 	if (!_git_exec(p_checkpoint_dir, commit_gitignore_args, output, exitcode)) {
 		// Check if it's just "nothing to commit"
 		if (output.find("nothing to commit") == -1) {
-			print_line("AI Checkpoint: Warning - could not commit .gitignore: " + output);
 		}
 		return;
 	}
 	
-	print_line("AI Checkpoint: ✅ .gitignore committed to checkpoint repository");
 }
 
 bool AICheckpointManager::_stage_all_files(const String &p_checkpoint_dir) {
-	print_line("AI Checkpoint: Staging ALL files in checkpoint directory...");
 	
 	// Add ALL files in checkpoint directory (this is an isolated git repo)
 	List<String> add_all_args;
@@ -591,7 +513,6 @@ bool AICheckpointManager::_stage_all_files(const String &p_checkpoint_dir) {
 	String output;
 	int exitcode;
 	if (!_git_exec(p_checkpoint_dir, add_all_args, output, exitcode)) {
-		print_line("AI Checkpoint: ❌ Failed to stage files in checkpoint directory: " + output);
 		return false;
 	}
 	
@@ -612,7 +533,6 @@ bool AICheckpointManager::_stage_all_files(const String &p_checkpoint_dir) {
 		}
 	}
 	
-	print_line("AI Checkpoint: ✅ Staged " + String::num_int64(staged_count) + " files in checkpoint directory");
 	
 	return true;
 }
@@ -624,23 +544,18 @@ bool AICheckpointManager::_create_commit(const String &p_checkpoint_dir, const S
 		commit_message += "...";
 	}
 	
-	print_line("AI Checkpoint: Creating Git commit in checkpoint directory...");
-	print_line("AI Checkpoint: Commit message: " + commit_message);
 	
 	List<String> commit_args; commit_args.push_back("commit"); commit_args.push_back("--allow-empty"); commit_args.push_back("-m"); commit_args.push_back(commit_message);
 	String output; int exitcode;
 	if (!_git_exec(p_checkpoint_dir, commit_args, output, exitcode)) {
 		// Check if this is a "nothing to commit" case
 		if (output.find("nothing to commit") != -1 || output.find("no changes added") != -1) {
-			print_line("AI Checkpoint: No changes to commit (working tree clean)");
 			return false; // Caller will handle tag creation
 		}
 		
-		print_line("AI Checkpoint: ❌ Failed to create commit: " + output);
 		return false;
 	}
 	
-	print_line("AI Checkpoint: ✅ Git commit created successfully in checkpoint directory");
 	return true;
 }
 
@@ -648,10 +563,8 @@ bool AICheckpointManager::_create_checkpoint_tag(const String &p_checkpoint_dir,
 	String tag_name = _generate_checkpoint_name(p_message_index);
 	String tag_message = "AI Chat checkpoint for message " + String::num_int64(p_message_index) + " - Project state BEFORE AI response";
 	
-	print_line("AI Checkpoint: Creating checkpoint tag: " + tag_name);
 	
 	// Clean up old checkpoint tags for this message index
-	print_line("AI Checkpoint: Cleaning up old checkpoints for message " + String::num_int64(p_message_index) + "...");
 	
 	List<String> list_old_tags_args;
 	list_old_tags_args.push_back("tag");
@@ -666,7 +579,6 @@ bool AICheckpointManager::_create_checkpoint_tag(const String &p_checkpoint_dir,
 		for (int i = 0; i < old_tags.size(); i++) {
 			String old_tag = old_tags[i].strip_edges();
 			if (!old_tag.is_empty()) {
-				print_line("AI Checkpoint:   - Deleting old tag: " + old_tag);
 				
 				List<String> delete_tag_args;
 				delete_tag_args.push_back("tag");
@@ -680,7 +592,6 @@ bool AICheckpointManager::_create_checkpoint_tag(const String &p_checkpoint_dir,
 			}
 		}
 		if (deleted_count > 0) {
-			print_line("AI Checkpoint: ✅ Cleaned up " + String::num_int64(deleted_count) + " old checkpoint(s)");
 		}
 	}
 	
@@ -694,16 +605,13 @@ bool AICheckpointManager::_create_checkpoint_tag(const String &p_checkpoint_dir,
 	String output; 
 	int exitcode;
 	if (!_git_exec(p_checkpoint_dir, tag_args, output, exitcode)) {
-		print_line("AI Checkpoint: ❌ Failed to create tag: " + output);
 		return false;
 	}
 	
-	print_line("AI Checkpoint: ✅ Checkpoint tag created: " + tag_name + " (BEFORE AI work)");
 	return true;
 }
 
 String AICheckpointManager::_find_checkpoint_tag(const String &p_checkpoint_dir, int p_message_index) {
-	print_line("AI Checkpoint: Searching for checkpoint tag for message " + String::num_int64(p_message_index) + "...");
 	
 	// Select the LATEST (NEWEST) checkpoint for this message index
 	List<String> tag_args; 
@@ -715,29 +623,23 @@ String AICheckpointManager::_find_checkpoint_tag(const String &p_checkpoint_dir,
 	String output; 
 	int exitcode;
 	if (!_git_exec(p_checkpoint_dir, tag_args, output, exitcode) || output.strip_edges().is_empty()) {
-		print_line("AI Checkpoint: ❌ No checkpoint tag found for message " + String::num_int64(p_message_index));
 		return String();
 	}
 	
 	// First line is the NEWEST "before AI" checkpoint
 	PackedStringArray tags = output.strip_edges().split("\n");
 	if (tags.is_empty() || tags[0].strip_edges().is_empty()) {
-		print_line("AI Checkpoint: ❌ No valid tags in output");
 		return String();
 	}
 	
 	String found_tag = tags[0].strip_edges();
-	print_line("AI Checkpoint: ✅ Found LATEST checkpoint (state BEFORE AI's work): " + found_tag);
 	
 	// Show all matching tags for debugging
 	if (tags.size() > 1) {
-		print_line("AI Checkpoint: ℹ️  Multiple checkpoints found for message " + String::num_int64(p_message_index) + ":");
 		for (int i = 0; i < tags.size(); i++) {
-			print_line("AI Checkpoint:     " + String::num_int64(i+1) + ". " + tags[i].strip_edges() + (i == 0 ? " ← USING THIS (newest pre-AI state)" : " (older, will be cleaned up)"));
 		}
 		
 		// Clean up old checkpoints to avoid clutter (keep only the newest)
-		print_line("AI Checkpoint: Cleaning up " + String::num_int64(tags.size() - 1) + " outdated checkpoint(s)...");
 		for (int i = 1; i < tags.size(); i++) {
 			String old_tag = tags[i].strip_edges();
 			if (!old_tag.is_empty()) {
@@ -748,7 +650,6 @@ String AICheckpointManager::_find_checkpoint_tag(const String &p_checkpoint_dir,
 				
 				String delete_output;
 				_git_exec(p_checkpoint_dir, delete_old_args, delete_output, exitcode);
-				print_line("AI Checkpoint:     ✅ Deleted outdated: " + old_tag);
 			}
 		}
 	}
@@ -757,70 +658,47 @@ String AICheckpointManager::_find_checkpoint_tag(const String &p_checkpoint_dir,
 }
 
 bool AICheckpointManager::_git_reset_to_tag(const String &p_checkpoint_dir, const String &p_tag) {
-	print_line("AI Checkpoint: Performing Git hard reset to: " + p_tag);
-	print_line("AI Checkpoint: WARNING: This will discard ALL uncommitted changes in checkpoint directory!");
 	
 	// Perform hard reset in checkpoint directory
 	List<String> reset_args; reset_args.push_back("reset"); reset_args.push_back("--hard"); reset_args.push_back(p_tag);
 	String output; int exitcode;
 	if (!_git_exec(p_checkpoint_dir, reset_args, output, exitcode)) {
-		print_line("AI Checkpoint: ❌ Checkpoint git reset failed: " + output);
 		return false;
 	}
 	
-	print_line("AI Checkpoint: ✅ Checkpoint git reset successful");
-	print_line("AI Checkpoint: Output: " + output.strip_edges());
 	
 	return true;
 }
 
 void AICheckpointManager::_clear_editor_state() {
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: CLEARING ALL EDITOR STATE");
-	print_line("AI Checkpoint: ========================================");
 	
 	// CRITICAL FIX: Clear ALL preview overlays FIRST
 	// This is the most important step - preview overlays mask the actual disk content!
-	print_line("AI Checkpoint: STEP 1: Clearing ALL preview overlays...");
-	print_line("AI Checkpoint: (Preview overlays are in-memory edits that mask disk content)");
 	EditorTools::clear_all_preview_overlays();
-	print_line("AI Checkpoint: ✅ ALL preview overlays cleared - scripts will now read from DISK");
 	
 	// Close ALL script tabs to force complete reload
 	if (ScriptEditor::get_singleton()) {
-		print_line("AI Checkpoint: STEP 2: Preparing to close script editor tabs...");
 		ScriptEditor *se = ScriptEditor::get_singleton();
 		
 		// Get list of open scripts
 		const Vector<Ref<Script>> &scripts = se->get_open_scripts();
-		print_line("AI Checkpoint: - Found " + String::num_int64(scripts.size()) + " open scripts");
 		
 		// Scripts will be closed during phase 3 refresh
 		for (int i = 0; i < scripts.size(); i++) {
 			if (scripts[i].is_valid()) {
 				String script_path = scripts[i]->get_path();
-				print_line("AI Checkpoint:   - Will close: " + script_path);
 			}
 		}
-		print_line("AI Checkpoint: ✅ Script tabs will be closed and reopened in Phase 3");
 	}
 	
 	// Close current scene
 	if (EditorNode::get_singleton()) {
-		print_line("AI Checkpoint: STEP 3: Closing current scene...");
 		EditorNode::get_singleton()->new_scene();
-		print_line("AI Checkpoint: ✅ Scene closed");
 	}
 	
 	// Clear GDScript cache to force recompilation
-	print_line("AI Checkpoint: STEP 4: Clearing GDScript cache...");
 	GDScriptCache::clear();
-	print_line("AI Checkpoint: ✅ GDScript cache cleared - scripts will recompile from disk");
 	
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: ✅✅✅ EDITOR STATE CLEARED COMPLETELY");
-	print_line("AI Checkpoint: Next: Git reset will restore files to disk");
-	print_line("AI Checkpoint: ========================================");
 }
 
 Vector<String> AICheckpointManager::_get_open_scripts() {
@@ -859,23 +737,17 @@ String AICheckpointManager::_generate_checkpoint_name(int p_message_index) {
 // ============================================================================
 
 void AICheckpointManager::_refresh_phase_1_resources() {
-	print_line("AI Checkpoint: PHASE 1: Clearing caches...");
 	
 	// Clear GDScript cache (force recompilation from disk when accessed)
-	print_line("AI Checkpoint:   - Clearing GDScript cache...");
 	GDScriptCache::clear();
-	print_line("AI Checkpoint:   ✅ GDScript cache cleared");
 	
 	// SKIP file system scan - causes crashes during active streaming
 	// Git reset already restored files on disk
 	// Resources will reload when accessed
-	print_line("AI Checkpoint:   - Skipping file system scan (prevents UI crashes)");
 	
-	print_line("AI Checkpoint: ✅ Phase 1 complete");
 }
 
 void AICheckpointManager::_refresh_phase_2_scenes() {
-	print_line("AI Checkpoint: PHASE 2: Closing and reopening scene from disk...");
 	
 	if (EditorNode::get_singleton()) {
 		Node *edited_scene = EditorNode::get_singleton()->get_edited_scene();
@@ -885,42 +757,32 @@ void AICheckpointManager::_refresh_phase_2_scenes() {
 		}
 		
 		if (!scene_path.is_empty() && FileAccess::exists(scene_path)) {
-			print_line("AI Checkpoint:   - CLOSING: " + scene_path);
 			EditorNode::get_singleton()->new_scene();
 			
-			print_line("AI Checkpoint:   - REOPENING from disk...");
 			EditorInterface::get_singleton()->open_scene_from_path(scene_path);
-			print_line("AI Checkpoint:   ✅ Scene reopened");
 		}
 	}
 	
-	print_line("AI Checkpoint: ✅ Phase 2 complete");
 }
 
 void AICheckpointManager::_refresh_phase_3_scripts(const Vector<String> &p_script_paths) {
-	print_line("AI Checkpoint: PHASE 3: FORCIBLY reloading scripts from restored disk files...");
 	
 	if (ScriptEditor::get_singleton()) {
 		ScriptEditor *se = ScriptEditor::get_singleton();
 		
 		// CLOSE all currently open scripts to clear in-memory state
-		print_line("AI Checkpoint:   - Closing all open scripts...");
 		se->call("close_all");
-		print_line("AI Checkpoint:   ✅ All scripts closed");
 		
 		// CRITICAL: We can't clear ResourceCache directly (it's private)
 		// Instead, we'll rely on CACHE_MODE_IGNORE when loading resources
 		// and forcibly set source code from disk
-		print_line("AI Checkpoint:   - Will bypass resource cache using CACHE_MODE_IGNORE");
 		
 		// REOPEN from restored disk files (bypassing ALL caches)
-		print_line("AI Checkpoint:   - Reopening " + String::num_int64(p_script_paths.size()) + " scripts fresh from disk...");
 		for (int i = 0; i < p_script_paths.size(); i++) {
 			String script_path = p_script_paths[i];
 			
 			// Verify file actually exists on disk after git reset
 			if (!FileAccess::exists(script_path)) {
-				print_line("AI Checkpoint:     ⚠️  File doesn't exist after restore: " + script_path + " (AI created it, now removed)");
 				continue;
 			}
 			
@@ -929,11 +791,9 @@ void AICheckpointManager::_refresh_phase_3_scripts(const Vector<String> &p_scrip
 			Error err;
 			String disk_content = FileAccess::get_file_as_string(script_path, &err);
 			if (err != OK) {
-				print_line("AI Checkpoint:     ❌ Failed to read from disk: " + script_path);
 				continue;
 			}
 			
-			print_line("AI Checkpoint:     - Read " + String::num_int64(disk_content.length()) + " bytes from disk: " + script_path);
 			
 			// Load fresh from disk with CACHE_MODE_IGNORE to force fresh read
 			Ref<Resource> resource = ResourceLoader::load(script_path, "", ResourceFormatLoader::CACHE_MODE_IGNORE);
@@ -943,25 +803,20 @@ void AICheckpointManager::_refresh_phase_3_scripts(const Vector<String> &p_scrip
 				script->set_source_code(disk_content);
 				script->reload(true); // Force full reload
 				
-				print_line("AI Checkpoint:     ✅ Loaded and forced content from disk: " + script_path);
 				se->edit(script);
 			} else {
-				print_line("AI Checkpoint:     ❌ Failed to load script resource: " + script_path);
 			}
 		}
 	}
 	
-	print_line("AI Checkpoint: ✅ Phase 3 complete - Scripts FORCIBLY reloaded from restored disk files");
 }
 
 void AICheckpointManager::_refresh_phase_4_ui() {
-	print_line("AI Checkpoint: PHASE 4: Refreshing UI...");
 	
 	// Force main window refresh
 	if (EditorNode::get_singleton()) {
 		Window *main_window = EditorNode::get_singleton()->get_window();
 		if (main_window) {
-			print_line("AI Checkpoint:   - Activating main window...");
 			main_window->grab_focus();
 			main_window->move_to_foreground();
 			
@@ -972,47 +827,31 @@ void AICheckpointManager::_refresh_phase_4_ui() {
 		}
 		
 		// Force complete redraw by triggering theme change notification
-		print_line("AI Checkpoint:   - Forcing complete redraw...");
 		EditorNode::get_singleton()->get_tree()->get_root()->propagate_notification(Control::NOTIFICATION_THEME_CHANGED);
 	}
 	
-	print_line("AI Checkpoint: ✅ Phase 4 complete");
 }
 
 void AICheckpointManager::_refresh_phase_5_docks() {
-	print_line("AI Checkpoint: PHASE 5: CRITICAL - Refreshing FileSystem dock...");
 	
 	// CRITICAL FIX: Git restore changes files on disk, but Godot's FileSystem doesn't know!
 	// We MUST force a filesystem scan or files won't appear in the navigator
-	print_line("AI Checkpoint:   - Forcing FileSystem scan to detect restored files...");
 	
 	if (EditorFileSystem::get_singleton()) {
 		// NUCLEAR OPTION: Full filesystem scan to rebuild file tree
 		// This is necessary because Git changed files behind Godot's back
 		EditorFileSystem::get_singleton()->scan();
-		print_line("AI Checkpoint:   ✅ FileSystem FULL SCAN started");
 		
 		// Also scan for changes (more lightweight, catches modifications)
 		EditorFileSystem::get_singleton()->scan_changes();
-		print_line("AI Checkpoint:   ✅ FileSystem CHANGE SCAN started");
 	} else {
-		print_line("AI Checkpoint:   ❌ EditorFileSystem not available!");
 	}
 	
 	// Force FileSystem dock to refresh its view
 	if (FileSystemDock::get_singleton()) {
-		print_line("AI Checkpoint:   - Refreshing FileSystem dock UI...");
 		// Navigate to current path to force refresh
 		FileSystemDock::get_singleton()->navigate_to_path("res://");
-		print_line("AI Checkpoint:   ✅ FileSystem dock refreshed");
 	}
 	
-	print_line("AI Checkpoint: ✅ Phase 5 complete");
-	print_line("AI Checkpoint: ========================================");
-	print_line("AI Checkpoint: ✅✅✅ REFRESH COMPLETE ✅✅✅");
-	print_line("AI Checkpoint: Git restored files to disk");
-	print_line("AI Checkpoint: FileSystem scanned - files NOW visible in navigator");
-	print_line("AI Checkpoint: Scripts/scenes reloaded from disk");
-	print_line("AI Checkpoint: ========================================");
 }
 

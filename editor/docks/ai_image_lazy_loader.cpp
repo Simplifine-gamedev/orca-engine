@@ -31,18 +31,15 @@ VBoxContainer* AIImageLazyLoader::create_lazy_image_placeholder(
 	const Dictionary &p_metadata,
 	VBoxContainer *p_parent
 ) {
-	print_line("AI Image Lazy Loader: create_lazy_image_placeholder called!");
 	print_line("  - base64_data length: " + String::num_int64(p_base64_data.length()));
 	print_line("  - parent valid: " + String(p_parent ? "yes" : "no"));
 	
 	if (!p_parent || p_base64_data.is_empty()) {
-		print_line("AI Image Lazy Loader: ERROR - parent null or data empty!");
 		return nullptr;
 	}
 	
 	VBoxContainer *image_container = memnew(VBoxContainer);
 	p_parent->add_child(image_container);
-	print_line("AI Image Lazy Loader: Created image_container and added to parent");
 	
 	// Extract metadata
 	String title = p_metadata.get("prompt", p_metadata.get("name", "Image"));
@@ -202,12 +199,10 @@ void AIImageLazyLoader::_on_load_image_pressed(Button *p_button, VBoxContainer *
 	save_button->connect("pressed", callable_mp_static(&AIImageLazyLoader::_on_simple_save_pressed).bind(p_base64_data, p_metadata));
 	controls_container->add_child(save_button);
 	
-	print_line("AI Image Lazy Loader: Successfully loaded and displayed image (" + String::num_int64(original_size.x) + "x" + String::num_int64(original_size.y) + ") with save button");
 }
 
 void AIImageLazyLoader::_on_simple_save_pressed(const String &p_base64_data, const Dictionary &p_metadata) {
 	if (p_base64_data.is_empty()) {
-		print_line("AI Image Lazy Loader: ERROR - No image data for save");
 		return;
 	}
 	
@@ -218,7 +213,6 @@ void AIImageLazyLoader::_on_simple_save_pressed(const String &p_base64_data, con
 	// Decode image to get original size
 	Vector<uint8_t> image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(p_base64_data);
 	if (image_data.size() == 0) {
-		print_line("AI Image Lazy Loader: ERROR - Failed to decode image");
 		return;
 	}
 	
@@ -266,7 +260,6 @@ void AIImageLazyLoader::_on_simple_save_pressed(const String &p_base64_data, con
 }
 
 void AIImageLazyLoader::_show_save_dialog_with_resolution(const String &p_base64_data, const Dictionary &p_metadata, const Vector2i &p_original_size) {
-	print_line("AI Image Lazy Loader: Showing save dialog with resolution dropdown");
 	
 	// Create file dialog
 	EditorFileDialog *file_dialog = memnew(EditorFileDialog);
@@ -336,7 +329,6 @@ void AIImageLazyLoader::_show_save_dialog_with_resolution(const String &p_base64
 
 void AIImageLazyLoader::_on_enhanced_file_save_selected(const String &p_file_path) {
 	if (p_file_path.is_empty() || g_pending_base64_data.is_empty()) {
-		print_line("AI Image Lazy Loader: ERROR - Missing path or image data");
 		return;
 	}
 	
@@ -346,7 +338,6 @@ void AIImageLazyLoader::_on_enhanced_file_save_selected(const String &p_file_pat
 		selected_resolution = g_resolution_dropdown->get_item_metadata(g_resolution_dropdown->get_selected());
 	}
 	
-	print_line("AI Image Lazy Loader: Saving to: " + p_file_path + " at resolution: " + String::num_int64(selected_resolution));
 	
 	// Decode image
 	Vector<uint8_t> image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(g_pending_base64_data);
@@ -376,7 +367,6 @@ void AIImageLazyLoader::_on_enhanced_file_save_selected(const String &p_file_pat
 			new_size.x = (int)(selected_resolution * aspect);
 		}
 		
-		print_line("AI Image Lazy Loader: Resizing " + String(original_size) + " -> " + String(new_size));
 		image->resize(new_size.x, new_size.y, Image::INTERPOLATE_LANCZOS);
 	}
 	

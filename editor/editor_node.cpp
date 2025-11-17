@@ -33,6 +33,7 @@
 #include "update/update_notification_popup.h"
 
 #include "editor/auth/auth_manager.h"
+#include "editor/auth/auth_dialog.h"
 #include "core/config/project_settings.h"
 #include "core/extension/gdextension_manager.h"
 #include "core/input/input.h"
@@ -365,6 +366,16 @@ void EditorNode::_open_version_control_dock() {
 }
 
 void EditorNode::_show_account_settings() {
+	AuthManager *auth = AuthManager::get_singleton();
+	
+	// If not authenticated, show login dialog
+	if (!auth || !auth->get_is_authenticated()) {
+		AuthDialog *auth_dialog = memnew(AuthDialog);
+		gui_base->add_child(auth_dialog);
+		auth_dialog->show_login();
+		return;
+	}
+	
 	// Show account settings popup
 	AcceptDialog *account_dialog = memnew(AcceptDialog);
 	account_dialog->set_title("Account Settings");
@@ -374,14 +385,7 @@ void EditorNode::_show_account_settings() {
 	account_dialog->add_child(vbox);
 	
 	// Get auth info
-	AuthManager *auth = AuthManager::get_singleton();
-	String email = "Not signed in";
-	bool is_authenticated = false;
-	
-	if (auth && auth->get_is_authenticated()) {
-		email = auth->get_user_email();
-		is_authenticated = true;
-	}
+	String email = auth->get_user_email();
 	
 	// Account info
 	HBoxContainer *account_hbox = memnew(HBoxContainer);
@@ -396,15 +400,45 @@ void EditorNode::_show_account_settings() {
 	email_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	account_hbox->add_child(email_label);
 	
-	if (is_authenticated) {
-		Button *sign_out_btn = memnew(Button);
-		sign_out_btn->set_text("Sign Out");
-		sign_out_btn->connect("pressed", callable_mp(this, &EditorNode::_sign_out_from_account_settings).bind(account_dialog));
-		account_hbox->add_child(sign_out_btn);
-	}
+	Button *sign_out_btn = memnew(Button);
+	sign_out_btn->set_text("Sign Out");
+	sign_out_btn->connect("pressed", callable_mp(this, &EditorNode::_sign_out_from_account_settings).bind(account_dialog));
+	account_hbox->add_child(sign_out_btn);
 	
 	gui_base->add_child(account_dialog);
 	account_dialog->popup_centered(Size2(400, 150));
+}
+
+void EditorNode::_refresh_account_button() {
+	if (!account_button) {
+		return;
+	}
+
+	AuthManager *auth = AuthManager::get_singleton();
+	if (auth && auth->get_is_authenticated()) {
+		String display_name = auth->get_user_name();
+		String email = auth->get_user_email();
+		if (display_name.is_empty()) {
+			display_name = email;
+		}
+		if (display_name.is_empty()) {
+			display_name = TTRC("Account");
+		}
+
+		account_button->set_text(display_name);
+
+		String tooltip = email.is_empty()
+				? TTRC("View account settings and sign out")
+				: vformat(TTRC("Signed in as %s\nClick to view account settings or sign out"), email);
+		account_button->set_tooltip_text(tooltip);
+	} else {
+		account_button->set_text(TTRC("Click to Login"));
+		account_button->set_tooltip_text(TTRC("Click to sign in to your Orca account"));
+	}
+}
+
+void EditorNode::refresh_account_button_from_auth() {
+	_refresh_account_button();
 }
 
 void EditorNode::_sign_out_from_account_settings(AcceptDialog *p_dialog) {
@@ -424,6 +458,8 @@ void EditorNode::_sign_out_from_account_settings(AcceptDialog *p_dialog) {
 	restart_dialog->set_title("Signed Out");
 	gui_base->add_child(restart_dialog);
 	restart_dialog->popup_centered();
+
+	_refresh_account_button();
 }
 
 void EditorNode::_update_title() {
@@ -8422,6 +8458,11 @@ EditorNode::EditorNode() {
 	account_button->set_tooltip_text(TTRC("View account settings and sign out"));
 	account_button->connect("pressed", callable_mp(this, &EditorNode::_show_account_settings));
 	right_menu_hb->add_child(account_button);
+	_refresh_account_button();
+
+	if (AuthManager *auth_singleton = AuthManager::get_singleton()) {
+		auth_singleton->connect("auth_state_changed", callable_mp(this, &EditorNode::_refresh_account_button), CONNECT_REFERENCE_COUNTED);
+	}
 
 	renderer = memnew(OptionButton);
 	renderer->set_visible(true);

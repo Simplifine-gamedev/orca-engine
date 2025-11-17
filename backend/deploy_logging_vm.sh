@@ -60,3 +60,6 @@ echo ""
 echo "🔧 Update your main backend .env:"
 echo "LOGGING_SERVER_URL=http://$EXTERNAL_IP:8082"
 
+
+
+

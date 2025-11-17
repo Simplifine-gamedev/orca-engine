@@ -222,9 +222,7 @@ void EditorLog::_meta_clicked(const String &p_meta) {
 			// Send the error to AI chat for fixing
 			String prompt = "Please help me fix this error:\n\n" + error_text;
 			ai_chat_dock->send_error_message(prompt);
-			print_line("AI Chat: Sent error message for fixing: " + error_text);
 		} else {
-			print_line("AI Chat: Unable to send error - AI Chat dock not available or empty error text");
 		}
 	} else {
 		// Handle regular URL/meta clicks, but also record runtime error/warning when clicked

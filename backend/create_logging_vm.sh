@@ -44,3 +44,6 @@ echo "1. Setup VM: ./setup_logging_vm.sh $PROJECT_ID $VM_NAME $ZONE"
 echo "2. Deploy code: ./deploy_logging_vm.sh $PROJECT_ID $VM_NAME $ZONE"
 echo "3. Update backend: LOGGING_SERVER_URL=http://$EXTERNAL_IP:8082"
 
+
+
+

@@ -65,3 +65,6 @@ gcloud compute ssh $VM_NAME --zone=$ZONE --project=$PROJECT_ID --command="$SETUP
 echo "✅ Logging VM setup complete!"
 echo "🔧 Next: ./deploy_logging_vm.sh $PROJECT_ID $VM_NAME $ZONE"
 
+
+
+

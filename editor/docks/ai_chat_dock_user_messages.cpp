@@ -124,7 +124,6 @@ void UserMessageHandler::_on_chat_container_gui_input(const Ref<InputEvent> &p_e
 		
 		if (!panel_rect.has_point(local_pos)) {
 			// Clicked outside - cancel edit mode
-			print_line("AI Chat: Clicked outside edit panel - canceling edit mode");
 			_on_edit_cancel_pressed(editing_message_index);
 			
 			// Disconnect the click-outside handler
@@ -138,7 +137,6 @@ void UserMessageHandler::_on_chat_container_gui_input(const Ref<InputEvent> &p_e
 void UserMessageHandler::on_user_bubble_clicked(int p_message_index) {
 	if (!chat_dock) return;
 	
-	print_line("AI Chat: User message bubble clicked - transforming to edit field at index: " + String::num_int64(p_message_index));
 	
 	// Get messages
 	Array messages = chat_dock->_get_messages_as_array();
@@ -149,30 +147,25 @@ void UserMessageHandler::on_user_bubble_clicked(int p_message_index) {
 	String role = msg.get("role", "");
 	
 	if (role != "user" || content.is_empty()) {
-		print_line("AI Chat: Message is not a user message or is empty");
 		return;
 	}
 	
 	// Access chat_container directly through friend access
 	VBoxContainer *chat_container = chat_dock->chat_container;
 	if (!chat_container) {
-		print_line("AI Chat: chat_container is null");
 		return;
 	}
 	
-	print_line("AI Chat: Searching for message_panel_" + String::num_int64(p_message_index) + " in " + String::num_int64(chat_container->get_child_count()) + " children");
 	
 	PanelContainer *bubble_panel = Object::cast_to<PanelContainer>(
 		chat_container->find_child("message_panel_" + String::num_int64(p_message_index), true, false)
 	);
 	
 	if (!bubble_panel) {
-		print_line("AI Chat: Bubble panel not loaded yet (lazy loading) - forcing full conversation load");
 		
 		// Message not loaded due to performance optimization - validate index first
 		Array all_messages = chat_dock->_get_messages_as_array();
 		if (p_message_index >= all_messages.size()) {
-			print_line("AI Chat: Invalid message index: " + String::num_int64(p_message_index));
 			return;
 		}
 		
@@ -214,14 +207,11 @@ void UserMessageHandler::on_user_bubble_clicked(int p_message_index) {
 		);
 		
 		if (!bubble_panel) {
-			print_line("AI Chat: ERROR - Still could not find bubble panel after full reload");
 			return;
 		}
 		
-		print_line("AI Chat: Successfully loaded and found bubble panel after full reload");
 	}
 	
-	print_line("AI Chat: Found bubble panel, transforming to edit field");
 	
 	// Store original content and index
 	original_message_content = content;
@@ -234,7 +224,6 @@ void UserMessageHandler::on_user_bubble_clicked(int p_message_index) {
 void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubble, const String &p_content, int p_message_index) {
 	if (!p_bubble || !chat_dock) return;
 	
-	print_line("AI Chat: Replacing bubble with edit field - bubble has " + String::num_int64(p_bubble->get_child_count()) + " children");
 	
 	// Clear the bubble's content immediately (not queue_free - that's deferred)
 	while (p_bubble->get_child_count() > 0) {
@@ -243,7 +232,6 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 		memdelete(child); // Immediate deletion
 	}
 	
-	print_line("AI Chat: Cleared bubble children, creating edit UI");
 	
 	// Update bubble styling to match normal user message background (dark gray)
 	Ref<StyleBoxFlat> edit_panel_style = memnew(StyleBoxFlat);
@@ -281,7 +269,6 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	
 	edit_vbox->add_child(edit_field);
 	
-	print_line("AI Chat: Added TextEdit field");
 	
 	// Buttons container aligned to right
 	HBoxContainer *button_container = memnew(HBoxContainer);
@@ -307,7 +294,6 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	cancel_button->connect("pressed", callable_mp(this, &UserMessageHandler::_on_edit_cancel_pressed).bind(p_message_index));
 	button_container->add_child(cancel_button);
 	
-	print_line("AI Chat: Added buttons");
 	
 	// Enable click-outside detection on the chat scroll container
 	if (chat_dock->chat_scroll) {
@@ -325,7 +311,6 @@ void UserMessageHandler::_replace_bubble_with_edit_field(PanelContainer *p_bubbl
 	// Focus the edit field with a slight delay to ensure UI is ready
 	edit_field->call_deferred("grab_focus");
 	
-	print_line("AI Chat: Transformed bubble to edit field successfully");
 }
 
 void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_message_index) {
@@ -333,11 +318,9 @@ void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_mes
 	
 	String new_content = p_edit_field->get_text().strip_edges();
 	if (new_content.is_empty()) {
-		print_line("AI Chat: Cannot send empty message");
 		return;
 	}
 	
-	print_line("AI Chat: Edit send pressed for message " + String::num_int64(p_message_index));
 	
 	// Disconnect click-outside handler if connected
 	if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
@@ -348,14 +331,12 @@ void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_mes
 	Array messages = chat_dock->_get_messages_as_array();
 	int messages_after = messages.size() - p_message_index - 1;
 	
-	print_line("AI Chat: This will restore to message " + String::num_int64(p_message_index) + ", losing " + String::num_int64(messages_after) + " newer messages");
 	
 	// ALWAYS show warning dialog when sending from a previous message
 	// User needs to know they're about to rollback the conversation and project state
 	editing_message_index = p_message_index;
 	
 	if (!restore_send_dialog) {
-		print_line("AI Chat: ERROR - restore_send_dialog is null!");
 		return;
 	}
 	
@@ -379,13 +360,10 @@ void UserMessageHandler::_on_edit_send_pressed(TextEdit *p_edit_field, int p_mes
 	
 	// Dialog already has custom buttons configured in constructor
 	
-	print_line("AI Chat: Showing confirmation dialog...");
 	restore_send_dialog->popup_centered(Size2(500, 300));
-	print_line("AI Chat: Dialog shown");
 }
 
 void UserMessageHandler::_on_edit_cancel_pressed(int p_message_index) {
-	print_line("AI Chat: Edit cancelled for message " + String::num_int64(p_message_index));
 	
 	// Disconnect click-outside handler if connected
 	if (chat_dock && chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
@@ -403,7 +381,6 @@ void UserMessageHandler::_on_edit_cancel_pressed(int p_message_index) {
 void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 	if (!chat_dock) return;
 	
-	print_line("AI Chat: Restore only pressed for message " + String::num_int64(p_message_index));
 	
 	// Disconnect click-outside handler if connected
 	if (chat_dock->chat_scroll && chat_dock->chat_scroll->is_connected("gui_input", callable_mp(this, &UserMessageHandler::_on_chat_container_gui_input))) {
@@ -417,7 +394,6 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
 		if (vbar) {
 			saved_scroll_position = vbar->get_value();
-			print_line("AI Chat: Saved scroll position: " + String::num(saved_scroll_position));
 		}
 	}
 	
@@ -431,7 +407,6 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 		chat_backup_content = FileAccess::get_file_as_string(chat_file_path, &err);
 		if (err == OK) {
 			has_backup = true;
-			print_line("AI Chat: Backed up chat history file (" + String::num_int64(chat_backup_content.length()) + " bytes)");
 		}
 	}
 	
@@ -439,7 +414,6 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 	bool success = chat_dock->_restore_from_checkpoint(p_message_index);
 	
 	if (success) {
-		print_line("AI Chat: Successfully restored project to checkpoint at message " + String::num_int64(p_message_index));
 		
 		// Restore the chat history file that we backed up (keep ALL messages)
 		if (has_backup) {
@@ -448,16 +422,13 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 			if (err == OK && file.is_valid()) {
 				file->store_string(chat_backup_content);
 				file->close();
-				print_line("AI Chat: Restored chat history file after checkpoint - kept all messages");
 				
 				// Reload conversations from the restored file
 				chat_dock->_load_conversations();
 			} else {
-				print_line("AI Chat: Failed to restore chat history file: " + String::num_int64(err));
 			}
 		}
 	} else {
-		print_line("AI Chat: Failed to restore project to checkpoint");
 	}
 	
 	// Reset state
@@ -472,7 +443,6 @@ void UserMessageHandler::_on_restore_only_pressed(int p_message_index) {
 		VScrollBar *vbar = chat_scroll->get_v_scroll_bar();
 		if (vbar) {
 			vbar->call_deferred("set_value", saved_scroll_position);
-			print_line("AI Chat: Restored scroll position: " + String::num(saved_scroll_position));
 		}
 	}
 }
@@ -514,7 +484,6 @@ void UserMessageHandler::_on_dialog_option(int p_option) {
 	
 	switch (p_option) {
 		case 0: // Restore & Send
-			print_line("AI Chat: User chose Restore & Send");
 			_restore_and_send(editing_message_index, edited_content);
 			// Reset state
 			editing_message_index = -1;
@@ -522,7 +491,6 @@ void UserMessageHandler::_on_dialog_option(int p_option) {
 			break;
 			
 		case 2: // Cancel
-			print_line("AI Chat: User chose to cancel and keep editing");
 			// Don't reset state - user continues editing
 			break;
 	}
@@ -531,7 +499,6 @@ void UserMessageHandler::_on_dialog_option(int p_option) {
 void UserMessageHandler::_on_dialog_custom_action(const StringName &p_action) {
 	if (p_action == "send_safe") {
 		// Send Without Restoring
-		print_line("AI Chat: User chose Send Without Restoring");
 		
 		String edited_content = restore_send_dialog->get_meta("edited_content", "");
 		
@@ -553,14 +520,12 @@ void UserMessageHandler::_on_dialog_custom_action(const StringName &p_action) {
 void UserMessageHandler::_restore_and_send(int p_message_index, const String &p_content) {
 	if (!chat_dock) return;
 	
-	print_line("AI Chat: Restoring to message index " + String::num_int64(p_message_index) + " and sending");
 	
     // Perform ACTUAL project restore (files + conversation) to the checkpoint for this message.
     // This was missing in this path and caused restore to be UI-only.
     bool ok = chat_dock->_restore_from_checkpoint(p_message_index);
     if (!ok) {
         // Fallback: at least truncate the conversation so sending proceeds
-        print_line("AI Chat: Restore failed inside _restore_and_send; truncating conversation as fallback");
         chat_dock->_truncate_conversation_at(p_message_index);
     }
     
@@ -583,7 +548,6 @@ void UserMessageHandler::_restore_and_send(int p_message_index, const String &p_
 void UserMessageHandler::_send_without_restoring(int p_message_index, const String &p_content) {
 	if (!chat_dock) return;
 	
-	print_line("AI Chat: SIMPLE SEND WITHOUT RESTORE - Truncating at message " + String::num_int64(p_message_index) + " and sending");
 	
 	// EXACTLY what you want: 
 	// 1. Delete all messages after the edited message
@@ -601,7 +565,6 @@ void UserMessageHandler::_send_without_restoring(int p_message_index, const Stri
 	// Truncate conversation - remove everything after this message
 	chat_history.resize(p_message_index + 1);
 	
-	print_line("AI Chat: Conversation truncated to " + String::num_int64(chat_history.size()) + " messages");
 	
 	// Replace edit field with normal bubble
 	_replace_edit_field_with_bubble(p_message_index, false);
@@ -618,6 +581,5 @@ void UserMessageHandler::_send_without_restoring(int p_message_index, const Stri
 	chat_dock->call("_update_ui_state");
 	chat_dock->call("_process_send_request_async");
 	
-	print_line("AI Chat: Sending truncated conversation - DONE");
 }
 

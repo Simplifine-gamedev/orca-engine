@@ -446,3 +446,7 @@ releases/
 backend/vertex-ai-key.json
 bin/
 *.wasm
+
+# Exclude test/example projects
+backend/orca-web/
+backend/dodge_the_creeps/

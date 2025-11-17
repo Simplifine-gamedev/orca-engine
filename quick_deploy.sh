@@ -68,8 +68,8 @@ case $DEPLOY_OPTION in
         ;;
     2)
         echo "For subdirectory deployment:"
-        echo "1. Copy bin/web_export/* to your orca-website repo in /public/editor/"
-        echo "2. Push to your existing orca-website repo"
+        echo "1. Copy bin/web_export/* to your web hosting location"
+        echo "2. Deploy to your hosting service"
         echo "3. Access at: https://orcaengine.ai/editor"
         ;;
     3)

@@ -143,13 +143,10 @@ void UpdateNotificationPopup::_get_current_version() {
     // This comes from core/orca_version.gen.cpp (auto-generated before compilation)
     current_version = String(ORCA_VERSION_STRING);
     
-    print_line("UpdateNotificationPopup: ✅ Version from compiled binary: " + current_version);
-    
     // Allow environment override for testing
     String env_version = OS::get_singleton()->get_environment("ORCA_VERSION");
     if (!env_version.is_empty()) {
         current_version = env_version;
-        print_line("UpdateNotificationPopup: 🧪 Version overridden for testing: " + current_version);
     }
 }
 
@@ -175,7 +172,6 @@ void UpdateNotificationPopup::_check_for_updates() {
 
 void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
     if (p_result != HTTPRequest::RESULT_SUCCESS || p_code != 200) {
-        print_line("UpdateNotificationPopup: Update check failed - Result: " + itos(p_result) + ", Code: " + itos(p_code));
         return;
     }
     
@@ -183,7 +179,6 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
     Variant json_var = JSON::parse_string(response_text);
     
     if (json_var.get_type() != Variant::DICTIONARY) {
-        print_line("UpdateNotificationPopup: Invalid JSON response from GitHub");
         return;
     }
     
@@ -191,20 +186,14 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
     String tag_name = release_data.get("tag_name", "");
     String remote_version = tag_name.lstrip("v");
     
-    print_line("UpdateNotificationPopup: Comparing versions - Current: '" + current_version + "' vs Remote: '" + remote_version + "'");
-    
     // SIMPLE RULE: Only show update if versions are DIFFERENT
     if (remote_version == current_version) {
-        print_line("UpdateNotificationPopup: ✅ Versions match - no update notification");
         return;
     }
     
     if (remote_version.is_empty()) {
-        print_line("UpdateNotificationPopup: ⚠️ Remote version is empty");
         return;
     }
-    
-    print_line("UpdateNotificationPopup: 🔔 Version mismatch detected - showing update notification");
     
     // Find appropriate download URL for user's platform
     Array assets = release_data.get("assets", Array());
@@ -227,7 +216,6 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
         
         if (matches) {
             platform_download_url = asset_url;
-            print_line("UpdateNotificationPopup: Found platform asset: " + asset_name);
             break;
         }
     }
@@ -237,7 +225,6 @@ void UpdateNotificationPopup::_on_update_response(int p_result, int p_code, cons
         download_url = platform_download_url;
         show_update_notification(remote_version, platform_download_url);
     } else {
-        print_line("UpdateNotificationPopup: ⚠️ No compatible download found for platform");
     }
 }
 

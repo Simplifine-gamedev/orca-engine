@@ -152,12 +152,9 @@ bool AIChatSaveCoordinator::is_dangerous_save_pattern(const String& p_method_nam
 }
 
 void AIChatSaveCoordinator::_log_save_coordinator(const String &p_operation, bool p_success, const String &p_details) {
-    String status = p_success ? "SUCCESS" : "FAILED";
-    String log_msg = "AI Chat Save Coordinator [" + p_operation.to_upper() + "]: " + status;
-    if (!p_details.is_empty()) {
-        log_msg += " - " + p_details;
-    }
-    print_line(log_msg);
+	(void)p_operation;
+	(void)p_success;
+	(void)p_details;
 }
 
 // No script binding needed - internal class only

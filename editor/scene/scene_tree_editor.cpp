@@ -277,7 +277,6 @@ void SceneTreeEditor::_warning_fix_with_ai(const String &p_action) {
 	}
 	AIChatDock *dock = en->get_ai_chat_dock();
 	if (!dock) {
-		print_line("SceneTreeEditor: AI Chat dock not available for warning fix");
 		return;
 	}
 	
@@ -288,7 +287,6 @@ void SceneTreeEditor::_warning_fix_with_ai(const String &p_action) {
 	
 	// Send to AI Chat
 	dock->send_error_message(prompt);
-	print_line("SceneTreeEditor: Sent node warning to AI Chat for fixing");
 	
 	// Close the warning dialog
 	warning->hide();

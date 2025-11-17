@@ -436,7 +436,6 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
         return out;
     }
 
-    print_line("AI Tools: Waiting for import: " + res_path + " (timeout: " + String::num_int64(timeout_ms) + "ms)");
     
     // If file doesn't exist, fail immediately
     if (!FileAccess::exists(res_path)) {
@@ -456,7 +455,6 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
 
     // Force reimport if requested
     if (force_reimport) {
-        print_line("AI Tools: Force reimporting: " + res_path);
         Vector<String> to_reimport;
         to_reimport.push_back(res_path);
         EditorFileSystem::get_singleton()->reimport_files(to_reimport);
@@ -477,20 +475,17 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
         bool exists = ri.get("exists", false);
         bool loadable = ri.get("loadable", false);
         
-        print_line("AI Tools: Import attempt " + String::num_int64(attempts) + " - Status: " + status + ", Exists: " + (exists ? "true" : "false") + ", Loadable: " + (loadable ? "true" : "false"));
         
         // SUCCESS CONDITIONS
         if (status == "ok" && loadable) {
             out["ok"] = true;
             out["status"] = status;
             out["attempts"] = attempts;
-            print_line("AI Tools: Import successful after " + String::num_int64(attempts) + " attempts");
             return out;
         }
         
         // If status is unknown but file is loadable, consider it successful
         if (status == "unknown" && exists && loadable) {
-            print_line("AI Tools: Import status unknown but file is loadable - considering success");
             out["ok"] = true;
             out["status"] = "loadable";
             out["attempts"] = attempts;
@@ -514,7 +509,6 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
             out["status"] = status;
             out["attempts"] = attempts;
             out["resource_info"] = ri;
-            print_line("AI Tools: Import appears stuck in pending state, giving up");
             return out;
         }
         
@@ -526,7 +520,6 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
             out["status"] = status;
             out["attempts"] = attempts;
             out["resource_info"] = ri;
-            print_line("AI Tools: Max attempts reached, giving up");
             return out;
         }
         
@@ -538,7 +531,6 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
             out["status"] = status;
             out["attempts"] = attempts;
             out["resource_info"] = ri;
-            print_line("AI Tools: Import marked as broken");
             return out;
         }
         
@@ -551,7 +543,6 @@ Dictionary EditorTools::wait_for_import(const Dictionary &p_args) {
             out["status"] = status;
             out["attempts"] = attempts;
             out["resource_info"] = ri;
-            print_line("AI Tools: Import timeout after " + String::num_int64(attempts) + " attempts, " + String::num_int64(elapsed) + "ms");
             return out;
         }
         
@@ -563,6 +554,18 @@ Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
     Dictionary result;
     bool include_warnings = p_args.get("include_warnings", true);
     String file_filter = p_args.get("file", "");
+	double lookback_seconds = 0.0;
+	if (p_args.has("lookback_seconds")) {
+		lookback_seconds = MAX(0.0, double(p_args.get("lookback_seconds", 0.0)));
+	}
+	uint64_t cutoff_ms = 0;
+	uint64_t now_ms = Time::get_singleton()->get_ticks_msec();
+	if (lookback_seconds > 0.0) {
+		uint64_t lookback_ms = (uint64_t)(lookback_seconds * 1000.0);
+		if (lookback_ms < now_ms) {
+			cutoff_ms = now_ms - lookback_ms;
+		}
+	}
     
     print_line("RUNTIME_ERRORS_SUMMARY: Starting with " + String::num_int64(s_runtime_errors.size()) + " total recorded errors");
     
@@ -573,10 +576,11 @@ Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
     int total_warnings = 0;
     
     // Process all errors from newest to oldest
-    for (int i = s_runtime_errors.size() - 1; i >= 0; i--) {
+	for (int i = s_runtime_errors.size() - 1; i >= 0; i--) {
         Dictionary e = s_runtime_errors[i];
         bool is_warning = e.get("is_warning", false);
         String message = e.get("message", "Unknown error");
+		uint64_t time_ms = (uint64_t)e.get("time_ms", 0);
         
         if (!include_warnings && is_warning) {
             continue;
@@ -584,6 +588,9 @@ Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
         if (!file_filter.is_empty() && String(e.get("file", "")) != file_filter) {
             continue;
         }
+		if (cutoff_ms > 0 && time_ms > 0 && time_ms < cutoff_ms) {
+			continue;
+		}
         
         // Count errors vs warnings
         if (is_warning) {
@@ -666,6 +673,10 @@ Dictionary EditorTools::get_runtime_errors_summary(const Dictionary &p_args) {
                        " total messages (" + String::num_int64(total_errors) + " errors, " + 
                        String::num_int64(total_warnings) + " warnings) with " + 
                        String::num_int64(unique_errors.size()) + " unique types";
+	if (lookback_seconds > 0.0) {
+		result["applied_lookback_seconds"] = lookback_seconds;
+		result["cutoff_timestamp_ms"] = cutoff_ms;
+	}
     
     return result;
 }
@@ -677,6 +688,18 @@ Dictionary EditorTools::get_runtime_errors_detailed(const Dictionary &p_args) {
     String file_filter = p_args.get("file", "");
     String message_filter = p_args.get("message_contains", "");
     bool group_duplicates = p_args.get("group_duplicates", true);
+    double lookback_seconds = 0.0;
+    if (p_args.has("lookback_seconds")) {
+        lookback_seconds = MAX(0.0, double(p_args.get("lookback_seconds", 0.0)));
+    }
+    uint64_t cutoff_ms = 0;
+    uint64_t now_ms = Time::get_singleton()->get_ticks_msec();
+    if (lookback_seconds > 0.0) {
+        uint64_t lookback_ms = (uint64_t)(lookback_seconds * 1000.0);
+        if (lookback_ms < now_ms) {
+            cutoff_ms = now_ms - lookback_ms;
+        }
+    }
     
     print_line("RUNTIME_ERRORS_DETAILED: Starting with " + String::num_int64(s_runtime_errors.size()) + " total recorded errors");
     
@@ -708,6 +731,10 @@ Dictionary EditorTools::get_runtime_errors_detailed(const Dictionary &p_args) {
         result["total_warnings"] = summary.get("total_warnings", 0);
         result["message"] = "Showing " + String::num_int64(detailed_errors.size()) + 
                            " most frequent error types (grouped)";
+        if (summary.has("applied_lookback_seconds")) {
+            result["applied_lookback_seconds"] = summary.get("applied_lookback_seconds", 0.0);
+            result["cutoff_timestamp_ms"] = summary.get("cutoff_timestamp_ms", 0);
+        }
     } else {
         // Return individual error instances
         Array out;
@@ -716,11 +743,15 @@ Dictionary EditorTools::get_runtime_errors_detailed(const Dictionary &p_args) {
             Dictionary e = s_runtime_errors[i];
             bool is_warning = e.get("is_warning", false);
             String message = e.get("message", "");
+            uint64_t time_ms = (uint64_t)e.get("time_ms", 0);
             
             if (!include_warnings && is_warning) {
                 continue;
             }
             if (!file_filter.is_empty() && String(e.get("file", "")) != file_filter) {
+                continue;
+            }
+            if (cutoff_ms > 0 && time_ms > 0 && time_ms < cutoff_ms) {
                 continue;
             }
             if (!message_filter.is_empty() && !message.containsn(message_filter)) {
@@ -761,6 +792,10 @@ Dictionary EditorTools::get_runtime_errors_detailed(const Dictionary &p_args) {
         result["grouped"] = false;
         result["total_found"] = out.size();
         result["message"] = "Showing " + String::num_int64(out.size()) + " individual error instances";
+        if (lookback_seconds > 0.0) {
+            result["applied_lookback_seconds"] = lookback_seconds;
+            result["cutoff_timestamp_ms"] = cutoff_ms;
+        }
     }
     
     return result;
@@ -1277,7 +1312,6 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		// AGGRESSIVE PERFORMANCE OPTIMIZATION: Much lower limits to prevent freeze
 		// Users can request more with explicit max_files parameter if needed
 		int max_files = p_args.get("max_files", 50); // REDUCED from 200 to 50 for speed
-		print_line("AI Chat: get_project_context starting with max_files limit: " + String::num_int64(max_files));
 		
 		// Get scenes in project (limited)
 		Array scenes;
@@ -1293,7 +1327,6 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		structure["scenes"] = scenes;
 		if (scene_files.size() >= max_files) {
 			structure["scenes_truncated"] = true;
-			print_line("AI Chat: Scene list truncated at " + String::num_int64(max_files) + " files (use max_files parameter for more)");
 		}
 		
 		// Get scripts (limited)
@@ -1310,7 +1343,6 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		structure["scripts"] = scripts;
 		if (script_files.size() >= max_files) {
 			structure["scripts_truncated"] = true;
-			print_line("AI Chat: Script list truncated at " + String::num_int64(max_files) + " files (use max_files parameter for more)");
 		}
 		
 		// Get autoloads
@@ -1353,7 +1385,6 @@ Dictionary EditorTools::get_project_context(const Dictionary &p_args) {
 		stats["max_files_limit"] = max_files;
 		structure["statistics"] = stats;
 		
-		print_line("AI Chat: get_project_context completed - " + String::num_int64(scenes.size()) + " scenes, " + String::num_int64(scripts.size()) + " scripts");
 		
 		result["success"] = true;
 		result["context"] = structure;
@@ -1410,14 +1441,10 @@ Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
 	if (!root) {
 		// Enhanced diagnostics for debugging scene root issues
 		SceneTree *tree = EditorNode::get_singleton()->get_tree();
-		print_line("AI Chat: get_all_nodes failed - no scene root found");
-		print_line("AI Chat: SceneTree valid: " + String(tree ? "yes" : "no"));
 		if (tree) {
-			print_line("AI Chat: Current scene: " + String(tree->get_current_scene() ? tree->get_current_scene()->get_name() : "null"));
 			// Try alternative scene access methods
 			Node *current_scene = tree->get_current_scene();
 			if (current_scene) {
-				print_line("AI Chat: Using current_scene as fallback");
 				root = current_scene;
 			}
 		}
@@ -1440,7 +1467,6 @@ Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
 	int nodes_collected = 0;
 	bool hit_limit = false;
 	
-	print_line("AI Chat: get_all_nodes starting with max_nodes limit: " + String::num_int64(max_nodes));
 	
 	// Helper lambda to recursively collect nodes with limit
     int nodes_traversed = 0;
@@ -1477,10 +1503,8 @@ Dictionary EditorTools::get_all_nodes(const Dictionary &p_args) {
 	if (hit_limit) {
 		result["truncated"] = true;
 		result["message"] = "Result limited to " + String::num_int64(max_nodes) + " nodes to prevent UI freezing. Use smaller scenes or increase max_nodes parameter.";
-		print_line("AI Chat: get_all_nodes hit limit of " + String::num_int64(max_nodes) + " nodes");
 	}
 	
-	print_line("AI Chat: get_all_nodes completed, collected " + String::num_int64(nodes.size()) + " nodes");
 	return result;
 }
 
@@ -1499,7 +1523,6 @@ Dictionary EditorTools::search_nodes_by_type(const Dictionary &p_args) {
 	int nodes_searched = 0;
 	bool hit_search_limit = false;
 	
-	print_line("AI Chat: search_nodes_by_type starting for type '" + type + "' with max_nodes limit: " + String::num_int64(max_nodes_to_search));
 	
 	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
 	if (root) {
@@ -1532,10 +1555,8 @@ Dictionary EditorTools::search_nodes_by_type(const Dictionary &p_args) {
 	if (hit_search_limit) {
 		result["truncated"] = true;
 		result["message"] = "Search limited to " + String::num_int64(max_nodes_to_search) + " nodes to prevent UI freezing. " + String::num_int64(nodes.size()) + " nodes of type '" + type + "' found.";
-		print_line("AI Chat: search_nodes_by_type hit search limit of " + String::num_int64(max_nodes_to_search) + " nodes");
 	}
 	
-	print_line("AI Chat: search_nodes_by_type completed - found " + String::num_int64(nodes.size()) + " nodes of type '" + type + "', searched " + String::num_int64(nodes_searched) + " total nodes");
 	return result;
 }
 
@@ -1620,8 +1641,6 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
     int properties_matched = 0; // after filters, before pagination/limit
     bool hit_properties_limit = false;
 
-    print_line("AI Chat: get_node_properties start | max=" + String::num_int64(max_properties) +
-        " offset=" + String::num_int64(offset) + (has_filters ? String(" filters=1") : String(" filters=0")));
 
     for (const PropertyInfo &prop_info : properties) {
         // Filter by explicit include list or prefix if provided
@@ -1810,14 +1829,12 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
     
     if (!expanded_resources.is_empty()) {
         result["expanded_mesh_resources"] = expanded_resources;
-        print_line("AI Chat: get_node_properties expanded " + String::num_int64(expanded_resources.size()) + " mesh resources for better visibility");
     }
 	
 	// Add truncation information
 	if (hit_properties_limit) {
 		result["properties_truncated"] = true;
 		result["message"] = "Properties limited to " + String::num_int64(max_properties) + " to prevent UI freezing";
-		print_line("AI Chat: get_node_properties hit properties limit of " + String::num_int64(max_properties));
 	}
 	if (hit_signals_limit) {
 		result["signals_truncated"] = true;
@@ -1825,10 +1842,8 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 		if (!msg.is_empty()) msg += ". ";
 		msg += "Signals limited to " + String::num_int64(max_signals);
 		result["message"] = msg;
-		print_line("AI Chat: get_node_properties hit signals limit of " + String::num_int64(max_signals));
 	}
 	
-	print_line("AI Chat: get_node_properties completed - " + String::num_int64(properties_processed) + " properties, " + String::num_int64(signals_processed) + " signals");
 	return result;
 }
 
@@ -1876,7 +1891,6 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 			result["message"] = "No scene is currently being edited to add a root node.";
 			return result;
 		}
-		print_line("AI Tools: create_node - No parent specified, creating at scene root: " + parent->get_name());
 	}
 
 	// If unique requested, return existing child if found.
@@ -1916,7 +1930,6 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 	}
 
 	new_node->set_name(name);
-	print_line("AI Tools: create_node - Creating '" + name + "' of type '" + type + "' under parent '" + parent->get_name() + "' at path: " + String(parent->get_path()));
 	parent->add_child(new_node);
 	// Ensure the new node is owned by the edited scene root so editor features see it as part of the scene.
 	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
@@ -4385,7 +4398,6 @@ Dictionary EditorTools::universal_scene_manager(const Dictionary &p_args) {
                         failure_reason = "Failed to set property '" + prop + "' (value unchanged)";
                         break;
                     } else {
-                        print_line("AI Chat: bulk_configure set " + path + "." + prop + " = " + String(val) + " (was: " + old_value + ")");
                     }
                 } else {
                     success = false;
@@ -5578,12 +5590,10 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 		// Override await_import if skip_import_wait is true
 		if (skip_import_wait) {
 			await_import = false;
-			print_line("AI Tools: Skipping scene import wait as requested (skip_import_wait=true)");
 		}
 		
 		// Force filesystem scan first to ensure the file is detected
 		if (EditorFileSystem::get_singleton()) {
-			print_line("AI Tools: Forcing filesystem scan for scene: " + scene_path);
 			EditorFileSystem::get_singleton()->scan_changes();
 			// Brief wait for scan to register the file
 			OS::get_singleton()->delay_usec(500000); // 500ms
@@ -5605,10 +5615,8 @@ Dictionary EditorTools::manage_scene(const Dictionary &p_args) {
 				
 				// For stuck/failed imports, try loading directly as a fallback
 				if (error_code == "IMPORT_STUCK" || error_code == "MAX_ATTEMPTS_REACHED" || error_code == "IMPORT_BROKEN") {
-					print_line("AI Tools: Scene import failed (" + error_code + "), attempting direct load as fallback...");
 					Ref<PackedScene> fallback_scene = ResourceLoader::load(scene_path);
 					if (fallback_scene.is_valid()) {
-						print_line("AI Tools: Direct scene load successful despite import failure");
 						// Continue with the successfully loaded scene
 					} else {
 						result["success"] = false;
@@ -5882,12 +5890,10 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 	// Override await_import if skip_import_wait is true
 	if (skip_import_wait) {
 		await_import = false;
-		print_line("AI Tools: Skipping import wait as requested (skip_import_wait=true)");
 	}
 	
 	// Force filesystem scan first to ensure the file is detected
 	if (EditorFileSystem::get_singleton()) {
-		print_line("AI Tools: Forcing filesystem scan for: " + resource_path);
 		EditorFileSystem::get_singleton()->scan_changes();
 		// Brief wait for scan to register the file
 		OS::get_singleton()->delay_usec(500000); // 500ms
@@ -5903,10 +5909,8 @@ Dictionary EditorTools::load_and_assign_resource(const Dictionary &p_args) {
 			
 			// For stuck/failed imports, try loading directly as a fallback
 			if (error_code == "IMPORT_STUCK" || error_code == "MAX_ATTEMPTS_REACHED" || error_code == "IMPORT_BROKEN") {
-				print_line("AI Tools: Import failed (" + error_code + "), attempting direct load as fallback...");
 				Ref<Resource> fallback_resource = ResourceLoader::load(resource_path);
 				if (fallback_resource.is_valid()) {
-					print_line("AI Tools: Direct load successful despite import failure");
 					// Continue with the successfully loaded resource
 				} else {
 					result["success"] = false;
@@ -6740,7 +6744,6 @@ Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 		String overlay = EditorTools::get_preview_overlay(path);
 		result["success"] = true;
 		result["content"] = smart_truncate_for_ai_context(overlay, path);
-		print_line("READ_FILE: Using preview overlay for " + path + " (staged edit pending)");
 		return result;
 	}
 	String content = FileAccess::get_file_as_string(path, &err);
@@ -8693,7 +8696,6 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 		Dictionary create_args = p_args;
 		if (p_args.has("parent_node") && !p_args.has("parent")) {
 			create_args["parent"] = p_args["parent_node"];
-			print_line("AI Tools: scene_manager - Mapping parent_node '" + String(p_args["parent_node"]) + "' to parent parameter");
 		}
 		return create_node(create_args);
 	} else if (operation == "node.create_batch") {
@@ -9139,12 +9141,9 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 	int filtered_count = 0;
 	int kept_count = 0;
 	
-	print_line("CONSOLE_FILTER_START: Fetched " + String::num_int64(console_output.size()) + " messages, targeting " + String::num_int64(max_lines) + " game messages");
-	
 	for (int i = 0; i < console_output.size(); i++) {
 		// Stop once we have enough game messages
 		if (kept_count >= max_lines) {
-			print_line("CONSOLE_FILTER: Reached target of " + String::num_int64(max_lines) + " game messages, stopping");
 			break;
 		}
 		
@@ -9154,11 +9153,6 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 		if (message.is_empty()) {
 			filtered_count++;
 			continue;
-		}
-		
-		// Debug: Print first few messages
-		if (i < 5) {
-			print_line("CONSOLE_FILTER_DEBUG [" + String::num_int64(i) + "]: '" + message.substr(0, MIN(80, message.length())) + "'");
 		}
 		
 		// CRITICAL FIX: More precise filtering - only filter EDITOR debug messages
@@ -9194,21 +9188,13 @@ Dictionary EditorTools::get_console_output(const Dictionary &p_args) {
 		
 		if (is_editor_debug) {
 			filtered_count++;
-			if (i < 5) {
-				print_line("  -> FILTERED (editor debug)");
-			}
 			continue;
 		}
 		
 		// This is a game message - keep it!
 		filtered_output.push_back(msg);
 		kept_count++;
-		if (kept_count <= 3) {
-			print_line("  -> KEPT (game message)");
-		}
 	}
-	
-	print_line("CONSOLE_FILTER_RESULT: Filtered " + String::num_int64(filtered_count) + " debug messages, returning " + String::num_int64(kept_count) + " game messages (target was " + String::num_int64(max_lines) + ")");
 	
 	result["success"] = true;
 	result["output_type"] = output_type;
@@ -9862,23 +9848,19 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 		// Safe texture access with null checks to prevent freezing
 		Ref<ViewportTexture> viewport_texture = viewport->get_texture();
 		if (viewport_texture.is_null()) {
-			print_line("AI Chat: Viewport texture is null for " + source_name);
 			return false;
 		}
 		
 		// Check viewport size first to prevent huge texture processing
 		Vector2i viewport_size = viewport->get_visible_rect().size;
 		if (viewport_size.x <= 0 || viewport_size.y <= 0 || viewport_size.x > 8192 || viewport_size.y > 8192) {
-			print_line("AI Chat: Viewport size too large or invalid for " + source_name + ": " + String::num_int64(viewport_size.x) + "x" + String::num_int64(viewport_size.y));
 			return false;
 		}
 		
 		// NON-BLOCKING: Get image safely with yield to prevent freezing
-		print_line("AI Chat: Starting screenshot capture for " + source_name);
 		
 		Ref<Image> screenshot = viewport_texture->get_image();
 		if (screenshot.is_null() || screenshot->is_empty()) {
-			print_line("AI Chat: Screenshot image is null or empty for " + source_name);
 			return false;
 		}
 		
@@ -9887,7 +9869,6 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 		
 		// Double-check image size matches expectations
 		if (screenshot->get_width() != viewport_size.x || screenshot->get_height() != viewport_size.y) {
-			print_line("AI Chat: Screenshot size mismatch for " + source_name + " - expected " + String::num_int64(viewport_size.x) + "x" + String::num_int64(viewport_size.y) + ", got " + String::num_int64(screenshot->get_width()) + "x" + String::num_int64(screenshot->get_height()));
 		}
 		
 		Vector2i original_size = Vector2i(screenshot->get_width(), screenshot->get_height());
@@ -9901,14 +9882,12 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 		
 		if (return_base64) {
 			// NON-BLOCKING: Convert to base64 with yield to prevent freeze
-			print_line("AI Chat: Converting screenshot to PNG buffer...");
 			Vector<uint8_t> png_buffer = screenshot->save_png_to_buffer();
 			
 			// Yield to UI during base64 encoding (can be expensive)
 			OS::get_singleton()->delay_usec(1000);
 			
 			if (png_buffer.size() > 0) {
-				print_line("AI Chat: Encoding " + String::num_int64(png_buffer.size()) + " bytes to base64...");
 				String base64_data = CoreBind::Marshalls::get_singleton()->raw_to_base64(png_buffer);
 				
 				// FOR UI LAZY LOADING: Use same format as image generation tools
@@ -9919,7 +9898,6 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 				capture_info["image_type"] = "screenshot";  // Important for UI handling
 				capture_info["prompt"] = "Runtime Screenshot (" + source_name + ")"; // For lazy loader title
 				
-				print_line("AI Chat: Screenshot ready - " + String::num_int64(screenshot->get_width()) + "x" + String::num_int64(screenshot->get_height()) + " (base64: " + String::num_int64(base64_data.length()) + " chars)");
 			}
 		} else {
 			// DISABLED: Don't save screenshots to disk - they're for AI analysis only
@@ -9941,11 +9919,9 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 	
 	// Capture game viewport first (higher priority for runtime screenshots)
 	if (target == "game" || target == "both") {
-		print_line("AI Chat: Capturing game viewport...");
 		
 		// Check if game is running
 		if (!EditorRunBar::get_singleton()->is_playing()) {
-			print_line("AI Chat: Game is not running - cannot capture game viewport");
 			Dictionary game_failure;
 			game_failure["source"] = "game";
 			game_failure["message"] = "Game not running. Use runtime_manager(op='game.start') first, then capture screenshot.";
@@ -9953,10 +9929,8 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 			screenshots.push_back(game_failure);
 		} else {
 			// Game is running - use different approach for external game window
-			print_line("AI Chat: Game is running, attempting to capture external game window");
 			
 			// SIMPLIFIED: Use RuntimeInspector which has working game viewport detection
-			print_line("AI Chat: Delegating to RuntimeInspector for game screenshot");
 			Dictionary runtime_result = RuntimeInspector::capture_viewport_screenshot("game", return_base64);
 			
 			if (runtime_result.get("success", false)) {
@@ -9979,9 +9953,7 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 				
 				screenshots.push_back(capture_info);
 				captured_any = true;
-				print_line("AI Chat: RuntimeInspector game capture successful");
 			} else {
-				print_line("AI Chat: RuntimeInspector game capture failed: " + String(runtime_result.get("error", "Unknown error")));
 				Dictionary game_failure;
 				game_failure["source"] = "game";
 				game_failure["message"] = "Game screenshot failed: " + String(runtime_result.get("error", "Unknown error"));
@@ -9993,15 +9965,12 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 	
 	// Capture editor viewport - this should be immediate and synchronous
 	if (target == "editor" || target == "both") {
-		print_line("AI Chat: Capturing editor viewport...");
 		Viewport *editor_viewport = EditorNode::get_singleton()->get_viewport();
 		if (editor_viewport) {
 			bool editor_success = capture_viewport(editor_viewport, "editor");
 			if (editor_success) {
 				captured_any = true;
-				print_line("AI Chat: Editor viewport captured successfully");
 			} else {
-				print_line("AI Chat: Editor viewport capture failed");
 				Dictionary editor_failure;
 				editor_failure["source"] = "editor";
 				editor_failure["message"] = "Editor viewport capture failed - texture may not be ready";
@@ -10009,7 +9978,6 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 				screenshots.push_back(editor_failure);
 			}
 		} else {
-			print_line("AI Chat: Editor viewport is null - trying alternative approach");
 			// Try alternative viewport capture methods
 			if (EditorNode::get_singleton()) {
 				Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
@@ -10017,7 +9985,6 @@ Dictionary EditorTools::take_screenshot(const Dictionary &p_args) {
 					Viewport *scene_viewport = scene_root->get_viewport();
 					if (scene_viewport && capture_viewport(scene_viewport, "editor_scene")) {
 						captured_any = true;
-						print_line("AI Chat: Alternative scene viewport captured successfully");
 					} else {
 						Dictionary editor_failure;
 						editor_failure["source"] = "editor";

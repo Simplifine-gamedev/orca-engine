@@ -1,10 +1,12 @@
 """
 Optimized Weaviate Vector Manager with parallelization and efficient querying
 """
+import json
 import weaviate
 import weaviate.classes as wvc
 from weaviate.auth import AuthApiKey
 from weaviate.classes.config import Configure, Property, DataType, VectorDistances
+from weaviate.classes.query import MetadataQuery, Filter
 from weaviate.classes.query import MetadataQuery, Filter
 import hashlib
 import os
@@ -16,7 +18,10 @@ import queue
 import numpy as np
 from datetime import datetime, timezone
 
+from graph_engine.indexer import GodotGraphIndexer
+
 class WeaviateVectorManager:
+    INDEX_VERSION = 2
     """High-performance Weaviate vector manager with parallel processing"""
     
     def __init__(self, weaviate_url: str, api_key: str, openai_client):
@@ -57,6 +62,7 @@ class WeaviateVectorManager:
         
         # Initialize collections
         self._init_collections()
+        self.graph_indexer = GodotGraphIndexer(self)
         
         # Dependency types for multi-hop tracing
         self.DEPENDENCY_WEIGHTS = {
@@ -115,6 +121,11 @@ class WeaviateVectorManager:
                     Property(name="target_file", data_type=DataType.TEXT),
                     Property(name="relationship_type", data_type=DataType.TEXT),
                     Property(name="weight", data_type=DataType.NUMBER),
+                    Property(name="source_symbol", data_type=DataType.TEXT),
+                    Property(name="target_symbol", data_type=DataType.TEXT),
+                    Property(name="signal_name", data_type=DataType.TEXT),
+                    Property(name="context", data_type=DataType.TEXT),
+                    Property(name="line_number", data_type=DataType.INT),
                 ],
                 vectorizer_config=Configure.Vectorizer.none(),
             )
@@ -138,6 +149,26 @@ class WeaviateVectorManager:
                     Property(name="context", data_type=DataType.TEXT),
                     Property(name="weight", data_type=DataType.NUMBER),
                     Property(name="timestamp", data_type=DataType.DATE),
+                ],
+                vectorizer_config=Configure.Vectorizer.none(),
+            )
+
+        # Artifact catalog for nodes
+        if not collections.exists("ProjectArtifacts"):
+            collections.create(
+                name="ProjectArtifacts",
+                properties=[
+                    Property(name="user_id", data_type=DataType.TEXT),
+                    Property(name="project_id", data_type=DataType.TEXT),
+                    Property(name="file_path", data_type=DataType.TEXT),
+                    Property(name="artifact_type", data_type=DataType.TEXT),
+                    Property(name="name", data_type=DataType.TEXT),
+                    Property(name="summary", data_type=DataType.TEXT),
+                    Property(name="metadata", data_type=DataType.TEXT),
+                    Property(name="checksum", data_type=DataType.TEXT),
+                    Property(name="size_bytes", data_type=DataType.INT),
+                    Property(name="last_modified", data_type=DataType.DATE),
+                    Property(name="tags", data_type=DataType.TEXT),
                 ],
                 vectorizer_config=Configure.Vectorizer.none(),
             )
@@ -191,7 +222,7 @@ class WeaviateVectorManager:
         return [e for e in results if e is not None]
     
     def index_files_with_content(self, files: List[Dict[str, Any]], user_id: str, 
-                                 project_id: str, max_workers: int = 10) -> Dict[str, Any]:
+                                 project_id: str, max_workers: int = 10, force_reindex: bool = False) -> Dict[str, Any]:
         """Index multiple files in parallel with provided content"""
         start_time = time.time()
         stats = {"indexed": 0, "skipped": 0, "failed": 0, "chunks": 0}
@@ -199,12 +230,15 @@ class WeaviateVectorManager:
         # Prepare all chunks for batch processing
         all_chunks = []
         chunk_to_file_map = []
+        files_for_graph: List[Dict[str, Any]] = []
         
         for file_data in files:
             # Handle both 'path' and 'file_path' keys for compatibility
             raw_file_path = file_data.get('path') or file_data.get('file_path', '')
             content = file_data.get('content', '')
             content_hash = file_data.get('hash', '')
+            if not content_hash and content:
+                content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
             
             # NORMALIZE FILE PATHS: Always strip res:// prefix for consistency
             file_path = raw_file_path
@@ -224,8 +258,8 @@ class WeaviateVectorManager:
                 continue
             
             # Check if file has changed (skip if unchanged)
-            if content_hash:
-                if self._is_file_unchanged(user_id, project_id, raw_file_path, content_hash):
+            if not force_reindex and content_hash:
+                if self._is_file_unchanged(user_id, project_id, raw_file_path, content_hash, self.INDEX_VERSION):
                     print(f"WeaviateVector: Skipping unchanged file: {file_path}")
                     stats["skipped"] += 1
                     continue
@@ -242,6 +276,13 @@ class WeaviateVectorManager:
             for chunk in chunks:
                 all_chunks.append(chunk)
                 chunk_to_file_map.append(file_path)
+
+            graph_entry = dict(file_data)
+            graph_entry["file_path"] = file_path
+            graph_entry["path"] = file_path
+            graph_entry["content"] = content
+            graph_entry["hash"] = content_hash
+            files_for_graph.append(graph_entry)
         
         if not all_chunks:
             return stats
@@ -272,6 +313,7 @@ class WeaviateVectorManager:
                     "chunk_end": chunk['end_line'],
                     "file_type": chunk['file_type'],
                     "timestamp": datetime.now(timezone.utc),
+                    "index_version": self.INDEX_VERSION,
                 }
                 
                 batch.add_object(
@@ -287,8 +329,11 @@ class WeaviateVectorManager:
         elapsed = time.time() - start_time
         print(f"WeaviateVector: Indexed {stats['chunks']} chunks from {stats['indexed']} files in {elapsed:.2f}s")
         
-        # Update graph relationships in background
-        self.executor.submit(self._update_graph_relationships, files, user_id, project_id)
+        # Update graph/metadata in background
+        if getattr(self, "graph_indexer", None) and files_for_graph:
+            self.executor.submit(self.graph_indexer.ingest, files_for_graph, user_id, project_id)
+        if files_for_graph:
+            self.executor.submit(self._update_graph_relationships, files_for_graph, user_id, project_id)
         
         return stats
     
@@ -310,46 +355,40 @@ class WeaviateVectorManager:
         
         # Search with filters
         collection = self.client.collections.get("ProjectEmbedding")
+        filter_obj = (
+            Filter.by_property("user_id").equal(user_id) &
+            Filter.by_property("project_id").equal(project_id)
+        )
         
         try:
-            # Try the new API syntax
             results = collection.query.near_vector(
                 near_vector=query_vector,
                 limit=max_results * 2,
                 return_metadata=MetadataQuery(distance=True),
-                return_properties=["file_path", "content", "chunk_index", 
-                                 "chunk_start", "chunk_end", "file_type"]
-            ).where(
-                Filter.by_property("user_id").equal(user_id) & 
-                Filter.by_property("project_id").equal(project_id)
-            ).do()
+                return_properties=["user_id", "project_id", "file_path", "content", 
+                                   "chunk_index", "chunk_start", "chunk_end", "file_type"],
+                filters=filter_obj
+            )
         except Exception as e:
-            # Fallback to alternative syntax or fetch all and filter
             print(f"Query method failed: {e}, trying alternative approach")
-            # Simple approach: fetch without filter and filter in Python
             try:
-                results = collection.query.near_vector(
+                raw_results = collection.query.near_vector(
                     near_vector=query_vector,
-                    limit=max_results * 10,  # Get more to filter later
+                    limit=max_results * 10,
                     return_metadata=MetadataQuery(distance=True),
                     return_properties=["user_id", "project_id", "file_path", "content", 
-                                     "chunk_index", "chunk_start", "chunk_end", "file_type"]
+                                       "chunk_index", "chunk_start", "chunk_end", "file_type"]
                 )
-                print(f"WeaviateSearch: Fetched {len(results.objects)} objects before filtering")
-                
-                # Filter results in Python
-                filtered_objects = []
-                for obj in results.objects:
-                    if (obj.properties.get('user_id') == user_id and 
-                        obj.properties.get('project_id') == project_id):
-                        filtered_objects.append(obj)
-                        
+                print(f"WeaviateSearch: Fetched {len(raw_results.objects)} objects before filtering")
+                filtered_objects = [
+                    obj for obj in raw_results.objects
+                    if obj.properties.get('user_id') == user_id and obj.properties.get('project_id') == project_id
+                ]
                 print(f"WeaviateSearch: {len(filtered_objects)} objects after filtering for user {user_id}, project {project_id}")
-                results.objects = filtered_objects[:max_results * 2]
-                
+                raw_results.objects = filtered_objects[:max_results * 2]
+                results = raw_results
             except Exception as e2:
                 print(f"WeaviateSearch: Alternative approach also failed: {e2}")
-                # Return empty results
                 class EmptyResults:
                     def __init__(self):
                         self.objects = []
@@ -818,10 +857,8 @@ class WeaviateVectorManager:
         return m.group(1) if m else None
     
     def _update_graph_relationships(self, files: List[Dict], user_id: str, project_id: str):
-        """Update graph relationships and detailed dependencies for multi-hop tracing"""
+        """Update detailed dependencies for multi-hop tracing (legacy system)."""
         try:
-            # Extract relationships and detailed dependencies
-            relationships = []
             dependencies = []
             
             for file_data in files:
@@ -837,35 +874,10 @@ class WeaviateVectorManager:
                     print(f"WeaviateVector: Skipping dependency extraction for filtered file: {file_path}")
                     continue
                 
-                # Extract basic file-level references
-                refs = self._extract_references(content, file_path)
-                for ref in refs:
-                    relationships.append({
-                        'source_file': file_path,
-                        'target_file': ref['target'],
-                        'relationship_type': ref['type'],
-                        'weight': ref.get('weight', 1.0)
-                    })
-                
                 # Extract detailed function-level dependencies for multi-hop tracing
                 detailed_deps = self._extract_detailed_dependencies(content, file_path)
                 print(f"WeaviateVector: Found {len(detailed_deps)} dependencies in {file_path}")
                 dependencies.extend(detailed_deps)
-            
-            # Batch insert basic relationships
-            if relationships:
-                collection = self.client.collections.get("ProjectGraph")
-                with collection.batch.dynamic() as batch:
-                    for rel in relationships:
-                        batch.add_object(properties={
-                            'user_id': user_id,
-                            'project_id': project_id,
-                            'source_file': rel['source_file'],
-                            'target_file': rel['target_file'],
-                            'relationship_type': rel['relationship_type'],
-                            'weight': rel['weight']
-                        })
-                print(f"WeaviateVector: Stored {len(relationships)} graph relationships")
             
             # Batch insert detailed dependencies
             if dependencies:
@@ -892,196 +904,6 @@ class WeaviateVectorManager:
                 
         except Exception as e:
             print(f"WeaviateVector: Error updating graph: {e}")
-    
-    def _extract_references(self, content: str, file_path: str) -> List[Dict]:
-        """Extract file references from code"""
-        refs = []
-        lines = content.split('\n')
-        ext = os.path.splitext(file_path)[1].lower()
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            # Python imports
-            if ext in ['.py'] and stripped.startswith(('import ', 'from ')):
-                parts = stripped.split()
-                if len(parts) > 1:
-                    if stripped.startswith('from'):
-                        # from module import ...
-                        module = parts[1].split('.')[0]
-                    else:
-                        # import module
-                        module = parts[1].split('.')[0].split(' as ')[0]
-                    refs.append({
-                        'target': f"{module}.py",
-                        'type': 'import',
-                        'weight': 1.0
-                    })
-            
-            # GDScript patterns
-            elif ext in ['.gd']:
-                import re
-                
-                # preload() for resources
-                preload_matches = re.findall(r'preload\(["\'](.*?)["\']\)', line)
-                for match in preload_matches:
-                    target = match.replace('res://', '')
-                    refs.append({
-                        'target': target,
-                        'type': 'preload',
-                        'weight': 1.0
-                    })
-                
-                # load() for dynamic loading
-                load_matches = re.findall(r'load\(["\'](.*?)["\']\)', line)
-                for match in load_matches:
-                    target = match.replace('res://', '')
-                    refs.append({
-                        'target': target,
-                        'type': 'load',
-                        'weight': 0.8
-                    })
-                
-                # extends references
-                if stripped.startswith('extends'):
-                    # extends "res://path/to/script.gd"
-                    string_match = re.search(r'extends\s+["\'](.*?)["\']', stripped)
-                    if string_match:
-                        target = string_match.group(1).replace('res://', '')
-                        refs.append({
-                            'target': target,
-                            'type': 'extends',
-                            'weight': 1.5
-                        })
-                
-                # SIGNAL DETECTION - Critical for HP system tracing!
-                
-                # Signal definitions: signal health_changed(new_health) 
-                signal_def_match = re.search(r'signal\s+(\w+)', stripped)
-                if signal_def_match:
-                    signal_name = signal_def_match.group(1)
-                    refs.append({
-                        'target': f"SIGNAL_DEF:{signal_name}",
-                        'type': 'defines_signal',
-                        'weight': 1.2,
-                        'signal_name': signal_name
-                    })
-                
-                # Signal connections: node.connect("signal_name", target, "method")
-                connect_matches = re.findall(r'\.connect\(\s*["\'](\w+)["\'],\s*([^,)]+)', line)
-                for signal_name, target_node in connect_matches:
-                    refs.append({
-                        'target': f"SIGNAL_CONNECT:{signal_name}",
-                        'type': 'connects_signal',
-                        'weight': 1.3,
-                        'signal_name': signal_name,
-                        'target_node': target_node.strip()
-                    })
-                
-                # Signal emissions: emit_signal("signal_name", args...)
-                emit_matches = re.findall(r'emit_signal\(\s*["\'](\w+)["\']', line)
-                for signal_name in emit_matches:
-                    refs.append({
-                        'target': f"SIGNAL_EMIT:{signal_name}",
-                        'type': 'emits_signal',
-                        'weight': 1.1,
-                        'signal_name': signal_name
-                    })
-                
-                # get_node references: get_node("NodePath")
-                get_node_matches = re.findall(r'get_node\(\s*["\']([^"\']+)["\']\s*\)', line)
-                for node_path in get_node_matches:
-                    refs.append({
-                        'target': f"NODE_REF:{node_path}",
-                        'type': 'references_node',
-                        'weight': 0.9,
-                        'node_path': node_path
-                    })
-                
-                # @onready var references: @onready var player = get_node("Player")
-                onready_matches = re.findall(r'@onready\s+var\s+\w+\s*=\s*get_node\(\s*["\']([^"\']+)["\']\s*\)', line)
-                for node_path in onready_matches:
-                    refs.append({
-                        'target': f"ONREADY_REF:{node_path}",
-                        'type': 'onready_reference',
-                        'weight': 1.0,
-                        'node_path': node_path
-                    })
-            
-            # C# using statements
-            elif ext in ['.cs'] and stripped.startswith('using '):
-                # Skip system namespaces
-                if not any(stripped.startswith(f'using {ns}') for ns in ['System', 'Godot']):
-                    namespace = stripped.replace('using ', '').rstrip(';').strip()
-                    refs.append({
-                        'target': f"{namespace}.cs",
-                        'type': 'using',
-                        'weight': 1.0
-                    })
-            
-            # Scene file references in any file
-            if '.tscn' in line or '.scn' in line:
-                import re
-                scene_matches = re.findall(r'["\'](.*?\.t?scn)["\']', line)
-                for match in scene_matches:
-                    target = match.replace('res://', '')
-                    refs.append({
-                        'target': target,
-                        'type': 'scene_ref',
-                        'weight': 0.9
-                    })
-        
-        # SCENE FILE (.tscn) SIGNAL DETECTION - Critical for HP system!
-        if ext == '.tscn':
-            import re
-            
-            # Parse signal connections in scene files
-            # [connection signal="health_changed" from="Player" to="UI" method="_on_player_health_changed"]
-            connection_matches = re.finditer(
-                r'\[connection signal="([^"]+)" from="([^"]*)" to="([^"]*)" method="([^"]*)"\]', 
-                content, re.MULTILINE
-            )
-            
-            for match in connection_matches:
-                signal_name, from_node, to_node, method = match.groups()
-                
-                # Create signal flow relationships  
-                refs.append({
-                    'target': f"SCENE_SIGNAL:{signal_name}:{from_node}:{to_node}",
-                    'type': 'scene_signal_connection',
-                    'weight': 1.4,  # High weight - signal connections are architecturally important
-                    'signal_name': signal_name,
-                    'from_node': from_node,
-                    'to_node': to_node,
-                    'method': method
-                })
-            
-            # Parse external script attachments: script = ExtResource("id") 
-            script_matches = re.finditer(r'script = ExtResource\(\s*["\']([^"\']+)["\']\s*\)', content)
-            for match in script_matches:
-                # Look for the corresponding ext_resource path
-                ext_resource_match = re.search(
-                    rf'\[ext_resource[^]]*id="?{re.escape(match.group(1))}"?[^]]*path="([^"]+)"[^]]*type="Script"',
-                    content
-                )
-                if ext_resource_match:
-                    script_path = ext_resource_match.group(1).replace('res://', '')
-                    refs.append({
-                        'target': script_path,
-                        'type': 'scene_script_attachment',
-                        'weight': 1.6,  # Very important for scene-script relationships
-                    })
-        
-        # Deduplicate references
-        seen = set()
-        unique_refs = []
-        for ref in refs:
-            key = (ref['target'], ref['type'])
-            if key not in seen:
-                seen.add(key)
-                unique_refs.append(ref)
-        
-        return unique_refs
     
     def _extract_detailed_dependencies(self, content: str, file_path: str) -> List[Dict]:
         """Extract detailed function-level dependencies for multi-hop tracing"""
@@ -1404,7 +1226,7 @@ class WeaviateVectorManager:
         except Exception as e:
             print(f"WeaviateVector: Error removing {file_path} from graph collections: {e}")
     
-    def _is_file_unchanged(self, user_id: str, project_id: str, raw_file_path: str, content_hash: str) -> bool:
+    def _is_file_unchanged(self, user_id: str, project_id: str, raw_file_path: str, content_hash: str, index_version: int) -> bool:
         """Check if file is unchanged by comparing content hash with existing chunks"""
         try:
             # Normalize path for consistency
@@ -1414,8 +1236,8 @@ class WeaviateVectorManager:
             # Try newer API first, fallback to older API
             try:
                 results = collection.query.fetch_objects(
-                    limit=1,  # Just need to find one matching chunk
-                    return_properties=["content_hash"],
+                    limit=1,
+                    return_properties=["content_hash", "index_version"],
                     where=Filter.by_property("user_id").equal(user_id) & 
                           Filter.by_property("project_id").equal(project_id) &
                           Filter.by_property("file_path").equal(file_path)
@@ -1423,8 +1245,8 @@ class WeaviateVectorManager:
             except Exception:
                 # Fallback: fetch all objects and filter manually (slower but compatible)
                 results = collection.query.fetch_objects(
-                    limit=100,  # Get more objects for manual filtering
-                    return_properties=["user_id", "project_id", "file_path", "content_hash"]
+                    limit=100,
+                    return_properties=["user_id", "project_id", "file_path", "content_hash", "index_version"]
                 )
             
             # If we find any chunk with the same hash, file is unchanged
@@ -1434,6 +1256,13 @@ class WeaviateVectorManager:
                     obj.properties.get('project_id') == project_id and
                     obj.properties.get('file_path') == file_path and
                     obj.properties.get('content_hash') == content_hash):
+                    stored_version = obj.properties.get('index_version') or 0
+                    try:
+                        stored_version = int(stored_version)
+                    except (ValueError, TypeError):
+                        stored_version = 0
+                    if stored_version < index_version:
+                        continue
                     return True
             
             return False
@@ -1534,7 +1363,7 @@ class WeaviateVectorManager:
         
         # Index files in batches
         if all_files:
-            batch_stats = self.index_files_with_content(all_files, user_id, project_id, max_workers)
+            batch_stats = self.index_files_with_content(all_files, user_id, project_id, max_workers, force_reindex=force_reindex)
             stats.update(batch_stats)
         
         return stats
@@ -1596,6 +1425,147 @@ class WeaviateVectorManager:
             return False
             
         return True
+
+    def _get_artifact_record(self, collection, file_path: str, user_id: str, project_id: str,
+                             cache: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        if not file_path:
+            return {"id": file_path, "artifact_type": "unknown", "summary": "", "metadata": {}}
+        if file_path in cache:
+            return cache[file_path]
+        try:
+            filters = (
+                Filter.by_property("user_id").equal(user_id)
+                & Filter.by_property("project_id").equal(project_id)
+                & Filter.by_property("file_path").equal(file_path)
+            )
+            result = collection.query.fetch_objects(
+                limit=1,
+                return_properties=[
+                    "file_path",
+                    "artifact_type",
+                    "name",
+                    "summary",
+                    "metadata",
+                    "checksum",
+                    "size_bytes",
+                    "last_modified",
+                    "tags",
+                ],
+                filters=filters,
+            )
+            if result.objects:
+                props = result.objects[0].properties
+                metadata_raw = props.get("metadata")
+                metadata = {}
+                if metadata_raw:
+                    try:
+                        metadata = json.loads(metadata_raw)
+                    except Exception:
+                        metadata = {"raw": metadata_raw}
+                record = {
+                    "id": file_path,
+                    "artifact_type": props.get("artifact_type"),
+                    "name": props.get("name"),
+                    "summary": props.get("summary"),
+                    "metadata": metadata,
+                    "tags": props.get("tags", "").split(",") if props.get("tags") else [],
+                }
+            else:
+                record = {"id": file_path, "artifact_type": "unknown", "summary": "", "metadata": {}}
+        except Exception as exc:
+            print(f"WeaviateVector: Artifact lookup failed for {file_path}: {exc}")
+            record = {"id": file_path, "artifact_type": "unknown", "summary": "", "metadata": {}}
+        cache[file_path] = record
+        return record
+
+    def sync_graph_payload(self, payload, user_id: str, project_id: str):
+        """Persist graph artifacts and edges emitted by the graph engine."""
+        artifacts = getattr(payload, "artifacts", [])
+        edges = getattr(payload, "edges", [])
+
+        if not artifacts and not edges:
+            return
+
+        artifact_collection = self.client.collections.get("ProjectArtifacts")
+        graph_collection = self.client.collections.get("ProjectGraph")
+
+        touched_files = {artifact.file_path for artifact in artifacts if artifact.file_path}
+        if touched_files:
+            self._delete_artifacts_for_files(touched_files, user_id, project_id)
+            self._delete_edges_for_files(touched_files, user_id, project_id)
+
+        if artifacts:
+            with artifact_collection.batch.dynamic() as batch:
+                for artifact in artifacts:
+                    props = {
+                        "user_id": user_id,
+                        "project_id": project_id,
+                        "file_path": artifact.file_path,
+                        "artifact_type": artifact.artifact_type,
+                        "name": artifact.name,
+                        "summary": artifact.summary,
+                        "metadata": json.dumps(artifact.metadata or {}),
+                        "checksum": artifact.checksum,
+                        "size_bytes": artifact.size_bytes,
+                        "last_modified": self._format_timestamp(artifact.last_modified),
+                        "tags": ",".join(artifact.tags) if artifact.tags else "",
+                    }
+                    batch.add_object(properties=props)
+
+        if edges:
+            with graph_collection.batch.dynamic() as batch:
+                for edge in edges:
+                    if not edge.target_file:
+                        continue
+                    props = {
+                        "user_id": user_id,
+                        "project_id": project_id,
+                        "source_file": edge.source_file,
+                        "target_file": edge.target_file,
+                        "relationship_type": edge.relationship_type,
+                        "weight": edge.weight,
+                        "source_symbol": edge.source_symbol,
+                        "target_symbol": edge.target_symbol,
+                        "signal_name": edge.signal_name,
+                        "context": edge.context,
+                        "line_number": edge.line_number,
+                    }
+                    batch.add_object(properties=props)
+
+    def _delete_artifacts_for_files(self, files: set, user_id: str, project_id: str):
+        collection = self.client.collections.get("ProjectArtifacts")
+        for file_path in files:
+            try:
+                where = (
+                    Filter.by_property("user_id").equal(user_id)
+                    & Filter.by_property("project_id").equal(project_id)
+                    & Filter.by_property("file_path").equal(file_path)
+                )
+                collection.data.delete_many(where=where)
+            except Exception as exc:
+                print(f"WeaviateVector: Failed to delete artifacts for {file_path}: {exc}")
+
+    def _delete_edges_for_files(self, files: set, user_id: str, project_id: str):
+        collection = self.client.collections.get("ProjectGraph")
+        for file_path in files:
+            try:
+                source_filter = (
+                    Filter.by_property("user_id").equal(user_id)
+                    & Filter.by_property("project_id").equal(project_id)
+                    & Filter.by_property("source_file").equal(file_path)
+                )
+                collection.data.delete_many(where=source_filter)
+            except Exception as exc:
+                print(f"WeaviateVector: Failed to delete edges for {file_path}: {exc}")
+
+    @staticmethod
+    def _format_timestamp(ts: Optional[float]):
+        if not ts:
+            return None
+        try:
+            return datetime.fromtimestamp(ts, timezone.utc)
+        except Exception:
+            return datetime.now(timezone.utc)
     
     def get_stats(self, user_id: str, project_id: str) -> Dict[str, Any]:
         """Get project statistics"""
@@ -1746,87 +1716,123 @@ class WeaviateVectorManager:
             print(f"WeaviateVector: Error removing file {file_path}: {e}")
             return False
     
-    def get_graph_context_for_files(self, file_paths: List[str], user_id: str, project_id: str, 
+    def get_graph_context_for_files(self, file_paths: List[str], user_id: str, project_id: str,
                                    **kwargs) -> Dict[str, Any]:
-        """Get graph context for files"""
+        """Get graph context for files using the new artifact + edge collections."""
         context = {}
-        
-        try:
-            collection = self.client.collections.get("ProjectGraph")
-            
-            for file_path in file_paths:
-                nodes = []
-                edges = []
-                
-                # Get ALL graph edges and filter (API compatibility workaround)
+        edge_collection = self.client.collections.get("ProjectGraph")
+        artifact_collection = self.client.collections.get("ProjectArtifacts")
+        artifact_cache: Dict[str, Dict[str, Any]] = {}
+
+        for file_path in file_paths:
+            edges = []
+            node_ids = set()
+
+            for prop_name in ("source_file", "target_file"):
                 try:
-                    # Fetch more objects to account for API limitations
-                    all_edges = collection.query.fetch_objects(
-                        limit=500,  # Increased limit to catch all relationships
-                        return_properties=["user_id", "project_id", "source_file", "target_file", "relationship_type", "weight"]
+                    filters = (
+                        Filter.by_property("user_id").equal(user_id)
+                        & Filter.by_property("project_id").equal(project_id)
+                        & Filter.by_property(prop_name).equal(file_path)
                     )
-                    
-                    print(f"WeaviateGraph: Fetched {len(all_edges.objects)} total graph objects for file {file_path}")
-                    
-                    for obj in all_edges.objects:
-                        props = obj.properties
-                        if (props.get('user_id') == user_id and 
-                            props.get('project_id') == project_id):
-                            
-                            source_file = props.get('source_file')
-                            target_file = props.get('target_file')
-                            
-                            # Check if this edge involves our file (either as source or target)
-                            if source_file == file_path or target_file == file_path:
-                                edge = {
-                                    'source': source_file,
-                                    'target': target_file,
-                                    'type': props.get('relationship_type', 'reference'),
-                                    'weight': props.get('weight', 1.0)
-                                }
-                                edges.append(edge)
-                                
-                                # Add both source and target as nodes
-                                for node_id in [source_file, target_file]:
-                                    if node_id and {'id': node_id, 'type': 'file'} not in nodes:
-                                        nodes.append({'id': node_id, 'type': 'file'})
-                                        
-                                print(f"WeaviateGraph: Found edge {source_file} -> {target_file} ({props.get('relationship_type')})")
-                    
-                except Exception as e:
-                    # Suppress noisy connection errors during network issues
-                    if "tcp handshaker shutdown" in str(e) or "ipv4:" in str(e):
-                        pass  # Silent fail for network issues
-                    else:
-                        print(f"WeaviateGraph: Error fetching graph edges: {e}")
-                
-                # Add the file itself as a node if not already present
-                if {'id': file_path, 'type': 'file'} not in nodes:
-                    nodes.append({'id': file_path, 'type': 'file', 'central': True})
-                
-                context[file_path] = {
-                    'nodes': nodes,
-                    'edges': edges
-                }
-                
-                print(f"WeaviateGraph: File {file_path} final context: {len(nodes)} nodes, {len(edges)} edges")
-                
-        except Exception as e:
-            print(f"WeaviateVector: Error getting graph context: {e}")
-            # Return empty context on error
-            context = {fp: {"nodes": [], "edges": []} for fp in file_paths}
-        
+                    results = edge_collection.query.fetch_objects(
+                        limit=200,
+                        return_properties=[
+                            "source_file",
+                            "target_file",
+                            "relationship_type",
+                            "weight",
+                            "signal_name",
+                            "source_symbol",
+                            "target_symbol",
+                            "context",
+                            "line_number",
+                        ],
+                        filters=filters,
+                    )
+                except Exception as exc:
+                    print(f"WeaviateGraph: edge query failed ({prop_name}): {exc}")
+                    continue
+
+                for obj in results.objects:
+                    props = obj.properties
+                    edge = {
+                        "source": props.get("source_file"),
+                        "target": props.get("target_file"),
+                        "type": props.get("relationship_type"),
+                        "weight": props.get("weight", 1.0),
+                        "signal_name": props.get("signal_name"),
+                        "source_symbol": props.get("source_symbol"),
+                        "target_symbol": props.get("target_symbol"),
+                        "context": props.get("context"),
+                        "line_number": props.get("line_number"),
+                    }
+                    edges.append(edge)
+                    node_ids.add(edge["source"])
+                    node_ids.add(edge["target"])
+
+            node_details = []
+            for node_id in sorted(n for n in node_ids if n):
+                details = self._get_artifact_record(
+                    artifact_collection, node_id, user_id, project_id, artifact_cache
+                )
+                node_details.append(details)
+
+            # Ensure center node present even if no edges
+            if file_path not in node_ids:
+                node_details.append(
+                    self._get_artifact_record(
+                        artifact_collection, file_path, user_id, project_id, artifact_cache
+                    )
+                )
+
+            context[file_path] = {
+                "nodes": node_details,
+                "edges": edges,
+            }
+
         return context
     
     def get_graph_context_expanded(self, file_paths: List[str], user_id: str, project_id: str,
-                                  depth: int = 1, kinds: List[str] = None) -> Dict[str, Any]:
-        """Get expanded graph context with depth traversal"""
-        if depth <= 0:
-            return self.get_graph_context_for_files(file_paths, user_id, project_id)
-        
-        # For now, just return single-level context
-        # Full depth traversal can be implemented later
-        return self.get_graph_context_for_files(file_paths, user_id, project_id)
+                                  depth: int = 1, kinds: List[str] = None,
+                                  max_nodes: int = 200, max_edges: int = 400) -> Dict[str, Any]:
+        """Multi-hop traversal starting from file_paths (depth counts hops)."""
+        depth = max(0, depth)
+        visited: Dict[str, Dict[str, Any]] = {}
+        seen: set[str] = set()
+        frontier = list(dict.fromkeys(fp for fp in file_paths if fp))
+        level = 0
+
+        while frontier and level <= depth and len(visited) < max_nodes:
+            context = self.get_graph_context_for_files(frontier, user_id, project_id)
+            new_frontier: List[str] = []
+
+            for file_path, payload in context.items():
+                if file_path in seen:
+                    continue
+
+                nodes = payload.get("nodes", [])
+                edges = payload.get("edges", [])
+
+                if kinds:
+                    edges = [edge for edge in edges if edge.get("type") in kinds]
+
+                visited[file_path] = {
+                    "nodes": nodes[:max_nodes],
+                    "edges": edges[:max_edges]
+                }
+                seen.add(file_path)
+
+                if level < depth:
+                    for edge in edges:
+                        neighbor = edge.get("target")
+                        if neighbor and neighbor not in seen and neighbor not in new_frontier:
+                            new_frontier.append(neighbor)
+
+            frontier = new_frontier
+            level += 1
+
+        return visited
     
     def trace_dependencies(self, start_function: str, start_file: str, user_id: str, project_id: str,
                           direction: str = 'forward', max_hops: int = 3) -> Dict[str, Any]:
@@ -1859,29 +1865,35 @@ class WeaviateVectorManager:
                 # Query dependencies
                 try:
                     if direction == 'forward':
-                        # Find what this function affects
-                        results = dependency_collection.query.fetch_objects(
-                            limit=100,
-                            return_properties=["source_file", "source_function", "source_node",
-                                             "target_file", "target_function", "target_node", 
-                                             "dependency_type", "signal_name", "weight", "context"],
-                            where=Filter.by_property("user_id").equal(user_id) & 
-                                  Filter.by_property("project_id").equal(project_id) &
-                                  Filter.by_property("source_file").equal(current_file) &
-                                  Filter.by_property("source_function").equal(current_func)
+                        filters = (
+                            Filter.by_property("user_id").equal(user_id)
+                            & Filter.by_property("project_id").equal(project_id)
+                            & Filter.by_property("source_file").equal(current_file)
+                            & Filter.by_property("source_function").equal(current_func)
                         )
                     else:
-                        # Find what affects this function
-                        results = dependency_collection.query.fetch_objects(
-                            limit=100,
-                            return_properties=["source_file", "source_function", "source_node",
-                                             "target_file", "target_function", "target_node", 
-                                             "dependency_type", "signal_name", "weight", "context"],
-                            where=Filter.by_property("user_id").equal(user_id) & 
-                                  Filter.by_property("project_id").equal(project_id) &
-                                  Filter.by_property("target_file").equal(current_file) &
-                                  Filter.by_property("target_function").equal(current_func)
+                        filters = (
+                            Filter.by_property("user_id").equal(user_id)
+                            & Filter.by_property("project_id").equal(project_id)
+                            & Filter.by_property("target_file").equal(current_file)
+                            & Filter.by_property("target_function").equal(current_func)
                         )
+                    results = dependency_collection.query.fetch_objects(
+                        limit=100,
+                        return_properties=[
+                            "source_file",
+                            "source_function",
+                            "source_node",
+                            "target_file",
+                            "target_function",
+                            "target_node",
+                            "dependency_type",
+                            "signal_name",
+                            "weight",
+                            "context",
+                        ],
+                        filters=filters,
+                    )
                 except Exception:
                     # Fallback: fetch all and filter manually
                     results = dependency_collection.query.fetch_objects(

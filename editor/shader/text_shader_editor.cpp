@@ -1867,7 +1867,6 @@ void TextShaderEditor::_apply_all_diff_hunks(bool p_accept) {
 }
 
 void TextShaderEditor::_clear_diff_data() {
-	print_line("_clear_diff_data called for shader!");
 	original_content = "";
 	modified_content = "";
 	has_pending_diffs = false;

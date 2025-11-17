@@ -594,6 +594,7 @@ private:
 	void _version_control_menu_option(int p_idx);
 	void _open_version_control_dock();
 	void _show_account_settings();
+	void _refresh_account_button();
 	void _sign_out_from_account_settings(AcceptDialog *p_dialog);
 	void _close_messages();
 	void _show_messages();
@@ -744,6 +745,7 @@ public:
 	AIChatDock *get_ai_chat_dock() const { return ai_chat_dock; }
 	// Public for use with callable_mp.
 	void init_plugins();
+	void refresh_account_button_from_auth();
 	void _on_plugin_ready(Object *p_script, const String &p_activate_name);
 
 	bool call_build();

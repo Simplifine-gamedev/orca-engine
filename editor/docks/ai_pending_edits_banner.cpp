@@ -75,10 +75,8 @@ AIPendingEditsBanner::AIPendingEditsBanner() {
 }
 
 void AIPendingEditsBanner::update_counts(int p_unique_files, int p_total_edits) {
-	print_line("AIPendingEditsBanner::update_counts - files: " + String::num_int64(p_unique_files) + ", edits: " + String::num_int64(p_total_edits));
 	
 	if (p_unique_files <= 0 || p_total_edits <= 0) {
-		print_line("AIPendingEditsBanner::update_counts - hiding banner (no pending edits)");
 		set_visible(false);
 		return;
 	}
@@ -93,7 +91,6 @@ void AIPendingEditsBanner::update_counts(int p_unique_files, int p_total_edits) 
 	}
 	count_label->set_text(text);
 	if (!is_visible()) {
-		print_line("AIPendingEditsBanner::update_counts - showing banner with text: " + text);
 		set_visible(true);
 	}
 }

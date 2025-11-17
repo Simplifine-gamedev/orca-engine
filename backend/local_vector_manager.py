@@ -62,7 +62,7 @@ class LocalVectorManager:
         except Exception:
             return False
 
-    def index_files_with_content(self, files: List[Dict], user_id: str, project_id: str, max_workers: Optional[int] = None) -> Dict:
+    def index_files_with_content(self, files: List[Dict], user_id: str, project_id: str, max_workers: Optional[int] = None, force_reindex: bool = False) -> Dict:
         indexed = skipped = failed = 0
         for fd in files:
             try:
@@ -70,7 +70,7 @@ class LocalVectorManager:
                 content = fd.get("content", "")
                 h = fd.get("hash") or hashlib.md5(content.encode("utf-8")).hexdigest()
                 key = f"{user_id}:{project_id}:{rel}"
-                if key in self.index and self.index[key]["hash"] == h:
+                if not force_reindex and key in self.index and self.index[key]["hash"] == h:
                     skipped += 1
                     continue
                 self.index[key] = {"file_path": rel, "hash": h, "content_preview": content[:5000]}

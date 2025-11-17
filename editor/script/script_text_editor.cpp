@@ -235,7 +235,6 @@ void ScriptTextEditor::apply_code() {
 	// Safety check: prevent saving content with diff markers
 	if (content.contains("\n+ ") || content.contains("\n- ") || 
 		content.begins_with("+ ") || content.begins_with("- ")) {
-		print_line("WARNING: apply_code() detected diff markers in content! Auto-accepting diff to save clean content.");
 		if (has_pending_diffs) {
 			accept_all_diffs(true);  // CRITICAL: true = silent auto-accept, don't emit signals
 			return; // accept_all_diffs will call apply_code again with clean content
@@ -2113,7 +2112,6 @@ void ScriptTextEditor::_notification(int p_what) {
 			// If we have pending diffs when the app is closing, automatically accept them
 			// to prevent saving diff markers in the file
 			if (has_pending_diffs) {
-				print_line("ScriptTextEditor: App closing with pending diffs, auto-accepting to save clean content");
 				accept_all_diffs(true);  // Silent auto-accept on close
 			}
 		} break;
@@ -3778,7 +3776,6 @@ void ScriptTextEditor::_apply_all_diff_hunks(bool p_accept, bool p_silent) {
 }
 
 void ScriptTextEditor::_clear_diff_data() {
-	print_line("_clear_diff_data called!");
 	original_content = "";
 	modified_content = "";
 	has_pending_diffs = false;

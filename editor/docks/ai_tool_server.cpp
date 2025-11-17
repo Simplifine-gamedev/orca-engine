@@ -181,13 +181,11 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
         // Always include the project root to avoid backend defaulting to old projects
         String project_root = ProjectSettings::get_singleton()->globalize_path("res://");
         args["project_root"] = project_root;
-        print_line("AI Tool Server: search_across_project invoking with project_root=" + project_root);
 		result = EditorTools::search_across_project(args);
 	} else if (function_name == "search_across_godot_docs") {
 		if (!args.has("max_results")) {
 			args["max_results"] = 5;
 		}
-		print_line("AI Tool Server: search_across_godot_docs invoking");
 		result = EditorTools::search_across_godot_docs(args);
 	} else if (function_name == "search_godot_assets") {
 		// Inject current Godot version if not specified
@@ -201,8 +199,11 @@ Dictionary AIToolServer::_handle_tool_request(const String &p_method, const Stri
 				args["godot_version"] = "4.3"; // Fallback to current stable
 			}
 		}
-		print_line("AI Tool Server: search_godot_assets invoking with version=" + String(args.get("godot_version", "unknown")));
 		// This will be forwarded to backend via normal tool execution path
+		result["success"] = true;
+		result["forwarded_to_backend"] = true;
+	} else if (function_name == "todo_manager") {
+		// Todo management is entirely backend-driven; mark for forwarding
 		result["success"] = true;
 		result["forwarded_to_backend"] = true;
 	} else if (function_name == "editor_introspect") {
@@ -378,7 +379,6 @@ Error AIToolServer::listen(int p_port) {
 		return err;
 	}
 	
-	print_line("AI Tool Server: Started on port " + itos(p_port));
 	
 	server_quit.clear();
 	server_thread.start(_server_thread_poll, this);
@@ -394,7 +394,6 @@ void AIToolServer::stop() {
 	server.unref();
 	_clear_client();
 	
-	print_line("AI Tool Server: Stopped");
 }
 
 bool AIToolServer::is_listening() const {

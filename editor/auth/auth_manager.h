@@ -13,6 +13,8 @@
 #include "core/string/ustring.h"
 #include "core/templates/hash_map.h"
 #include "core/io/http_client.h"
+#include "core/io/stream_peer_tcp.h"
+#include "core/io/tcp_server.h"
 
 class AuthManager : public Object {
 	GDCLASS(AuthManager, Object);
@@ -41,6 +43,21 @@ private:
 	bool _store_token_secure(const String &p_key, const String &p_value);
 	String _retrieve_token_secure(const String &p_key);
 	void _delete_token_secure(const String &p_key);
+	String _get_auth_storage_dir() const;
+	String _get_legacy_auth_storage_dir() const;
+	void _ensure_auth_storage_dir_exists(const String &p_dir) const;
+	void _remove_token_file(const String &p_dir, const String &p_key) const;
+
+	// Loopback auth server
+	bool _start_loopback_server();
+	void _stop_loopback_server();
+	void _send_loopback_response(const Ref<StreamPeerTCP> &p_client, bool p_success);
+	bool _handle_loopback_connection(const Ref<StreamPeerTCP> &p_client);
+	String _read_http_request(const Ref<StreamPeerTCP> &p_client);
+
+	Ref<TCPServer> loopback_server;
+	uint16_t loopback_port = 0;
+	uint64_t loopback_deadline_msec = 0;
 
 protected:
 	static void _bind_methods();
@@ -68,6 +85,9 @@ public:
 	void store_tokens(const String &p_access_token, const String &p_refresh_token, const String &p_user_id, const String &p_email, const String &p_name);
 	bool load_stored_tokens();
 	void clear_stored_tokens();
+
+	// Loopback server polling
+	void poll_loopback_server();
 
 	// Getters
 	bool get_is_authenticated() const { return is_authenticated; }

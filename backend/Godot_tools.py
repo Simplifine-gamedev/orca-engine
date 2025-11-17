@@ -577,6 +577,38 @@ _godot_tools_template = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "graph_manager",
+            "description": "REQUIRED: Always specify 'op' parameter. Explore the Godot project graph (scene↔script relationships, signals, resources). Use this before editing to understand connected files.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["graph.neighbors", "graph.walk"],
+                        "description": "Graph operations. 'graph.neighbors' inspects a specific file; 'graph.walk' traverses multiple hops automatically."
+                    },
+                    "file_path": {"type": "string", "description": "Primary file to explore (e.g., 'res://player.gd')."},
+                    "file_paths": {"type": "array", "items": {"type": "string"}, "description": "Optional list of additional files to include."},
+                    "start_file": {"type": "string", "description": "graph.walk: single starting file/scene."},
+                    "start_files": {"type": "array", "items": {"type": "string"}, "description": "graph.walk: list of starting files/scenes."},
+                    "project_root": {"type": "string", "description": "Project root path (used to derive project_id if not provided)."},
+                    "project_id": {"type": "string", "description": "Project identifier (MD5 hash of project root)."},
+                    "depth": {"type": "integer", "default": 1, "minimum": 1, "maximum": 3, "description": "Neighbor expansion depth (currently limited to 1-3)."},
+                    "edge_types": {"type": "array", "items": {"type": "string"}, "description": "Filter to specific relationship types (e.g., ['attached_script','scene_ref'])."},
+                    "max_nodes": {"type": "integer", "default": 12, "minimum": 1, "maximum": 50, "description": "Maximum nodes to return per file."},
+                    "max_edges": {"type": "integer", "default": 24, "minimum": 1, "maximum": 200, "description": "Maximum edges to return per file."},
+                    "graph_preview": {"type": "boolean", "default": True, "description": "Return trimmed preview for UI display."},
+                    "include_summary": {"type": "boolean", "default": True, "description": "Include aggregate graph statistics."},
+                    "include_raw": {"type": "boolean", "default": False, "description": "Return the full raw graph context (can be large)."}
+                },
+                "required": ["op"]
+            }
+        }
+    },
 
     {
         "type": "function",
@@ -592,11 +624,29 @@ _godot_tools_template = [
                     "scene_path": {"type": "string"},
                     "clear_errors": {"type": "boolean", "default": True},
 
-                    "include_warnings": {"type": "boolean", "default": True},
-                    "file_filter": {"type": "string"},
-                    "max_count": {"type": "integer", "default": 20},
-                    "message_contains": {"type": "string"},
-                    "group_duplicates": {"type": "boolean", "default": True},
+                    "include_warnings": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "errors.* ops: include warnings alongside errors when summarizing logs."
+                    },
+                    "file_filter": {
+                        "type": "string",
+                        "description": "errors.* ops: only include entries whose file path contains this substring (e.g., 'player.gd')."
+                    },
+                    "max_count": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "errors.* ops: limit number of error instances to return after filtering."
+                    },
+                    "message_contains": {
+                        "type": "string",
+                        "description": "errors.* ops: only include messages that contain this substring."
+                    },
+                    "group_duplicates": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "errors.summary: when true, collapse identical errors into a single entry with counts."
+                    },
 
                     # Screenshot parameters (TEMP disabled)
                     # "filename": {"type": "string", "default": "screenshot_debug.png"},
@@ -604,9 +654,26 @@ _godot_tools_template = [
                     # "return_base64": {"type": "boolean", "default": True},
                     
                     # Console output parameters
-                    "output_type": {"type": "string", "enum": ["all", "print", "error", "warning"], "default": "all"},
-                    "max_lines": {"type": "integer", "default": 50, "description": "Maximum console lines to retrieve"},
-                    "since_timestamp": {"type": "integer", "description": "Only get output since this timestamp (milliseconds)"},
+                    "lookback_seconds": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "errors.* ops: only include runtime errors from the last N seconds (0 = all history)."
+                    },
+                    "output_type": {
+                        "type": "string",
+                        "enum": ["all", "print", "error", "warning"],
+                        "default": "all",
+                        "description": "console.get_output: which messages to return (filters by Godot log category)."
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "console.get_output: maximum number of filtered game log lines to return."
+                    },
+                    "since_timestamp": {
+                        "type": "integer",
+                        "description": "console.get_output: reserved for future incremental log streaming (currently ignored)."
+                    },
                     
                     # Input testing parameters
                     "action_name": {"type": "string", "description": "Input action name to test"},
@@ -729,6 +796,50 @@ _godot_tools_template = [
                     "trace_duration": {"type": "number", "default": 1.0, "description": "How long to trace property changes (seconds)"},
                     "include_callstack": {"type": "boolean", "default": True, "description": "Include script callstack in trace"},
                     "compare_to_editor": {"type": "boolean", "default": False, "description": "Compare runtime values to editor values (for diagnose)"}
+                },
+                "required": ["op"]
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "todo_manager",
+            "description": "Plan tracker for the AI. ONLY call after you've already run semantic search + graph.walk + file reads and need to organize the next steps.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["todo.list", "todo.add", "todo.add_batch", "todo.update", "todo.remove", "todo.clear"],
+                        "description": "Todo operation (list/add/update/remove/clear)."
+                    },
+                    "project_root": {"type": "string", "description": "Project root/path used to scope the todo list."},
+                    "content": {"type": "string", "description": "Todo text (required for todo.add)."},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "in_progress", "completed", "cancelled"],
+                        "description": "Status for todo.add/todo.update (defaults to 'pending')."
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed", "cancelled"],
+                                    "default": "pending"
+                                }
+                            },
+                            "required": ["content"]
+                        },
+                        "description": "Batch payload for todo.add_batch"
+                    },
+                    "todo_id": {"type": "string", "description": "Todo identifier for update/remove operations."}
                 },
                 "required": ["op"]
             }
