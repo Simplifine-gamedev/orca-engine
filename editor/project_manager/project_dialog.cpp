@@ -450,6 +450,18 @@ void ProjectDialog::_renderer_selected() {
 	String renderer_type = renderer_button_group->get_pressed_button()->get_meta(SNAME("rendering_method"));
 
 	bool rd_error = false;
+	
+	// ORCA ENGINE FIX: On Windows with RD_ENABLED, allow Forward+ and Mobile even if runtime test failed
+	// Match the same logic used when creating the renderer buttons
+	#ifdef WINDOWS_ENABLED
+	#ifdef RD_ENABLED
+	bool allow_rd_renderers = true;
+	#else
+	bool allow_rd_renderers = rendering_device_supported;
+	#endif
+	#else
+	bool allow_rd_renderers = rendering_device_supported;
+	#endif
 
 	if (renderer_type == "forward_plus") {
 		renderer_info->set_text(
@@ -458,7 +470,7 @@ void ProjectDialog::_renderer_selected() {
 				String::utf8("\n•  ") + TTR("Can scale to large complex scenes.") +
 				String::utf8("\n•  ") + TTR("Uses RenderingDevice backend.") +
 				String::utf8("\n•  ") + TTR("Slower rendering of simple scenes."));
-		rd_error = !rendering_device_supported;
+		rd_error = !allow_rd_renderers;
 	} else if (renderer_type == "mobile") {
 		renderer_info->set_text(
 				String::utf8("•  ") + TTR("Supports desktop + mobile platforms.") +
@@ -466,7 +478,7 @@ void ProjectDialog::_renderer_selected() {
 				String::utf8("\n•  ") + TTR("Less scalable for complex scenes.") +
 				String::utf8("\n•  ") + TTR("Uses RenderingDevice backend.") +
 				String::utf8("\n•  ") + TTR("Fast rendering of simple scenes."));
-		rd_error = !rendering_device_supported;
+		rd_error = !allow_rd_renderers;
 	} else if (renderer_type == "gl_compatibility") {
 		renderer_info->set_text(
 				String::utf8("•  ") + TTR("Supports desktop, mobile + web platforms.") +
@@ -1053,8 +1065,23 @@ ProjectDialog::ProjectDialog() {
 	}
 
 	rendering_device_supported = DisplayServer::is_rendering_device_supported();
+	
+	// ORCA ENGINE FIX: On Windows, if RD_ENABLED is compiled in, always show Forward+ and Mobile options
+	// The runtime test can fail in virtualization environments (Parallels, VMWare) even when drivers work
+	// Users should be able to try Forward+ and Mobile - if they don't work, they can switch to Compatibility
+	#ifdef WINDOWS_ENABLED
+	#ifdef RD_ENABLED
+	// If RenderingDevice is compiled in, allow Forward+ and Mobile even if runtime test failed
+	// This is more user-friendly - let users try the modern renderers
+	bool allow_rd_renderers = true;
+	#else
+	bool allow_rd_renderers = rendering_device_supported;
+	#endif
+	#else
+	bool allow_rd_renderers = rendering_device_supported;
+	#endif
 
-	if (!rendering_device_supported) {
+	if (!rendering_device_supported && !allow_rd_renderers) {
 		default_renderer_type = "gl_compatibility";
 	}
 
@@ -1063,6 +1090,18 @@ ProjectDialog::ProjectDialog() {
 	rs_button->set_text(TTRC("Forward+"));
 #ifndef RD_ENABLED
 	rs_button->set_disabled(true);
+#else
+	// On Windows with RD_ENABLED, always enable Forward+ even if runtime test failed
+	// User can try it and switch to Compatibility if it doesn't work
+	#ifdef WINDOWS_ENABLED
+	if (!allow_rd_renderers) {
+		rs_button->set_disabled(true);
+	}
+	#else
+	if (!rendering_device_supported) {
+		rs_button->set_disabled(true);
+	}
+	#endif
 #endif
 	rs_button->set_meta(SNAME("rendering_method"), "forward_plus");
 	rs_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectDialog::_renderer_selected));
@@ -1075,6 +1114,17 @@ ProjectDialog::ProjectDialog() {
 	rs_button->set_text(TTRC("Mobile"));
 #ifndef RD_ENABLED
 	rs_button->set_disabled(true);
+#else
+	// On Windows with RD_ENABLED, always enable Mobile even if runtime test failed
+	#ifdef WINDOWS_ENABLED
+	if (!allow_rd_renderers) {
+		rs_button->set_disabled(true);
+	}
+	#else
+	if (!rendering_device_supported) {
+		rs_button->set_disabled(true);
+	}
+	#endif
 #endif
 	rs_button->set_meta(SNAME("rendering_method"), "mobile");
 	rs_button->connect(SceneStringName(pressed), callable_mp(this, &ProjectDialog::_renderer_selected));

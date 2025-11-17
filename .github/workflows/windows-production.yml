@@ -65,6 +65,9 @@ jobs:
       - name: Setup MSVC
         uses: microsoft/setup-msbuild@v1.1
 
+      - name: Download Direct3D 12 SDK components
+        run: python ./misc/scripts/install_d3d12_sdk_windows.py
+
       - name: Free up disk space
         shell: powershell
         run: |
@@ -84,7 +87,8 @@ jobs:
           echo "🧠 Available memory:"
           Get-WmiObject -Class Win32_ComputerSystem | Select-Object TotalPhysicalMemory
           echo "⚡ Starting SCons build..."
-          scons platform=windows target=editor dev_build=no arch=x86_64 cache_path=.scons-cache cache_limit=15 lto=none fast_unsafe=yes vulkan=no scu_build=yes scu_limit=64 -j $env:NUMBER_OF_PROCESSORS verbose=yes
+          echo "📦 Enabling D3D12 for RenderingDevice support (Forward+ and Mobile renderers)"
+          scons platform=windows target=editor dev_build=no arch=x86_64 cache_path=.scons-cache cache_limit=15 lto=none fast_unsafe=yes vulkan=no d3d12=yes scu_build=yes scu_limit=64 -j $env:NUMBER_OF_PROCESSORS verbose=yes
         env:
           ORCA_VERSION: ${{ env.ORCA_VERSION }}
 
