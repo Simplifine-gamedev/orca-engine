@@ -1912,6 +1912,36 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				"Error: Command line arguments implied opening both editor and project manager, which is not possible. Aborting.\n");
 		goto error;
 	}
+	
+	// ORCA ENGINE FIX: On Windows, when launched without explicit flags (double-click), default to Project Manager
+	// This ensures fresh downloads always open Project Manager instead of trying to auto-open broken projects
+	// This prevents crashes when users download and double-click the exe
+	// MUST happen BEFORE globals->setup() is called
+	#ifdef WINDOWS_ENABLED
+	if (!project_manager && !editor && !cmdline_tool && editor_pid == 0) {
+		// Check if we were launched with any command-line arguments
+		// If no args were provided (double-click), default to project manager
+		List<String> cmdline_args = OS::get_singleton()->get_cmdline_args();
+		bool has_explicit_flags = false;
+		for (List<String>::Element *E = cmdline_args.front(); E; E = E->next()) {
+			String arg = E->get();
+			if (arg == "--editor" || arg == "-e" || arg == "--project-manager" || arg == "-p" || 
+			    arg == "--path" || arg.begins_with("--") || arg.contains("project.godot")) {
+				has_explicit_flags = true;
+				break;
+			}
+		}
+		
+		if (!has_explicit_flags) {
+			// Launched without arguments (double-click) - default to Project Manager for safety
+			print_line("Orca: Launched without arguments, defaulting to Project Manager");
+			project_manager = true;
+			editor = false;
+			// Clear project_path to ensure clean Project Manager startup
+			project_path = "";
+		}
+	}
+	#endif
 #endif
 
 	// Network file system needs to be configured before globals, since globals are based on the
@@ -1939,7 +1969,24 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #endif
 	} else {
 #ifdef TOOLS_ENABLED
-		editor = false;
+		// ORCA ENGINE FIX: If project fails to load and we're trying to open editor, fall back to project manager
+		// This prevents crashes when double-clicking the exe and finding a broken project
+		if (editor && !project_manager) {
+			print_line("Orca: Project failed to load at '" + project_path + "', falling back to Project Manager");
+			editor = false;
+			project_manager = true;
+			project_path = "."; // Reset to allow project manager to work
+			// Try to setup again with project manager mode
+			if (globals->setup(project_path, main_pack, upwards, false) != OK) {
+				// If even project manager fails, show error
+				const String error_msg = "Error: Couldn't initialize Project Manager. Please check your installation.";
+				OS::get_singleton()->print("%s", error_msg.utf8().get_data());
+				OS::get_singleton()->alert(error_msg);
+				goto error;
+			}
+		} else {
+			editor = false;
+		}
 #else
 		const String error_msg = "Error: Couldn't load project data at path \"" + project_path + "\". Is the .pck file missing?\nIf you've renamed the executable, the associated .pck file should also be renamed to match the executable's name (without the extension).\n";
 		OS::get_singleton()->print("%s", error_msg.utf8().get_data());
@@ -1968,17 +2015,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	if (!project_manager && !editor) {
 		// If we didn't find a project, we fall back to the project manager.
 		project_manager = !found_project && !cmdline_tool;
-		
-	// ORCA ENGINE FIX: On Windows, default to project manager if uncertain
-	// This prevents "Couldn't detect whether to run" errors during automated updates
-	// IMPORTANT: Only apply this fallback if we don't have a project loaded AND we're not launched from the editor
-	#ifdef WINDOWS_ENABLED
-	if (!project_manager && !editor && !cmdline_tool && !found_project && editor_pid == 0) {
-		print_line("Orca: Windows uncertain startup - defaulting to project manager mode");
-		project_manager = true;
 	}
-	#endif
-	}
+	
 
 	{
 		// Synced with https://github.com/baldurk/renderdoc/blob/2b01465c7/renderdoc/driver/vulkan/vk_layer.cpp#L118-L165

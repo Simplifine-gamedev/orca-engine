@@ -546,7 +546,7 @@ String AuthManager::_get_auth_storage_dir() const {
 #ifdef MACOS_ENABLED
 	return OS::get_singleton()->get_config_path().path_join("Orca").path_join("auth");
 #elif defined(LINUXBSD_ENABLED)
-	return OS::get_singleton()->get_home_path().path_join(".orca_auth");
+	return OS::get_singleton()->get_config_path().path_join("Orca").path_join("auth");
 #else
 	return OS::get_singleton()->get_user_data_dir().path_join("auth");
 #endif
