@@ -100,7 +100,7 @@ public:
 	// HTTP utilities for Supabase API
 	Error make_supabase_request(const String &p_endpoint, const String &p_method, const String &p_body, String &r_response);
 	
-	// Autumn billing integration
+	// Autumn billing integration (public so it can be called via call_deferred)
 	void initialize_autumn_account();
 
 	AuthManager();

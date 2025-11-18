@@ -37,6 +37,7 @@ void AuthManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_user_id"), &AuthManager::get_user_id);
 	ClassDB::bind_method(D_METHOD("get_user_email"), &AuthManager::get_user_email);
 	ClassDB::bind_method(D_METHOD("get_user_name"), &AuthManager::get_user_name);
+	ClassDB::bind_method(D_METHOD("initialize_autumn_account"), &AuthManager::initialize_autumn_account);
 	ADD_SIGNAL(MethodInfo("auth_state_changed"));
 }
 
@@ -116,8 +117,8 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	print_line("Authentication successful for user: " + user_email);
 	_stop_loopback_server();
 	
-	// Initialize Autumn account after successful login
-	initialize_autumn_account();
+	// Initialize Autumn account after successful login (deferred to avoid blocking)
+	call_deferred("initialize_autumn_account");
 	
 	// Notify the auth dialog if it exists
 	if (auth_dialog) {
@@ -135,8 +136,8 @@ bool AuthManager::try_auto_login() {
 		is_authenticated = true;
 		print_line("Auto-login successful for user: " + user_email);
 		
-		// Initialize Autumn account after auto-login
-		initialize_autumn_account();
+		// Initialize Autumn account after auto-login (deferred to avoid blocking startup)
+		call_deferred("initialize_autumn_account");
 		
 		return true;
 	}
@@ -301,8 +302,8 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 			
 			print_line("Email sign-in successful!");
 			
-			// Initialize Autumn account after successful login
-			initialize_autumn_account();
+			// Initialize Autumn account after successful login (deferred to avoid blocking)
+			call_deferred("initialize_autumn_account");
 			
 			_notify_auth_success();
 		} else {
@@ -459,8 +460,8 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 			
 			print_line("Email sign-up and auto-login successful!");
 			
-			// Initialize Autumn account after successful sign-up
-			initialize_autumn_account();
+			// Initialize Autumn account after successful sign-up (deferred to avoid blocking)
+			call_deferred("initialize_autumn_account");
 			
 			_notify_auth_success();
 		} else {
@@ -871,16 +872,22 @@ void AuthManager::initialize_autumn_account() {
 		return;
 	}
 	
-	print_line("ORCA AUTUMN: Initializing Autumn account for user: " + user_id);
+	print_line("========================================");
+	print_line("ORCA AUTUMN: Starting initialization");
+	print_line("ORCA AUTUMN: User ID: " + user_id);
+	print_line("ORCA AUTUMN: User Email: " + user_email);
+	print_line("========================================");
 	
-	// Call website API directly: https://orcaengine.ai/api/autumn/customer
+	// Call website API directly: https://orcaengine.ai/api/autumn/check
 	// This creates customer + assigns Free plan if new user
+	print_line("ORCA AUTUMN: Connecting to orcaengine.ai...");
 	Ref<HTTPClient> http = HTTPClient::create();
 	Error err = http->connect_to_host("orcaengine.ai", 443, TLSOptions::client());
 	if (err != OK) {
-		print_error("ORCA AUTUMN: Failed to connect to website API");
+		print_error("ORCA AUTUMN: Failed to connect to website API (error: " + itos(err) + ")");
 		return;
 	}
+	print_line("ORCA AUTUMN: Connection initiated...");
 	
 	// Wait for connection
 	while (http->get_status() == HTTPClient::STATUS_CONNECTING || http->get_status() == HTTPClient::STATUS_RESOLVING) {
@@ -889,9 +896,10 @@ void AuthManager::initialize_autumn_account() {
 	}
 	
 	if (http->get_status() != HTTPClient::STATUS_CONNECTED) {
-		print_error("ORCA AUTUMN: Could not connect to website API");
+		print_error("ORCA AUTUMN: Could not connect to website API (status: " + itos(http->get_status()) + ")");
 		return;
 	}
+	print_line("ORCA AUTUMN: Connected successfully!");
 	
 	// Prepare headers - send user_id as Bearer token (as per website API spec)
 	Vector<String> headers;
@@ -909,12 +917,14 @@ void AuthManager::initialize_autumn_account() {
 	CharString body_utf8 = body_json.utf8();
 	
 	// Make POST request to /api/autumn/check (auto-creates customer if new)
+	print_line("ORCA AUTUMN: Sending POST request to /api/autumn/check...");
 	err = http->request(HTTPClient::METHOD_POST, "/api/autumn/check", headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
 	
 	if (err != OK) {
-		print_error("ORCA AUTUMN: Failed to make initialization request");
+		print_error("ORCA AUTUMN: Failed to make initialization request (error: " + itos(err) + ")");
 		return;
 	}
+	print_line("ORCA AUTUMN: Request sent, waiting for response...");
 	
 	// Wait for response
 	while (http->get_status() == HTTPClient::STATUS_REQUESTING) {
