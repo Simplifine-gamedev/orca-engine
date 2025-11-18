@@ -16,39 +16,42 @@ import logging
 logger = logging.getLogger(__name__)
 
 class AutumnPricingService:
-    """Service for integrating with Autumn pricing and billing system"""
+    """Service for integrating with Autumn pricing and billing system
+    
+    Uses website API proxy endpoints (https://orcaengine.ai/api/autumn/*) instead of
+    direct Autumn API calls for better security and centralized management.
+    """
     
     def __init__(self):
-        self.api_key = os.getenv('AUTUMN_SECRET_KEY')
-        if not self.api_key:
-            logger.warning("AUTUMN_SECRET_KEY not set - pricing features will be disabled")
-        
-        self.base_url = "https://api.useautumn.com/v1"
+        # Use website API proxy instead of direct Autumn API
+        self.base_url = "https://orcaengine.ai/api/autumn"
         self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
+        # Note: Authentication is done via customer_id in Authorization header
+        # The website API handles adding the Autumn secret key server-side
     
     def _is_enabled(self) -> bool:
         """Check if Autumn integration is properly configured"""
-        return bool(self.api_key)
+        # Always enabled when using website API proxy
+        return True
     
-    def check_usage(self, user_id: str, feature_id: str = "ai-requests") -> Tuple[bool, Dict]:
+    def check_usage(self, user_id: str, feature_id: str = "ai-requests", required_quantity: int = 1) -> Tuple[bool, Dict]:
         """
         Check if user has access to make a request
+        Uses website API proxy: https://orcaengine.ai/api/autumn/check
         Returns (allowed, usage_info)
         """
-        if not self._is_enabled():
-            # If Autumn is not configured, allow unlimited requests (fallback)
-            return True, {"fallback_mode": True}
-        
         try:
             response = requests.post(
                 f"{self.base_url}/check",
-                headers=self.headers,
+                headers={
+                    **self.headers,
+                    'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
+                },
                 json={
-                    "customer_id": user_id,
-                    "feature_id": feature_id
+                    "feature_id": feature_id,
+                    "required_quantity": required_quantity
                 },
                 timeout=5
             )
@@ -68,18 +71,18 @@ class AutumnPricingService:
     
     def track_usage(self, user_id: str, feature_id: str = "ai-requests", value: int = 1) -> bool:
         """
-        Track usage for a user
+        Track usage for a user after successful AI request
+        Uses website API proxy: https://orcaengine.ai/api/autumn/track
         Returns True if successful, False otherwise
         """
-        if not self._is_enabled():
-            return True  # Skip tracking if not configured
-        
         try:
             response = requests.post(
                 f"{self.base_url}/track",
-                headers=self.headers,
+                headers={
+                    **self.headers,
+                    'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
+                },
                 json={
-                    "customer_id": user_id,
                     "feature_id": feature_id,
                     "value": value
                 },
@@ -96,95 +99,61 @@ class AutumnPricingService:
             logger.error(f"Autumn track exception: {e}")
             return False
     
-    def attach_free_tier(self, user_id: str) -> bool:
+    def initialize_customer(self, user_id: str, user_email: str = None) -> Dict:
         """
-        Attach the free tier to a new user
-        Returns True if successful
+        Initialize Autumn account for a user (creates customer + assigns Free plan if new)
+        Uses website API proxy: https://orcaengine.ai/api/autumn/customer
+        This is called after successful Supabase login
+        Returns customer data or error dict
         """
-        if not self._is_enabled():
-            return True
-        
         try:
-            response = requests.post(
-                f"{self.base_url}/attach",
-                headers=self.headers,
-                json={
-                    "customer_id": user_id,
-                    "product_id": "free"
-                },
+            headers = {
+                **self.headers,
+                'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
+            }
+            if user_email:
+                headers['X-User-Email'] = user_email
+            
+            response = requests.get(
+                f"{self.base_url}/customer",
+                headers=headers,
                 timeout=10
             )
             
             if response.status_code == 200:
-                logger.info(f"Successfully attached free tier to user {user_id}")
-                return True
+                customer_data = response.json()
+                logger.info(f"Successfully initialized Autumn account for user {user_id}")
+                return customer_data
             else:
-                logger.error(f"Failed to attach free tier: {response.status_code} - {response.text}")
-                return False
+                logger.error(f"Failed to initialize customer: {response.status_code} - {response.text}")
+                return {"error": f"Failed to initialize: {response.status_code}"}
                 
         except Exception as e:
-            logger.error(f"Autumn attach exception: {e}")
-            return False
+            logger.error(f"Autumn initialize exception: {e}")
+            return {"error": str(e)}
     
-    def check_and_track_usage(self, user_id: str, feature_id: str = "ai-requests") -> Tuple[bool, Dict]:
+    def check_quota(self, user_id: str, feature_id: str = "ai-requests", required_quantity: int = 1) -> Tuple[bool, Dict]:
         """
-        Check if user can make request and track usage atomically
-        Auto-assigns free tier to new users
-        Returns (allowed, info_dict)
+        Check if user has quota BEFORE making AI request
+        Does NOT track usage - that should be done AFTER successful completion
+        Returns (allowed, usage_info)
         """
-        if not self._is_enabled():
-            return True, {"fallback_mode": True}
-        
-        try:
-            # First check access
-            allowed, check_info = self.check_usage(user_id, feature_id)
-            
-            # Auto-assign free tier to brand new users with no product
-            # Note: If balance is None, user has no product attached yet
-            has_no_balance = check_info.get("balance") is None
-            
-            if has_no_balance and check_info.get("code") == "feature_found":
-                logger.info(f"New user {user_id} detected - assigning free tier")
-                self.attach_free_tier(user_id)
-                # Re-check after assignment
-                allowed, check_info = self.check_usage(user_id, feature_id)
-            
-            if not allowed:
-                # Extract useful information for the client
-                return False, {
-                    "error": "Request limit exceeded",
-                    "limits": check_info.get("balances", []),
-                    "upgrade_available": True,
-                    "check_data": check_info
-                }
-            
-            # If allowed, track the usage
-            track_success = self.track_usage(user_id, feature_id)
-            
-            return True, {
-                "usage_tracked": track_success,
-                "check_data": check_info
-            }
-            
-        except Exception as e:
-            logger.error(f"Autumn check_and_track exception: {e}")
-            # Fallback: allow request
-            return True, {"error": str(e), "fallback": True}
+        return self.check_usage(user_id, feature_id, required_quantity)
     
     def get_checkout_url(self, user_id: str, product_id: str) -> Dict:
         """
         Get checkout URL for product upgrade/purchase
-        Returns checkout data or error
+        Uses website API proxy: https://orcaengine.ai/api/autumn/attach
+        Returns checkout data with checkout_url or error
         """
-        if not self._is_enabled():
-            return {"error": "Autumn not configured"}
-        
         try:
             response = requests.post(
-                f"{self.base_url}/checkout",
-                headers=self.headers,
+                f"{self.base_url}/attach",
+                headers={
+                    **self.headers,
+                    'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
+                },
                 json={
-                    "customer_id": user_id,
                     "product_id": product_id
                 },
                 timeout=10
@@ -193,25 +162,26 @@ class AutumnPricingService:
             if response.status_code == 200:
                 return response.json()
             else:
-                logger.error(f"Autumn checkout failed: {response.status_code} - {response.text}")
-                return {"error": f"Checkout failed: {response.status_code}"}
+                logger.error(f"Autumn attach failed: {response.status_code} - {response.text}")
+                return {"error": f"Attach failed: {response.status_code}"}
                 
         except Exception as e:
-            logger.error(f"Autumn checkout exception: {e}")
+            logger.error(f"Autumn attach exception: {e}")
             return {"error": str(e)}
     
     def get_customer_info(self, user_id: str) -> Dict:
         """
         Get customer subscription and usage information
+        Uses website API proxy: https://orcaengine.ai/api/autumn/customer
         Returns customer data or error
         """
-        if not self._is_enabled():
-            return {"error": "Autumn not configured"}
-        
         try:
             response = requests.get(
-                f"{self.base_url}/customers/{user_id}",
-                headers=self.headers,
+                f"{self.base_url}/customer",
+                headers={
+                    **self.headers,
+                    'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
+                },
                 timeout=10
             )
             

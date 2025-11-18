@@ -3852,8 +3852,8 @@ def chat():
     if error_response:
         return error_response, status_code
     
-    # Check Autumn rate limits
-    allowed, pricing_info = pricing_service.check_and_track_usage(user['id'])
+    # Check Autumn quota BEFORE processing request (don't track yet - track after success)
+    allowed, pricing_info = pricing_service.check_quota(user['id'], "ai-requests", 1)
     if not allowed:
         return jsonify({
             "error": "Monthly request limit exceeded",
@@ -6706,6 +6706,14 @@ def chat():
                 except Exception as callback_err:
                     print(f"⚠️  STREAMING_LOG_ERROR: Failed to log streaming response: {callback_err}")
                 
+                # Track usage AFTER successful completion
+                try:
+                    pricing_service.track_usage(user['id'], "ai-requests", 1)
+                    print(f"AUTUMN_USAGE_TRACKED: Tracked 1 AI request for user {user['id']}")
+                except Exception as track_err:
+                    print(f"⚠️  AUTUMN_TRACK_ERROR: Failed to track usage: {track_err}")
+                    # Don't fail the request if tracking fails
+                
                 print(f"BACKEND_DEBUG: About to send final status: completed")
                 yield json.dumps({"status": "completed"}) + '\n'
                 print(f"BACKEND_DEBUG: Final status completed sent")
@@ -7681,6 +7689,42 @@ def auth_callback():
             
     except Exception as e:
         return f"<html><body><h1>Authentication Error</h1><p>{str(e)}</p></body></html>", 500
+
+@app.route('/auth/initialize_autumn', methods=['POST'])
+def initialize_autumn():
+    """Initialize Autumn account after successful Supabase login"""
+    try:
+        # Robust JSON parse
+        try:
+            data = request.get_json()
+        except Exception:
+            raw = request.get_data(cache=False, as_text=True)
+            filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+            data = json.loads(filtered)
+        
+        user_id = data.get('user_id')
+        user_email = data.get('user_email')
+        
+        if not user_id:
+            return jsonify({"error": "user_id required", "success": False}), 400
+        
+        # Initialize Autumn account (creates customer + assigns Free plan if new)
+        customer_data = pricing_service.initialize_customer(user_id, user_email)
+        
+        if "error" in customer_data:
+            return jsonify({
+                "success": False,
+                "error": customer_data.get("error"),
+                "customer_data": None
+            }), 500
+        
+        return jsonify({
+            "success": True,
+            "customer_data": customer_data
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/auth/status', methods=['POST'])
 def auth_status():
