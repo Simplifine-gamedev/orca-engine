@@ -117,8 +117,11 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	print_line("Authentication successful for user: " + user_email);
 	_stop_loopback_server();
 	
-	// Initialize Autumn account after successful login (deferred to avoid blocking)
-	call_deferred("initialize_autumn_account");
+	// Initialize Autumn account after successful login
+	// TESTING: Call directly to see if it works at all
+	print_line("ORCA AUTH: About to call initialize_autumn_account()");
+	initialize_autumn_account();
+	print_line("ORCA AUTH: initialize_autumn_account() completed");
 	
 	// Notify the auth dialog if it exists
 	if (auth_dialog) {
