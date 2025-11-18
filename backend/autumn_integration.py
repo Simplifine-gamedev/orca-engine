@@ -75,28 +75,37 @@ class AutumnPricingService:
         Uses website API proxy: https://orcaengine.ai/api/autumn/track
         Returns True if successful, False otherwise
         """
+        print(f"🔵 AUTUMN_TRACK: Starting track_usage for user {user_id}, feature={feature_id}, value={value}")
         try:
-            response = requests.post(
-                f"{self.base_url}/track",
-                headers={
-                    **self.headers,
-                    'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
-                },
-                json={
-                    "feature_id": feature_id,
-                    "value": value
-                },
-                timeout=5
-            )
+            url = f"{self.base_url}/track"
+            headers = {
+                **self.headers,
+                'Authorization': f'Bearer {user_id}'
+            }
+            body = {
+                "feature_id": feature_id,
+                "value": value
+            }
+            print(f"🔵 AUTUMN_TRACK: Calling {url}")
+            print(f"🔵 AUTUMN_TRACK: Headers: {headers}")
+            print(f"🔵 AUTUMN_TRACK: Body: {body}")
+            
+            response = requests.post(url, headers=headers, json=body, timeout=5)
+            
+            print(f"🔵 AUTUMN_TRACK: Response status={response.status_code}")
+            print(f"🔵 AUTUMN_TRACK: Response body={response.text[:200]}")
             
             if response.status_code == 200:
+                print(f"✅ AUTUMN_TRACK: SUCCESS - Tracked {value} {feature_id} for user {user_id}")
                 return True
             else:
                 logger.error(f"Autumn track failed: {response.status_code} - {response.text}")
+                print(f"❌ AUTUMN_TRACK: FAILED - {response.status_code}")
                 return False
                 
         except Exception as e:
             logger.error(f"Autumn track exception: {e}")
+            print(f"❌ AUTUMN_TRACK: EXCEPTION - {e}")
             return False
     
     def initialize_customer(self, user_id: str, user_email: str = None) -> Dict:
