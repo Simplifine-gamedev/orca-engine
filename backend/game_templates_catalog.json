@@ -1,0 +1,115 @@
+[
+  {
+    "id": "kenney-fps",
+    "name": "Starter Kit FPS",
+    "category": "fps",
+    "engine": "godot-4",
+    "description": "Complete FPS template with character controller, weapon switching, enemies, and CC0 assets. Perfect starting point for first-person shooters.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/KenneyNL/Starter-Kit-FPS/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/KenneyNL/Starter-Kit-FPS"
+    },
+    "license": "MIT (code), CC0 (assets)",
+    "entry_scene": "scenes/main.tscn",
+    "features": ["character controller", "weapon switching", "enemies", "CC0 models/sfx"],
+    "godot_version": "4.3+"
+  },
+  {
+    "id": "g2p-2d-platformer",
+    "name": "2D Platformer Starter Kit",
+    "category": "2d-platformer",
+    "engine": "godot-4",
+    "description": "Juicy 2D platformer with character controller, demo levels, scoring, and sound effects. Great for side-scrolling games.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/brettchalupa/godot_2d_platformer/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/brettchalupa/godot_2d_platformer"
+    },
+    "license": "CC0",
+    "entry_scene": "scenes/menu.tscn",
+    "features": ["character controller", "three levels", "menu system", "scoring", "SFX"],
+    "godot_version": "4.0+"
+  },
+  {
+    "id": "adildev-2d-platformer",
+    "name": "2D Platformer Starter Kit (AdilDev)",
+    "category": "2d-platformer",
+    "engine": "godot-4",
+    "description": "Clean 2D platformer template with modular components and clear code structure.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/AdilDevStuff/2D-Platformer-Starter-Kit/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/AdilDevStuff/2D-Platformer-Starter-Kit"
+    },
+    "license": "MIT",
+    "entry_scene": "main.tscn",
+    "features": ["modular design", "clean code", "basic platformer mechanics"],
+    "godot_version": "4.x"
+  },
+  {
+    "id": "kenney-3d-platformer",
+    "name": "Starter Kit 3D Platformer",
+    "category": "3d-platformer",
+    "engine": "godot-4",
+    "description": "3D platformer with character controller, double-jump, collectibles, falling platforms, and CC0 assets.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/KenneyNL/Starter-Kit-3D-Platformer/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/KenneyNL/Starter-Kit-3D-Platformer"
+    },
+    "license": "MIT (code), CC0 (assets)",
+    "entry_scene": "scenes/main.tscn",
+    "features": ["3D character controller", "double-jump", "coins", "falling platforms", "camera controls"],
+    "godot_version": "4.3+"
+  },
+  {
+    "id": "gdquest-third-person",
+    "name": "GDQuest Third-Person Controller",
+    "category": "3d-platformer",
+    "engine": "godot-4",
+    "description": "Professional third-person controller with combat mechanics including run, jump, melee, aim, shoot, grenades, enemies, and collectibles.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/gdquest-demos/godot-4-3d-third-person-controller/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/gdquest-demos/godot-4-3d-third-person-controller"
+    },
+    "license": "MIT",
+    "entry_scene": "levels/level_01.tscn",
+    "features": ["third-person camera", "combat system", "aim/shoot mechanics", "grenades", "enemies", "collectibles"],
+    "godot_version": "4.0+"
+  },
+  {
+    "id": "kenney-city-builder",
+    "name": "Starter Kit City Builder",
+    "category": "city-building",
+    "engine": "godot-4",
+    "description": "City building game template with build/remove structures, smooth camera, dynamic MeshLibrary, and save/load system.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/KenneyNL/Starter-Kit-City-Builder/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/KenneyNL/Starter-Kit-City-Builder"
+    },
+    "license": "MIT (code), CC0 (assets)",
+    "entry_scene": "scenes/main.tscn",
+    "features": ["build/remove structures", "smooth camera", "dynamic MeshLibrary", "save/load", "CC0 city assets"],
+    "godot_version": "4.3+"
+  },
+  {
+    "id": "cats-soulslike",
+    "name": "Modular Souls-Like Template",
+    "category": "slasher",
+    "engine": "godot-4",
+    "description": "Modular, signal-driven Souls-like template perfect for hack-and-slash and melee action games. Easy to customize with your own animations and models.",
+    "source": {
+      "type": "github-zip",
+      "url": "https://github.com/catprisbrey/Cats-Godot4-Modular-Souls-like-Template/archive/refs/heads/main.zip",
+      "repo_url": "https://github.com/catprisbrey/Cats-Godot4-Modular-Souls-like-Template"
+    },
+    "license": "Unlicense (code), CC0 (assets)",
+    "entry_scene": "testworld.tscn",
+    "features": ["modular design", "signal-driven", "combat system", "stamina system", "dodge/roll mechanics"],
+    "godot_version": "4.0+"
+  }
+]
+

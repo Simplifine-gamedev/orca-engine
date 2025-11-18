@@ -10,7 +10,7 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "project_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Manages project context, filesystem operations, asset library, and updates. Common operations: 'context.get' (analyze project), 'fs.read' (read files), 'fs.list' (list directories), 'assets.search' (find assets).",
+            "description": "REQUIRED: Always specify 'op' parameter. Manages project context, filesystem operations, asset library, base game templates, and updates. Common operations: 'context.get' (analyze project), 'fs.read' (read files), 'fs.list' (list directories), 'assets.search' (find assets), 'templates.list' (list game templates), 'templates.install' (install template).",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -28,10 +28,12 @@ _godot_tools_template = [
                             "project.analyze_dir", "project.copy_dir", "project.update_refs",
                             # Asset library
                             "assets.search", "assets.install",
+                            # Base game templates
+                            "templates.list", "templates.install",
                             # Updates
                             "updates.check"
                         ],
-                        "description": "**REQUIRED** operation type. Examples: 'context.get' (get project structure), 'fs.read' (read file), 'fs.list' (list directory), 'fs.write' (write file), 'assets.search' (search assets). NEVER call project_manager without specifying op parameter."
+                        "description": "**REQUIRED** operation type. Examples: 'context.get' (get project structure), 'fs.read' (read file), 'fs.list' (list directory), 'fs.write' (write file), 'assets.search' (search assets), 'templates.list' (list base game templates), 'templates.install' (install template). NEVER call project_manager without specifying op parameter."
                     },
                     "dry_run": {"type": "boolean", "default": False},
 
@@ -103,6 +105,17 @@ _godot_tools_template = [
                     "project_path": {"type": "string"},
                     "install_location": {"type": "string", "default": "addons/"},
                     "create_backup": {"type": "boolean", "default": True},
+
+                    # templates.list
+                    "template_category": {
+                        "type": "string",
+                        "enum": ["fps", "2d-platformer", "3d-platformer", "city-building", "slasher"],
+                        "description": "Filter templates by category (optional)"
+                    },
+
+                    # templates.install
+                    "template_id": {"type": "string", "description": "ID of the template to install (e.g., 'kenney-fps', 'g2p-2d-platformer')"},
+                    "target_path": {"type": "string", "description": "Directory path where template should be extracted"},
 
                     # updates.check
                     "force_check": {"type": "boolean", "default": False},

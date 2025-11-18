@@ -2846,6 +2846,42 @@ def project_manager_internal(arguments: dict) -> dict:
             }
             return check_for_app_updates_internal(update_args)
             
+        elif op == "templates.list":
+            # List available base game templates
+            from template_manager import list_templates, get_categories
+            category = arguments.get('template_category')
+            templates = list_templates(category)
+            categories = get_categories()
+            return {
+                "success": True,
+                "templates": templates,
+                "categories": categories,
+                "count": len(templates),
+                "filtered_by": category if category else "all"
+            }
+            
+        elif op == "templates.install":
+            # Install a base game template
+            from template_manager import install_template
+            template_id = arguments.get('template_id')
+            target_path = arguments.get('target_path')
+            
+            if not template_id:
+                return {
+                    "success": False,
+                    "error": "Missing required parameter 'template_id'"
+                }
+            
+            if not target_path:
+                return {
+                    "success": False,
+                    "error": "Missing required parameter 'target_path'"
+                }
+            
+            # Install the template
+            result = install_template(template_id, target_path)
+            return result
+            
         elif op in ["context.get", "fs.list", "fs.read", "fs.write_lines", "fs.replace_string", 
                    "fs.copy", "fs.move", "fs.delete", "fs.mkdir", "fs.symlink", "fs.refresh", 
                    "project.analyze_dir", "project.copy_dir", "project.update_refs"]:
