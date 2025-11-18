@@ -102,28 +102,40 @@ class AutumnPricingService:
     def initialize_customer(self, user_id: str, user_email: str = None) -> Dict:
         """
         Initialize Autumn account for a user (creates customer + assigns Free plan if new)
-        Uses website API proxy: https://orcaengine.ai/api/autumn/customer
+        Uses /check endpoint which auto-creates customers (GET /customer does not)
         This is called after successful Supabase login
         Returns customer data or error dict
         """
         try:
+            # Use /check endpoint to auto-create customer with default product (Free plan)
+            # Per Autumn docs: customers are auto-created via check/track/attach endpoints
             headers = {
                 **self.headers,
-                'Authorization': f'Bearer {user_id}'  # Send user_id as Bearer token
+                'Authorization': f'Bearer {user_id}'
             }
             if user_email:
                 headers['X-User-Email'] = user_email
             
-            response = requests.get(
-                f"{self.base_url}/customer",
+            response = requests.post(
+                f"{self.base_url}/check",
                 headers=headers,
+                json={
+                    "feature_id": "ai-requests",
+                    "required_quantity": 0  # Just checking, not consuming
+                },
                 timeout=10
             )
             
             if response.status_code == 200:
-                customer_data = response.json()
+                check_data = response.json()
                 logger.info(f"Successfully initialized Autumn account for user {user_id}")
-                return customer_data
+                # Convert check response to customer-like format
+                return {
+                    "customer_id": user_id,
+                    "balance": check_data.get("balance"),
+                    "allowed": check_data.get("allowed"),
+                    "features": check_data
+                }
             else:
                 logger.error(f"Failed to initialize customer: {response.status_code} - {response.text}")
                 return {"error": f"Failed to initialize: {response.status_code}"}

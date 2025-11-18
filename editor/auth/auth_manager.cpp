@@ -901,8 +901,15 @@ void AuthManager::initialize_autumn_account() {
 		headers.push_back("X-User-Email: " + user_email);
 	}
 	
-	// Make GET request to /api/autumn/customer
-	err = http->request(HTTPClient::METHOD_GET, "/api/autumn/customer", headers, nullptr, 0);
+	// Prepare request body for /check endpoint (auto-creates customer with default Free plan)
+	Dictionary body_dict;
+	body_dict["feature_id"] = "ai-requests";
+	body_dict["required_quantity"] = 0;  // Just checking, not consuming quota
+	String body_json = JSON::stringify(body_dict);
+	CharString body_utf8 = body_json.utf8();
+	
+	// Make POST request to /api/autumn/check (auto-creates customer if new)
+	err = http->request(HTTPClient::METHOD_POST, "/api/autumn/check", headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
 	
 	if (err != OK) {
 		print_error("ORCA AUTUMN: Failed to make initialization request");
@@ -930,30 +937,22 @@ void AuthManager::initialize_autumn_account() {
 		
 		String response_text = String::utf8((const char *)rb.ptr(), rb.size());
 		
-		// Parse JSON response
+		// Parse JSON response from /check endpoint
 		JSON json;
 		Error parse_err = json.parse(response_text);
 		if (parse_err == OK) {
-			Dictionary customer_data = json.get_data();
-			if (!customer_data.has("error")) {
+			Dictionary check_response = json.get_data();
+			if (!check_response.has("error")) {
 				print_line("ORCA AUTUMN: Successfully initialized Autumn account");
-				// Log customer info for debugging
-				if (customer_data.has("products")) {
-					Array products = customer_data.get("products", Array());
-					print_line(vformat("ORCA AUTUMN: Customer has %d active products", products.size()));
-				}
-				if (customer_data.has("features")) {
-					Dictionary features = customer_data.get("features", Dictionary());
-					if (features.has("ai-requests")) {
-						Dictionary ai_requests = features.get("ai-requests", Dictionary());
-						if (ai_requests.has("balance")) {
-							int balance = ai_requests.get("balance", 0);
-							print_line(vformat("ORCA AUTUMN: %d AI requests remaining", balance));
-						}
-					}
+				// Log quota info from /check response
+				if (check_response.has("balance")) {
+					int balance = check_response.get("balance", 0);
+					int included = check_response.get("included_usage", 0);
+					bool allowed = check_response.get("allowed", false);
+					print_line(vformat("ORCA AUTUMN: Balance: %d/%d AI requests, Allowed: %s", balance, included, allowed ? "Yes" : "No"));
 				}
 			} else {
-				String error_msg = customer_data.get("error", "Unknown error");
+				String error_msg = check_response.get("error", "Unknown error");
 				print_line("ORCA AUTUMN: Initialization failed: " + error_msg);
 			}
 		} else {
