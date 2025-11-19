@@ -40,8 +40,6 @@
 extern DWORD CrashHandlerException(EXCEPTION_POINTERS *ep);
 #endif
 
-#endif
-
 class CrashHandler {
 	bool disabled;
 
