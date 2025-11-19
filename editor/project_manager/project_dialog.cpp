@@ -1096,10 +1096,14 @@ ProjectDialog::ProjectDialog() {
 	#ifdef WINDOWS_ENABLED
 	if (!allow_rd_renderers) {
 		rs_button->set_disabled(true);
+	} else {
+		rs_button->set_disabled(false); // Explicitly enable on Windows with RD_ENABLED
 	}
 	#else
 	if (!rendering_device_supported) {
 		rs_button->set_disabled(true);
+	} else {
+		rs_button->set_disabled(false);
 	}
 	#endif
 #endif
@@ -1119,10 +1123,14 @@ ProjectDialog::ProjectDialog() {
 	#ifdef WINDOWS_ENABLED
 	if (!allow_rd_renderers) {
 		rs_button->set_disabled(true);
+	} else {
+		rs_button->set_disabled(false); // Explicitly enable on Windows with RD_ENABLED
 	}
 	#else
 	if (!rendering_device_supported) {
 		rs_button->set_disabled(true);
+	} else {
+		rs_button->set_disabled(false);
 	}
 	#endif
 #endif

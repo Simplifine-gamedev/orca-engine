@@ -1,0 +1,840 @@
+{
+  "project_root": "dodge_the_creeps",
+  "nodes": [
+    {
+      "file_path": "main.tscn",
+      "node_type": "scene",
+      "name": "main.tscn",
+      "class_name": null,
+      "extends": null,
+      "functions": [],
+      "signals": [],
+      "exports": [],
+      "signal_handlers": [],
+      "runtime_methods": [],
+      "scene_nodes": [
+        {
+          "name": "Main",
+          "type": "Node",
+          "parent": "",
+          "path": "Main"
+        },
+        {
+          "name": "ColorRect",
+          "type": "ColorRect",
+          "parent": ".",
+          "path": "./ColorRect"
+        },
+        {
+          "name": "Player",
+          "type": "Node",
+          "parent": ".",
+          "path": "./Player"
+        },
+        {
+          "name": "MobTimer",
+          "type": "Timer",
+          "parent": ".",
+          "path": "./MobTimer"
+        },
+        {
+          "name": "ScoreTimer",
+          "type": "Timer",
+          "parent": ".",
+          "path": "./ScoreTimer"
+        },
+        {
+          "name": "StartTimer",
+          "type": "Timer",
+          "parent": ".",
+          "path": "./StartTimer"
+        },
+        {
+          "name": "StartPosition",
+          "type": "Marker2D",
+          "parent": ".",
+          "path": "./StartPosition"
+        },
+        {
+          "name": "MobPath",
+          "type": "Path2D",
+          "parent": ".",
+          "path": "./MobPath"
+        },
+        {
+          "name": "MobSpawnLocation",
+          "type": "PathFollow2D",
+          "parent": "MobPath",
+          "path": "MobPath/MobSpawnLocation"
+        },
+        {
+          "name": "HUD",
+          "type": "Node",
+          "parent": ".",
+          "path": "./HUD"
+        },
+        {
+          "name": "Music",
+          "type": "AudioStreamPlayer",
+          "parent": ".",
+          "path": "./Music"
+        },
+        {
+          "name": "DeathSound",
+          "type": "AudioStreamPlayer",
+          "parent": ".",
+          "path": "./DeathSound"
+        }
+      ],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 2270,
+      "last_modified": 1763432977.7638972,
+      "checksum": "2254eef1d10c1d63869b951435517fe3"
+    },
+    {
+      "file_path": "player.tscn",
+      "node_type": "scene",
+      "name": "player.tscn",
+      "class_name": null,
+      "extends": null,
+      "functions": [],
+      "signals": [],
+      "exports": [],
+      "signal_handlers": [],
+      "runtime_methods": [],
+      "scene_nodes": [
+        {
+          "name": "Player",
+          "type": "Area2D",
+          "parent": "",
+          "path": "Player"
+        },
+        {
+          "name": "AnimatedSprite2D",
+          "type": "AnimatedSprite2D",
+          "parent": ".",
+          "path": "./AnimatedSprite2D"
+        },
+        {
+          "name": "CollisionShape2D",
+          "type": "CollisionShape2D",
+          "parent": ".",
+          "path": "./CollisionShape2D"
+        },
+        {
+          "name": "Trail",
+          "type": "GPUParticles2D",
+          "parent": ".",
+          "path": "./Trail"
+        }
+      ],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 2083,
+      "last_modified": 1763432977.7678475,
+      "checksum": "236a012b6e791aa74276da90267f44ea"
+    },
+    {
+      "file_path": "hud.gd",
+      "node_type": "script",
+      "name": "hud.gd",
+      "class_name": null,
+      "extends": "CanvasLayer",
+      "functions": [
+        "show_message",
+        "show_game_over",
+        "update_score",
+        "_on_StartButton_pressed",
+        "_on_MessageTimer_timeout"
+      ],
+      "signals": [
+        "start_game"
+      ],
+      "exports": [],
+      "signal_handlers": [
+        "_on_StartButton_pressed",
+        "_on_MessageTimer_timeout"
+      ],
+      "runtime_methods": [],
+      "scene_nodes": [],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [
+        "MessageLabel",
+        "MessageLabel",
+        "MessageTimer",
+        "MessageTimer",
+        "MessageLabel",
+        "MessageLabel",
+        "StartButton",
+        "ScoreLabel",
+        "StartButton",
+        "MessageLabel"
+      ],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 535,
+      "last_modified": 1763432977.7610173,
+      "checksum": "18cb9368b72eaea8a04b9879ba40ba2d"
+    },
+    {
+      "file_path": "mob.tscn",
+      "node_type": "scene",
+      "name": "mob.tscn",
+      "class_name": null,
+      "extends": null,
+      "functions": [],
+      "signals": [],
+      "exports": [],
+      "signal_handlers": [],
+      "runtime_methods": [],
+      "scene_nodes": [
+        {
+          "name": "Mob",
+          "type": "RigidBody2D",
+          "parent": "",
+          "path": "Mob"
+        },
+        {
+          "name": "AnimatedSprite2D",
+          "type": "AnimatedSprite2D",
+          "parent": ".",
+          "path": "./AnimatedSprite2D"
+        },
+        {
+          "name": "CollisionShape2D",
+          "type": "CollisionShape2D",
+          "parent": ".",
+          "path": "./CollisionShape2D"
+        },
+        {
+          "name": "VisibleOnScreenNotifier2D",
+          "type": "VisibleOnScreenNotifier2D",
+          "parent": ".",
+          "path": "./VisibleOnScreenNotifier2D"
+        }
+      ],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 1954,
+      "last_modified": 1763432977.7667146,
+      "checksum": "88fe665c5c73b01c594509dc6d9ee7b6"
+    },
+    {
+      "file_path": "player.gd",
+      "node_type": "script",
+      "name": "player.gd",
+      "class_name": null,
+      "extends": "Area2D",
+      "functions": [
+        "_ready",
+        "_process",
+        "start",
+        "_on_body_entered"
+      ],
+      "signals": [
+        "hit"
+      ],
+      "exports": [
+        "speed"
+      ],
+      "signal_handlers": [
+        "_on_body_entered"
+      ],
+      "runtime_methods": [
+        "_ready",
+        "_process"
+      ],
+      "scene_nodes": [],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [
+        "AnimatedSprite2D",
+        "AnimatedSprite2D",
+        "AnimatedSprite2D",
+        "AnimatedSprite2D",
+        "Trail",
+        "AnimatedSprite2D",
+        "AnimatedSprite2D",
+        "CollisionShape2D",
+        "CollisionShape2D"
+      ],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 1330,
+      "last_modified": 1763432977.7671363,
+      "checksum": "b7e286f551acee5bebdb3eaa84da6cb9"
+    },
+    {
+      "file_path": "main.gd",
+      "node_type": "script",
+      "name": "main.gd",
+      "class_name": null,
+      "extends": "Node",
+      "functions": [
+        "game_over",
+        "new_game",
+        "_on_MobTimer_timeout",
+        "_on_ScoreTimer_timeout",
+        "_on_StartTimer_timeout"
+      ],
+      "signals": [],
+      "exports": [
+        "mob_scene"
+      ],
+      "signal_handlers": [
+        "_on_MobTimer_timeout",
+        "_on_ScoreTimer_timeout",
+        "_on_StartTimer_timeout"
+      ],
+      "runtime_methods": [],
+      "scene_nodes": [],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [
+        "ScoreTimer",
+        "MobTimer",
+        "HUD",
+        "Music",
+        "DeathSound",
+        "Player",
+        "StartPosition",
+        "StartTimer",
+        "HUD",
+        "HUD",
+        "Music",
+        "HUD",
+        "MobTimer",
+        "ScoreTimer"
+      ],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 1314,
+      "last_modified": 1763432977.7632146,
+      "checksum": "f6b5570cd74ad84531cddcfd06c0cd3a"
+    },
+    {
+      "file_path": "mob.gd",
+      "node_type": "script",
+      "name": "mob.gd",
+      "class_name": null,
+      "extends": "RigidBody2D",
+      "functions": [
+        "_ready",
+        "_on_VisibilityNotifier2D_screen_exited"
+      ],
+      "signals": [],
+      "exports": [],
+      "signal_handlers": [
+        "_on_VisibilityNotifier2D_screen_exited"
+      ],
+      "runtime_methods": [
+        "_ready"
+      ],
+      "scene_nodes": [],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [
+        "AnimatedSprite2D",
+        "AnimatedSprite2D",
+        "AnimatedSprite2D"
+      ],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 258,
+      "last_modified": 1763432977.7641976,
+      "checksum": "8549624cf1b4ddec1c185ae5b879c4cc"
+    },
+    {
+      "file_path": "hud.tscn",
+      "node_type": "scene",
+      "name": "hud.tscn",
+      "class_name": null,
+      "extends": null,
+      "functions": [],
+      "signals": [],
+      "exports": [],
+      "signal_handlers": [],
+      "runtime_methods": [],
+      "scene_nodes": [
+        {
+          "name": "HUD",
+          "type": "CanvasLayer",
+          "parent": "",
+          "path": "HUD"
+        },
+        {
+          "name": "ScoreLabel",
+          "type": "Label",
+          "parent": ".",
+          "path": "./ScoreLabel"
+        },
+        {
+          "name": "MessageLabel",
+          "type": "Label",
+          "parent": ".",
+          "path": "./MessageLabel"
+        },
+        {
+          "name": "StartButton",
+          "type": "Button",
+          "parent": ".",
+          "path": "./StartButton"
+        },
+        {
+          "name": "MessageTimer",
+          "type": "Timer",
+          "parent": ".",
+          "path": "./MessageTimer"
+        }
+      ],
+      "node_scripts": {},
+      "resource_type": null,
+      "resource_dependencies": [],
+      "preloads": [],
+      "loads": [],
+      "node_accesses": [],
+      "groups": [],
+      "collision_layers": [],
+      "collision_masks": [],
+      "size_bytes": 1751,
+      "last_modified": 1763432977.762021,
+      "checksum": "3602221d7d8876ba4a648911cf0cb386"
+    }
+  ],
+  "connections": [
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "hit",
+      "handler_method": "game_over",
+      "source_node_path": "Player",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_MobTimer_timeout",
+      "source_node_path": "MobTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_ScoreTimer_timeout",
+      "source_node_path": "ScoreTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_StartTimer_timeout",
+      "source_node_path": "StartTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "start_game",
+      "handler_method": "new_game",
+      "source_node_path": "HUD",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "hit",
+      "handler_method": "game_over",
+      "source_node_path": "Player",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_MobTimer_timeout",
+      "source_node_path": "MobTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_ScoreTimer_timeout",
+      "source_node_path": "ScoreTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_StartTimer_timeout",
+      "source_node_path": "StartTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "main.tscn",
+      "target_file": "main.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "start_game",
+      "handler_method": "new_game",
+      "source_node_path": "HUD",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "player.tscn",
+      "target_file": "player.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "body_entered",
+      "handler_method": "_on_body_entered",
+      "source_node_path": ".",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "player.tscn",
+      "target_file": "player.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "body_entered",
+      "handler_method": "_on_body_entered",
+      "source_node_path": ".",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "mob.tscn",
+      "target_file": "mob.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "screen_exited",
+      "handler_method": "_on_VisibilityNotifier2D_screen_exited",
+      "source_node_path": "VisibleOnScreenNotifier2D",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "mob.tscn",
+      "target_file": "mob.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "screen_exited",
+      "handler_method": "_on_VisibilityNotifier2D_screen_exited",
+      "source_node_path": "VisibleOnScreenNotifier2D",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "hud.tscn",
+      "target_file": "hud.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "pressed",
+      "handler_method": "_on_StartButton_pressed",
+      "source_node_path": "StartButton",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "hud.tscn",
+      "target_file": "hud.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_MessageTimer_timeout",
+      "source_node_path": "MessageTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "hud.tscn",
+      "target_file": "hud.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "pressed",
+      "handler_method": "_on_StartButton_pressed",
+      "source_node_path": "StartButton",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    },
+    {
+      "source_file": "hud.tscn",
+      "target_file": "hud.tscn",
+      "connection_type": "signal_flow",
+      "signal_name": "timeout",
+      "handler_method": "_on_MessageTimer_timeout",
+      "source_node_path": "MessageTimer",
+      "target_node_path": ".",
+      "strength": 1.0,
+      "metadata": {}
+    }
+  ],
+  "autoloads": {},
+  "input_actions": {
+    "move_left": {
+      "definition": "{"
+    },
+    "move_right": {
+      "definition": "{"
+    },
+    "move_up": {
+      "definition": "{"
+    },
+    "move_down": {
+      "definition": "{"
+    },
+    "start_game": {
+      "definition": "{"
+    }
+  },
+  "signal_flows": {
+    "hit": [
+      {
+        "scene": "main.tscn",
+        "from_node": "Player",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "game_over"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "Player",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "game_over",
+        "connection_type": "scene_connection"
+      }
+    ],
+    "timeout": [
+      {
+        "scene": "main.tscn",
+        "from_node": "MobTimer",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "_on_MobTimer_timeout"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "ScoreTimer",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "_on_ScoreTimer_timeout"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "StartTimer",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "_on_StartTimer_timeout"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "MobTimer",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "_on_MobTimer_timeout",
+        "connection_type": "scene_connection"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "ScoreTimer",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "_on_ScoreTimer_timeout",
+        "connection_type": "scene_connection"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "StartTimer",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "_on_StartTimer_timeout",
+        "connection_type": "scene_connection"
+      },
+      {
+        "scene": "hud.tscn",
+        "from_node": "MessageTimer",
+        "to_node": ".",
+        "from_script": "hud.tscn",
+        "to_script": "hud.tscn",
+        "method": "_on_MessageTimer_timeout"
+      },
+      {
+        "scene": "hud.tscn",
+        "from_node": "MessageTimer",
+        "to_node": ".",
+        "from_script": "hud.tscn",
+        "to_script": "hud.tscn",
+        "method": "_on_MessageTimer_timeout",
+        "connection_type": "scene_connection"
+      }
+    ],
+    "start_game": [
+      {
+        "scene": "main.tscn",
+        "from_node": "HUD",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "new_game"
+      },
+      {
+        "scene": "main.tscn",
+        "from_node": "HUD",
+        "to_node": ".",
+        "from_script": "main.tscn",
+        "to_script": "main.tscn",
+        "method": "new_game",
+        "connection_type": "scene_connection"
+      }
+    ],
+    "body_entered": [
+      {
+        "scene": "player.tscn",
+        "from_node": ".",
+        "to_node": ".",
+        "from_script": "player.tscn",
+        "to_script": "player.tscn",
+        "method": "_on_body_entered"
+      },
+      {
+        "scene": "player.tscn",
+        "from_node": ".",
+        "to_node": ".",
+        "from_script": "player.tscn",
+        "to_script": "player.tscn",
+        "method": "_on_body_entered",
+        "connection_type": "scene_connection"
+      }
+    ],
+    "screen_exited": [
+      {
+        "scene": "mob.tscn",
+        "from_node": "VisibleOnScreenNotifier2D",
+        "to_node": ".",
+        "from_script": "mob.tscn",
+        "to_script": "mob.tscn",
+        "method": "_on_VisibilityNotifier2D_screen_exited"
+      },
+      {
+        "scene": "mob.tscn",
+        "from_node": "VisibleOnScreenNotifier2D",
+        "to_node": ".",
+        "from_script": "mob.tscn",
+        "to_script": "mob.tscn",
+        "method": "_on_VisibilityNotifier2D_screen_exited",
+        "connection_type": "scene_connection"
+      }
+    ],
+    "pressed": [
+      {
+        "scene": "hud.tscn",
+        "from_node": "StartButton",
+        "to_node": ".",
+        "from_script": "hud.tscn",
+        "to_script": "hud.tscn",
+        "method": "_on_StartButton_pressed"
+      },
+      {
+        "scene": "hud.tscn",
+        "from_node": "StartButton",
+        "to_node": ".",
+        "from_script": "hud.tscn",
+        "to_script": "hud.tscn",
+        "method": "_on_StartButton_pressed",
+        "connection_type": "scene_connection"
+      }
+    ]
+  },
+  "summary": {
+    "total_files": 8,
+    "scripts": 4,
+    "scenes": 4,
+    "resources": 0,
+    "autoloads": 0,
+    "input_actions": 5,
+    "total_connections": 18,
+    "signal_flows": 6,
+    "unique_signals": 6
+  },
+  "version": "2.0.0"
+}

@@ -6590,10 +6590,23 @@ Dictionary EditorTools::list_project_files(const Dictionary &p_args) {
 
 Dictionary EditorTools::read_file(const Dictionary &p_args) {
     // Unified read: if line range is present, use advanced; otherwise full content with preview fallback
+    Dictionary result;
     if (p_args.has("start_line") || p_args.has("end_line")) {
-        return read_file_advanced(p_args);
+        result = read_file_advanced(p_args);
+    } else {
+        result = read_file_content(p_args);
     }
-    return read_file_content(p_args);
+    
+    // WORLD-CLASS: Add enhanced context if requested
+    bool include_context = p_args.get("include_context", false);
+    if (include_context && result.get("success", false)) {
+        String path = p_args.get("path", "");
+        if (!path.is_empty()) {
+            add_enhanced_context_to_result(result, path);
+        }
+    }
+    
+    return result;
 }
 
 String EditorTools::smart_truncate_for_ai_context(const String &p_content, const String &p_file_path) {
@@ -6729,6 +6742,61 @@ String EditorTools::smart_truncate_for_ai_context(const String &p_content, const
 	
 	return content;
 }
+
+void EditorTools::add_enhanced_context_to_result(Dictionary &p_result, const String &p_file_path) {
+	// WORLD-CLASS CONTEXT ENRICHMENT: Add Godot-specific relationships and metadata
+	
+	if (!p_result.get("success", false)) {
+		return; // Don't enrich failed operations
+	}
+	
+	// Get the enhanced graph parser from AIChatDock singleton
+	AIChatDock *ai_chat_dock = AIChatDock::get_singleton();
+	if (!ai_chat_dock) {
+		return;
+	}
+	
+	// Get enriched context using the enhanced graph parser
+	// This includes: signals emitted/received, dependencies, connected files, etc.
+	Dictionary enriched_context = ai_chat_dock->get_file_enhanced_context(p_file_path);
+	
+	if (!enriched_context.is_empty()) {
+		// Add as "enhanced_context" field in the result
+		p_result["enhanced_context"] = enriched_context;
+		
+		// Add user-friendly summary
+		String summary = enriched_context.get("summary", "");
+		if (!summary.is_empty()) {
+			p_result["context_summary"] = summary;
+		}
+		
+		// Extract key relationships for quick access
+		Array signals_emitted = enriched_context.get("signals_emitted_to", Array());
+		if (signals_emitted.size() > 0) {
+			p_result["signals_emitted_count"] = signals_emitted.size();
+			p_result["signals_emitted"] = signals_emitted;
+		}
+		
+		Array signals_received = enriched_context.get("signals_received_from", Array());
+		if (signals_received.size() > 0) {
+			p_result["signals_received_count"] = signals_received.size();
+			p_result["signals_received"] = signals_received;
+		}
+		
+		Array dependencies = enriched_context.get("dependencies", Array());
+		if (dependencies.size() > 0) {
+			p_result["dependencies_count"] = dependencies.size();
+			p_result["dependencies"] = dependencies;
+		}
+		
+		Array connections = enriched_context.get("connections", Array());
+		if (connections.size() > 0) {
+			p_result["connections_count"] = connections.size();
+			p_result["related_files"] = connections;
+		}
+	}
+}
+
 Dictionary EditorTools::read_file_content(const Dictionary &p_args) {
 	Dictionary result;
 	if (!p_args.has("path")) {

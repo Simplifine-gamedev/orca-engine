@@ -749,9 +749,52 @@ void AIChatDock::_render_interleaved_reasoning_blocks(ChatMessage &p_message, in
 
 	int insertion_index = 0;
 	int existing_block_count = 0;
+	
+	// Parse blocks first to know how many we should have
+	// CRITICAL FIX: Always parse from content to get planning/reasoning tags
+	// thinking_blocks from Anthropic only contains reasoning, not planning tags from content
+	Array parsed_blocks = AIReasoningParser::parse_interleaved_blocks(p_message.content);
+	
+	// If we have Anthropic thinking_blocks, merge them with parsed blocks
+	// But prioritize parsed blocks from content (which includes planning tags)
+	if (!p_message.thinking_blocks.is_empty() && parsed_blocks.is_empty()) {
+		// Only use thinking_blocks if content parsing found nothing
+		// This handles Anthropic-specific thinking blocks when no tags in content
+		parsed_blocks = p_message.thinking_blocks;
+	}
+	
 	if (reasoning_container) {
 		insertion_index = reasoning_container->get_index();
-		existing_block_count = reasoning_container->get_child_count();
+		// Count actual block VBoxContainers (each block creates one VBoxContainer as direct child)
+		// Text blocks create RichTextLabel directly, reasoning/planning blocks create VBoxContainer
+		// So we need to count VBoxContainers + RichTextLabels that are direct children
+		for (int i = 0; i < reasoning_container->get_child_count(); i++) {
+			Node *child = reasoning_container->get_child(i);
+			// Count VBoxContainers (reasoning/planning blocks) and RichTextLabels (text blocks)
+			if (Object::cast_to<VBoxContainer>(child) || Object::cast_to<RichTextLabel>(child)) {
+				existing_block_count++;
+			}
+		}
+		
+		// CRITICAL FIX: During streaming, we need to handle incomplete tags
+		// If we detect opening tags but parsing finds fewer blocks than expected,
+		// it means tags are incomplete - we should still render what we have
+		// But if block count INCREASES (incomplete tag completed), we need to re-render
+		
+		// Check if block structure changed significantly (more than just content updates)
+		// This happens when an incomplete tag becomes complete
+		if (parsed_blocks.size() > existing_block_count && existing_block_count > 0) {
+			// New blocks appeared (incomplete tag completed) - need to re-render structure
+			// Clear all children and re-render to ensure correct block types
+			while (reasoning_container->get_child_count() > 0) {
+				Node *child = reasoning_container->get_child(0);
+				reasoning_container->remove_child(child);
+				child->queue_free();
+			}
+			existing_block_count = 0; // Reset count for full re-render
+		}
+		// If parsed_blocks.size() < existing_block_count, it means parsing found fewer blocks
+		// This can happen during streaming with incomplete tags - we'll update existing blocks
 		// For streaming: Keep existing blocks and only add new ones (incremental)
 		// For loading: Clear and recreate all (existing_block_count will be 0)
 		// Only clear if we're doing a full re-render (when loading conversations)
@@ -777,12 +820,8 @@ void AIChatDock::_render_interleaved_reasoning_blocks(ChatMessage &p_message, in
 		message_vbox->move_child(reasoning_container, insertion_index);
 	}
 
-	Array blocks;
-	if (!p_message.thinking_blocks.is_empty()) {
-		blocks = p_message.thinking_blocks;
-	} else {
-		blocks = AIReasoningParser::parse_interleaved_blocks(p_message.content);
-	}
+	// Use the blocks we parsed earlier (or from thinking_blocks)
+	Array blocks = parsed_blocks;
 	if (blocks.is_empty()) {
 		// Fallback: show cleaned text if parsing failed or no blocks exist
 		// CRITICAL: Only show fallback if we actually have content to show
@@ -806,56 +845,69 @@ void AIChatDock::_render_interleaved_reasoning_blocks(ChatMessage &p_message, in
 	} else {
 		// Start from existing_block_count to only add NEW blocks (for incremental streaming updates)
 		// If existing_block_count is 0, we render all blocks (for loading conversations)
+		// CRITICAL: During streaming, we need to update existing blocks' content AND add new ones
+		// This handles cases where tags become complete (e.g., <planning>...</planning> closes)
+		
+		// Update content of existing blocks incrementally during streaming
+		// This ensures blocks update in real-time as content streams in
+		// CRITICAL: Handle both matching types and type changes (text -> planning/reasoning when tag completes)
+		for (int i = 0; i < blocks.size() && i < existing_block_count; i++) {
+			Dictionary block = blocks[i];
+			String type = block.get("type", "text");
+			String content = block.get("content", "");
+			
+			// Find the corresponding UI element and update its content
+			if (i < reasoning_container->get_child_count()) {
+				Node *existing_child = reasoning_container->get_child(i);
+				VBoxContainer *existing_vbox = Object::cast_to<VBoxContainer>(existing_child);
+				
+				// Check if block type matches UI structure
+				bool is_reasoning_or_planning = (type == "reasoning" || type == "planning");
+				bool ui_is_reasoning_or_planning = (existing_vbox != nullptr);
+				
+				if (is_reasoning_or_planning && ui_is_reasoning_or_planning) {
+					// Both are reasoning/planning blocks - update content
+					for (int j = 0; j < existing_vbox->get_child_count(); j++) {
+						Node *inner_child = existing_vbox->get_child(j);
+						PanelContainer *panel = Object::cast_to<PanelContainer>(inner_child);
+						if (panel && panel->get_child_count() > 0) {
+							RichTextLabel *label = Object::cast_to<RichTextLabel>(panel->get_child(0));
+							if (label) {
+								String bbcode_content = _markdown_to_bbcode(content);
+								label->set_text(bbcode_content);
+								break;
+							}
+						}
+					}
+				} else if (!is_reasoning_or_planning && Object::cast_to<RichTextLabel>(existing_child)) {
+					// Both are text blocks - update content
+					RichTextLabel *text_label = Object::cast_to<RichTextLabel>(existing_child);
+					String bbcode_content = _markdown_to_bbcode(content);
+					text_label->set_text(bbcode_content);
+				}
+				// If types don't match (text -> planning/reasoning), the block count change logic above will handle it
+			}
+		}
+		
+		// Now add any NEW blocks (beyond existing_block_count)
+		// This handles new blocks that appear as streaming continues
 		for (int i = existing_block_count; i < blocks.size(); i++) {
 			Dictionary block = blocks[i];
 			String type = block.get("type", "text");
 			String content = block.get("content", "");
 
 			if (type == "reasoning") {
-				VBoxContainer *thinking_box = memnew(VBoxContainer);
-				thinking_box->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-				reasoning_container->add_child(thinking_box);
-
-				Button *toggle = memnew(Button);
-				toggle->set_text("Thinking");
-				toggle->set_flat(false);
-				toggle->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-				toggle->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
-				toggle->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
-				thinking_box->add_child(toggle);
-
-				PanelContainer *content_panel = memnew(PanelContainer);
-				content_panel->set_visible(false);
-				Ref<StyleBoxFlat> style = memnew(StyleBoxFlat);
-				style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
-				style->set_border_width_all(1);
-				style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
-				style->set_content_margin_all(8);
-				style->set_corner_radius_all(4);
-				content_panel->add_theme_style_override("panel", style);
-				thinking_box->add_child(content_panel);
-
-				RichTextLabel *thinking_label = memnew(RichTextLabel);
-				thinking_label->set_use_bbcode(true);
-				thinking_label->set_fit_content(true);
-				thinking_label->set_selection_enabled(true);
-				thinking_label->set_context_menu_enabled(true);
-				thinking_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-				thinking_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.9));
-				thinking_label->set_text(_markdown_to_bbcode(content));
-				content_panel->add_child(thinking_label);
-
-				toggle->connect("pressed", callable_mp(this, &AIChatDock::_on_thinking_section_toggled).bind(content_panel));
+				// Use helper function to create thinking block UI
+				String bbcode_content = _markdown_to_bbcode(content);
+				AIReasoningParser::create_thinking_block_ui(reasoning_container, block, this, bbcode_content);
+			} else if (type == "planning") {
+				// Use helper function to create planning block UI
+				String bbcode_content = _markdown_to_bbcode(content);
+				AIReasoningParser::create_planning_block_ui(reasoning_container, block, this, bbcode_content);
 			} else {
-				RichTextLabel *text_label = memnew(RichTextLabel);
-				text_label->set_use_bbcode(true);
-				text_label->set_fit_content(true);
-				text_label->set_selection_enabled(true);
-				text_label->set_context_menu_enabled(true);
-				text_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-				text_label->add_theme_color_override("default_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
-				text_label->set_text(_markdown_to_bbcode(content));
-				reasoning_container->add_child(text_label);
+				// Use helper function to create text block UI
+				String bbcode_content = _markdown_to_bbcode(content);
+				AIReasoningParser::create_text_block_ui(reasoning_container, content, this, bbcode_content);
 			}
 		}
 	}
@@ -864,10 +916,13 @@ void AIChatDock::_render_interleaved_reasoning_blocks(ChatMessage &p_message, in
 	message_panel->queue_redraw();
 	reasoning_container->queue_redraw();
 
-	// Store the parsed reasoning for persistence.
+	// Store the parsed blocks for persistence (including planning blocks)
+	// This ensures planning blocks are saved and can be reloaded
+	p_message.thinking_blocks = blocks;
+	
+	// Also store reasoning content separately for backward compatibility
 	Dictionary parsed = AIReasoningParser::parse_reasoning_tags(p_message.content);
 	p_message.reasoning_content = parsed.get("reasoning", "");
-	p_message.thinking_blocks = blocks;
 	
 	// CRITICAL: Ensure tool calls are rendered AFTER thinking blocks
 	// If the message has tool calls, render them now (they should be after reasoning_container)
@@ -917,7 +972,8 @@ void AIChatDock::_render_pending_reasoning_blocks() {
 		if (!msg.thinking_blocks.is_empty()) {
 			continue; // Already rendered
 		}
-		if (!AIReasoningParser::has_reasoning_tags(msg.content)) {
+		// Check for both reasoning and planning tags
+		if (!AIReasoningParser::has_reasoning_tags(msg.content) && !AIReasoningParser::has_planning_tags(msg.content)) {
 			continue;
 		}
 
@@ -2144,20 +2200,43 @@ void AIChatDock::_send_edited_message_safely(int p_message_index, const String &
 		Node *existing = chat_container->find_child("message_panel_" + String::num_int64(p_message_index), true, false);
 		PanelContainer *old_panel = Object::cast_to<PanelContainer>(existing);
 		if (old_panel) {
-			// Build a new message panel without using _create_message_bubble (which adds spacers)
-			PanelContainer *new_panel = memnew(PanelContainer);
-			new_panel->set_name("message_panel_" + String::num_int64(p_message_index));
-			
-			// Copy the structure from _create_message_bubble but without spacer logic
-			_build_message_content(new_panel, chat_history[p_message_index], p_message_index);
-			
-			// Replace the old panel with the new one at the same position
-			Node *parent = old_panel->get_parent();
+			// CRITICAL FIX: Use _create_message_bubble directly for consistency
+			// This ensures tool calls and tool results are rendered correctly
 			int old_index = old_panel->get_index();
+			Node *parent = old_panel->get_parent();
 			parent->remove_child(old_panel);
 			old_panel->queue_free();
-			parent->add_child(new_panel);
-			parent->move_child(new_panel, old_index);
+			
+			// Create fresh message bubble (will be added at end of container)
+			_create_message_bubble(chat_history[p_message_index], p_message_index);
+			
+			// Move to correct position
+			if (chat_container && chat_container->get_child_count() > 0) {
+				Node *new_panel = nullptr;
+				for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+					Node *child = chat_container->get_child(i);
+					if (child->get_name() == "message_panel_" + String::num_int64(p_message_index)) {
+						new_panel = child;
+						break;
+					}
+				}
+				if (new_panel && parent == chat_container) {
+					chat_container->move_child(new_panel, old_index);
+				}
+			}
+			
+			// Re-apply tool results if this is an assistant message with tools
+			const ChatMessage &msg = chat_history[p_message_index];
+			if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+				// Find and apply tool results from history
+				for (int i = p_message_index + 1; i < chat_history.size(); i++) {
+					const ChatMessage &tool_msg = chat_history[i];
+					if (tool_msg.role == "tool" && !tool_msg.tool_call_id.is_empty()) {
+						// Re-apply with deferred call using the standard path
+						call_deferred("_apply_tool_result_deferred", tool_msg.tool_call_id, tool_msg.name, tool_msg.content, tool_msg.tool_results);
+					}
+				}
+			}
 		}
 	}
 	
@@ -2213,20 +2292,43 @@ void AIChatDock::_on_edit_message_cancel_pressed(int p_message_index) {
 		Node *existing = chat_container->find_child("message_panel_" + String::num_int64(p_message_index), true, false);
 		PanelContainer *old_panel = Object::cast_to<PanelContainer>(existing);
 		if (old_panel) {
-			// Build a new message panel without using _create_message_bubble (which adds spacers)
-			PanelContainer *new_panel = memnew(PanelContainer);
-			new_panel->set_name("message_panel_" + String::num_int64(p_message_index));
-			
-			// Copy the structure from _create_message_bubble but without spacer logic
-			_build_message_content(new_panel, chat_history[p_message_index], p_message_index);
-			
-			// Replace the old panel with the new one at the same position
-			Node *parent = old_panel->get_parent();
+			// CRITICAL FIX: Use _create_message_bubble directly for consistency
+			// This ensures tool calls and tool results are rendered correctly
 			int old_index = old_panel->get_index();
+			Node *parent = old_panel->get_parent();
 			parent->remove_child(old_panel);
 			old_panel->queue_free();
-			parent->add_child(new_panel);
-			parent->move_child(new_panel, old_index);
+			
+			// Create fresh message bubble (will be added at end of container)
+			_create_message_bubble(chat_history[p_message_index], p_message_index);
+			
+			// Move to correct position
+			if (chat_container && chat_container->get_child_count() > 0) {
+				Node *new_panel = nullptr;
+				for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+					Node *child = chat_container->get_child(i);
+					if (child->get_name() == "message_panel_" + String::num_int64(p_message_index)) {
+						new_panel = child;
+						break;
+					}
+				}
+				if (new_panel && parent == chat_container) {
+					chat_container->move_child(new_panel, old_index);
+				}
+			}
+			
+			// Re-apply tool results if this is an assistant message with tools
+			const ChatMessage &msg = chat_history[p_message_index];
+			if (msg.role == "assistant" && !msg.tool_calls.is_empty()) {
+				// Find and apply tool results from history
+				for (int i = p_message_index + 1; i < chat_history.size(); i++) {
+					const ChatMessage &tool_msg = chat_history[i];
+					if (tool_msg.role == "tool" && !tool_msg.tool_call_id.is_empty()) {
+						// Re-apply with deferred call using the standard path
+						call_deferred("_apply_tool_result_deferred", tool_msg.tool_call_id, tool_msg.name, tool_msg.content, tool_msg.tool_results);
+					}
+				}
+			}
 		} else {
 			for (int i = 0; i < chat_container->get_child_count(); i++) {
 				Node *child = chat_container->get_child(i);
@@ -3513,55 +3615,36 @@ void AIChatDock::_perform_project_reindex() {
 	
 	_set_embedding_status("Clearing old index", true);
 	
-	// Call backend reindex endpoint - construct server URL
-	String base_url;
-	String is_dev = OS::get_singleton()->get_environment("IS_DEV");
-	if (is_dev.is_empty()) {
-		// Backward-compat with DEV_MODE
-		is_dev = OS::get_singleton()->get_environment("DEV_MODE");
-	}
-	if (!is_dev.is_empty() && is_dev.to_lower() == "true") {
-		base_url = "http://127.0.0.1:5050";
+	// CRITICAL FIX: Use frontend indexing pipeline with enhanced graph generation
+	// Instead of calling backend /reindex_project, do a full frontend re-scan
+	print_line("🚀 REINDEX: Starting frontend reindex with enhanced graph");
+	
+	// Reset indexing state
+	initial_indexing_done = false;
+	pending_changed_files.clear();
+	pending_fs_changes = false;
+	embedding_in_progress = false; // CRITICAL: Reset the in-progress flag
+	embedding_request_busy = false;
+	
+	// Clear the enhanced graph parser to start fresh
+	if (enhanced_graph_parser.is_valid()) {
+		enhanced_graph_parser->clear();
+		print_line("🔄 REINDEX: Cleared enhanced graph parser");
 	} else {
-		base_url = "https://api.orcaengine.ai";
+		print_line("❌ REINDEX: Enhanced graph parser not valid!");
 	}
 	
-	// Allow override via editor settings or environment variable
-	if (EditorSettings::get_singleton() && EditorSettings::get_singleton()->has_setting("ai_chat/base_url")) {
-		String override_url = EditorSettings::get_singleton()->get_setting("ai_chat/base_url");
-		if (!override_url.is_empty()) {
-			base_url = override_url;
-		}
-	} else if (!OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL").is_empty()) {
-		base_url = OS::get_singleton()->get_environment("AI_CHAT_CLOUD_URL");
+	// Ensure embedding system is initialized
+	if (!embedding_system_initialized) {
+		print_line("⚠️ REINDEX: Embedding system not initialized, initializing now");
+		_initialize_embedding_system();
 	}
 	
-	HTTPRequest *reindex_request = memnew(HTTPRequest);
-	get_parent()->add_child(reindex_request);
+	print_line("🔄 REINDEX: Reset all indexing flags");
 	
-	// Set headers
-	PackedStringArray headers;
-	headers.push_back("Content-Type: application/json");
-	headers.push_back("Authorization: Bearer " + auth_token);
-	headers.push_back("X-Machine-ID: " + get_machine_id());
-	headers.push_back("X-Project-Root: " + _get_project_root_path());
-	headers.push_back("X-User-ID: " + current_user_id);
-	
-	// Send request
-	Dictionary request_data;
-	request_data["project_root"] = _get_project_root_path();
-	
-	String json_string = JSON::stringify(request_data);
-	Error err = reindex_request->request(base_url + "/reindex_project", headers, HTTPClient::METHOD_POST, json_string);
-	
-	if (err != OK) {
-		_set_embedding_status("Reindex failed", false);
-		reindex_request->queue_free();
-		return;
-	}
-	
-	// Connect response handler
-	reindex_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_reindex_response));
+	// Start fresh indexing using the enhanced graph pipeline
+	print_line("📤 REINDEX: Calling _perform_initial_indexing");
+	call_deferred("_perform_initial_indexing");
 }
 
 void AIChatDock::_on_reindex_response(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
@@ -3610,13 +3693,12 @@ void AIChatDock::_check_index_status_and_start_if_needed() {
 	HTTPRequest *status_request = memnew(HTTPRequest);
 	get_parent()->add_child(status_request);
 	
-	// Set headers
+	// Set headers with proper Supabase auth
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
-	headers.push_back("Authorization: Bearer " + auth_token);
+	_add_version_headers_to_request(headers);  // CRITICAL: Includes Supabase auth!
 	headers.push_back("X-Machine-ID: " + get_machine_id());
 	headers.push_back("X-Project-Root: " + _get_project_root_path());
-	headers.push_back("X-User-ID: " + current_user_id);
 	
 	// Send request
 	Dictionary request_data;
@@ -3656,19 +3738,23 @@ void AIChatDock::_on_index_status_response(int p_result, int p_response_code, co
 		if (parse_err == OK) {
 			Dictionary response = json_parser.get_data();
 			bool indexed = response.get("indexed", false);
+			bool needs_reindex = response.get("needs_reindex", false);
+			int backend_index_version = response.get("index_version", 0);
+			String graph_version = response.get("graph_version", "");
+			String required_graph_version = response.get("required_graph_version", "2.0.0");
 			
-			if (indexed) {
+			// Check if backend schema changed or graph is outdated
+			if (indexed && needs_reindex) {
+				should_index = true;  // Force reindex even though files are indexed
+			} else if (indexed) {
 				Dictionary stats = response.get("stats", Dictionary());
 				int total_files = stats.get("total_files", 0);
 				
-				_set_embedding_status(String::num_int64(total_files) + " files already indexed", false);
+				_set_embedding_status(String::num_int64(total_files) + " files indexed", false);
 				initial_indexing_done = true;
 				should_index = false;
-			} else {
 			}
-		} else {
 		}
-	} else {
 	}
 	
 	if (should_index) {
@@ -4968,16 +5054,20 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 					conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
 				}
 				
-				// CRITICAL: Only render thinking blocks if they actually exist (not just reasoning tags)
-				// During streaming, don't render based on reasoning tags alone - wait for actual blocks
-				// This prevents removing content_label when there are no blocks to show
+				// CRITICAL: Check for tags and render blocks in real-time during streaming
+				// We need to check for tags and render even if blocks aren't complete yet
+				// The render function will handle incremental updates correctly
 				bool has_thinking_blocks = !last_msg.thinking_blocks.is_empty();
+				bool has_reasoning_tags = AIReasoningParser::has_reasoning_tags(last_msg.content);
+				bool has_planning_tags_stream = AIReasoningParser::has_planning_tags(last_msg.content);
 				
-				if (has_thinking_blocks) {
-					// Render interleaved reasoning blocks (replaces content_label with reasoning_container)
+				// Always render if tags are detected - the render function handles incremental updates
+				if (has_thinking_blocks || has_reasoning_tags || has_planning_tags_stream) {
+					// Render interleaved reasoning/planning blocks (replaces content_label with reasoning_container)
+					// This function handles incremental rendering - it only adds NEW blocks
 					int message_index = chat_history.size() - 1;
 					_render_interleaved_reasoning_blocks(last_msg, message_index);
-					// Hide the simple label since reasoning blocks replace it
+					// Hide the simple label since reasoning/planning blocks replace it
 					if (label && label->is_visible()) {
 						label->set_visible(false);
 					}
@@ -5244,12 +5334,13 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			backend_only_tools.insert("install_godot_asset");
 			backend_only_tools.insert("generate_3d_model");
 			backend_only_tools.insert("todo_manager");
+			backend_only_tools.insert("search_manager"); // Default backend-only unless explicitly allowed
 		}
 		
 		// SPECIAL HANDLING: search_manager needs mode-aware backend routing
 		bool is_backend_only = backend_only_tools.has(function_name);
 		if (function_name == "search_manager") {
-			// Parse to check search mode
+			// Parse to check search mode and operation
 			Ref<JSON> mode_json;
 			mode_json.instantiate();
 			if (mode_json->parse(arguments_str) == OK) {
@@ -5257,8 +5348,15 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 				String search_mode = mode_args.get("search_mode", "semantic");
 				String op = mode_args.get("op", "");
 				
-				// Only grep mode runs on frontend, all others are backend-only
-				if (op == "project.search" && search_mode == "grep") {
+				// NEW OPERATIONS: All signal tracing, data flow, and architectural analysis operations are backend-only
+				if (op == "signal.trace" || op == "signal.find_emitters" || op == "signal.find_handlers" ||
+				    op == "data_flow.analyze" || op == "export_var.trace" || 
+				    op == "node_control.analyze" || op == "group.trace_interactions" || 
+				    op == "scene.composition_tree") {
+					is_backend_only = true; // All new operations are backend-only
+				}
+				// Only grep mode of project.search runs on frontend, all others are backend-only
+				else if (op == "project.search" && search_mode == "grep") {
 					is_backend_only = false; // Allow grep to run on frontend
 				} else {
 					is_backend_only = true; // Semantic/keyword/hybrid/docs all go to backend
@@ -6537,13 +6635,8 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	// Dictionary data = p_result; // Already declared above
 	// bool success = data.get("success", false); // Already declared above
 
-	Label *status_label = memnew(Label);
-	status_label->set_text(success ? "Tool Succeeded" : "Tool Failed");
-	status_label->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
-	header_hbox->add_child(status_label);
-
-	// Removed HSeparator to reduce spacing after tool results
+	// REMOVED: Status label to avoid duplicate info (toggle button already shows status)
+	// Just render the tool-specific content directly
 
 	// Use the shared tool-specific UI creation function
 	uint64_t ui_start = OS::get_singleton()->get_ticks_msec();
@@ -7173,8 +7266,9 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	// This ensures consistency between streaming and loaded conversations
 	bool has_thinking_blocks = !p_message.thinking_blocks.is_empty();
 	bool has_reasoning_tags = AIReasoningParser::has_reasoning_tags(p_message.content);
+	bool has_planning_tags_check = AIReasoningParser::has_planning_tags(p_message.content);
 	
-	if (has_thinking_blocks || has_reasoning_tags) {
+	if (has_thinking_blocks || has_reasoning_tags || has_planning_tags_check) {
 		// Render interleaved reasoning blocks (replaces content_label with reasoning_container)
 		// This is the SAME path used during streaming, ensuring consistency
 		_render_interleaved_reasoning_blocks(const_cast<ChatMessage&>(p_message), p_message_index);
@@ -7199,7 +7293,8 @@ void AIChatDock::_create_message_bubble(const AIChatDock::ChatMessage &p_message
 	// CRITICAL: Tool calls are now rendered by _render_interleaved_reasoning_blocks if thinking blocks exist
 	// OR by the code below if no thinking blocks exist
 	// This ensures tool calls always appear AFTER content/thinking blocks
-	if (!p_message.tool_calls.is_empty() && !has_thinking_blocks && !has_reasoning_tags) {
+	bool has_planning_tags = AIReasoningParser::has_planning_tags(p_message.content);
+	if (!p_message.tool_calls.is_empty() && !has_thinking_blocks && !has_reasoning_tags && !has_planning_tags) {
 		message_panel->set_visible(true);
 		// Recreate tool call placeholders when loading saved conversations (only if no thinking blocks)
 		_create_tool_call_bubbles(p_message.tool_calls);
@@ -7845,16 +7940,8 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     content_vbox->set_v_size_flags(Control::SIZE_SHRINK_BEGIN);
     content_scroll->add_child(content_vbox);
 
-	HBoxContainer *header_hbox = memnew(HBoxContainer);
-	content_vbox->add_child(header_hbox);
-
-	Label *status_label = memnew(Label);
-	status_label->set_text(success ? "Tool Succeeded" : "Tool Failed");
-	status_label->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
-	header_hbox->add_child(status_label);
-
-	// Removed HSeparator to reduce spacing after tool results
+	// REMOVED: Status label to avoid duplicate info (toggle button already shows status)
+	// Just render the tool-specific content directly
 
     // Create specific UI based on the tool that was called
     _create_tool_specific_ui(content_vbox, p_tool_message.name, result, success, args);
@@ -10209,8 +10296,62 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
 
+	} else if (p_tool_name == "graph_manager" && p_success) {
+		// WORLD-CLASS: Graph manager UI - show nodes and edges
+		String op = p_args.get("op", "");
+		
+		Label *header = memnew(Label);
+		header->set_text("Graph Analysis: " + op);
+		header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+		header->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+		p_content_vbox->add_child(header);
+		
+		// Show nodes with clickable file names
+		Array nodes = p_result.get("nodes", Array());
+		if (nodes.size() > 0) {
+			Label *nodes_header = memnew(Label);
+			nodes_header->set_text("Nodes (" + String::num_int64(nodes.size()) + "):");
+			nodes_header->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+			p_content_vbox->add_child(nodes_header);
+			
+			VBoxContainer *nodes_vbox = memnew(VBoxContainer);
+			p_content_vbox->add_child(nodes_vbox);
+			
+			int max_nodes = MIN(5, nodes.size());
+			for (int i = 0; i < max_nodes; i++) {
+				Dictionary node = nodes[i];
+				String file_path = node.get("file_path", node.get("id", ""));
+				String node_type = node.get("kind", node.get("node_type", ""));
+				
+				Button *node_button = memnew(Button);
+				node_button->set_text("  • " + file_path + (node_type.is_empty() ? "" : " (" + node_type + ")"));
+				node_button->set_flat(true);
+				node_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+				node_button->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")));
+				node_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(file_path));
+				nodes_vbox->add_child(node_button);
+			}
+			
+			if (nodes.size() > max_nodes) {
+				Label *more = memnew(Label);
+				more->set_text("  ... and " + String::num_int64(nodes.size() - max_nodes) + " more nodes");
+				more->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+				more->add_theme_font_size_override("font_size", 10);
+				nodes_vbox->add_child(more);
+			}
+		}
+		
+		// Show edges summary
+		Array edges = p_result.get("edges", Array());
+		if (edges.size() > 0) {
+			Label *edges_label = memnew(Label);
+			edges_label->set_text("Edges: " + String::num_int64(edges.size()) + " connections");
+			edges_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.8));
+			p_content_vbox->add_child(edges_label);
+		}
+		
 	} else if (p_tool_name == "search_manager" && p_success) {
-		// ULTRA-MINIMAL UI for search_manager (handles both project and docs search)
+		// ENHANCED UI for search_manager - show files with relationship preview
 		String search_mode = p_result.get("search_mode", "semantic");
 		int file_count = p_result.get("file_count", 0);
 		String query = p_result.get("query", "");
@@ -10221,8 +10362,82 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 		summary_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
 		p_content_vbox->add_child(summary_label);
 		
+		// WORLD-CLASS: Show files with clickable names, line ranges, and relationships
+		Array similar_files = p_result.get("similar_files", Array());
+		if (similar_files.size() > 0) {
+			VBoxContainer *results_vbox = memnew(VBoxContainer);
+			results_vbox->add_theme_constant_override("separation", 8);
+			p_content_vbox->add_child(results_vbox);
+			
+			int max_preview = MIN(5, similar_files.size());
+			for (int i = 0; i < max_preview; i++) {
+				Dictionary file_result = similar_files[i];
+				String file_path = file_result.get("file_path", "");
+				int chunk_start = file_result.get("chunk_start", -1);
+				int chunk_end = file_result.get("chunk_end", -1);
+				
+				// File row with clickable button
+				HBoxContainer *file_row = memnew(HBoxContainer);
+				results_vbox->add_child(file_row);
+				
+				// CLICKABLE file button
+				Button *file_button = memnew(Button);
+				String display_text = " " + file_path;
+				if (chunk_start >= 0 && chunk_end >= 0) {
+					display_text += " [L" + String::num_int64(chunk_start) + "-" + String::num_int64(chunk_end) + "]";
+				}
+				file_button->set_text(display_text);
+				file_button->set_flat(true);
+				file_button->set_text_alignment(HORIZONTAL_ALIGNMENT_LEFT);
+				file_button->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+				file_button->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+				file_button->connect("pressed", callable_mp(this, &AIChatDock::_on_tool_file_link_pressed).bind(file_path));
+				file_row->add_child(file_button);
+				
+				// WORLD-CLASS: Show relationships inline (NO heavy objects!)
+				Dictionary relationships = file_result.get("relationships", Dictionary());
+				if (!relationships.is_empty()) {
+					// Build relationship summary in one line
+					String rel_summary = "";
+					
+					Array signals_emitted = relationships.get("signals_emitted_to", Array());
+					if (signals_emitted.size() > 0) {
+						rel_summary += "" + String::num_int64(signals_emitted.size()) + " signals";
+					}
+					
+					Array scripts_attached = relationships.get("scripts_attached_to", Array());
+					if (scripts_attached.size() > 0) {
+						if (!rel_summary.is_empty()) rel_summary += " | ";
+						rel_summary += "" + String::num_int64(scripts_attached.size()) + " scenes";
+					}
+					
+					Array resources_used = relationships.get("resources_used", Array());
+					if (resources_used.size() > 0) {
+						if (!rel_summary.is_empty()) rel_summary += " | ";
+						rel_summary += "" + String::num_int64(resources_used.size()) + " resources";
+					}
+					
+					if (!rel_summary.is_empty()) {
+						Label *rel_label = memnew(Label);
+						rel_label->set_text("    " + rel_summary);
+						rel_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
+						rel_label->add_theme_font_size_override("font_size", 11);
+						results_vbox->add_child(rel_label);
+					}
+				}
+			}
+			
+			if (similar_files.size() > max_preview) {
+				Label *more_label = memnew(Label);
+				more_label->set_text("... and " + String::num_int64(similar_files.size() - max_preview) + " more results");
+				more_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.5));
+				more_label->add_theme_font_size_override("font_size", 10);
+				results_vbox->add_child(more_label);
+			}
+		}
+		
 		Label *note_label = memnew(Label);
-		note_label->set_text("Results are available to the AI for analysis and follow-up questions.");
+		note_label->set_text("Full results with relationships available to AI for deep analysis.");
 		note_label->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
 		p_content_vbox->add_child(note_label);
 		
@@ -11086,26 +11301,19 @@ void AIChatDock::_rebuild_conversation_ui(const Vector<ChatMessage> &p_messages)
 		_create_load_more_button(start_index);
 	}
 	
-	// First pass: Create all non-tool messages (this includes assistant messages with tool_calls)
+	// UNIFIED APPROACH: Create ALL messages including tools
+	// Tools will update their placeholders, non-tools will create bubbles
 	for (int i = 0; i < messages_to_display.size(); i++) {
 		const ChatMessage &msg = messages_to_display[i];
-		if (msg.role != "tool") {
-			// Use adjusted index for UI naming
-			int ui_index = start_index + i;
-			_create_message_bubble(msg, ui_index);
-		}
-	}
-	
-	// Second pass: Apply tool results to their corresponding placeholders with a delay
-	// Use a timer to ensure UI is fully built before applying tool results
-	float delay = 0.1f;
-	for (int i = 0; i < messages_to_display.size(); i++) {
-		const ChatMessage &msg = messages_to_display[i];
+		int ui_index = start_index + i;
+		
 		if (msg.role == "tool" && !msg.tool_call_id.is_empty()) {
-			// Stagger the tool result applications to avoid race conditions
-			Ref<SceneTreeTimer> timer = get_tree()->create_timer(delay, true);
-			timer->connect("timeout", callable_mp(this, &AIChatDock::_apply_tool_result_deferred).bind(msg.tool_call_id, msg.name, msg.content, msg.tool_results), CONNECT_ONE_SHOT);
-			delay += 0.05f; // Add small delay between each tool result
+			// Tool result: will update its placeholder (created by previous assistant message)
+			// Use single deferred call to allow assistant message to finish rendering
+			call_deferred("_apply_tool_result_deferred", msg.tool_call_id, msg.name, msg.content, msg.tool_results);
+		} else {
+			// Non-tool message: create its bubble (assistant, user, system)
+			_create_message_bubble(msg, ui_index);
 		}
 	}
 }
@@ -11124,12 +11332,12 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	if (!placeholder) {
 		// Assistant message may not be fully constructed yet; schedule a bounded retry via timer
 		int tries = (int)tool_result_retry_counts.get(p_tool_call_id, 0);
-		if (tries >= 5) {
+		if (tries >= 20) { // INCREASED from 5 to 20 retries to ensure placeholders are found
 			tool_result_retry_counts.erase(p_tool_call_id);
 			return;
 		}
 		tool_result_retry_counts[p_tool_call_id] = tries + 1;
-		Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.05, true);
+		Ref<SceneTreeTimer> timer = get_tree()->create_timer(0.1, true); // INCREASED from 0.05 to 0.1
 		timer->connect("timeout", callable_mp(this, &AIChatDock::_on_tool_result_retry_timeout).bind(p_tool_call_id, p_tool_name, p_content, p_tool_results));
 		return;
 	}
@@ -11231,18 +11439,9 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	// Prevent long status lines from expanding the dock width
 	toggle_button->set_clip_text(true);
 	toggle_button->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	// Preserve full text in tooltip for accessibility
+	// Use monochromatic styling (consistent with other paths)
+	AIChatToolStyling::style_tool_result_button(toggle_button, success, this);
 	toggle_button->set_tooltip_text(toggle_button->get_text());
-	// Remove icons for cleaner appearance - just use colored text
-	toggle_button->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	// Add subtle border to tool result buttons for better visual separation
-	Ref<StyleBoxFlat> tool_button_style = memnew(StyleBoxFlat);
-	tool_button_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background
-	tool_button_style->set_border_width_all(1);
-	tool_button_style->set_border_color(success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3) : get_theme_color(SNAME("error_color"), SNAME("Editor")) * Color(1, 1, 1, 0.3));
-	tool_button_style->set_corner_radius_all(4);
-	tool_button_style->set_content_margin_all(6);
-	toggle_button->add_theme_style_override("normal", tool_button_style);
 	tool_container->add_child(toggle_button);
 
 	// Add accept/reject buttons for file editing tools after the main toggle button
@@ -11286,16 +11485,8 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	VBoxContainer *content_vbox = memnew(VBoxContainer);
 	content_panel->add_child(content_vbox);
 
-	HBoxContainer *header_hbox = memnew(HBoxContainer);
-	content_vbox->add_child(header_hbox);
-
-	Label *status_label = memnew(Label);
-	status_label->set_text(success ? "Tool Succeeded" : "Tool Failed");
-	status_label->add_theme_color_override("font_color", success ? get_theme_color(SNAME("success_color"), SNAME("Editor")) : get_theme_color(SNAME("error_color"), SNAME("Editor")));
-	status_label->add_theme_icon_override("icon", get_theme_icon(success ? SNAME("StatusSuccess") : SNAME("StatusError"), SNAME("EditorIcons")));
-	header_hbox->add_child(status_label);
-
-	// Removed HSeparator to reduce spacing after tool results
+	// REMOVED: Status label to avoid duplicate info (toggle button already shows status)
+	// Just render the tool-specific content directly
 
 	// Create specific UI based on the tool that was called
 	_create_tool_specific_ui(content_vbox, p_tool_name, result, success, args);
@@ -13799,6 +13990,11 @@ AIChatDock::AIChatDock() {
 	// Initialize AI auto snapshots viewer
 	auto_snapshots.instantiate();
 	auto_snapshots->initialize(this);
+	
+	// Initialize enhanced graph parser for world-class context
+	enhanced_graph_parser.instantiate();
+	enhanced_graph_parser->set_project_root(ProjectSettings::get_singleton()->globalize_path("res://"));
+	// Enhanced graph parser initialized
 }
 
 
@@ -15353,10 +15549,10 @@ void AIChatDock::_create_backend_tool_placeholder(const String &p_tool_id, const
 	message_vbox->add_child(placeholder);
 
 	Ref<StyleBoxFlat> placeholder_style = memnew(StyleBoxFlat);
-	placeholder_style->set_bg_color(get_theme_color(SNAME("dark_color_1"), SNAME("Editor")));
+	placeholder_style->set_bg_color(Color(0, 0, 0, 0)); // Transparent background - CONSISTENT with _create_tool_call_bubbles
 	placeholder_style->set_content_margin_all(10);
-	placeholder_style->set_border_width_all(1);
-	placeholder_style->set_border_color(get_theme_color(SNAME("dark_color_2"), SNAME("Editor")));
+	placeholder_style->set_border_width_all(0); // No border - CONSISTENT
+	placeholder_style->set_border_color(Color(0, 0, 0, 0)); // Transparent border - CONSISTENT
 	placeholder_style->set_corner_radius_all(5);
 	placeholder->add_theme_style_override("panel", placeholder_style);
 
@@ -15558,6 +15754,25 @@ String AIChatDock::get_machine_id() const {
 	return machine_id;
 }
 
+Dictionary AIChatDock::get_file_enhanced_context(const String &p_file_path) {
+	// WORLD-CLASS: Return enhanced context for a file including all Godot-specific relationships
+	if (!enhanced_graph_parser.is_valid()) {
+		return Dictionary();
+	}
+	
+	// CRITICAL FIX: If the file isn't in the graph yet, rebuild the graph from current project
+	// This ensures fs.read always has fresh context even if called before full indexing
+	Dictionary context = enhanced_graph_parser->get_context_for_file(p_file_path);
+	if (context.is_empty() || !context.has("node_data")) {
+		// File not in graph - need to rebuild from project files
+		_rebuild_graph_from_project();
+		// Try again after rebuild
+		context = enhanced_graph_parser->get_context_for_file(p_file_path);
+	}
+	
+	return enhanced_graph_parser->enrich_file_context(p_file_path);
+}
+
 String AIChatDock::get_conversation_image(const String &p_image_id) const {
 	// Search through current conversation for image with matching ID
 	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
@@ -15683,10 +15898,10 @@ void AIChatDock::_initialize_embedding_system() {
         _update_user_status();
     // }
 
-    // Defer status/indexing to avoid overlapping requests right after init
+    // Trigger index status check after initialization
+    call_deferred("_check_index_status_and_start_if_needed");
 }
 void AIChatDock::_perform_initial_indexing() {
-
 	if (!embedding_system_initialized) {
 		return;
 	}
@@ -15695,7 +15910,7 @@ void AIChatDock::_perform_initial_indexing() {
 		return;
 	}
 	
-	_set_embedding_status("", false);
+	_set_embedding_status("Scanning project files", false);
 	
 	// Always use cloud-ready approach: scan files and send content
 	// This works both locally and when deployed to cloud
@@ -15844,7 +16059,13 @@ void AIChatDock::_on_embedding_request_completed(int p_result, int p_code, const
 }
 
 String AIChatDock::_get_project_root_path() {
-	return ProjectSettings::get_singleton()->globalize_path("res://");
+	String path = ProjectSettings::get_singleton()->globalize_path("res://");
+	// CRITICAL: Strip trailing slash for consistent hashing with backend
+	if (path.ends_with("/") || path.ends_with("\\")) {
+		path = path.substr(0, path.length() - 1);
+	}
+	
+	return path;
 }
 
 String AIChatDock::_get_embed_base_url() {
@@ -15928,6 +16149,9 @@ void AIChatDock::_update_file_embedding(const String &p_file_path) {
 	Array files_arr;
 	files_arr.push_back(file_data);
 	
+	// CRITICAL: Generate enhanced graph for single file updates too
+	_generate_enhanced_graph_from_files(files_arr);
+	
 	Dictionary payload;
 	payload["files"] = files_arr;
 	Dictionary batch_info;
@@ -15935,6 +16159,23 @@ void AIChatDock::_update_file_embedding(const String &p_file_path) {
 	batch_info["total"] = 1;
 	batch_info["files_in_batch"] = 1;
 	payload["batch_info"] = batch_info;
+	
+	// Add enhanced graph data
+	Dictionary enhanced_graph = _get_enhanced_graph_data();
+	if (!enhanced_graph.is_empty()) {
+		payload["enhanced_graph"] = enhanced_graph;
+	}
+	
+	// Enrich file with context
+	if (files_arr.size() > 0) {
+		Dictionary file_data = files_arr[0];
+		String file_path = file_data.get("path", "");
+		if (!file_path.is_empty()) {
+			_enrich_file_data_with_context(file_data, file_path);
+			files_arr[0] = file_data;
+			payload["files"] = files_arr;
+		}
+	}
 	
 	_send_embedding_request("index_files", payload);
 }
@@ -15951,7 +16192,7 @@ void AIChatDock::_remove_file_embedding(const String &p_file_path) {
 }
 
 void AIChatDock::_on_filesystem_changed() {
-    // Only rely on per-file saved signals for accuracy; skip project-wide reindex on generic FS changes.
+    // Filesystem changed (external edits, git pulls, etc.)
     pending_fs_changes = true;
 }
 
@@ -15989,6 +16230,22 @@ void AIChatDock::_on_editor_resource_saved(Object *p_res) {
         pending_fs_changes = true;
         // Optional: surface status as queued (non-blocking)
         _set_embedding_status("Queued file for indexing", false);
+        
+        // WORLD-CLASS: Update graph immediately for fresh context
+        if (enhanced_graph_parser.is_valid()) {
+            String project_root = _get_project_root_path();
+            String relative_path = abs_path_res.replace(project_root, "").trim_prefix("/").trim_prefix("\\");
+            
+            Error err;
+            String content = FileAccess::get_file_as_string(abs_path_res, &err);
+            if (err == OK) {
+                if (relative_path.get_file() == "project.godot") {
+                    enhanced_graph_parser->parse_project_file(content);
+                } else {
+                    enhanced_graph_parser->parse_file(relative_path, content);
+                }
+            }
+        }
     }
 }
 
@@ -15999,13 +16256,29 @@ void AIChatDock::_on_editor_scene_saved(const String &p_path) {
         pending_changed_files.insert(abs_path);
         pending_fs_changes = true;
         _set_embedding_status("Queued file for indexing", false);
+        
+        // WORLD-CLASS: Update graph immediately for fresh context
+        if (enhanced_graph_parser.is_valid()) {
+            String project_root = _get_project_root_path();
+            String relative_path = abs_path.replace(project_root, "").trim_prefix("/").trim_prefix("\\");
+            
+            Error err;
+            String content = FileAccess::get_file_as_string(abs_path, &err);
+            if (err == OK) {
+                enhanced_graph_parser->parse_file(relative_path, content);
+            }
+        }
     }
 }
 
-void AIChatDock::_on_embedding_poll_tick() {
+void AIChatDock::_on_embedding_poll_tick() {  // Runs every ~5 seconds
     if (!embedding_system_initialized || !_is_user_authenticated() || embedding_request_busy) {
         return;
     }
+    
+    // PERIODIC VERSION CHECK: Disabled - only check on startup
+    // File changes are handled by save watchers
+    // Schema changes are rare and users can manually reindex if needed
     // Prefer batching changed files; otherwise do lightweight incremental project scan
     if (!pending_changed_files.is_empty()) {
         // Batch changed files using cloud-ready endpoint to minimize requests
@@ -16019,6 +16292,9 @@ void AIChatDock::_on_embedding_poll_tick() {
         }
         pending_changed_files.clear();
         if (!files_arr.is_empty()) {
+            // CRITICAL: Generate enhanced graph for changed files too
+            _generate_enhanced_graph_from_files(files_arr);
+            
             Dictionary payload;
             payload["files"] = files_arr;
             Dictionary batch_info;
@@ -16026,18 +16302,33 @@ void AIChatDock::_on_embedding_poll_tick() {
             batch_info["total"] = 1;
             batch_info["files_in_batch"] = files_arr.size();
             payload["batch_info"] = batch_info;
+            
+            // Add enhanced graph data
+            Dictionary enhanced_graph = _get_enhanced_graph_data();
+            if (!enhanced_graph.is_empty()) {
+                payload["enhanced_graph"] = enhanced_graph;
+            }
+            
+            // Enrich files with context
+            for (int i = 0; i < files_arr.size(); i++) {
+                Dictionary file_data = files_arr[i];
+                String file_path = file_data.get("path", "");
+                if (!file_path.is_empty()) {
+                    _enrich_file_data_with_context(file_data, file_path);
+                    files_arr[i] = file_data;
+                }
+            }
+            payload["files"] = files_arr;
+            
             _set_embedding_status("Indexing changed files", true);
             _send_embedding_request("index_files", payload);
             last_index_request_ms = OS::get_singleton()->get_ticks_msec();
             return;
         }
     }
-    // If there were FS changes but nothing queued, avoid aggressive full project scan
-    if (pending_fs_changes) {
-        // Only clear the flag - don't trigger full project indexing for generic FS changes
-        // Real changes should be caught by the specific save handlers above
-        pending_fs_changes = false;
-    }
+    // Filesystem changes are handled by Godot's built-in watchers
+    // Individual file saves trigger precise updates via _on_editor_resource_saved
+    pending_fs_changes = false;
 }
 
 
@@ -16047,6 +16338,7 @@ void AIChatDock::_on_embedding_poll_tick() {
 void AIChatDock::_scan_and_index_project_files() {
 	
 	String project_root = _get_project_root_path();
+	// Starting project scan
 	
 	Array file_contents = Array();
 	int files_processed = 0;
@@ -16054,6 +16346,8 @@ void AIChatDock::_scan_and_index_project_files() {
 	
 	// Get all files in project recursively
 	_scan_directory_recursive(project_root, project_root, file_contents, files_processed, files_skipped);
+	
+	// Scanned files
 	
 	
 	if (file_contents.size() == 0) {
@@ -16066,6 +16360,7 @@ void AIChatDock::_scan_and_index_project_files() {
 	int total_batches = (file_contents.size() + batch_size - 1) / batch_size;
 	
 	_set_embedding_status("", false);
+	// Sending files in batches
 	_send_file_batch(file_contents, 0, batch_size, 1, total_batches);
 }
 void AIChatDock::_scan_directory_recursive(const String &p_dir_path, const String &p_project_root, Array &p_file_contents, int &p_files_processed, int &p_files_skipped) {
@@ -16162,6 +16457,8 @@ Dictionary AIChatDock::_read_file_for_indexing(const String &p_file_path, const 
 	file_data["hash"] = content_hash;
 	file_data["size"] = content.length();
 	
+	// Note: Enhanced context enrichment happens in _send_file_batch after building the graph
+	
 	return file_data;
 }
 
@@ -16198,7 +16495,168 @@ void AIChatDock::_send_file_batch(const Array &p_all_files, int p_start_index, i
 	current_batch_info["all_files"] = p_all_files;
 	
 	
+	// CRITICAL: Generate enhanced graph from files before sending
+	_generate_enhanced_graph_from_files(batch_files);
+	
+	// Add enhanced graph data to payload for world-class context
+	Dictionary enhanced_graph = _get_enhanced_graph_data();
+	if (!enhanced_graph.is_empty()) {
+		payload["enhanced_graph"] = enhanced_graph;
+		// Enhanced graph generated successfully
+	}
+	
+	// WORLD-CLASS: Enrich each file with its context (signals, dependencies, relationships)
+	// This happens AFTER building the graph so we have complete relationship data
+	for (int i = 0; i < batch_files.size(); i++) {
+		Dictionary file_data = batch_files[i];
+		String file_path = file_data.get("path", "");
+		if (!file_path.is_empty()) {
+			_enrich_file_data_with_context(file_data, file_path);
+			batch_files[i] = file_data; // Update with enriched data
+		}
+	}
+	
+	// Update payload with enriched files
+	payload["files"] = batch_files;
+	
 	_send_embedding_request("index_files", payload);
+}
+
+void AIChatDock::_generate_enhanced_graph_from_files(const Array &p_files) {
+	if (!enhanced_graph_parser.is_valid()) {
+		return;
+	}
+	
+	// CRITICAL: For first batch, clear old graph to start fresh
+	// For subsequent batches, accumulate (don't clear)
+	int current_batch = (int)current_batch_info.get("current_batch", 1);
+	if (current_batch == 1) {
+		enhanced_graph_parser->clear();
+	}
+	
+	// Parse all files in this batch to build/extend the graph
+	for (int i = 0; i < p_files.size(); i++) {
+		Dictionary file_data = p_files[i];
+		String file_path = file_data.get("path", "");
+		String content = file_data.get("content", "");
+		
+		if (!file_path.is_empty() && !content.is_empty()) {
+			// Special handling for project.godot
+			if (file_path.get_file() == "project.godot") {
+				enhanced_graph_parser->parse_project_file(content);
+			} else {
+				enhanced_graph_parser->parse_file(file_path, content);
+			}
+		}
+	}
+}
+
+Dictionary AIChatDock::_get_enhanced_graph_data() {
+	if (!enhanced_graph_parser.is_valid()) {
+		return Dictionary();
+	}
+	
+	return enhanced_graph_parser->get_graph_data();
+}
+
+void AIChatDock::_enrich_file_data_with_context(Dictionary &p_file_data, const String &p_file_path) {
+	if (!enhanced_graph_parser.is_valid()) {
+		return;
+	}
+	
+	// CRITICAL: Parse this file first if it hasn't been parsed yet
+	// The file needs to be in the graph before we can get its context
+	String content = p_file_data.get("content", "");
+	if (!content.is_empty()) {
+		if (p_file_path.get_file() == "project.godot") {
+			enhanced_graph_parser->parse_project_file(content);
+		} else {
+			enhanced_graph_parser->parse_file(p_file_path, content);
+		}
+	}
+	
+	// Get enriched context for this file
+	Dictionary enriched_context = enhanced_graph_parser->enrich_file_context(p_file_path);
+	
+	if (!enriched_context.is_empty()) {
+		// Add context to file data
+		p_file_data["context"] = enriched_context;
+		
+		// Add user-friendly summary
+		String summary = enriched_context.get("summary", "");
+		if (!summary.is_empty()) {
+			p_file_data["context_summary"] = summary;
+		}
+	}
+}
+
+void AIChatDock::_rebuild_graph_from_project() {
+	// Rebuild the enhanced graph from all project files on-demand
+	if (!enhanced_graph_parser.is_valid()) {
+		return;
+	}
+	
+	enhanced_graph_parser->clear();
+	
+	String project_root = _get_project_root_path();
+	
+	// Quick scan of project files to rebuild graph
+	Ref<DirAccess> dir = DirAccess::open(project_root);
+	if (dir.is_null()) {
+		return;
+	}
+	
+	// Parse project.godot first
+	String project_file = project_root.path_join("project.godot");
+	if (FileAccess::exists(project_file)) {
+		Error err;
+		String content = FileAccess::get_file_as_string(project_file, &err);
+		if (err == OK) {
+			enhanced_graph_parser->parse_project_file(content);
+		}
+	}
+	
+	// Quick recursive scan for .gd and .tscn files
+	_rebuild_graph_scan_recursive(project_root);
+}
+
+void AIChatDock::_rebuild_graph_scan_recursive(const String &p_dir_path) {
+	Ref<DirAccess> dir = DirAccess::open(p_dir_path);
+	if (dir.is_null()) {
+		return;
+	}
+	
+	dir->list_dir_begin();
+	String file_name = dir->get_next();
+	
+	while (!file_name.is_empty()) {
+		String full_path = p_dir_path.path_join(file_name);
+		
+		if (dir->current_is_dir()) {
+			// Skip hidden directories and build dirs
+			if (!file_name.begins_with(".") && 
+			    file_name != "build" && file_name != "bin" && file_name != ".godot") {
+				_rebuild_graph_scan_recursive(full_path);
+			}
+		} else {
+			// Parse files
+			String ext = file_name.get_extension().to_lower();
+			if (ext == "gd" || ext == "tscn" || ext == "scn") {
+				Error err;
+				String content = FileAccess::get_file_as_string(full_path, &err);
+				if (err == OK) {
+					// Make relative path
+					String project_root = _get_project_root_path();
+					String relative_path = full_path.replace(project_root, "").trim_prefix("/").trim_prefix("\\");
+					enhanced_graph_parser->parse_file(relative_path, content);
+				}
+			}
+		}
+		
+		file_name = dir->get_next();
+	}
+	
+	dir->list_dir_end();
 }
 
 void AIChatDock::_on_script_editor_diff_accepted(const String &p_path, const String &p_content) {

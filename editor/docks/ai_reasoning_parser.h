@@ -22,16 +22,25 @@ public:
 	// Extract <reasoning> tags from text and return cleaned text + reasoning content
 	static Dictionary parse_reasoning_tags(const String &p_text);
 	
-	// Parse into interleaved blocks preserving order: [{type: "text", content: "..."}, {type: "reasoning", content: "..."}]
+	// Parse into interleaved blocks preserving order: [{type: "text", content: "..."}, {type: "reasoning", content: "..."}, {type: "planning", content: "..."}]
+	// Handles both <reasoning> and <planning> tags
 	static Array parse_interleaved_blocks(const String &p_text);
 	
 	// Check if text contains <reasoning> tags
 	static bool has_reasoning_tags(const String &p_text);
 	
+	// Check if text contains <planning> tags
+	static bool has_planning_tags(const String &p_text);
+	
 	// Create a thinking block UI element and add it to the container
 	// Returns the created thinking label for updating content later
 	// p_bbcode_content: Pre-converted BBCode content (if empty, uses raw content from block)
 	static RichTextLabel *create_thinking_block_ui(VBoxContainer *p_container, const Dictionary &p_block, Control *p_theme_source, const String &p_bbcode_content = "");
+	
+	// Create a planning block UI element and add it to the container
+	// Returns the created planning label for updating content later
+	// p_bbcode_content: Pre-converted BBCode content (if empty, uses raw content from block)
+	static RichTextLabel *create_planning_block_ui(VBoxContainer *p_container, const Dictionary &p_block, Control *p_theme_source, const String &p_bbcode_content = "");
 	
 	// Create a text block UI element and add it to the container
 	// p_bbcode_content: Pre-converted BBCode content (if empty, uses raw p_content)
@@ -40,6 +49,9 @@ public:
 	// Incrementally add new blocks to an existing reasoning container (for streaming)
 	// Returns the number of new blocks added
 	static int add_blocks_incremental(VBoxContainer *p_container, const Array &p_new_blocks, Control *p_theme_source, const String &p_markdown_to_bbcode_func_name = "");
+
+private:
+	static void _toggle_panel_visibility(Control *p_panel);
 };
 
 #endif // AI_REASONING_PARSER_H

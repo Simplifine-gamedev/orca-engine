@@ -72,6 +72,9 @@ public:
     // File utilities
     static int get_file_line_count(const String &p_path, int p_max_bytes = 0);
     static String smart_truncate_for_ai_context(const String &p_content, const String &p_file_path);
+    
+    // Enhanced context enrichment for world-class AI assistance
+    static void add_enhanced_context_to_result(Dictionary &p_result, const String &p_file_path);
 
 	// Individual Tool Methods (used by universal tools)
 	static Dictionary get_scene_info(const Dictionary &p_args);

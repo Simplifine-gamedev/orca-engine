@@ -140,7 +140,7 @@ static void send_crash_report_to_backend(const String &p_crash_dump) {
 	json_payload += vformat("\"project_name\": \"%s\",", project_name.c_escape());
 	json_payload += vformat("\"machine_id\": \"%s\",", machine_id.c_escape());
 	json_payload += "\"user_id\": \"crash_reporter\",";
-	json_payload += vformat("\"timestamp\": %lld", (int64_t)time(nullptr));
+	json_payload += vformat("\"timestamp\": %d", (int64_t)time(nullptr));
 	json_payload += "}";
 	
 	// Parse URL components
@@ -259,7 +259,7 @@ DWORD CrashHandlerException(EXCEPTION_POINTERS *ep) {
 		
 		// Create timestamped crash file
 		__time64_t now = _time64(nullptr);
-		crash_file_path = crash_dir.path_join(vformat("crash_%lld.txt", (int64_t)now));
+		crash_file_path = crash_dir.path_join(vformat("crash_%d.txt", (int64_t)now));
 		crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
 		
 		if (crash_file) {

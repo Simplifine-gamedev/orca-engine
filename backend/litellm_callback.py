@@ -33,13 +33,10 @@ class GodotLiteLLMLogger(CustomLogger):
     
     def _start_background_logger(self):
         """Start background thread for async HTTP requests"""
-        print(f"🔧 THREAD_DEBUG: Starting background logger thread")
         def run_async_logger():
             try:
-                print(f"🔧 THREAD_DEBUG: Background thread started")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                print(f"🔧 THREAD_DEBUG: Event loop created, starting queue processing")
                 loop.run_until_complete(self._process_log_queue())
             except Exception as e:
                 print(f"❌ THREAD_ERROR: Background thread crashed: {e}")
@@ -48,29 +45,22 @@ class GodotLiteLLMLogger(CustomLogger):
         
         thread = Thread(target=run_async_logger, daemon=True)
         thread.start()
-        print(f"🔧 THREAD_DEBUG: Background thread launched")
     
     async def _process_log_queue(self):
         """Process log queue in background"""
-        print(f"🔧 THREAD_DEBUG: Queue processing loop started")
         queue_check_count = 0
         while True:
             try:
                 # Get log from queue (non-blocking with timeout)
                 try:
                     queue_check_count += 1
-                    if queue_check_count % 10 == 0:  # Log every 10th check
-                        print(f"🔧 THREAD_DEBUG: Queue check #{queue_check_count}, size: {self.log_queue.qsize()}")
                     log_data = self.log_queue.get(timeout=1.0)
-                    print(f"🔧 THREAD_DEBUG: Got log from queue: {log_data.get('event_type', 'unknown')} for {log_data.get('request_id', 'unknown')}")
                 except queue.Empty:
                     continue
                 
                 # Send to logging server
-                print(f"🔧 THREAD_DEBUG: Sending log to server...")
                 success = await self._send_log_async(log_data)
                 if success:
-                    print(f"🔧 THREAD_DEBUG: Log sent successfully, marking task done")
                     self.log_queue.task_done()
                 else:
                     # Log locally on failure but don't break
@@ -128,14 +118,15 @@ class GodotLiteLLMLogger(CustomLogger):
             if hasattr(g, 'user') and g.user:
                 user_context['user_id'] = g.user.get('id')
                 user_context['user_provider'] = g.user.get('provider')
-                user_context['user_name'] = g.user.get('name')  # For project name inference
             
             # Get project info from Flask context or headers
             if hasattr(g, 'project_root'):
                 project_root = g.project_root
                 if project_root:
                     import hashlib
-                    user_context['project_id'] = hashlib.md5(project_root.encode()).hexdigest()
+                    # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+                    normalized_root = project_root.rstrip('/')
+                    user_context['project_id'] = hashlib.md5(normalized_root.encode()).hexdigest()
                     user_context['project_root'] = project_root  # Save full path
                     
                     # Try to extract project name from path
@@ -168,10 +159,41 @@ class GodotLiteLLMLogger(CustomLogger):
                 except Exception:
                     pass
             
+            # Fallback: if still no user info, try headers directly
+            if request and not user_context.get('user_id'):
+                header_user = request.headers.get('X-User-ID')
+                if header_user:
+                    user_context['user_id'] = header_user
+                supabase_user = request.headers.get('X-Supabase-User-ID')
+                if supabase_user and not user_context.get('user_provider'):
+                    user_context['user_provider'] = 'supabase'
+            
+            # Merge explicit context passed via kwargs
+            explicit_ctx = kwargs.get('_godot_user_context')
+            if isinstance(explicit_ctx, dict) and explicit_ctx:
+                if user_context:
+                    merged_ctx = user_context.copy()
+                    merged_ctx.update({k: v for k, v in explicit_ctx.items() if v is not None})
+                    user_context = merged_ctx
+                else:
+                    user_context = explicit_ctx.copy()
+            
+            # If no fresh context but stored context exists, reuse it
+            if (not user_context or not user_context.get('user_id')) and hasattr(self, '_stored_user_context'):
+                stored = getattr(self, '_stored_user_context', {}) or {}
+                if stored:
+                    merged = stored.copy()
+                    merged.update({k: v for k, v in user_context.items() if v is not None})
+                    user_context = merged
+            elif user_context:
+                self._stored_user_context = user_context.copy()
+            
             return user_context
             
         except Exception:
             # Not in Flask context or other error
+            if hasattr(self, '_stored_user_context'):
+                return getattr(self, '_stored_user_context', {}).copy()
             return {}
     
     def _extract_model_info(self, kwargs: dict) -> dict:

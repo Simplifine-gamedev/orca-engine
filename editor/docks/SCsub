@@ -17,6 +17,7 @@ dock_sources = [
     "ai_chat_tool_styling.cpp",
     "ai_checkpoint_manager.cpp",
     "ai_conversation_persistence.cpp",
+    "ai_enhanced_graph_parser.cpp",
     "ai_image_lazy_loader.cpp",
     "ai_manual_snapshots.cpp",
     "ai_auto_snapshots.cpp",

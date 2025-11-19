@@ -7,8 +7,8 @@ ZONE="${3:-us-central1-c}"
 
 echo "📦 Deploying logging server code..."
 
-# Create deployment package
-tar -czf logging_server.tar.gz simple_logging_server.py .env 2>/dev/null
+# Create deployment package (include latest logging server implementation)
+tar -czf logging_server.tar.gz logging_server.py litellm_callback.py .env 2>/dev/null
 
 # Upload to VM
 echo "📤 Uploading to VM..."

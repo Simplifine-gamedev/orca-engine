@@ -218,6 +218,22 @@ def parse_log_data(raw_data: dict) -> dict:
             'raw_request': _limit_json_size(raw_data.get('raw_request', {})),
             'raw_response': _limit_json_size(raw_data.get('raw_response', {}))
         }
+
+        user_context = raw_data.get('user_context') or {}
+        if not log_entry['user_id']:
+            log_entry['user_id'] = user_context.get('user_id')
+        if not log_entry['user_provider']:
+            log_entry['user_provider'] = user_context.get('user_provider')
+        if not log_entry['project_id']:
+            log_entry['project_id'] = user_context.get('project_id') or raw_data.get('project_id')
+        if not log_entry['project_name']:
+            log_entry['project_name'] = user_context.get('project_name')
+        if not log_entry['project_root']:
+            log_entry['project_root'] = user_context.get('project_root')
+        if not log_entry['session_id']:
+            log_entry['session_id'] = user_context.get('session_id')
+        if not log_entry['conversation_id']:
+            log_entry['conversation_id'] = user_context.get('conversation_id')
         
         return log_entry
         

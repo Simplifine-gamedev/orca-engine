@@ -32,6 +32,7 @@
 
 #include "ai_tool_server.h"
 #include "ai_chat_history_manager.h"
+#include "ai_enhanced_graph_parser.h"
 #include "common.h"
 #include "core/io/http_client.h"
 #include "core/io/image.h"
@@ -105,6 +106,7 @@ private:
 	UserMessageHandler *user_message_handler = nullptr;
 	Ref<AIManualSnapshots> manual_snapshots;
 	Ref<AIAutoSnapshots> auto_snapshots;
+	Ref<AIEnhancedGraphParser> enhanced_graph_parser;
 	// Helper to find RichTextLabel recursively.
 	static RichTextLabel *find_rich_text_label_in_children(Node *p_node) {
 		if (!p_node) {
@@ -609,6 +611,13 @@ private:
 	String _calculate_content_hash(const String &p_content);
 	void _send_file_batch(const Array &p_all_files, int p_start_index, int p_batch_size, int p_current_batch, int p_total_batches);
 	
+	// Enhanced graph generation and context enrichment
+	void _generate_enhanced_graph_from_files(const Array &p_files);
+	Dictionary _get_enhanced_graph_data();
+	void _enrich_file_data_with_context(Dictionary &p_file_data, const String &p_file_path);
+	void _rebuild_graph_from_project();
+	void _rebuild_graph_scan_recursive(const String &p_dir_path);
+	
 	// Smart context attachment based on embeddings
 	void _suggest_relevant_files(const String &p_query);
 	void _auto_attach_relevant_context();
@@ -822,6 +831,9 @@ public:
 	
 	// Image access for EditorTools
 	String get_conversation_image(const String &p_image_id) const;
+	
+	// Enhanced context access for EditorTools (world-class AI context)
+	Dictionary get_file_enhanced_context(const String &p_file_path);
 	
     // Git checkpoints system (uses project git directly)
     void _init_checkpoints_repo();

@@ -214,6 +214,12 @@ def log_event(event_name: str, props: dict | None = None, severity: str = 'INFO'
             payload['request_id'] = getattr(g, 'request_id', None)
         except Exception:
             pass
+        try:
+            user_id = getattr(g, 'user_id', None)
+            if user_id:
+                payload['user_id'] = user_id
+        except Exception:
+            pass
         if props:
             payload['props'] = props
         if STRUCTURED_LOGS:
@@ -1332,12 +1338,12 @@ def verify_authentication():
         if user_id or machine_id_dev:
             effective_user = user_id or f"dev_{machine_id_dev}"
             print(f"🧪 DEV MODE: Bypassing auth for user {effective_user}")
-            return _enforce_supabase_identity({
+            return _with_user_context(_enforce_supabase_identity({
                 "id": effective_user,
                 "name": "Dev User",
                 "email": "dev@example.com",
                 "provider": "dev_mode"
-            })
+            }))
     
     auth_header = request.headers.get('Authorization', '')
     machine_id = request.headers.get('X-Machine-ID') or (request.json.get('machine_id') if request.json else None)
@@ -1349,7 +1355,7 @@ def verify_authentication():
         token = auth_header[7:]
         user = auth_manager.verify_session(machine_id, token)
         if user:
-            return _enforce_supabase_identity(user)
+            return _with_user_context(_enforce_supabase_identity(user))
     
     # If Supabase is configured, require Supabase authentication (no guest fallback)
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
@@ -1370,6 +1376,7 @@ def verify_authentication():
             "provider": "supabase"
         }
         print(f"SUPABASE_AUTH_SUCCESS: Authenticated as {supabase_user['email']}")
+        _set_request_user_context(supabase_user)
         return supabase_user, None, None
     
     # Guest fallback if Supabase not configured and guests are allowed
@@ -1381,6 +1388,7 @@ def verify_authentication():
         guest_name = request.headers.get('X-Guest-Name')
         guest_result = auth_manager.create_or_get_guest_session(machine_id, guest_name)
         if guest_result.get('success'):
+            _set_request_user_context(guest_result['user'])
             return guest_result['user'], None, None
         else:
             return None, {"error": f"Guest session failed: {guest_result.get('error','unknown')}", "success": False}, 401
@@ -1475,6 +1483,28 @@ def _enforce_supabase_identity(user: dict):
         # If Supabase not configured, skip validation
         print("SUPABASE_VALIDATION_SKIPPED: SUPABASE_URL or SUPABASE_SERVICE_KEY not set")
         return user, None, None
+
+def _set_request_user_context(user: dict | None) -> None:
+    """Attach authenticated user information to Flask's global context for downstream logging."""
+    try:
+        if not isinstance(user, dict):
+            return
+        g.user = user
+        user_id = user.get('id')
+        if user_id:
+            g.user_id = user_id
+        user_provider = user.get('provider')
+        if user_provider:
+            g.user_provider = user_provider
+    except Exception:
+        pass
+
+def _with_user_context(auth_result: tuple[dict | None, dict | None, int | None]):
+    """Ensure user context is stored before returning authentication result."""
+    user, error_body, status_code = auth_result
+    if user and not error_body:
+        _set_request_user_context(user)
+    return user, error_body, status_code
 
 
 def verify_server_key_if_required():
@@ -2416,6 +2446,754 @@ def _add_expansion_candidate(candidates: dict, file_path: str, reason: str, scor
             'source': source
         }
 
+def _enrich_results_with_context(results: list, user_id: str, project_id: str, project_root: Optional[str], vector_manager) -> list:
+    """Enrich search results with relationship/edge information from enhanced graph"""
+    
+    try:
+        # Try to get enhanced graph data
+        enhanced_graph = None
+        if hasattr(vector_manager, 'get_enhanced_graph'):
+            try:
+                enhanced_graph = vector_manager.get_enhanced_graph(user_id, project_id)
+            except Exception as e:
+                print(f"CONTEXT_ENRICH: Could not get enhanced graph: {e}")
+        
+        if not enhanced_graph:
+            print("CONTEXT_ENRICH: No enhanced graph available, returning results as-is")
+            return results
+        
+        # Build lookup maps for fast context retrieval
+        nodes_by_path = {node['file_path']: node for node in enhanced_graph.get('nodes', [])}
+        connections_by_file = {}
+        
+        # DEBUG: Check what connection types we have
+        all_connections = enhanced_graph.get('connections', [])
+        connection_types = {}
+        for conn in all_connections:
+            conn_type = conn.get('connection_type', 'unknown')
+            connection_types[conn_type] = connection_types.get(conn_type, 0) + 1
+        
+        if connection_types:
+            print(f"🔍 GRAPH_CONNECTIONS: Found {len(all_connections)} connections")
+            for conn_type, count in connection_types.items():
+                print(f"  {conn_type}: {count}")
+            
+            # DEBUG: Show first few connection file paths
+            print("🔍 CONNECTION_PATHS:")
+            for i, conn in enumerate(all_connections[:3]):
+                source = conn.get('source_file', 'N/A')
+                target = conn.get('target_file', 'N/A')
+                print(f"  {i+1}. {source} → {target} ({conn.get('connection_type', 'unknown')})")
+        else:
+            print("❌ GRAPH_CONNECTIONS: No connections found in enhanced graph")
+        
+        for conn in enhanced_graph.get('connections', []):
+            source = conn.get('source_file')
+            target = conn.get('target_file')
+            
+            if source not in connections_by_file:
+                connections_by_file[source] = {'outgoing': [], 'incoming': []}
+            if target not in connections_by_file:
+                connections_by_file[target] = {'outgoing': [], 'incoming': []}
+            
+            connections_by_file[source]['outgoing'].append(conn)
+            connections_by_file[target]['incoming'].append(conn)
+        
+        # Best-effort fallback if project_root wasn't provided
+        if not project_root:
+            try:
+                project_root = getattr(g, "project_root", None)
+            except RuntimeError:
+                project_root = None
+        
+        # Enrich each result
+        enriched = []
+        for result in results:
+            file_path = result.get('file_path', '')
+            
+            # Get base result
+            enriched_result = dict(result)
+            
+            # Add node information (now enriched by backend during storage!)
+            node_info = nodes_by_path.get(file_path, {})
+            
+            if node_info:
+                enriched_result['context'] = {
+                    'node_type': node_info.get('node_type'),
+                    'class_name': node_info.get('class_name'),
+                    'extends': node_info.get('extends'),
+                    'functions': node_info.get('functions', []),
+                    'signals_defined': node_info.get('signals', []),
+                    'signals_emitted': node_info.get('signals_emitted', []),  # NEW: Include emissions
+                    'exports': node_info.get('exports', []),
+                    'runtime_methods': node_info.get('runtime_methods', []),
+                    'groups': node_info.get('groups', []),
+                    'method_calls': node_info.get('method_calls', []),
+                    'node_accesses': node_info.get('node_accesses', []),
+                    'dynamic_scene_loads': node_info.get('dynamic_scene_loads', [])
+                }
+            
+            # Add relationship information
+            file_connections = connections_by_file.get(file_path, {'outgoing': [], 'incoming': []})
+            
+            # DEBUG: Check connections for this specific file
+            if file_connections['outgoing'] or file_connections['incoming']:
+                print(f"🔗 FILE_CONNECTIONS for {file_path}: {len(file_connections['outgoing'])} outgoing, {len(file_connections['incoming'])} incoming")
+                if file_connections['outgoing']:
+                    first_out = file_connections['outgoing'][0]
+                    print(f"  First outgoing: {first_out.get('connection_type', 'unknown')} → {first_out.get('target_file', 'N/A')}")
+            else:
+                print(f"❌ NO_CONNECTIONS for {file_path}")
+                # Show all file paths in connections for debugging
+                all_file_paths_in_conns = set()
+                for conn in all_connections:
+                    all_file_paths_in_conns.add(conn.get('source_file', ''))
+                    all_file_paths_in_conns.add(conn.get('target_file', ''))
+                print(f"  Available file paths in graph: {sorted(list(all_file_paths_in_conns))[:5]}")
+                print(f"  Searching for: '{file_path}'")
+            
+            # Organize relationships by type - WORLD-CLASS ARCHITECTURE ANALYSIS
+            relationships = {
+                'signals_emitted_to': [],
+                'signals_received_from': [],
+                'scripts_attached_to': [],
+                'attached_to_scenes': [],
+                'resources_used': [],
+                'scenes_instantiated': [],
+                'instantiated_by': [],
+                'export_variables': [],
+                'referenced_by_export': [],
+                'used_as_resource': [],
+                'extends_from': [],
+                'method_calls_to': [],
+                'method_calls_from': [],
+                'node_accesses': [],
+                'preloaded_by': [],
+                'loaded_by': [],
+                'signal_chains': [],
+                'dependency_clusters': [],
+                'architectural_role': 'unknown'
+            }
+            
+            # Process outgoing connections (what this file affects)
+            for conn in file_connections['outgoing']:
+                conn_type = conn.get('connection_type')
+                target = conn.get('target_file')
+                
+                if conn_type == 'signal_flow':
+                    # WORLD-CLASS: Detailed signal flow with complete chain info
+                    signal_info = {
+                        'signal_name': conn.get('signal_name'),
+                        'handler_method': conn.get('handler_method'),
+                        'from_node': conn.get('from_node'),
+                        'to_node': conn.get('to_node'),
+                        'scene_file': conn.get('scene_file', target),
+                        'target_script': conn.get('target_script'),
+                        'connection_type': conn.get('connection_type', 'signal_flow')
+                    }
+                    
+                    # Add to appropriate array based on target
+                    if conn.get('target_script'):
+                        signal_info['target_file'] = conn.get('target_script')
+                        relationships['signals_emitted_to'].append(signal_info)
+                    else:
+                        signal_info['target_file'] = target
+                        relationships['signals_emitted_to'].append(signal_info)
+                elif conn_type == 'script_attachment':
+                    relationships['scripts_attached_to'].append({
+                        'scene_file': target,
+                        'node_path': conn.get('node_name'),
+                        'node_name': conn.get('node_name')
+                    })
+                elif conn_type == 'external_resource':
+                    # CRITICAL: Map external resources to resources_used
+                    relationships['resources_used'].append({
+                        'resource_file': target,
+                        'resource_type': conn.get('resource_type', 'Unknown')
+                    })
+                elif conn_type == 'scene_instantiation':
+                    # WORLD-CLASS: Scene instantiation with complete context
+                    relationships['scenes_instantiated'].append({
+                        'scene_file': target,
+                        'instantiated_as': conn.get('instantiated_as', conn.get('node_name', '')),
+                        'node_name': conn.get('node_name', ''),
+                        'resource_id': conn.get('resource_id', ''),
+                        'instantiated_in': file_path
+                    })
+                elif conn_type == 'dynamic_scene_load':
+                    # CRITICAL: Map dynamic scene loads to scenes_instantiated
+                    if target:
+                        relationships['scenes_instantiated'].append({
+                            'scene_file': target,
+                            'load_type': conn.get('load_type', 'unknown'),
+                            'scene_variable': conn.get('scene_variable', ''),
+                            'instantiated_in': file_path
+                        })
+                    elif conn.get('scene_variable'):
+                        # Will be resolved via export variable mapping
+                        relationships['scenes_instantiated'].append({
+                            'scene_variable': conn.get('scene_variable'),
+                            'load_type': conn.get('load_type', 'instantiate'),
+                            'instantiated_in': file_path
+                        })
+                elif conn_type == 'export_variable':
+                    # GAME-CHANGER: Map export variables to their assigned resources
+                    relationships['export_variables'].append({
+                        'export_var_name': conn.get('export_var_name', ''),
+                        'export_var_type': conn.get('export_var_type', ''),
+                        'resource_file': target,
+                        'scene_file': conn.get('scene_file', ''),
+                        'node_name': conn.get('node_name', '')
+                    })
+                    # Also add to resources_used since export vars reference resources
+                    relationships['resources_used'].append({
+                        'resource_file': target,
+                        'resource_type': 'ExportVariable',
+                        'export_var_name': conn.get('export_var_name', '')
+                    })
+                elif conn_type == 'preload':
+                    relationships['preloaded_by'].append(target)
+                elif conn_type == 'load':
+                    relationships['loaded_by'].append(target)
+            
+            # Process incoming connections (what affects this file)
+            for conn in file_connections['incoming']:
+                conn_type = conn.get('connection_type')
+                source = conn.get('source_file')
+                
+                if conn_type == 'signal_flow':
+                    relationships['signals_received_from'].append({
+                        'source_file': source,
+                        'signal_name': conn.get('signal_name'),
+                        'handler_method': conn.get('handler_method'),
+                        'from_node': conn.get('from_node'),
+                        'to_node': conn.get('to_node'),
+                        'scene_file': conn.get('scene_file', source)
+                    })
+                elif conn_type == 'script_attachment':
+                    # This script is attached to scenes
+                    relationships['attached_to_scenes'].append({
+                        'scene_file': source,
+                        'node_name': conn.get('node_name', ''),
+                        'node_path': conn.get('node_name', '')
+                    })
+                elif conn_type == 'scene_instantiation':
+                    # This scene is instantiated by other scenes
+                    relationships['instantiated_by'].append({
+                        'parent_scene': source,
+                        'instantiated_as': conn.get('instantiated_as', ''),
+                        'node_name': conn.get('node_name', ''),
+                        'resource_id': conn.get('resource_id', '')
+                    })
+                elif conn_type == 'extends':
+                    relationships['extends_from'].append(source)
+                elif conn_type == 'export_variable':
+                    # This file is referenced by an export variable in another script
+                    relationships['referenced_by_export'].append({
+                        'script_file': source,
+                        'export_var_name': conn.get('export_var_name', ''),
+                        'export_var_type': conn.get('export_var_type', ''),
+                        'scene_file': conn.get('scene_file', ''),
+                        'node_name': conn.get('node_name', '')
+                    })
+                elif conn_type == 'external_resource':
+                    # This file is used as an external resource
+                    relationships['used_as_resource'].append({
+                        'scene_file': source,
+                        'resource_type': conn.get('resource_type', 'Unknown')
+                    })
+            
+            # GAME-CHANGER: Add groups from node_info to relationships
+            if node_info:
+                groups = node_info.get('groups', [])
+                if groups:
+                    relationships['groups'] = groups
+            
+            # Add node accesses to relationships (which nodes this script references)
+            if node_info:
+                node_accesses = node_info.get('node_accesses', [])
+                if node_accesses:
+                    relationships['node_accesses'] = node_accesses
+            
+            # Add relationships to result
+            enriched_result['relationships'] = relationships
+            
+            # WORLD-CLASS: Generate architectural insights and signal chains
+            signal_chains = _build_signal_chains(relationships, file_path)
+            if signal_chains:
+                relationships['signal_chains'] = signal_chains
+            
+            # GAME-CHANGER: Build multi-hop signal propagation tree
+            try:
+                propagation_tree = _build_signal_propagation_tree(file_path, enhanced_graph, max_depth=3)
+                if propagation_tree:
+                    relationships['signal_propagation_tree'] = propagation_tree
+                    print(f"✅ PROPAGATION_TREE: Built for {file_path} with {len(propagation_tree.get('cascades', []))} cascades")
+            except Exception as e:
+                print(f"❌ PROPAGATION_TREE_ERROR for {file_path}: {e}")
+            
+            # GAME-CHANGER: Build scene composition hierarchy
+            try:
+                composition_tree = _build_scene_composition_tree(file_path, enhanced_graph)
+                if composition_tree:
+                    relationships['scene_composition'] = composition_tree
+                    print(f"✅ SCENE_COMPOSITION: Built for {file_path}")
+            except Exception as e:
+                print(f"❌ SCENE_COMPOSITION_ERROR for {file_path}: {e}")
+            
+            # GAME-CHANGER: Analyze group interactions
+            try:
+                group_interactions = _analyze_group_interactions(file_path, enhanced_graph, node_info)
+                if group_interactions:
+                    relationships['group_interactions'] = group_interactions
+                    print(f"✅ GROUP_INTERACTIONS: Found for {file_path}")
+            except Exception as e:
+                print(f"❌ GROUP_INTERACTIONS_ERROR for {file_path}: {e}")
+            
+            # Determine architectural role based on relationships
+            arch_role = _determine_architectural_role(relationships, enriched_result.get('context', {}))
+            relationships['architectural_role'] = arch_role
+            
+            # Add method calls from context
+            if node_info:
+                method_calls = node_info.get('method_calls', [])
+                if method_calls:
+                    relationships['method_calls_to'] = method_calls
+            
+            # Add usage summary with world-class insights
+            total_connections = len(file_connections['outgoing']) + len(file_connections['incoming'])
+            enriched_result['usage_summary'] = {
+                'total_connections': total_connections,
+                'signals_involved': len(relationships['signals_emitted_to']) + len(relationships['signals_received_from']),
+                'resources_count': len(relationships['resources_used']),
+                'scenes_instantiated_count': len(relationships['scenes_instantiated']),
+                'scenes_attached_to': len(relationships['attached_to_scenes']),
+                'coupling_score': _calculate_coupling_score(relationships),
+                'architectural_role': arch_role,
+                'change_impact_score': _calculate_change_impact(relationships),
+                'is_hub': total_connections > 5,
+                'is_leaf': total_connections <= 1,
+                'complexity_indicators': _get_complexity_indicators(relationships, enriched_result.get('context', {}))
+            }
+            
+            enriched.append(enriched_result)
+        
+        print(f"CONTEXT_ENRICH: Enhanced {len(enriched)} results with relationship data")
+        return enriched
+        
+    except Exception as e:
+        print(f"CONTEXT_ENRICH_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return results  # Return original results if enrichment fails
+
+def _build_signal_chains(relationships: dict, file_path: str) -> list:
+    """Build signal chains showing complete flow: emitter → signal → handler"""
+    chains = []
+    
+    # Build chains from signals emitted by this file
+    for signal_info in relationships.get('signals_emitted_to', []):
+        chain = {
+            'signal_name': signal_info.get('signal_name'),
+            'emitter': file_path,
+            'emitter_node': signal_info.get('from_node'),
+            'receiver': signal_info.get('target_file'),
+            'receiver_node': signal_info.get('to_node'),
+            'handler_method': signal_info.get('handler_method'),
+            'scene_context': signal_info.get('scene_file'),
+            'flow_type': 'outgoing'
+        }
+        chains.append(chain)
+    
+    # Build chains from signals received by this file
+    for signal_info in relationships.get('signals_received_from', []):
+        chain = {
+            'signal_name': signal_info.get('signal_name'),
+            'emitter': signal_info.get('source_file'),
+            'emitter_node': signal_info.get('from_node'),
+            'receiver': file_path,
+            'receiver_node': signal_info.get('to_node'),
+            'handler_method': signal_info.get('handler_method'),
+            'scene_context': signal_info.get('scene_file'),
+            'flow_type': 'incoming'
+        }
+        chains.append(chain)
+    
+    return chains
+
+def _build_signal_propagation_tree(file_path: str, enhanced_graph: dict, max_depth: int = 3) -> dict:
+    """Build multi-hop signal propagation tree showing cascading effects"""
+    
+    if not enhanced_graph:
+        return {}
+    
+    nodes_by_path = {node['file_path']: node for node in enhanced_graph.get('nodes', [])}
+    all_connections = enhanced_graph.get('connections', [])
+    
+    # Build signal flow map for quick lookup
+    signal_flows = {}
+    for conn in all_connections:
+        if conn.get('connection_type') == 'signal_flow':
+            signal_name = conn.get('signal_name')
+            if signal_name:
+                if signal_name not in signal_flows:
+                    signal_flows[signal_name] = []
+                signal_flows[signal_name].append(conn)
+    
+    propagation_tree = {
+        'root_file': file_path,
+        'cascades': [],
+        'total_depth': 0
+    }
+    
+    # Find ALL signals that originate from or pass through this file
+    # This includes signals emitted by scripts attached to scenes
+    signals_to_trace = set()
+    
+    # For script files: use signals_defined
+    file_node = nodes_by_path.get(file_path, {})
+    signals_defined = file_node.get('signals_defined', []) if isinstance(file_node.get('signals_defined'), list) else []
+    for signal_name in signals_defined:
+        if isinstance(signal_name, dict):
+            signals_to_trace.add(signal_name.get('signal_name', ''))
+        else:
+            signals_to_trace.add(str(signal_name))
+    
+    # For scene files: find all signal flows that pass through this scene
+    for signal_name, connections in signal_flows.items():
+        for conn in connections:
+            scene_file = conn.get('scene_file', '')
+            source_file = conn.get('source_file', '')
+            if scene_file == file_path or source_file == file_path:
+                signals_to_trace.add(signal_name)
+    
+    # Build cascades for all relevant signals
+    for signal_name in signals_to_trace:
+        if signal_name:
+            # Build cascade for this signal
+            cascade = _trace_signal_cascade(signal_name, file_path, signal_flows, nodes_by_path, depth=0, max_depth=max_depth, visited=set())
+            if cascade:
+                propagation_tree['cascades'].append(cascade)
+                propagation_tree['total_depth'] = max(propagation_tree['total_depth'], cascade.get('depth', 0))
+    
+    return propagation_tree if propagation_tree['cascades'] else {}
+
+def _trace_signal_cascade(signal_name: str, current_file: str, signal_flows: dict, nodes_by_path: dict, depth: int, max_depth: int, visited: set) -> dict:
+    """Recursively trace signal cascades"""
+    
+    if depth >= max_depth or current_file in visited:
+        return None
+    
+    visited.add(current_file)
+    
+    # Find connections for this signal
+    all_connections = signal_flows.get(signal_name, [])
+    
+    # CRITICAL FIX: Filter to only connections FROM the current file
+    # This ensures we trace the actual flow path, not all possible handlers
+    connections = []
+    for conn in all_connections:
+        # Check multiple possible source fields (different parsers use different names)
+        conn_source = (conn.get('source_file') or conn.get('from_file') or 
+                      conn.get('source_script') or '')
+        # For scene-based connections, the scene_file might be the context
+        conn_scene = conn.get('scene_file', '')
+        
+        # Match if this connection originates from current_file or its scene context
+        if conn_source == current_file or conn_scene == current_file:
+            connections.append(conn)
+    
+    print(f"SIGNAL_CASCADE_DEBUG: depth={depth}, signal='{signal_name}', current_file='{current_file}', found {len(connections)} relevant connections (from {len(all_connections)} total)")
+    
+    cascade = {
+        'signal_name': signal_name,
+        'emitter': current_file,
+        'depth': depth,
+        'handlers': [],
+        'triggered_signals': []
+    }
+    
+    # Find handlers for this signal
+    for conn in connections:
+        handler_method = conn.get('handler_method')
+        target_file = conn.get('target_file', '')
+        target_script = conn.get('target_script', '')
+        
+        # CRITICAL: Prefer target_script, but handle empty string vs missing
+        if target_script:  # Non-empty string
+            actual_target = target_script
+        elif target_file and not target_file.endswith('.tscn'):
+            # Use target_file only if it's not a scene
+            actual_target = target_file
+        elif target_file:
+            # Last resort: scene file (won't be able to recurse but at least shows connection)
+            actual_target = target_file
+            print(f"SIGNAL_CASCADE_WARNING: Handler at {target_file} (scene) - need script for recursion")
+        else:
+            actual_target = None
+        
+        if handler_method and actual_target:
+            handler_info = {
+                'handler_method': handler_method,
+                'handler_file': actual_target,
+                'handler_node': conn.get('to_node'),
+                'scene_context': conn.get('scene_file'),
+                'can_recurse': not actual_target.endswith('.tscn')  # Flag if we can trace deeper
+            }
+            cascade['handlers'].append(handler_info)
+            
+            # Only try to recurse if we have a script file (not scene)
+            if not handler_info['can_recurse']:
+                print(f"SIGNAL_CASCADE_STOP: Cannot recurse from scene file {actual_target}")
+                continue
+            
+            # GAME-CHANGER: Check if the handler METHOD triggers more signals (METHOD-LEVEL INTELLIGENCE!)
+            handler_node = nodes_by_path.get(actual_target, {})
+            
+            # CRITICAL FIX: Use function_signals map to get ONLY signals emitted by THIS METHOD
+            function_signals = handler_node.get('function_signals', []) if isinstance(handler_node.get('function_signals'), list) else []
+            signals_from_this_method = []
+            
+            # Find signals emitted by the specific handler method
+            for func_mapping in function_signals:
+                if isinstance(func_mapping, dict) and func_mapping.get('function_name') == handler_method:
+                    method_signals = func_mapping.get('signals_emitted', [])
+                    if isinstance(method_signals, list):
+                        signals_from_this_method = method_signals
+                    break
+            
+            # If no method-level mapping exists, fallback to file-level (for backward compatibility)
+            if not signals_from_this_method:
+                # Legacy fallback: use all signals from file (less accurate)
+                signals_emitted = handler_node.get('signals_emitted', []) if isinstance(handler_node.get('signals_emitted'), list) else []
+                for emitted_signal in signals_emitted:
+                    if isinstance(emitted_signal, dict):
+                        sig_name = emitted_signal.get('signal_name', '')
+                    else:
+                        sig_name = str(emitted_signal)
+                    if sig_name:
+                        signals_from_this_method.append(sig_name)
+                
+                if signals_from_this_method:
+                    print(f"SIGNAL_CASCADE_FALLBACK: Using file-level signals for {actual_target}::{handler_method} (method mapping not found)")
+            else:
+                print(f"SIGNAL_CASCADE_METHOD: Found {len(signals_from_this_method)} signal(s) emitted by {actual_target}::{handler_method}")
+            
+            # Trace each signal emitted by this handler method
+            for triggered_signal_name in signals_from_this_method:
+                triggered_signal_name = str(triggered_signal_name).strip()
+                
+                if triggered_signal_name and triggered_signal_name != signal_name:
+                    # Recursively trace the triggered signal
+                    sub_cascade = _trace_signal_cascade(
+                        triggered_signal_name, 
+                        actual_target, 
+                        signal_flows, 
+                        nodes_by_path, 
+                        depth + 1, 
+                        max_depth, 
+                        visited.copy()
+                    )
+                    if sub_cascade:
+                        cascade['triggered_signals'].append(sub_cascade)
+                        print(f"SIGNAL_CASCADE_CHAIN: depth={depth} -> {depth+1}: {signal_name} -> {triggered_signal_name} (via {handler_method})")
+                    else:
+                        print(f"SIGNAL_CASCADE_DEAD_END: {triggered_signal_name} emitted by {handler_method} has no handlers or max depth reached")
+    
+    return cascade if cascade['handlers'] or cascade['triggered_signals'] else None
+
+def _build_scene_composition_tree(file_path: str, enhanced_graph: dict) -> dict:
+    """Build complete scene instantiation hierarchy showing who creates what"""
+    
+    if not enhanced_graph or not file_path.endswith('.tscn'):
+        return {}
+    
+    all_connections = enhanced_graph.get('connections', [])
+    
+    composition = {
+        'root_scene': file_path,
+        'instantiates': [],  # Scenes this scene instantiates
+        'instantiated_by': [],  # Scenes that instantiate this scene
+        'children': [],  # Child scenes with their instantiation info
+        'depth': 0
+    }
+    
+    # Find scenes instantiated by this scene
+    for conn in all_connections:
+        if conn.get('source_file') == file_path:
+            if conn.get('connection_type') == 'scene_instantiation':
+                instantiation_info = {
+                    'scene_file': conn.get('target_file'),
+                    'instantiated_as': conn.get('instantiated_as'),
+                    'node_name': conn.get('node_name'),
+                    'resource_id': conn.get('resource_id')
+                }
+                composition['instantiates'].append(conn.get('target_file'))
+                composition['children'].append(instantiation_info)
+                composition['depth'] = max(composition['depth'], 1)
+        
+        # Find scenes that instantiate this scene
+        if conn.get('target_file') == file_path and conn.get('connection_type') == 'scene_instantiation':
+            composition['instantiated_by'].append({
+                'parent_scene': conn.get('source_file'),
+                'instantiated_as': conn.get('instantiated_as'),
+                'node_name': conn.get('node_name')
+            })
+    
+    return composition if composition['instantiates'] or composition['instantiated_by'] else {}
+
+def _analyze_group_interactions(file_path: str, enhanced_graph: dict, node_info: dict) -> dict:
+    """Analyze group-based interactions showing who affects which groups"""
+    
+    if not node_info:
+        return {}
+    
+    groups_data = node_info.get('groups', [])
+    if not groups_data:
+        return {}
+    
+    interactions = {
+        'belongs_to_groups': [],
+        'calls_on_groups': [],
+        'checks_groups': [],
+        'affected_by': []  # Which files call methods on groups this file belongs to
+    }
+    
+    # Process group operations from this file
+    for group_info in groups_data:
+        action = group_info.get('action', '')
+        group_name = group_info.get('group_name', '')
+        
+        if action == 'add_to_group':
+            interactions['belongs_to_groups'].append({
+                'group_name': group_name,
+                'line': group_info.get('line'),
+                'code': group_info.get('code')
+            })
+        elif action == 'call_group':
+            interactions['calls_on_groups'].append({
+                'group_name': group_name,
+                'method_called': group_info.get('method_called', ''),
+                'line': group_info.get('line'),
+                'code': group_info.get('code')
+            })
+        elif action == 'is_in_group':
+            interactions['checks_groups'].append({
+                'group_name': group_name,
+                'line': group_info.get('line'),
+                'code': group_info.get('code')
+            })
+    
+    # WORLD-CLASS: Find which files call operations on groups this file belongs to
+    if interactions['belongs_to_groups']:
+        my_groups = [g['group_name'] for g in interactions['belongs_to_groups']]
+        
+        # Search all nodes for call_group operations on these groups
+        for node_data in enhanced_graph.get('nodes', []):
+            if isinstance(node_data, dict):
+                node_path = node_data.get('file_path', '')
+                if node_path and node_path != file_path:
+                    other_groups = node_data.get('groups', [])
+                    for other_group_info in other_groups:
+                        if isinstance(other_group_info, dict):
+                            if other_group_info.get('action') == 'call_group':
+                                called_group = other_group_info.get('group_name', '')
+                                if called_group in my_groups:
+                                    interactions['affected_by'].append({
+                                        'caller_file': node_path,
+                                        'group_name': called_group,
+                                        'method_called': other_group_info.get('method_called', ''),
+                                        'impact': 'This file will be affected by this group call'
+                                    })
+    
+    # Only return if there's meaningful interaction data
+    has_data = any([
+        interactions['belongs_to_groups'],
+        interactions['calls_on_groups'],
+        interactions['checks_groups'],
+        interactions['affected_by']
+    ])
+    
+    return interactions if has_data else {}
+
+def _determine_architectural_role(relationships: dict, context: dict) -> str:
+    """Determine the architectural role based on relationship patterns"""
+    
+    # Count different types of relationships
+    signals_out = len(relationships.get('signals_emitted_to', []))
+    signals_in = len(relationships.get('signals_received_from', []))
+    scenes_attached = len(relationships.get('attached_to_scenes', []))
+    scenes_instantiated = len(relationships.get('scenes_instantiated', []))
+    resources_used = len(relationships.get('resources_used', []))
+    method_calls = len(relationships.get('method_calls_to', []))
+    
+    # Determine role based on patterns
+    if signals_out > 3 and signals_in < 2:
+        return 'Event_Emitter_Hub'
+    elif signals_in > 3 and signals_out < 2:
+        return 'Event_Handler_Hub'
+    elif scenes_instantiated > 2:
+        return 'Scene_Manager'
+    elif scenes_attached > 0 and method_calls > 3:
+        return 'Interactive_Component'
+    elif resources_used > 5:
+        return 'Resource_Heavy_Scene'
+    elif signals_out > 0 and signals_in > 0:
+        return 'Signal_Bridge'
+    elif scenes_attached > 0:
+        return 'Scene_Script'
+    elif context.get('node_type') == 'scene':
+        return 'Scene_Definition'
+    else:
+        return 'Utility_Script'
+
+def _calculate_coupling_score(relationships: dict) -> float:
+    """Calculate how tightly coupled this file is (0.0 = loose, 1.0 = tight)"""
+    total_deps = (
+        len(relationships.get('signals_emitted_to', [])) +
+        len(relationships.get('signals_received_from', [])) +
+        len(relationships.get('scenes_instantiated', [])) +
+        len(relationships.get('attached_to_scenes', [])) +
+        len(relationships.get('method_calls_to', []))
+    )
+    
+    # Normalize to 0-1 scale (10+ connections = highly coupled)
+    return min(total_deps / 10.0, 1.0)
+
+def _calculate_change_impact(relationships: dict) -> float:
+    """Calculate potential impact of changes to this file (0.0 = low, 1.0 = high)"""
+    # Files that depend on this one
+    dependents = (
+        len(relationships.get('instantiated_by', [])) +
+        len(relationships.get('referenced_by_export', [])) +
+        len(relationships.get('used_as_resource', [])) +
+        len(relationships.get('signals_received_from', []))
+    )
+    
+    # Normalize to 0-1 scale (5+ dependents = high impact)
+    return min(dependents / 5.0, 1.0)
+
+def _get_complexity_indicators(relationships: dict, context: dict) -> list:
+    """Get complexity indicators for this file"""
+    indicators = []
+    
+    if len(relationships.get('signals_emitted_to', [])) > 2:
+        indicators.append('multi_signal_emitter')
+    if len(relationships.get('signals_received_from', [])) > 2:
+        indicators.append('multi_signal_receiver')
+    if len(relationships.get('scenes_instantiated', [])) > 1:
+        indicators.append('scene_factory')
+    if len(relationships.get('method_calls_to', [])) > 5:
+        indicators.append('high_node_interaction')
+    if len(relationships.get('resources_used', [])) > 3:
+        indicators.append('resource_heavy')
+    if len(context.get('functions', [])) > 10:
+        indicators.append('large_script')
+    if relationships.get('architectural_role') in ['Event_Emitter_Hub', 'Event_Handler_Hub']:
+        indicators.append('communication_hub')
+    
+    return indicators
+
 def _identify_architectural_role(file_path: str, graph_context: dict) -> str:
     """Identify the architectural role of a file based on its connections"""
     file_ctx = graph_context.get(file_path, {})
@@ -2482,7 +3260,9 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
         
         # Generate project ID if not provided
         if not project_id:
-            project_id = hashlib.md5(project_root.encode()).hexdigest()
+            # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+            normalized_root = project_root.rstrip('/')
+            project_id = hashlib.md5(normalized_root.encode()).hexdigest()
         
         # Use search mode as specified - no hardcoded auto-detection
         detected_mode = search_mode
@@ -2516,7 +3296,15 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
             cloud_vector_manager, include_graph
         )
         
-        # Format results with enhanced scoring
+        # CRITICAL FIX: enhanced_results is a dict, extract the list for enrichment
+        similar_files_list = enhanced_results.get('similar_files', []) if isinstance(enhanced_results, dict) else enhanced_results
+        
+        # CONTEXT ENRICHMENT: Add relationship/edge information to each result
+        enriched_files_list = _enrich_results_with_context(
+            similar_files_list, user['id'], project_id, project_root, cloud_vector_manager
+        )
+        
+        # Format results with enhanced scoring and context
         formatted_results = {
             "similar_files": [
                 {
@@ -2531,12 +3319,17 @@ def search_across_project_internal(arguments: dict, current_user: dict = None) -
                     "chunk_index": r['chunk']['chunk_index'] if r.get('chunk') else 0,
                     "chunk_start": r['chunk']['start_line'] if r.get('chunk') else None,
                     "chunk_end": r['chunk']['end_line'] if r.get('chunk') else None,
-                    "line_count": r.get('file_line_count')
+                    "chunk_content": r['chunk'].get('content', '') if r.get('chunk') else '',  # CRITICAL: Include actual code!
+                    "line_count": r.get('file_line_count'),
+                    # NEW: Rich context information from enhanced graph
+                    "context": r.get('context', {}),
+                    "relationships": r.get('relationships', {}),
+                    "usage_summary": r.get('usage_summary', {})
                 }
-                for r in enhanced_results['similar_files']
+                for r in enriched_files_list
             ],
-            "central_files": enhanced_results.get('central_files', []),
-            "graph_summary": enhanced_results.get('graph_summary', {})
+            "central_files": enhanced_results.get('central_files', []) if isinstance(enhanced_results, dict) else [],
+            "graph_summary": enhanced_results.get('graph_summary', {}) if isinstance(enhanced_results, dict) else {}
         }
         
         # Get graph context for final results
@@ -2964,7 +3757,9 @@ def graph_manager_internal(arguments: dict, current_user: dict = None) -> dict:
         project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
         project_id = arguments.get('project_id')
         if not project_id and project_root:
-            project_id = hashlib.md5(project_root.encode()).hexdigest()
+            # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+            normalized_root = project_root.rstrip('/')
+            project_id = hashlib.md5(normalized_root.encode()).hexdigest()
         if not project_id:
             return {"success": False, "error": "project_id or project_root required for graph operations"}
 
@@ -3184,6 +3979,38 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
                 'code_examples_only': arguments.get('code_examples_only', False)
             }
             return search_across_godot_docs_internal(docs_args)
+        
+        # NEW: Multi-hop signal propagation tracing
+        elif op == "signal.trace":
+            return _trace_signal_propagation_internal(arguments, current_user)
+        
+        # NEW: Find all emitters of a signal
+        elif op == "signal.find_emitters":
+            return _find_signal_emitters_internal(arguments, current_user)
+        
+        # NEW: Find all handlers of a signal
+        elif op == "signal.find_handlers":
+            return _find_signal_handlers_internal(arguments, current_user)
+        
+        # NEW: Data flow analysis (variable → signal → UI updates)
+        elif op == "data_flow.analyze":
+            return _analyze_data_flow_internal(arguments, current_user)
+        
+        # NEW: Export variable impact tracing
+        elif op == "export_var.trace":
+            return _trace_export_variable_internal(arguments, current_user)
+        
+        # NEW: Node control pattern analysis
+        elif op == "node_control.analyze":
+            return _analyze_node_control_patterns_internal(arguments, current_user)
+        
+        # NEW: Group interaction tracing
+        elif op == "group.trace_interactions":
+            return _trace_group_interactions_internal(arguments, current_user)
+        
+        # NEW: Scene composition tree
+        elif op == "scene.composition_tree":
+            return _get_scene_composition_tree_internal(arguments, current_user)
             
         else:
             return {"success": False, "error": f"Unknown search_manager operation: {op}"}
@@ -3191,6 +4018,776 @@ def search_manager_internal(arguments: dict, current_user: dict = None) -> dict:
     except Exception as e:
         print(f"SEARCH_MANAGER_ERROR: {e}")
         return {"success": False, "error": f"Search manager operation failed: {str(e)}"}
+
+# ========== WORLD-CLASS SIGNAL PROPAGATION & DATA FLOW ANALYSIS ==========
+
+def _derive_project_id(project_root: str) -> str:
+    """Derive project ID from project root path"""
+    if not project_root:
+        return ""
+    # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+    normalized_root = project_root.rstrip('/')
+    return hashlib.md5(normalized_root.encode()).hexdigest()
+
+def _get_enhanced_graph_for_project(user_id: str, project_id: str) -> dict:
+    """Helper to retrieve enhanced graph from vector manager"""
+    if not cloud_vector_manager:
+        print("❌ ENHANCED_GRAPH: No cloud_vector_manager available")
+        return {}
+    
+    try:
+        if hasattr(cloud_vector_manager, 'get_enhanced_graph'):
+            graph = cloud_vector_manager.get_enhanced_graph(user_id, project_id)
+            if graph:
+                nodes_count = len(graph.get('nodes', []))
+                connections_count = len(graph.get('connections', []))
+                print(f"✅ ENHANCED_GRAPH_RETRIEVED: {nodes_count} nodes, {connections_count} connections for project {project_id}")
+                return graph
+            else:
+                print(f"❌ ENHANCED_GRAPH_NOT_FOUND: No graph data for user={user_id}, project={project_id}")
+                print(f"   This means the project hasn't been indexed yet or the graph failed to store")
+                return {}
+        else:
+            print("⚠️ ENHANCED_GRAPH: Vector manager doesn't support get_enhanced_graph")
+            return {}
+    except Exception as e:
+        print(f"❌ ENHANCED_GRAPH_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
+
+def _trace_signal_propagation_internal(arguments: dict, current_user: dict = None) -> dict:
+    """
+    GAME-CHANGER: Trace multi-hop signal propagation cascades
+    Shows complete flow: Player.hit → Main.game_over() → HUD.show_game_over() → Timer.start() → UI update
+    """
+    try:
+        signal_name = arguments.get('signal_name')
+        file_path = arguments.get('file_path')
+        max_depth = arguments.get('max_depth', 3)
+        include_triggered = arguments.get('include_triggered_signals', True)
+        
+        if not signal_name:
+            return {"success": False, "error": "signal_name parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": f"No graph data found for project {project_id[:8]}...",
+                "recommendations": [
+                    "1. Re-index your project to build the enhanced graph",
+                    "2. Ensure the project has .gd and .tscn files",
+                    "3. Check backend logs for graph storage errors"
+                ],
+                "next_steps": "Try using 'project.search' first to build the graph, then retry this operation"
+            }
+        
+        # Build propagation tree
+        if file_path:
+            # Trace from specific file
+            propagation_tree = _build_signal_propagation_tree(file_path, enhanced_graph, max_depth)
+            
+            # Filter to just the requested signal
+            if propagation_tree and 'cascades' in propagation_tree:
+                filtered_cascades = [c for c in propagation_tree['cascades'] if c.get('signal_name') == signal_name]
+                propagation_tree['cascades'] = filtered_cascades
+        else:
+            # Find all files that emit this signal
+            signal_tree = _trace_signal_across_project(signal_name, enhanced_graph, max_depth)
+            propagation_tree = signal_tree
+        
+        if not propagation_tree or not propagation_tree.get('cascades'):
+            return {
+                "success": True,
+                "signal_name": signal_name,
+                "found_cascades": False,
+                "message": f"Signal '{signal_name}' not found in project graph. It may be defined but not connected anywhere.",
+                "suggestions": [
+                    f"Search for files that define signal '{signal_name}' using project.search",
+                    "Check if signal is emitted but not connected to any handlers",
+                    "Verify signal name spelling and case"
+                ]
+            }
+        
+        # Build human-readable cascade description
+        cascade_descriptions = []
+        for cascade in propagation_tree.get('cascades', []):
+            desc = _describe_signal_cascade(cascade, depth=0)
+            cascade_descriptions.append(desc)
+        
+        return {
+            "success": True,
+            "signal_name": signal_name,
+            "propagation_tree": propagation_tree,
+            "cascades": propagation_tree.get('cascades', []),
+            "emitters": propagation_tree.get('emitters', []),
+            "cascade_descriptions": cascade_descriptions,
+            "max_depth_reached": propagation_tree.get('total_depth', 0),
+            "total_cascades": len(propagation_tree.get('cascades', [])),
+            "message": f"Found {len(propagation_tree.get('cascades', []))} cascade chain(s) for signal '{signal_name}'"
+        }
+        
+    except Exception as e:
+        print(f"SIGNAL_TRACE_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": f"Signal tracing failed: {str(e)}"}
+
+def _trace_signal_across_project(signal_name: str, enhanced_graph: dict, max_depth: int) -> dict:
+    """Trace a signal across the entire project (all emitters → all handlers)"""
+    nodes_by_path = {node['file_path']: node for node in enhanced_graph.get('nodes', [])}
+    all_connections = enhanced_graph.get('connections', [])
+    
+    # Build signal flow map
+    signal_flows = {}
+    for conn in all_connections:
+        if conn.get('connection_type') == 'signal_flow':
+            sig_name = conn.get('signal_name')
+            if sig_name:
+                if sig_name not in signal_flows:
+                    signal_flows[sig_name] = []
+                signal_flows[sig_name].append(conn)
+    
+    # Find all emitters of this signal
+    emitters = []
+    for node in nodes_by_path.values():
+        signals_emitted = node.get('signals_emitted', []) if isinstance(node.get('signals_emitted'), list) else []
+        for sig in signals_emitted:
+            sig_name = sig.get('signal_name', '') if isinstance(sig, dict) else str(sig)
+            if sig_name == signal_name:
+                emitters.append(node['file_path'])
+    
+    # Build cascade from each emitter
+    all_cascades = []
+    for emitter_file in emitters:
+        cascade = _trace_signal_cascade(signal_name, emitter_file, signal_flows, nodes_by_path, 0, max_depth, set())
+        if cascade:
+            all_cascades.append(cascade)
+    
+    return {
+        'signal_name': signal_name,
+        'emitters': emitters,
+        'cascades': all_cascades,
+        'total_depth': max(c.get('depth', 0) for c in all_cascades) if all_cascades else 0
+    }
+
+def _describe_signal_cascade(cascade: dict, depth: int = 0) -> str:
+    """Generate human-readable description of a signal cascade"""
+    indent = "  " * depth
+    signal_name = cascade.get('signal_name', 'unknown')
+    emitter = cascade.get('emitter', 'unknown').split('/')[-1]  # Just filename
+    
+    desc = f"{indent}Signal '{signal_name}' from {emitter}:\n"
+    
+    # Describe handlers
+    handlers = cascade.get('handlers', [])
+    for handler in handlers:
+        method = handler.get('handler_method', 'unknown')
+        file = handler.get('handler_file', 'unknown').split('/')[-1]
+        node = handler.get('handler_node', '')
+        node_info = f" (node: {node})" if node and node != '.' else ""
+        desc += f"{indent}  → {file}.{method}(){node_info}\n"
+    
+    # Describe triggered signals (sub-cascades)
+    triggered = cascade.get('triggered_signals', [])
+    for sub_cascade in triggered:
+        desc += _describe_signal_cascade(sub_cascade, depth + 1)
+    
+    return desc
+
+def _find_signal_emitters_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Find all files that emit a specific signal"""
+    try:
+        signal_name = arguments.get('signal_name')
+        if not signal_name:
+            return {"success": False, "error": "signal_name parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for signal emitter analysis",
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        # Find emitters
+        emitters = []
+        for node in enhanced_graph.get('nodes', []):
+            signals_emitted = node.get('signals_emitted', []) if isinstance(node.get('signals_emitted'), list) else []
+            for sig in signals_emitted:
+                sig_name = sig.get('signal_name', '') if isinstance(sig, dict) else str(sig)
+                if sig_name == signal_name:
+                    emitter_info = {
+                        'file_path': node['file_path'],
+                        'file_type': node.get('node_type', 'unknown'),
+                        'line': sig.get('line') if isinstance(sig, dict) else None,
+                        'code': sig.get('code') if isinstance(sig, dict) else None
+                    }
+                    emitters.append(emitter_info)
+        
+        return {
+            "success": True,
+            "signal_name": signal_name,
+            "emitters": emitters,
+            "count": len(emitters),
+            "message": f"Found {len(emitters)} file(s) that emit signal '{signal_name}'"
+        }
+        
+    except Exception as e:
+        print(f"FIND_EMITTERS_ERROR: {e}")
+        return {"success": False, "error": str(e)}
+
+def _find_signal_handlers_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Find all handlers for a specific signal"""
+    try:
+        signal_name = arguments.get('signal_name')
+        if not signal_name:
+            return {"success": False, "error": "signal_name parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for signal handler analysis",
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        # Find handlers from signal_flow connections
+        handlers = []
+        for conn in enhanced_graph.get('connections', []):
+            if conn.get('connection_type') == 'signal_flow' and conn.get('signal_name') == signal_name:
+                handler_file = conn.get('target_script') or conn.get('target_file')
+                handler_info = {
+                    'handler_method': conn.get('handler_method'),
+                    'handler_file': handler_file,
+                    'handler_node': conn.get('to_node'),
+                    'emitter_file': conn.get('source_script') or conn.get('source_file'),
+                    'emitter_node': conn.get('from_node'),
+                    'scene_context': conn.get('scene_file'),
+                    'connection_type': conn.get('connection_type')
+                }
+                handlers.append(handler_info)
+        
+        return {
+            "success": True,
+            "signal_name": signal_name,
+            "handlers": handlers,
+            "count": len(handlers),
+            "message": f"Found {len(handlers)} handler(s) for signal '{signal_name}'"
+        }
+        
+    except Exception as e:
+        print(f"FIND_HANDLERS_ERROR: {e}")
+        return {"success": False, "error": str(e)}
+
+def _analyze_data_flow_internal(arguments: dict, current_user: dict = None) -> dict:
+    """
+    GAME-CHANGER: Analyze complete data flow from variable → signal → UI updates
+    Example: score variable → score_changed signal → HUD.update_score() → Label.text update
+    """
+    try:
+        start_variable = arguments.get('start_variable')
+        start_file = arguments.get('start_file')
+        include_ui = arguments.get('include_ui_updates', True)
+        
+        if not start_variable:
+            return {"success": False, "error": "start_variable parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for data flow analysis",
+                "variable": start_variable,
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        # Trace data flow
+        data_flow = _trace_data_flow(start_variable, start_file, enhanced_graph, include_ui)
+        
+        return {
+            "success": True,
+            "variable": start_variable,
+            "start_file": start_file,
+            "data_flow": data_flow,
+            "flow_steps": len(data_flow.get('steps', [])),
+            "ui_impacts": data_flow.get('ui_impacts', []),
+            "message": f"Traced {len(data_flow.get('steps', []))} step(s) in data flow for '{start_variable}'"
+        }
+        
+    except Exception as e:
+        print(f"DATA_FLOW_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+def _trace_data_flow(variable_name: str, start_file: str, enhanced_graph: dict, include_ui: bool) -> dict:
+    """Trace complete data flow path for a variable"""
+    nodes_by_path = {node['file_path']: node for node in enhanced_graph.get('nodes', [])}
+    all_connections = enhanced_graph.get('connections', [])
+    
+    flow = {
+        'variable': variable_name,
+        'start_file': start_file,
+        'steps': [],
+        'ui_impacts': [],
+        'signals_triggered': [],
+        'properties_modified': []
+    }
+    
+    # Step 1: Find where variable is defined
+    start_node = nodes_by_path.get(start_file, {})
+    exports = start_node.get('exports', [])
+    
+    # Check if it's an export variable
+    is_export = False
+    for exp in exports:
+        if isinstance(exp, dict) and exp.get('name') == variable_name:
+            is_export = True
+            flow['steps'].append({
+                'step': 'definition',
+                'file': start_file,
+                'type': 'export_variable',
+                'export_type': exp.get('type', 'unknown'),
+                'description': f"@export var {variable_name}: {exp.get('type', 'unknown')}"
+            })
+            break
+    
+    # Step 2: Find where variable is assigned (export_variable connections)
+    for conn in all_connections:
+        if conn.get('connection_type') == 'export_variable' and conn.get('export_var_name') == variable_name:
+            flow['steps'].append({
+                'step': 'assignment',
+                'file': conn.get('scene_file', start_file),
+                'assigned_resource': conn.get('target_file'),
+                'resource_type': conn.get('export_var_type', 'unknown'),
+                'description': f"{variable_name} = {conn.get('target_file')} (in {conn.get('node_name', 'scene')})"
+            })
+    
+    # Step 3: Find where variable is used (.instantiate(), method calls, etc.)
+    # Search for variable usage in method_calls and dynamic_scene_loads
+    for node_path, node in nodes_by_path.items():
+        dynamic_loads = node.get('dynamic_scene_loads', [])
+        for load in dynamic_loads:
+            if isinstance(load, dict) and load.get('scene_variable') == variable_name:
+                flow['steps'].append({
+                    'step': 'usage',
+                    'file': node_path,
+                    'usage_type': 'instantiate',
+                    'line': load.get('line'),
+                    'description': f"{variable_name}.instantiate() in {node_path}"
+                })
+        
+        # Check property modifications that might use the variable
+        prop_mods = node.get('property_modifications', [])
+        for mod in prop_mods:
+            if isinstance(mod, dict):
+                prop = mod.get('property', '')
+                if variable_name in prop:
+                    flow['steps'].append({
+                        'step': 'property_modification',
+                        'file': node_path,
+                        'property': prop,
+                        'line': mod.get('line'),
+                        'description': f"Property '{prop}' modified in {node_path}"
+                    })
+    
+    # Step 4: Find signals that might be emitted as a result
+    # Look for signals emitted from functions that access this variable
+    if start_node:
+        signals_emitted = start_node.get('signals_emitted', [])
+        for sig in signals_emitted:
+            sig_name = sig.get('signal_name', '') if isinstance(sig, dict) else str(sig)
+            if sig_name:
+                flow['signals_triggered'].append({
+                    'signal_name': sig_name,
+                    'emitter_file': start_file,
+                    'line': sig.get('line') if isinstance(sig, dict) else None
+                })
+    
+    # Step 5: Trace UI impacts if requested
+    if include_ui:
+        ui_impacts = _find_ui_impact_chain(variable_name, flow['signals_triggered'], enhanced_graph)
+        flow['ui_impacts'] = ui_impacts
+    
+    return flow
+
+def _find_ui_impact_chain(variable_name: str, triggered_signals: list, enhanced_graph: dict) -> list:
+    """Find how a variable impacts UI elements"""
+    ui_impacts = []
+    nodes_by_path = {node['file_path']: node for node in enhanced_graph.get('nodes', [])}
+    
+    # Look for UI-related method calls in handler functions
+    ui_patterns = ['update', 'show', 'hide', 'set_text', 'set_value', 'display', 'refresh']
+    
+    for sig_info in triggered_signals:
+        signal_name = sig_info.get('signal_name')
+        
+        # Find handlers for this signal
+        for conn in enhanced_graph.get('connections', []):
+            if conn.get('connection_type') == 'signal_flow' and conn.get('signal_name') == signal_name:
+                handler_method = conn.get('handler_method', '')
+                handler_file = conn.get('target_script') or conn.get('target_file')
+                
+                # Check if handler method name suggests UI update
+                for pattern in ui_patterns:
+                    if pattern.lower() in handler_method.lower():
+                        ui_impacts.append({
+                            'ui_method': handler_method,
+                            'ui_file': handler_file,
+                            'ui_node': conn.get('to_node'),
+                            'triggered_by': signal_name,
+                            'description': f"{signal_name} → {handler_file}.{handler_method}()"
+                        })
+                        break
+    
+    return ui_impacts
+
+def _trace_export_variable_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Trace export variable impact chains (mob_scene → mob.tscn → mob spawning)"""
+    try:
+        export_var_name = arguments.get('export_var_name')
+        file_path = arguments.get('file_path')
+        
+        if not export_var_name:
+            return {"success": False, "error": "export_var_name parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for export variable tracing",
+                "export_var_name": export_var_name,
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        # Find export variable connections
+        export_chain = []
+        for conn in enhanced_graph.get('connections', []):
+            if conn.get('connection_type') == 'export_variable' and conn.get('export_var_name') == export_var_name:
+                if not file_path or conn.get('source_file') == file_path:
+                    export_chain.append({
+                        'script_file': conn.get('source_file'),
+                        'scene_file': conn.get('scene_file'),
+                        'assigned_resource': conn.get('target_file'),
+                        'resource_type': conn.get('export_var_type', 'unknown'),
+                        'node_name': conn.get('node_name'),
+                        'description': f"@export var {export_var_name} = {conn.get('target_file')} (in {conn.get('scene_file')})"
+                    })
+        
+        # Find usage of this export variable
+        usage = []
+        for node in enhanced_graph.get('nodes', []):
+            dynamic_loads = node.get('dynamic_scene_loads', [])
+            for load in dynamic_loads:
+                if isinstance(load, dict) and load.get('scene_variable') == export_var_name:
+                    usage.append({
+                        'file': node['file_path'],
+                        'usage_type': load.get('type', 'instantiate'),
+                        'line': load.get('line'),
+                        'description': f"{export_var_name}.{load.get('type', 'instantiate')}() in {node['file_path']}"
+                    })
+        
+        return {
+            "success": True,
+            "export_var_name": export_var_name,
+            "export_chain": export_chain,
+            "usage_locations": usage,
+            "total_assignments": len(export_chain),
+            "total_usages": len(usage),
+            "message": f"Export variable '{export_var_name}' has {len(export_chain)} assignment(s) and {len(usage)} usage(s)"
+        }
+        
+    except Exception as e:
+        print(f"EXPORT_VAR_TRACE_ERROR: {e}")
+        return {"success": False, "error": str(e)}
+
+def _analyze_node_control_patterns_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Analyze which scripts control which nodes (cross-scene node access patterns)"""
+    try:
+        node_name = arguments.get('node_name')
+        scene_file = arguments.get('scene_file')
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for node control analysis",
+                "node_name": node_name,
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        control_patterns = []
+        
+        # Find all scripts that access nodes
+        for node in enhanced_graph.get('nodes', []):
+            if node.get('node_type') != 'script':
+                continue
+            
+            node_accesses = node.get('node_accesses', [])
+            method_calls = node.get('method_calls', [])
+            
+            for access in node_accesses:
+                if isinstance(access, dict):
+                    accessed_node = access.get('node_name', '')
+                    # Match if specific node requested or show all
+                    if not node_name or node_name in accessed_node:
+                        control_patterns.append({
+                            'controlling_script': node['file_path'],
+                            'controlled_node': accessed_node,
+                            'access_type': access.get('type', 'unknown'),
+                            'line': access.get('line'),
+                            'description': f"{node['file_path']} accesses ${accessed_node}"
+                        })
+            
+            for call in method_calls:
+                if isinstance(call, dict):
+                    called_node = call.get('node', '')
+                    if not node_name or node_name in called_node:
+                        control_patterns.append({
+                            'controlling_script': node['file_path'],
+                            'controlled_node': called_node,
+                            'access_type': 'method_call',
+                            'method': call.get('method'),
+                            'line': call.get('line'),
+                            'description': f"{node['file_path']} calls ${called_node}.{call.get('method', 'unknown')}()"
+                        })
+        
+        # Filter by scene if specified
+        if scene_file:
+            # Find scripts attached to this scene
+            scene_scripts = set()
+            for conn in enhanced_graph.get('connections', []):
+                if conn.get('source_file') == scene_file and conn.get('connection_type') == 'script_attachment':
+                    scene_scripts.add(conn.get('target_file'))
+            
+            control_patterns = [p for p in control_patterns if p['controlling_script'] in scene_scripts]
+        
+        return {
+            "success": True,
+            "node_name": node_name or "all_nodes",
+            "scene_file": scene_file,
+            "control_patterns": control_patterns,
+            "total_controllers": len(set(p['controlling_script'] for p in control_patterns)),
+            "total_accesses": len(control_patterns),
+            "message": f"Found {len(control_patterns)} node control pattern(s)"
+        }
+        
+    except Exception as e:
+        print(f"NODE_CONTROL_ERROR: {e}")
+        return {"success": False, "error": str(e)}
+
+def _trace_group_interactions_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Trace group interaction patterns (who adds, who calls, who checks)"""
+    try:
+        group_name = arguments.get('group_name')
+        
+        if not group_name:
+            return {"success": False, "error": "group_name parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for group interaction tracing",
+                "group_name": group_name,
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        # Find all group interactions
+        adds_to_group = []
+        calls_on_group = []
+        checks_group = []
+        group_members = []
+        
+        for node in enhanced_graph.get('nodes', []):
+            groups_data = node.get('groups', [])
+            if not groups_data:
+                continue
+            
+            for group_info in groups_data:
+                if not isinstance(group_info, dict):
+                    continue
+                
+                if group_info.get('group_name') != group_name:
+                    continue
+                
+                action = group_info.get('action', '')
+                
+                if action == 'add_to_group':
+                    adds_to_group.append({
+                        'file': node['file_path'],
+                        'line': group_info.get('line'),
+                        'code': group_info.get('code'),
+                        'node_name': group_info.get('node_name')
+                    })
+                    group_members.append(node['file_path'])
+                    
+                elif action == 'call_group':
+                    calls_on_group.append({
+                        'file': node['file_path'],
+                        'method_called': group_info.get('method_called'),
+                        'line': group_info.get('line'),
+                        'code': group_info.get('code'),
+                        'description': f"{node['file_path']} calls {group_info.get('method_called', 'unknown')}() on group '{group_name}'"
+                    })
+                    
+                elif action == 'is_in_group':
+                    checks_group.append({
+                        'file': node['file_path'],
+                        'line': group_info.get('line'),
+                        'code': group_info.get('code')
+                    })
+        
+        # Also check scene groups
+        for node in enhanced_graph.get('nodes', []):
+            if node.get('node_type') == 'scene':
+                scene_groups = node.get('groups', [])
+                for group_info in scene_groups:
+                    if isinstance(group_info, dict) and group_info.get('group_name') == group_name:
+                        group_members.append({
+                            'scene_file': node['file_path'],
+                            'node_name': group_info.get('node_name'),
+                            'line': group_info.get('line')
+                        })
+        
+        return {
+            "success": True,
+            "group_name": group_name,
+            "members": group_members,
+            "adds_to_group": adds_to_group,
+            "calls_on_group": calls_on_group,
+            "checks_group": checks_group,
+            "total_members": len(group_members),
+            "total_callers": len(calls_on_group),
+            "message": f"Group '{group_name}' has {len(group_members)} member(s), called by {len(calls_on_group)} script(s)"
+        }
+        
+    except Exception as e:
+        print(f"GROUP_TRACE_ERROR: {e}")
+        return {"success": False, "error": str(e)}
+
+def _get_scene_composition_tree_internal(arguments: dict, current_user: dict = None) -> dict:
+    """Get scene composition tree showing instantiation hierarchy"""
+    try:
+        file_path = arguments.get('file_path')
+        
+        if not file_path:
+            return {"success": False, "error": "file_path parameter is required"}
+        
+        # Get project context
+        project_root = arguments.get('project_root') or getattr(g, 'project_root', None)
+        project_id = arguments.get('project_id') or _derive_project_id(project_root)
+        user_id = (current_user or {}).get('id') or getattr(g, 'user_id', 'guest')
+        
+        if not project_root or not project_id:
+            return {"success": False, "error": "project_root is required"}
+        
+        # Get enhanced graph
+        enhanced_graph = _get_enhanced_graph_for_project(user_id, project_id)
+        if not enhanced_graph:
+            return {
+                "success": False,
+                "error": "Enhanced graph not available",
+                "details": "Graph data required for scene composition analysis",
+                "file_path": file_path,
+                "recommendations": ["Re-index project to build enhanced graph"]
+            }
+        
+        # Build composition tree
+        composition_tree = _build_scene_composition_tree(file_path, enhanced_graph)
+        
+        if not composition_tree:
+            return {
+                "success": True,
+                "file_path": file_path,
+                "composition_tree": {},
+                "message": f"No scene composition found for '{file_path}'. This may not be a scene file, or it doesn't instantiate other scenes."
+            }
+        
+        return {
+            "success": True,
+            "file_path": file_path,
+            "composition_tree": composition_tree,
+            "instantiates_count": len(composition_tree.get('instantiates', [])),
+            "instantiated_by_count": len(composition_tree.get('instantiated_by', [])),
+            "message": f"Scene '{file_path}' instantiates {len(composition_tree.get('instantiates', []))} scene(s), instantiated by {len(composition_tree.get('instantiated_by', []))} scene(s)"
+        }
+        
+    except Exception as e:
+        print(f"COMPOSITION_TREE_ERROR: {e}")
+        return {"success": False, "error": str(e)}
 
 def resource_manager_internal(arguments: dict, conversation_messages: list = None) -> dict:
     """Handle resource_manager tool operations"""
@@ -3843,12 +5440,8 @@ def chat():
     3. Executes any tool calls
     4. Streams the final response back to Godot
     """
-    # Verify authentication
-    user, error_response, status_code = verify_authentication()
-    if error_response:
-        return error_response, status_code
-    
     # Robust JSON parse: tolerate stray control chars or accidental non-JSON bytes
+    # Do this BEFORE authentication check so we can check for user_id in JSON
     try:
         data = request.get_json()
     except Exception:
@@ -3859,10 +5452,56 @@ def chat():
         try:
             data = _json.loads(filtered)
         except Exception:
-            return jsonify({"error": "Invalid JSON payload"}), 400
+            data = {}
 
     if not isinstance(data, dict):
-        return jsonify({"error": "Invalid request body"}), 400
+        data = {}
+    
+    # Verify authentication - check for missing user_id or failed verification
+    user_id_header = request.headers.get('X-User-ID')
+    user_id_json = data.get('supabase_user_id') or data.get('user_id')
+    
+    # Check if user_id is missing (old app version) or authentication fails
+    user, error_response, status_code = verify_authentication()
+    if error_response or not user or (not user_id_header and not user_id_json):
+        # Return a streaming assistant message instead of an error
+        # This ensures it gets rendered in the UI properly
+        auth_message = "Your request was not authenticated, please update the app or login if already updated, to use the chat."
+        
+        def generate_auth_error_stream():
+            # Generate a request_id for consistency
+            request_id = str(uuid.uuid4())
+            yield json.dumps({"request_id": request_id, "status": "started"}) + '\n'
+            
+            # Stream the authentication error message as content_delta
+            # Split into chunks to simulate streaming
+            chunk_size = 50
+            for i in range(0, len(auth_message), chunk_size):
+                chunk = auth_message[i:i + chunk_size]
+                yield json.dumps({
+                    "content_delta": chunk,
+                    "status": "streaming"
+                }) + '\n'
+            
+            # Send final completion status
+            yield json.dumps({
+                "status": "completed",
+                "message": "Authentication required"
+            }) + '\n'
+        
+        return Response(
+            stream_with_context(generate_auth_error_stream()),
+            mimetype='application/x-ndjson',
+            headers={
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive'
+            }
+        )
+    
+    # Data already parsed above for authentication check, reuse it
 
     messages = data.get('messages', [])
     context = data.get('context') or {}
@@ -4641,18 +6280,37 @@ def chat():
                     openai_messages_count.append(m2)
 
                 # Prepend appropriate system prompt based on mode
+                # For thinking models, include reasoning section; for others, exclude it
+                system_prompt_content = None
                 if chat_mode == 'ask' and SYSTEM_PROMPT_ASK:
-                    system_msg = {"role": "system", "content": SYSTEM_PROMPT_ASK}
+                    system_prompt_content = SYSTEM_PROMPT_ASK
                     print(f"SYSTEM_PROMPT: Using ASK mode prompt ({len(SYSTEM_PROMPT_ASK)} chars)")
                 elif SYSTEM_PROMPT:
-                    system_msg = {"role": "system", "content": SYSTEM_PROMPT}
+                    system_prompt_content = SYSTEM_PROMPT
                     print(f"SYSTEM_PROMPT: Using AGENT mode prompt ({len(SYSTEM_PROMPT)} chars)")
-                else:
-                    system_msg = None
                 
-                if system_msg:
+                # Conditionally modify system prompt based on thinking mode
+                if system_prompt_content:
+                    is_thinking = _is_thinking_mode(model_friendly_name)
+                    if not is_thinking:
+                        # Remove reasoning protocol section for non-thinking models
+                        import re
+                        # Remove the entire "## Reasoning Protocol" section (until next ## section)
+                        system_prompt_content = re.sub(
+                            r'## Reasoning Protocol\s*\n\n.*?(?=\n## |\Z)',
+                            '',
+                            system_prompt_content,
+                            flags=re.DOTALL
+                        )
+                        print(f"SYSTEM_PROMPT: Removed reasoning section (non-thinking model)")
+                    else:
+                        print(f"SYSTEM_PROMPT: Keeping reasoning section (thinking model)")
+                    
+                    system_msg = {"role": "system", "content": system_prompt_content}
                     openai_messages_send = [system_msg] + openai_messages_send
                     openai_messages_count = [system_msg] + openai_messages_count
+                else:
+                    system_msg = None
                 
                 # VISION_NORMALIZE: Enforce OpenAI vision format and downscale data URIs before sending
                 def _normalize_openai_vision(messages):
@@ -4798,6 +6456,32 @@ def chat():
                             "request_timeout": 300  # CRITICAL: Explicit request timeout for GCP Cloud Run
                         }
                         
+                        user_context_payload = {}
+                        try:
+                            if hasattr(g, 'user_id') and g.user_id:
+                                user_context_payload['user_id'] = g.user_id
+                            if hasattr(g, 'user_provider') and g.user_provider:
+                                user_context_payload['user_provider'] = g.user_provider
+                            if hasattr(g, 'project_root') and g.project_root:
+                                import hashlib
+                                user_context_payload['project_root'] = g.project_root
+                                # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+                                normalized_root = g.project_root.rstrip('/')
+                                user_context_payload['project_id'] = hashlib.md5(normalized_root.encode()).hexdigest()
+                            if hasattr(g, 'request_id') and g.request_id:
+                                user_context_payload['session_id'] = g.request_id
+                            if hasattr(g, 'conversation_id') and g.conversation_id:
+                                user_context_payload['conversation_id'] = g.conversation_id
+                        except Exception:
+                            pass
+                        
+                        if user_context_payload:
+                            completion_params['_godot_user_context'] = user_context_payload
+                        
+                        # CRITICAL: Set request ID and start time for logging (after completion_params creation)
+                        completion_params['_godot_request_id'] = request_id
+                        completion_params['_godot_start_time'] = time.time()
+                        
                         # EXPERIMENTAL: Always enable thinking mode when requested, regardless of tools
                         # Anthropic should support thinking + tools together
                         if reasoning_params:
@@ -4808,7 +6492,10 @@ def chat():
                         
                         # Execute request; if provider rejects thinking params, retry without them
                         try:
-                            response = completion(**completion_params)
+                            # CRITICAL: Filter out internal Godot parameters before calling LiteLLM
+                            litellm_params = {k: v for k, v in completion_params.items() 
+                                            if not k.startswith('_godot')}
+                            response = completion(**litellm_params)
                         except Exception as e_comp:
                             err_msg = str(e_comp).lower()
                             if reasoning_params and ("reasoning" in err_msg or "thinking" in err_msg or "unsupported" in err_msg or "invalid" in err_msg):
@@ -4817,7 +6504,10 @@ def chat():
                                 completion_params_fallback.pop("reasoning_effort", None)
                                 completion_params_fallback.pop("thinking", None)
                                 completion_params_fallback.pop("reasoning", None)
-                                response = completion(**completion_params_fallback)
+                                # Filter out internal Godot parameters for fallback too
+                                litellm_params_fallback = {k: v for k, v in completion_params_fallback.items() 
+                                                         if not k.startswith('_godot')}
+                                response = completion(**litellm_params_fallback)
                             else:
                                 raise
                         
@@ -5206,6 +6896,18 @@ def chat():
                         
                         # search_manager: check search mode to decide frontend vs backend
                         elif func_name == "search_manager":
+                            # NEW BACKEND OPS: Always backend for advanced signal/data analysis
+                            if op in [
+                                "signal.trace",
+                                "signal.find_emitters",
+                                "signal.find_handlers",
+                                "data_flow.analyze",
+                                "export_var.trace",
+                                "node_control.analyze",
+                                "group.trace_interactions",
+                                "scene.composition_tree"
+                            ]:
+                                return True
                             if op == "docs.search":
                                 return True  # Docs search always on backend
                             elif op == "project.search":
@@ -5579,17 +7281,30 @@ def chat():
                             # Prepare tool result for AI model - include essential file info + graph intelligence
                             similar_files_full = search_result.get("results", {}).get("similar_files", [])[:10]
                             
-                            # Keep essential fields + graph scores for AI decision making
+                            # Chunk content verification (removed debug logging)
+                            
+                            # Keep essential fields + COMPLETE GRAPH CONTEXT for AI intelligence
                             similar_files_for_ai = []
                             for file_info in similar_files_full:
-                                similar_files_for_ai.append({
-                                    "file_path": file_info.get("file_path"),               # ESSENTIAL
-                                    "chunk_start": file_info.get("chunk_start"),           # ESSENTIAL (line number)
-                                    "chunk_end": file_info.get("chunk_end"),               # ESSENTIAL
-                                    "similarity": file_info.get("similarity", 0.0),        # USEFUL (how relevant)
-                                    "centrality_score": file_info.get("centrality_score"), # USEFUL (architectural importance)
-                                    "ranking_explanation": file_info.get("ranking_explanation", "")  # USEFUL (why selected)
-                                })
+                                file_data = {
+                                    "file_path": file_info.get("file_path"),
+                                    "chunk_start": file_info.get("chunk_start"),
+                                    "chunk_end": file_info.get("chunk_end"),
+                                    "chunk_content": file_info.get("chunk_content", ""),
+                                    "similarity": file_info.get("similarity", 0.0),
+                                    "centrality_score": file_info.get("centrality_score"),
+                                    "ranking_explanation": file_info.get("ranking_explanation", "")
+                                }
+                                
+                                # CRITICAL: Include complete graph context for world-class intelligence!
+                                if file_info.get("context"):
+                                    file_data["context"] = file_info["context"]  # Functions, signals, exports
+                                if file_info.get("relationships"):
+                                    file_data["relationships"] = file_info["relationships"]  # ALL edges!
+                                if file_info.get("usage_summary"):
+                                    file_data["usage_summary"] = file_info["usage_summary"]  # Architectural role
+                                
+                                similar_files_for_ai.append(file_data)
                             
                             tool_result_for_openai = {
                                 "success": search_result.get("success"),
@@ -6213,18 +7928,30 @@ def chat():
                             # Handle different result formats
                             results_data = sm_result.get("results")
                             if isinstance(results_data, dict):
-                                # PROJECT SEARCH: Extract file info with graph metadata
+                                # PROJECT SEARCH: Extract file info with COMPLETE GRAPH CONTEXT
                                 similar_files_full = results_data.get("similar_files", [])[:10]
                                 similar_files_for_ai = []
                                 for file_info in similar_files_full:
-                                    similar_files_for_ai.append({
+                                    file_data = {
                                         "file_path": file_info.get("file_path"),
                                         "chunk_start": file_info.get("chunk_start"),
                                         "chunk_end": file_info.get("chunk_end"),
+                                        "chunk_content": file_info.get("chunk_content", ""),
                                         "similarity": file_info.get("similarity", 0.0),
                                         "centrality_score": file_info.get("centrality_score"),
                                         "ranking_explanation": file_info.get("ranking_explanation", "")
-                                    })
+                                    }
+                                    
+                                    # CRITICAL: Include ALL graph intelligence!
+                                    if file_info.get("context"):
+                                        file_data["context"] = file_info["context"]
+                                    if file_info.get("relationships"):
+                                        file_data["relationships"] = file_info["relationships"]
+                                    if file_info.get("usage_summary"):
+                                        file_data["usage_summary"] = file_info["usage_summary"]
+                                    
+                                    similar_files_for_ai.append(file_data)
+                                    
                                 sm_result_for_history["similar_files"] = similar_files_for_ai
                                 sm_result_for_history["graph_summary"] = results_data.get("graph_summary", {})
                                 
@@ -6646,7 +8373,8 @@ def chat():
                 except Exception:
                     pass
                 
-                print(f"🔍 CALLBACK_TRACE: About to check manual callback trigger, litellm_logger={litellm_logger is not None}")
+                print(f"🔍 CALLBACK_TRACE: About to check manual callback trigger, litellm_logger={litellm_logger is not None}, full_text_response_len={len(full_text_response) if full_text_response else 0}")
+                print(f"🔍 USER_CONTEXT_DEBUG: g.user_id={getattr(g, 'user_id', None)}, g.user={getattr(g, 'user', None)}")
                 
                 # CRITICAL FIX: Manually log streaming responses (bypass LiteLLM callbacks)
                 # Direct logging to prevent duplicates and ensure reliability
@@ -6661,13 +8389,49 @@ def chat():
                             end_time = time.time()
                             duration_ms = int((end_time - start_time) * 1000) if start_time else 0
                             
-                            # Get stored context
-                            stored_context = getattr(litellm_logger, '_stored_context', {})
+                            # CRITICAL: Extract user context directly from Flask g object NOW (while it's still available)
+                            stored_context = {}
+                            try:
+                                if hasattr(g, 'user_id') and g.user_id:
+                                    stored_context['user_id'] = g.user_id
+                                if hasattr(g, 'user_provider') and g.user_provider:
+                                    stored_context['user_provider'] = g.user_provider
+                                if hasattr(g, 'project_root') and g.project_root:
+                                    import hashlib
+                                    stored_context['project_root'] = g.project_root
+                                    # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+                                    normalized_root = g.project_root.rstrip('/')
+                                    stored_context['project_id'] = hashlib.md5(normalized_root.encode()).hexdigest()
+                                    try:
+                                        import os
+                                        stored_context['project_name'] = os.path.basename(g.project_root.rstrip('/'))
+                                    except Exception:
+                                        pass
+                                if hasattr(g, 'request_id') and g.request_id:
+                                    stored_context['session_id'] = g.request_id
+                                if hasattr(g, 'conversation_id') and g.conversation_id:
+                                    stored_context['conversation_id'] = g.conversation_id
+                            except Exception as ctx_err:
+                                print(f"⚠️  CONTEXT_EXTRACT_ERROR: {ctx_err}")
+                                # Fallback to stored context from logger
+                                stored_context = getattr(litellm_logger, '_stored_user_context', {}) or {}
+                            
+                            # Ensure user_id is present (critical for logging)
+                            if not stored_context.get('user_id'):
+                                # Try to get from completion_params user context
+                                user_ctx = completion_params.get('_godot_user_context', {})
+                                if user_ctx.get('user_id'):
+                                    stored_context['user_id'] = user_ctx['user_id']
+                                    stored_context['user_provider'] = user_ctx.get('user_provider', 'unknown')
+                            
+                            print(f"🔍 STORED_CONTEXT_DEBUG: user_id={stored_context.get('user_id')}, project_id={stored_context.get('project_id')}")
+                            
+                            request_id_for_log = completion_params.get('_godot_request_id', str(uuid.uuid4()))
                             
                             # Create user input log
                             user_log = litellm_logger._create_user_input_log(
                                 completion_params, 
-                                completion_params.get('_godot_request_id', str(uuid.uuid4())), 
+                                request_id_for_log, 
                                 duration_ms, 
                                 stored_context
                             )
@@ -6677,12 +8441,12 @@ def chat():
                                 completion_params, 
                                 type('MockResponse', (), {'choices': [type('Choice', (), {'message': type('Message', (), {'content': full_text_response})()})()]})(),
                                 full_text_response,
-                                completion_params.get('_godot_request_id', str(uuid.uuid4())), 
+                                request_id_for_log, 
                                 duration_ms, 
                                 stored_context
                             )
                             
-                            print(f"🔄 STREAMING_LOG: Logging user input and assistant response ({len(full_text_response)} chars)")
+                            print(f"🔄 STREAMING_LOG: Logging user input and assistant response ({len(full_text_response)} chars), user_id={stored_context.get('user_id', 'MISSING')}")
                             
                             # Send both logs
                             litellm_logger._queue_log(user_log)
@@ -6691,6 +8455,8 @@ def chat():
                             print(f"⚠️  DUPLICATE_PREVENTION: Callback already triggered for this request")
                 except Exception as callback_err:
                     print(f"⚠️  STREAMING_LOG_ERROR: Failed to log streaming response: {callback_err}")
+                    import traceback
+                    traceback.print_exc()
                 
                 print(f"BACKEND_DEBUG: About to send final status: completed")
                 yield json.dumps({"status": "completed"}) + '\n'
@@ -7793,16 +9559,44 @@ def check_index_status():
         if not cloud_vector_manager:
             return jsonify({"indexed": False, "error": "Vector search unavailable"}), 501
         
+        # CRITICAL: Get current backend versions for frontend comparison
+        current_index_version = getattr(cloud_vector_manager, 'INDEX_VERSION', 0)
+        required_graph_version = "2.0.0"  # Must match enhanced graph requirements
+        
+        print(f"INDEX_STATUS: project_root='{project_root}', project_id={project_id}")
+        
         # Check if project has any indexed files
         try:
             stats = cloud_vector_manager.get_project_stats(user['id'], project_id)
             indexed_files = stats.get('total_files', 0)
             
+            # Check enhanced graph status
+            enhanced_graph = None
+            graph_version = None
+            graph_needs_update = False
+            
+            if hasattr(cloud_vector_manager, 'get_enhanced_graph'):
+                enhanced_graph = cloud_vector_manager.get_enhanced_graph(user['id'], project_id)
+                if enhanced_graph:
+                    graph_version = enhanced_graph.get('version', '1.0.0')
+                    graph_needs_update = graph_version < required_graph_version
+                else:
+                    # CRITICAL: No graph found - need to reindex to build it!
+                    if indexed_files > 0:
+                        print(f"⚠️ INDEX_STATUS: Has {indexed_files} files but NO graph - forcing reindex")
+                        graph_needs_update = True
+            
             return jsonify({
                 "success": True,
                 "indexed": indexed_files > 0,
                 "stats": stats,
-                "project_id": project_id
+                "project_id": project_id,
+                # VERSION INFO for frontend to detect outdated indices
+                "index_version": current_index_version,
+                "graph_version": graph_version,
+                "required_graph_version": required_graph_version,
+                "needs_reindex": graph_needs_update,  # TRUE if graph is old OR missing
+                "has_graph": enhanced_graph is not None
             })
         except AttributeError:
             # Fallback for managers that don't have get_project_stats
@@ -7810,7 +9604,9 @@ def check_index_status():
                 "success": True, 
                 "indexed": False,  # Conservative: assume not indexed if we can't check
                 "message": "Index status check not supported by current vector manager",
-                "project_id": project_id
+                "project_id": project_id,
+                "index_version": current_index_version,
+                "needs_reindex": True  # Conservative: assume reindex needed
             })
         
     except Exception as e:
@@ -7825,9 +9621,13 @@ def reindex_project():
         return gate
         
     try:
+        print(f"REINDEX_DEBUG: Headers: X-User-ID={request.headers.get('X-User-ID')}, X-Supabase-User-ID={request.headers.get('X-Supabase-User-ID')}")
+        print(f"REINDEX_DEBUG: Body: {request.json}")
+        
         # Verify authentication
         user, error_response, status_code = verify_authentication()
         if error_response:
+            print(f"REINDEX_AUTH_FAILED: {error_response}")
             return jsonify(error_response), status_code
             
         data = request.json or {}
@@ -7840,7 +9640,9 @@ def reindex_project():
         if not project_root:
             return jsonify({"error": "project_root required (pass in body or X-Project-Root header)"}), 400
         
-        project_id = hashlib.md5(project_root.encode()).hexdigest()
+        # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+        normalized_root = project_root.rstrip('/')
+        project_id = hashlib.md5(normalized_root.encode()).hexdigest()
         
         if not cloud_vector_manager:
             return jsonify({"success": False, "error": "Vector search unavailable"}), 501
@@ -7874,7 +9676,9 @@ def clear_project_debug():
         
     data = request.json or {}
     project_root = data.get('project_root') or os.getcwd()
-    project_id = hashlib.md5(project_root.encode()).hexdigest()
+    # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+    normalized_root = project_root.rstrip('/')
+    project_id = hashlib.md5(normalized_root.encode()).hexdigest()
     
     if cloud_vector_manager:
         cloud_vector_manager.clear_project(user['id'], project_id)
@@ -7934,7 +9738,9 @@ def embed_endpoint():
         
         # Generate project ID if not provided
         if not project_id:
-            project_id = hashlib.md5(project_root.encode()).hexdigest()
+            # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+            normalized_root = project_root.rstrip('/')
+            project_id = hashlib.md5(normalized_root.encode()).hexdigest()
         
         if cloud_vector_manager is None:
             return jsonify({
@@ -7989,7 +9795,7 @@ def embed_endpoint():
             })
             
         elif action == 'index_files':
-            # Cloud-ready batch file indexing
+            # Cloud-ready batch file indexing with enhanced Godot graph analysis
             files = data.get('files', [])
             if not files:
                 return jsonify({"error": "files array required for index_files action"}), 400
@@ -7997,6 +9803,63 @@ def embed_endpoint():
             batch_info = data.get('batch_info', {})
             max_workers = data.get('max_workers')
             force_reindex = bool(data.get('force_reindex') or batch_info.get('force_reindex'))
+            
+            # CRITICAL: Check if frontend already provided enhanced graph data
+            frontend_graph = data.get('enhanced_graph')
+            enhanced_graph_data = None
+            use_enhanced_graph = frontend_graph or data.get('use_enhanced_graph', True)
+            
+            # ENHANCED: Use frontend-provided graph or generate it on backend
+            if frontend_graph:
+                print(f"🔍 ENHANCED_GRAPH: Using frontend-provided graph data")
+                enhanced_graph_data = frontend_graph
+                
+                # Store in vector manager
+                if hasattr(cloud_vector_manager, 'store_enhanced_graph'):
+                    cloud_vector_manager.store_enhanced_graph(enhanced_graph_data, user['id'], project_id)
+                    print(f"✅ ENHANCED_GRAPH: Stored frontend graph in vector manager")
+                    
+            elif use_enhanced_graph:
+                print(f"🔍 ENHANCED_GRAPH: Using enhanced Godot parser for {len(files)} files")
+                
+                try:
+                    # Import the enhanced parser
+                    from enhanced_godot_parser import create_enhanced_godot_graph
+                    
+                    # Create temporary directory with files for parsing
+                    import tempfile
+                    import os
+                    
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        # Write files to temp directory maintaining structure
+                        for file_data in files:
+                            file_path = file_data.get('path', '')
+                            content = file_data.get('content', '')
+                            
+                            if file_path and content:
+                                full_temp_path = os.path.join(temp_dir, file_path)
+                                os.makedirs(os.path.dirname(full_temp_path), exist_ok=True)
+                                
+                                with open(full_temp_path, 'w', encoding='utf-8') as f:
+                                    f.write(content)
+                        
+                        # Generate enhanced graph
+                        enhanced_graph_data = create_enhanced_godot_graph(temp_dir, user['id'], project_id)
+                        print(f"✅ ENHANCED_GRAPH: Generated graph with {enhanced_graph_data['summary']['total_files']} nodes, {enhanced_graph_data['summary']['total_connections']} connections")
+                        
+                        # Store enhanced graph data in vector manager if it supports it
+                        if hasattr(cloud_vector_manager, 'store_enhanced_graph'):
+                            cloud_vector_manager.store_enhanced_graph(enhanced_graph_data, user['id'], project_id)
+                            print(f"📊 ENHANCED_GRAPH: Stored in vector manager")
+                        
+                except Exception as graph_error:
+                    print(f"⚠️ ENHANCED_GRAPH_ERROR: {graph_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # Continue with regular indexing if graph parsing fails
+                    enhanced_graph_data = None
+            
+            # Regular file indexing (enhanced with graph data if available)
             try:
                 stats = cloud_vector_manager.index_files_with_content(
                     files, user['id'], project_id, max_workers=max_workers, force_reindex=force_reindex
@@ -8006,13 +9869,23 @@ def embed_endpoint():
                     files, user['id'], project_id, force_reindex=force_reindex
                 )
             
-            return jsonify({
+            # Enhanced response with graph data
+            response_data = {
                 "success": True,
                 "action": "index_files",
                 "stats": stats,
                 "batch_info": batch_info,
-                "project_id": project_id
-            })
+                "project_id": project_id,
+                "enhanced_graph_enabled": use_enhanced_graph
+            }
+            
+            # Include graph summary if available
+            if enhanced_graph_data:
+                response_data["graph_summary"] = enhanced_graph_data['summary']
+                response_data["signal_flows"] = len(enhanced_graph_data.get('signal_flows', {}))
+                response_data["autoloads"] = len(enhanced_graph_data.get('autoloads', {}))
+            
+            return jsonify(response_data)
         
         elif action == 'update_file':
             file_path = data.get('file_path')
@@ -8084,6 +9957,136 @@ def embed_endpoint():
                 "message": "Project index cleared successfully"
             })
         
+        elif action == 'graph_query':
+            # NEW: Enhanced graph querying endpoint for Godot-specific data
+            query_type = data.get('query_type')  # 'autoloads', 'signals', 'scenes', 'dependencies', 'summary'
+            
+            if not query_type:
+                return jsonify({"error": "query_type required for graph_query action. Options: autoloads, signals, scenes, dependencies, summary"}), 400
+            
+            try:
+                if hasattr(cloud_vector_manager, 'get_enhanced_graph'):
+                    graph_data = cloud_vector_manager.get_enhanced_graph(user['id'], project_id)
+                    
+                    if not graph_data:
+                        return jsonify({
+                            "success": False,
+                            "error": "No enhanced graph data available. Please re-index your project with enhanced_graph=true.",
+                            "project_id": project_id
+                        }), 404
+                    
+                    if query_type == 'autoloads':
+                        return jsonify({
+                            "success": True,
+                            "action": "graph_query",
+                            "query_type": "autoloads",
+                            "autoloads": graph_data.get('autoloads', {}),
+                            "count": len(graph_data.get('autoloads', {})),
+                            "project_id": project_id
+                        })
+                    
+                    elif query_type == 'signals':
+                        signal_summary = {}
+                        for signal_name, flows in graph_data.get('signal_flows', {}).items():
+                            emitters = len([f for f in flows if f.get('type') == 'emission'])
+                            handlers = len([f for f in flows if f.get('method')])
+                            signal_summary[signal_name] = {
+                                'emitters': emitters,
+                                'handlers': handlers,
+                                'total_flows': len(flows),
+                                'flows': flows  # Include full flow data
+                            }
+                        
+                        return jsonify({
+                            "success": True,
+                            "action": "graph_query",
+                            "query_type": "signals",
+                            "signals": signal_summary,
+                            "total_signals": len(signal_summary),
+                            "project_id": project_id
+                        })
+                    
+                    elif query_type == 'scenes':
+                        scenes = [node for node in graph_data.get('nodes', []) if node.get('node_type') == 'scene']
+                        scene_summary = []
+                        for scene in scenes:
+                            scene_info = {
+                                'file_path': scene.get('file_path'),
+                                'name': scene.get('name'),
+                                'node_count': len(scene.get('scene_nodes', [])),
+                                'script_count': len(scene.get('node_scripts', {})),
+                                'size_bytes': scene.get('size_bytes', 0)
+                            }
+                            scene_summary.append(scene_info)
+                        
+                        return jsonify({
+                            "success": True,
+                            "action": "graph_query",
+                            "query_type": "scenes",
+                            "scenes": scene_summary,
+                            "total_scenes": len(scenes),
+                            "project_id": project_id
+                        })
+                    
+                    elif query_type == 'dependencies':
+                        # Group connections by type
+                        deps_by_type = {}
+                        for conn in graph_data.get('connections', []):
+                            conn_type = conn.get('connection_type', 'unknown')
+                            if conn_type not in deps_by_type:
+                                deps_by_type[conn_type] = []
+                            deps_by_type[conn_type].append({
+                                'source': conn.get('source_file'),
+                                'target': conn.get('target_file'),
+                                'signal_name': conn.get('signal_name'),
+                                'handler_method': conn.get('handler_method'),
+                                'strength': conn.get('strength', 1.0)
+                            })
+                        
+                        return jsonify({
+                            "success": True,
+                            "action": "graph_query",
+                            "query_type": "dependencies",
+                            "dependencies_by_type": deps_by_type,
+                            "total_connections": len(graph_data.get('connections', [])),
+                            "connection_types": list(deps_by_type.keys()),
+                            "project_id": project_id
+                        })
+                    
+                    elif query_type == 'summary':
+                        # Return comprehensive project summary
+                        summary = graph_data.get('summary', {})
+                        summary['enhanced_graph_version'] = graph_data.get('version', 'unknown')
+                        summary['created_at'] = graph_data.get('created_at')
+                        
+                        return jsonify({
+                            "success": True,
+                            "action": "graph_query",
+                            "query_type": "summary",
+                            "summary": summary,
+                            "project_id": project_id
+                        })
+                    
+                    else:
+                        return jsonify({"error": f"Unknown query_type: {query_type}. Options: autoloads, signals, scenes, dependencies, summary"}), 400
+                
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": "Enhanced graph queries not supported by current vector manager. Update your vector manager to support get_enhanced_graph().",
+                        "project_id": project_id
+                    }), 501
+                    
+            except Exception as e:
+                print(f"GRAPH_QUERY_ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({
+                    "success": False,
+                    "error": str(e),
+                    "project_id": project_id
+                }), 500
+        
         else:
             return jsonify({"error": f"Unknown action: {action}"}), 400
     
@@ -8131,7 +10134,9 @@ def search_project():
 
         # Generate project ID if not provided
         if not project_id:
-            project_id = hashlib.md5(project_root.encode()).hexdigest()
+            # CRITICAL: Normalize project_root to avoid trailing slash inconsistencies
+            normalized_root = project_root.rstrip('/')
+            project_id = hashlib.md5(normalized_root.encode()).hexdigest()
 
         arguments = {
             "query": query,

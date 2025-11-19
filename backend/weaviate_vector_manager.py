@@ -21,10 +21,10 @@ from datetime import datetime, timezone
 from graph_engine.indexer import GodotGraphIndexer
 
 class WeaviateVectorManager:
-    INDEX_VERSION = 2
+    INDEX_VERSION = 3  # BUMPED: Added function_signals, enhanced signal flows, method-level tracking
     """High-performance Weaviate vector manager with parallel processing"""
     
-    def __init__(self, weaviate_url: str, api_key: str, openai_client):
+    def __init__(self, weaviate_url: str, api_key: str, openai_client, project_root: Optional[str] = None):
         self.openai_client = openai_client
         self.weaviate_url = weaviate_url
         
@@ -59,6 +59,11 @@ class WeaviateVectorManager:
         # Cache for frequently accessed data
         self.cache = {}
         self.cache_lock = threading.Lock()
+        
+        # Enhanced graph cache (fallback for Weaviate API issues)
+        self.enhanced_graph_cache = {}
+        self.graph_cache_lock = threading.Lock()
+        self.project_root = project_root or os.getenv('PROJECT_ROOT')
         
         # Initialize collections
         self._init_collections()
@@ -1276,25 +1281,29 @@ class WeaviateVectorManager:
         try:
             collection = self.client.collections.get("ProjectEmbedding")
             
-            # Count unique files in the project
+            # Count unique files in the project - manual filter for old Weaviate compatibility
             try:
                 results = collection.query.fetch_objects(
-                    limit=1000,  # Get a large number to count files
-                    return_properties=["file_path"],
-                    where=Filter.by_property("user_id").equal(user_id) & 
-                          Filter.by_property("project_id").equal(project_id)
+                    limit=1000,
+                    return_properties=["file_path", "user_id", "project_id"]
                 )
                 
-                # Count unique files
+                # Manually filter and count unique files
                 unique_files = set()
+                matching_chunks = 0
                 for obj in results.objects:
-                    file_path = obj.properties.get('file_path', '')
-                    if file_path:
-                        unique_files.add(file_path)
+                    if (obj.properties.get('user_id') == user_id and 
+                        obj.properties.get('project_id') == project_id):
+                        file_path = obj.properties.get('file_path', '')
+                        if file_path:
+                            unique_files.add(file_path)
+                        matching_chunks += 1
+                
+                print(f"WeaviateVector: Project stats - {len(unique_files)} files, {matching_chunks} chunks")
                 
                 return {
                     "total_files": len(unique_files),
-                    "total_chunks": len(results.objects),
+                    "total_chunks": matching_chunks,
                     "user_id": user_id,
                     "project_id": project_id
                 }
@@ -2155,6 +2164,240 @@ class WeaviateVectorManager:
             print(f"WeaviateVector: Hybrid search error: {e}")
             # Fallback to semantic search
             return self.search(query, user_id, project_id, max_results)
+    
+    def store_enhanced_graph(self, graph_data: dict, user_id: str, project_id: str):
+        """Store enhanced Godot graph data in Weaviate"""
+        try:
+            print(f"📊 STORE_ENHANCED_GRAPH: Storing graph for user={user_id}, project={project_id}")
+            print(f"📊 GRAPH_SUMMARY: {graph_data.get('summary', {})}")
+            
+            # CRITICAL FIX: Enrich frontend graph with backend parsing BEFORE storing
+            # This ensures the graph always has complete data regardless of frontend compilation state
+            # Note: Enrichment is optional and will be skipped if project_root not available
+            graph_data = self._enrich_graph_with_backend_parsing(graph_data)
+            
+            # Create a collection for enhanced graph data if it doesn't exist
+            collection_name = "EnhancedGodotGraph"
+            
+            if not self.client.collections.exists(collection_name):
+                # Create collection for graph data
+                self.client.collections.create(
+                    name=collection_name,
+                    properties=[
+                        Property(name="user_id", data_type=DataType.TEXT),
+                        Property(name="project_id", data_type=DataType.TEXT),
+                        Property(name="graph_data", data_type=DataType.TEXT),
+                        Property(name="created_at", data_type=DataType.DATE),
+                        Property(name="version", data_type=DataType.TEXT),
+                        Property(name="summary", data_type=DataType.TEXT)
+                    ]
+                )
+                print(f"✅ Created {collection_name} collection")
+            
+            collection = self.client.collections.get(collection_name)
+            
+            # Delete existing graph data for this project (including old versions)
+            print(f"🗑️  ENHANCED_GRAPH: Cleaning old graph data for project {project_id[:8]}...")
+            try:
+                collection.data.delete_many(
+                    where=Filter.by_property("user_id").equal(user_id) & 
+                          Filter.by_property("project_id").equal(project_id)
+                )
+                print(f"✅ ENHANCED_GRAPH: Cleaned old graph data")
+            except Exception as del_error:
+                print(f"⚠️  ENHANCED_GRAPH: Could not delete old data (might not exist): {del_error}")
+            
+            # Store new graph data
+            graph_object = {
+                "user_id": user_id,
+                "project_id": project_id,
+                "graph_data": json.dumps(graph_data),
+                "created_at": datetime.now(timezone.utc),
+                "version": graph_data.get('version', '2.0.0'),
+                "summary": json.dumps(graph_data.get('summary', {}))
+            }
+            
+            collection.data.insert(graph_object)
+            print(f"✅ ENHANCED_GRAPH: Stored graph data for project {project_id}")
+            
+            # Also store in memory cache as fallback
+            with self.graph_cache_lock:
+                cache_key = f"{user_id}:{project_id}"
+                self.enhanced_graph_cache[cache_key] = graph_data
+                print(f"✅ ENHANCED_GRAPH: Also cached in memory for fast access")
+            
+        except Exception as e:
+            print(f"❌ ENHANCED_GRAPH_STORE_ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _enrich_graph_with_backend_parsing(self, graph_data: dict) -> dict:
+        """
+        CRITICAL FIX: Enrich frontend graph data with backend parsing
+        This fills in missing data (signals_emitted, signals_defined, etc.) when frontend C++ isn't compiled
+        """
+        if not graph_data or not self.project_root:
+            return graph_data
+        
+        nodes = graph_data.get('nodes', [])
+        enriched_count = 0
+        
+        for node in nodes:
+            file_path = node.get('file_path', '')
+            if not file_path or node.get('node_type') != 'script':
+                continue
+            
+            # Check if node has incomplete data
+            has_signals_emitted = bool(node.get('signals_emitted'))
+            has_signals_defined = bool(node.get('signals'))
+            
+            if has_signals_emitted and has_signals_defined:
+                continue  # Node already has complete data
+            
+            # Parse file directly
+            full_path = os.path.join(self.project_root, file_path)
+            if not os.path.exists(full_path):
+                continue
+            
+            try:
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                # Parse signals_emitted
+                if not has_signals_emitted:
+                    signals_emitted = []
+                    # Pattern 1: signal_name.emit()
+                    for match in re.finditer(r'(\w+)\.emit\s*\(', content):
+                        signal_name = match.group(1)
+                        line_num = content[:match.start()].count('\n') + 1
+                        signals_emitted.append({
+                            'signal_name': signal_name,
+                            'line': line_num,
+                            'code': content.split('\n')[line_num-1].strip() if line_num <= len(content.split('\n')) else ''
+                        })
+                    
+                    # Pattern 2: emit_signal("signal_name")
+                    for match in re.finditer(r'emit_signal\s*\(\s*["\'](\w+)["\']', content):
+                        signal_name = match.group(1)
+                        line_num = content[:match.start()].count('\n') + 1
+                        signals_emitted.append({
+                            'signal_name': signal_name,
+                            'line': line_num,
+                            'code': content.split('\n')[line_num-1].strip() if line_num <= len(content.split('\n')) else ''
+                        })
+                    
+                    node['signals_emitted'] = signals_emitted
+                
+                # Parse signals_defined
+                if not has_signals_defined:
+                    signals_defined = []
+                    for match in re.finditer(r'^\s*signal\s+(\w+)', content, re.MULTILINE):
+                        signal_name = match.group(1)
+                        line_num = content[:match.start()].count('\n') + 1
+                        signals_defined.append({
+                            'signal_name': signal_name,
+                            'line': line_num
+                        })
+                    
+                    node['signals'] = signals_defined
+                
+                if signals_emitted or signals_defined:
+                    enriched_count += 1
+                    
+            except Exception as e:
+                print(f"⚠️ GRAPH_ENRICH: Error parsing {file_path}: {e}")
+        
+        if enriched_count > 0:
+            print(f"✅ GRAPH_ENRICH: Enriched {enriched_count}/{len(nodes)} node(s) with backend parsing")
+        
+        return graph_data
+    
+    def get_enhanced_graph(self, user_id: str, project_id: str) -> dict:
+        """Retrieve enhanced Godot graph data from cache or Weaviate"""
+        
+        print(f"🔍 GET_ENHANCED_GRAPH: Looking for user={user_id}, project={project_id}")
+        
+        # CRITICAL: Define minimum required graph version (matches our schema changes)
+        REQUIRED_GRAPH_VERSION = "2.0.0"  # Must have function_signals field
+        
+        # Try memory cache first (fastest)
+        cache_key = f"{user_id}:{project_id}"
+        with self.graph_cache_lock:
+            if cache_key in self.enhanced_graph_cache:
+                cached_graph = self.enhanced_graph_cache[cache_key]
+                
+                # CRITICAL: Check if cached graph has required version
+                graph_version = cached_graph.get('version', '1.0.0')
+                if graph_version < REQUIRED_GRAPH_VERSION:
+                    print(f"⚠️ ENHANCED_GRAPH: Cached graph outdated (v{graph_version} < v{REQUIRED_GRAPH_VERSION}), invalidating...")
+                    del self.enhanced_graph_cache[cache_key]
+                else:
+                    nodes_count = len(cached_graph.get('nodes', []))
+                    connections_count = len(cached_graph.get('connections', []))
+                    print(f"✅ ENHANCED_GRAPH: Retrieved from memory cache v{graph_version} - {nodes_count} nodes, {connections_count} connections")
+                    return cached_graph
+            else:
+                print(f"⚠️ ENHANCED_GRAPH: Not in memory cache (cache has {len(self.enhanced_graph_cache)} entries)")
+                # DEBUG: Show what's in cache
+                if self.enhanced_graph_cache:
+                    print(f"   Cache keys: {list(self.enhanced_graph_cache.keys())[:3]}")
+        
+        # Try Weaviate as fallback
+        try:
+            collection_name = "EnhancedGodotGraph"
+            
+            if not self.client.collections.exists(collection_name):
+                print(f"❌ ENHANCED_GRAPH: Collection {collection_name} doesn't exist yet")
+                return None
+            
+            collection = self.client.collections.get(collection_name)
+            
+            # Simple approach: get all objects and filter manually (most reliable)
+            try:
+                all_results = collection.query.fetch_objects(limit=100)
+                print(f"🔍 ENHANCED_GRAPH: Weaviate returned {len(all_results.objects)} total graph objects")
+                
+                # DEBUG: Show first few objects for comparison
+                for i, obj in enumerate(all_results.objects[:3]):
+                    stored_user = obj.properties.get("user_id", "MISSING")
+                    stored_project = obj.properties.get("project_id", "MISSING")
+                    print(f"   [{i}] user={stored_user}, project={stored_project}")
+                
+                # Filter manually for the specific user/project
+                for obj in all_results.objects:
+                    stored_user = obj.properties.get("user_id")
+                    stored_project = obj.properties.get("project_id")
+                    
+                    if stored_user == user_id and stored_project == project_id:
+                        graph_json = obj.properties["graph_data"]
+                        graph_data = json.loads(graph_json)
+                        
+                        # CRITICAL: Check if stored graph is outdated
+                        graph_version = graph_data.get('version', '1.0.0')
+                        if graph_version < REQUIRED_GRAPH_VERSION:
+                            print(f"⚠️ ENHANCED_GRAPH: Weaviate graph outdated (v{graph_version} < v{REQUIRED_GRAPH_VERSION}), ignoring...")
+                            # Don't cache old version, return None to trigger reindex
+                            return None
+                        
+                        # Cache for next time
+                        with self.graph_cache_lock:
+                            self.enhanced_graph_cache[cache_key] = graph_data
+                        
+                        nodes_count = len(graph_data.get('nodes', []))
+                        connections_count = len(graph_data.get('connections', []))
+                        print(f"✅ ENHANCED_GRAPH: Retrieved from Weaviate v{graph_version} - {nodes_count} nodes, {connections_count} connections")
+                        return graph_data
+                
+                print(f"❌ ENHANCED_GRAPH: No match found for user={user_id}, project={project_id}")
+                return None
+                        
+            except Exception as query_error:
+                print(f"ENHANCED_GRAPH: Weaviate query failed: {query_error}")
+                return None
+            
+        except Exception as e:
+            print(f"❌ ENHANCED_GRAPH_GET_ERROR: {e}")
+            return None
     
     def close(self):
         """Clean up resources"""

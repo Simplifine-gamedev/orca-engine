@@ -85,6 +85,18 @@ def process_log_queue():
             stats['logs_failed'] += 1
             time.sleep(1)
 
+SCRUB_KEYS = {"user_name", "user_email", "user_context"}
+
+def _sanitize_log_payload(log_data: dict) -> dict:
+    """Remove fields that aren't present in the Supabase table schema."""
+    try:
+        payload = dict(log_data)
+        for key in SCRUB_KEYS:
+            payload.pop(key, None)
+        return payload
+    except Exception:
+        return log_data
+
 def send_to_supabase(log_data: dict) -> bool:
     """Send log data to Supabase"""
     try:
@@ -95,7 +107,8 @@ def send_to_supabase(log_data: dict) -> bool:
             'Content-Type': 'application/json'
         }
         
-        response = requests.post(url, json=log_data, headers=headers, timeout=10)
+        payload = _sanitize_log_payload(log_data)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 201:
             return True

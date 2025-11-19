@@ -21,7 +21,7 @@ _godot_tools_template = [
                             # Context
                             "context.get",
                             # Filesystem
-                            "fs.list", "fs.read", "fs.write", "fs.write_lines", "fs.replace_string",
+                            "fs.list", "fs.read", "fs.read_with_context", "fs.write", "fs.write_lines", "fs.replace_string",
                             "fs.copy", "fs.move", "fs.delete",
                             "fs.mkdir", "fs.symlink", "fs.refresh",
                             # Project-level ops
@@ -31,7 +31,7 @@ _godot_tools_template = [
                             # Updates
                             "updates.check"
                         ],
-                        "description": "**REQUIRED** operation type. Examples: 'context.get' (get project structure), 'fs.read' (read file), 'fs.list' (list directory), 'fs.write' (write file), 'assets.search' (search assets). NEVER call project_manager without specifying op parameter."
+                        "description": "**REQUIRED** operation type. Examples: 'context.get' (get project structure), 'fs.read' (read file), 'fs.read_with_context' (read file with relationships), 'fs.list' (list directory), 'fs.write' (write file), 'assets.search' (search assets). NEVER call project_manager without specifying op parameter."
                     },
                     "dry_run": {"type": "boolean", "default": False},
 
@@ -56,6 +56,7 @@ _godot_tools_template = [
 
                     # fs.read / fs.write (whole file replacement)
                     "path": {"type": "string", "description": "File path"},
+                    "include_context": {"type": "boolean", "default": False, "description": "For fs.read: include relationship/edge information (signals emitted/received, dependencies, etc.)"},
                     "content": {"type": "string", "maxLength": 8000, "description": "New content for fs.write. IMPORTANT: Keep content under 8000 characters to prevent JSON corruption. For large scripts, make smaller incremental edits instead of full file replacements. Break complex features into multiple smaller operations."},
                     
                     # fs.write_lines (line range editing)
@@ -547,15 +548,16 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "search_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Search across project and Godot docs. Operations: 'project.search' (search project files), 'docs.search' (search Godot documentation). Always include 'query' parameter with search terms.",
+            "description": "REQUIRED: Always specify 'op' parameter. Search across project and Godot docs with ENHANCED CONTEXT. Also provides multi-hop signal propagation, data flow tracing, cross-scene dependencies. Operations: 'project.search' (search files with context), 'signal.trace' (trace signal cascades), 'data_flow.analyze' (variable→signal→UI flow), 'export_var.trace' (trace export variable impacts), 'node_control.analyze' (which scripts control which nodes), 'group.trace_interactions' (group interaction analysis).",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "op": {"type": "string", "enum": ["project.search", "docs.search"]},
+                    "op": {"type": "string", "enum": ["project.search", "docs.search", "signal.trace", "signal.find_emitters", "signal.find_handlers", "data_flow.analyze", "export_var.trace", "node_control.analyze", "group.trace_interactions", "scene.composition_tree"]},
                     "query": {"type": "string"},
                     "max_results": {"type": "integer", "default": 5},
                     "include_graph": {"type": "boolean", "default": True},
+                    "include_context": {"type": "boolean", "default": True, "description": "Include enhanced context with signals, dependencies, and relationships - RECOMMENDED for world-class results"},
                     "modality_filter": {"type": "string", "enum": ["text", "image", "audio"]},
                     "project_root": {"type": "string"},
                     "project_id": {"type": "string"},
@@ -571,9 +573,30 @@ _godot_tools_template = [
                     "section_filter": {"type": "string", "enum": ["overview", "methods", "properties", "signals"]},
                     "class_filter": {"type": "string"},
                     "difficulty": {"type": "string", "enum": ["beginner", "intermediate", "advanced"]},
-                    "code_examples_only": {"type": "boolean", "default": False}
+                    "code_examples_only": {"type": "boolean", "default": False},
+                    
+                    # Signal tracing parameters (for signal.* ops)
+                    "signal_name": {"type": "string", "description": "Signal name to trace (e.g., 'hit', 'game_over', 'score_changed')"},
+                    "file_path": {"type": "string", "description": "File path to start tracing from (e.g., 'player.gd', 'main.tscn')"},
+                    "max_depth": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5, "description": "Maximum cascade depth for multi-hop signal tracing (default: 3)"},
+                    "include_triggered_signals": {"type": "boolean", "default": True, "description": "Include signals triggered by handlers (for full cascade chains)"},
+                    
+                    # Data flow parameters (for data_flow.analyze)
+                    "start_variable": {"type": "string", "description": "Variable name to trace (e.g., 'score', 'health', 'mob_scene')"},
+                    "start_file": {"type": "string", "description": "File containing the variable to trace"},
+                    "include_ui_updates": {"type": "boolean", "default": True, "description": "Track how data flows to UI updates"},
+                    
+                    # Export variable tracing (for export_var.trace)
+                    "export_var_name": {"type": "string", "description": "Export variable name to trace (e.g., 'mob_scene', 'player_scene')"},
+                    
+                    # Node control analysis (for node_control.analyze)
+                    "node_name": {"type": "string", "description": "Node name to analyze control patterns for"},
+                    "scene_file": {"type": "string", "description": "Scene file containing the node"},
+                    
+                    # Group interaction tracing (for group.trace_interactions)
+                    "group_name": {"type": "string", "description": "Group name to trace interactions for (e.g., 'mobs', 'enemies', 'ui_elements')"}
                 },
-                "required": ["op", "query"]
+                "required": ["op"]
             }
         }
     },
