@@ -43,9 +43,8 @@
 // For HTTP crash reporting
 #import <Foundation/Foundation.h>
 
-#if defined(DEBUG_ENABLED)
+// Crash handler enabled for crash reporting in all builds
 #define CRASH_HANDLER_ENABLED 1
-#endif
 
 #ifdef CRASH_HANDLER_ENABLED
 #include <cxxabi.h>

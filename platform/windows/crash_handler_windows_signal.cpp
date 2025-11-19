@@ -37,7 +37,8 @@
 #include "core/version.h"
 #include "main/main.h"
 
-#ifdef CRASH_HANDLER_EXCEPTION
+// Enable crash handler for all builds for crash reporting
+#if 1 // Always enabled
 
 #include <cxxabi.h>
 #include <algorithm>
@@ -330,7 +331,8 @@ void CrashHandler::disable() {
 		return;
 	}
 
-#if defined(CRASH_HANDLER_EXCEPTION)
+// Always enabled for crash reporting
+#if 1
 	signal(SIGSEGV, nullptr);
 	signal(SIGFPE, nullptr);
 	signal(SIGILL, nullptr);
@@ -340,7 +342,8 @@ void CrashHandler::disable() {
 }
 
 void CrashHandler::initialize() {
-#if defined(CRASH_HANDLER_EXCEPTION)
+// Always enabled for crash reporting
+#if 1
 	signal(SIGSEGV, CrashHandlerException);
 	signal(SIGFPE, CrashHandlerException);
 	signal(SIGILL, CrashHandlerException);

@@ -46,9 +46,8 @@
 #endif
 #endif
 
-#ifndef DEBUG_ENABLED
-#undef CRASH_HANDLER_ENABLED
-#endif
+// Crash handler enabled for crash reporting in all builds
+// (Keep CRASH_HANDLER_ENABLED defined)
 
 #ifdef CRASH_HANDLER_ENABLED
 #include <cxxabi.h>

@@ -407,6 +407,7 @@ def configure_msvc(env: "SConsEnvironment"):
         ]
     )
     env.AppendUnique(CPPDEFINES=["NOMINMAX"])  # disable bogus min/max WinDef.h macros
+    env.AppendUnique(CPPDEFINES=["CRASH_HANDLER_ENABLED"])  # enable crash handler for crash reporting
     if env["arch"] == "x86_64":
         env.AppendUnique(CPPDEFINES=["_WIN64"])
 
