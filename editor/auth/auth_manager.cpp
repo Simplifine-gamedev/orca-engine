@@ -57,17 +57,11 @@ void AuthManager::open_web_login() {
 		String redirect = vformat("http://127.0.0.1:%d/auth/callback", loopback_port);
 		String redirect_param = "redirect=" + redirect.uri_encode();
 		login_url += login_url.contains("?") ? "&" + redirect_param : "?" + redirect_param;
-		print_line(vformat("ORCA AUTH: Loopback redirect active on %s", redirect));
-	} else {
-		print_line("ORCA AUTH: Loopback redirect unavailable, falling back to custom scheme only");
 	}
-
-	print_line("Opening web login at: " + login_url);
 	OS::get_singleton()->shell_open(login_url);
 }
 
 bool AuthManager::handle_deep_link(const String &p_url) {
-	print_line("Received deep link: " + p_url);
 
 	// Parse URL: orca://auth?access_token=XXX&refresh_token=YYY&user_id=ZZZ&email=...&name=...
 	if (!p_url.begins_with("orca://")) {
@@ -114,7 +108,6 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	store_tokens(new_access_token, new_refresh_token, new_user_id, new_email, new_name);
 	
 	is_authenticated = true;
-	print_line("Authentication successful for user: " + user_email);
 	_stop_loopback_server();
 	
 	// Initialize Autumn account after successful login
@@ -134,7 +127,6 @@ bool AuthManager::try_auto_login() {
 	if (load_stored_tokens()) {
 		// TODO: Verify tokens are still valid by making a test API call
 		is_authenticated = true;
-		print_line("Auto-login successful for user: " + user_email);
 		
 		// Initialize Autumn account after auto-login (deferred to avoid blocking startup)
 		call_deferred("initialize_autumn_account");
@@ -154,13 +146,10 @@ void AuthManager::sign_out() {
 	user_email = "";
 	user_name = "";
 	_stop_loopback_server();
-	print_line("User signed out");
 	emit_signal("auth_state_changed");
 }
 
 void AuthManager::sign_in_with_email(const String &p_email, const String &p_password) {
-	print_line("AuthManager: Signing in with email: " + p_email);
-	
 	// Make HTTP request to Supabase auth endpoint
 	Ref<HTTPClient> http = HTTPClient::create();
 	// Remove https:// prefix from SUPABASE_URL for connect_to_host
@@ -222,7 +211,6 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 		}
 		
 		String response_text = String::utf8((const char *)rb.ptr(), rb.size());
-		print_line("Email sign-in response: " + response_text);
 		
 		// Check HTTP status code
 		int status_code = http->get_response_code();
@@ -300,8 +288,6 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 			store_tokens(new_access_token, new_refresh_token, new_user_id, new_email, new_name);
 			is_authenticated = true;
 			
-			print_line("Email sign-in successful!");
-			
 			// Initialize Autumn account after successful login (deferred to avoid blocking)
 			call_deferred("initialize_autumn_account");
 			
@@ -316,8 +302,6 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 }
 
 void AuthManager::sign_up_with_email(const String &p_email, const String &p_password, const String &p_name) {
-	print_line("AuthManager: Signing up with email: " + p_email);
-	
 	// Make HTTP request to Supabase auth endpoint
 	Ref<HTTPClient> http = HTTPClient::create();
 	// Remove https:// prefix from SUPABASE_URL for connect_to_host
@@ -385,7 +369,6 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 		}
 		
 		String response_text = String::utf8((const char *)rb.ptr(), rb.size());
-		print_line("Email sign-up response: " + response_text);
 		
 		// Check HTTP status code
 		int status_code = http->get_response_code();
@@ -457,8 +440,6 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 			// Store tokens and mark as authenticated
 			store_tokens(new_access_token, new_refresh_token, new_user_id, new_email, p_name);
 			is_authenticated = true;
-			
-			print_line("Email sign-up and auto-login successful!");
 			
 			// Initialize Autumn account after successful sign-up (deferred to avoid blocking)
 			call_deferred("initialize_autumn_account");
@@ -542,7 +523,6 @@ void AuthManager::poll_loopback_server() {
 	}
 
 	if (loopback_deadline_msec > 0 && OS::get_singleton()->get_ticks_msec() > loopback_deadline_msec) {
-		print_line("ORCA AUTH: Loopback login timed out, closing listener");
 		_stop_loopback_server();
 		return;
 	}
@@ -958,7 +938,7 @@ bool AuthManager::_start_loopback_server() {
 		}
 	}
 
-	print_error("ORCA AUTH: Unable to start loopback server on localhost");
+	// Loopback server unavailable - will use custom scheme only
 	loopback_server.unref();
 	loopback_port = 0;
 	loopback_deadline_msec = 0;

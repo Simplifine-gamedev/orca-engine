@@ -246,24 +246,79 @@ DWORD CrashHandlerException(EXCEPTION_POINTERS *ep) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
-	// REAL-TIME CRASH DUMP FILE: Write to disk immediately in case of force quit
+	// BULLETPROOF CRASH DUMP FILE: Write to disk immediately in case of force quit
+	// Try multiple locations with fallbacks to ensure crash is always saved
 	String crash_file_path;
 	FILE *crash_file = nullptr;
+	__time64_t now = _time64(nullptr);
+	String timestamp = vformat("crash_%d.txt", (int64_t)now);
 	
-	if (OS::get_singleton()) {
+	// PRIORITY 1: Project directory (preferred location)
+	if (OS::get_singleton() && ProjectSettings::get_singleton() && !crash_file) {
+		String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+		if (!project_dir.is_empty()) {
+			String crash_dir = project_dir.path_join("crashes");
+			
+			if (CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr) || 
+				GetLastError() == ERROR_ALREADY_EXISTS) {
+				
+				crash_file_path = crash_dir.path_join(timestamp);
+				crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+				
+				if (crash_file) {
+					fprintf(stderr, "CRASH_REPORTER: Writing to project: %s\n", crash_file_path.utf8().get_data());
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 2: User data directory (fallback 1)
+	if (OS::get_singleton() && !crash_file) {
 		String user_data_dir = OS::get_singleton()->get_user_data_dir();
-		String crash_dir = user_data_dir.path_join("crashes");
-		
-		// Create directory
-		CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr);
-		
-		// Create timestamped crash file
-		__time64_t now = _time64(nullptr);
-		crash_file_path = crash_dir.path_join(vformat("crash_%d.txt", (int64_t)now));
+		if (!user_data_dir.is_empty()) {
+			String crash_dir = user_data_dir.path_join("crashes");
+			
+			if (CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr) || 
+				GetLastError() == ERROR_ALREADY_EXISTS) {
+				
+				crash_file_path = crash_dir.path_join(timestamp);
+				crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+				
+				if (crash_file) {
+					fprintf(stderr, "CRASH_REPORTER: Writing to user data: %s\n", crash_file_path.utf8().get_data());
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 3: Temp directory (fallback 2)
+	if (OS::get_singleton() && !crash_file) {
+		String temp_dir = OS::get_singleton()->get_temp_path();
+		if (!temp_dir.is_empty()) {
+			String crash_dir = temp_dir.path_join("godot_crashes");
+			
+			if (CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr) || 
+				GetLastError() == ERROR_ALREADY_EXISTS) {
+				
+				crash_file_path = crash_dir.path_join(timestamp);
+				crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+				
+				if (crash_file) {
+					fprintf(stderr, "CRASH_REPORTER: Writing to temp: %s\n", crash_file_path.utf8().get_data());
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 4: Current working directory (last resort)
+	if (!crash_file) {
+		crash_file_path = timestamp;  // Just filename in current dir
 		crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
 		
 		if (crash_file) {
-			fprintf(stderr, "CRASH_REPORTER: Writing crash dump to: %s\n", crash_file_path.utf8().get_data());
+			fprintf(stderr, "CRASH_REPORTER: Writing to current dir: %s\n", crash_file_path.utf8().get_data());
+		} else {
+			fprintf(stderr, "CRASH_REPORTER: FAILED to create crash file anywhere!\n");
 		}
 	}
 	

@@ -178,30 +178,88 @@ static void handle_crash(int sig) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
-	// REAL-TIME CRASH DUMP FILE: Write to disk immediately in case of force quit
-	// Location: user://crashes/crash_TIMESTAMP.txt (survives force quit/power loss)
+	// BULLETPROOF CRASH DUMP FILE: Write to disk immediately in case of force quit
+	// Try multiple locations with fallbacks to ensure crash is always saved
 	String crash_file_path;
 	FILE *crash_file = nullptr;
+	time_t now = time(nullptr);
+	String timestamp = vformat("crash_%d.txt", (int64_t)now);
 	
-	if (OS::get_singleton()) {
-		// Get user data dir and create crashes subdirectory
-		String user_data_dir = OS::get_singleton()->get_user_data_dir();
-		String crash_dir = user_data_dir.path_join("crashes");
-		
-		// Create directory if it doesn't exist
-		@autoreleasepool {
-			NSString *ns_crash_dir = [NSString stringWithUTF8String:crash_dir.utf8().get_data()];
-			[[NSFileManager defaultManager] createDirectoryAtPath:ns_crash_dir 
-				withIntermediateDirectories:YES attributes:nil error:nil];
+	// PRIORITY 1: Project directory (preferred location)
+	if (OS::get_singleton() && ProjectSettings::get_singleton() && !crash_file) {
+		String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+		if (!project_dir.is_empty()) {
+			String crash_dir = project_dir.path_join("crashes");
+			
+			@autoreleasepool {
+				NSString *ns_crash_dir = [NSString stringWithUTF8String:crash_dir.utf8().get_data()];
+				if ([[NSFileManager defaultManager] createDirectoryAtPath:ns_crash_dir 
+					withIntermediateDirectories:YES attributes:nil error:nil]) {
+					
+					crash_file_path = crash_dir.path_join(timestamp);
+					crash_file = fopen(crash_file_path.utf8().get_data(), "w");
+					
+					if (crash_file) {
+						fprintf(stderr, "CRASH_REPORTER: Writing to project: %s\n", crash_file_path.utf8().get_data());
+					}
+				}
+			}
 		}
-		
-		// Create timestamped crash file
-		time_t now = time(nullptr);
-		crash_file_path = crash_dir.path_join(vformat("crash_%d.txt", (int64_t)now));
+	}
+	
+	// PRIORITY 2: User data directory (fallback 1)
+	if (OS::get_singleton() && !crash_file) {
+		String user_data_dir = OS::get_singleton()->get_user_data_dir();
+		if (!user_data_dir.is_empty()) {
+			String crash_dir = user_data_dir.path_join("crashes");
+			
+			@autoreleasepool {
+				NSString *ns_crash_dir = [NSString stringWithUTF8String:crash_dir.utf8().get_data()];
+				if ([[NSFileManager defaultManager] createDirectoryAtPath:ns_crash_dir 
+					withIntermediateDirectories:YES attributes:nil error:nil]) {
+					
+					crash_file_path = crash_dir.path_join(timestamp);
+					crash_file = fopen(crash_file_path.utf8().get_data(), "w");
+					
+					if (crash_file) {
+						fprintf(stderr, "CRASH_REPORTER: Writing to user data: %s\n", crash_file_path.utf8().get_data());
+					}
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 3: Temp directory (fallback 2)
+	if (OS::get_singleton() && !crash_file) {
+		String temp_dir = OS::get_singleton()->get_temp_path();
+		if (!temp_dir.is_empty()) {
+			String crash_dir = temp_dir.path_join("godot_crashes");
+			
+			@autoreleasepool {
+				NSString *ns_crash_dir = [NSString stringWithUTF8String:crash_dir.utf8().get_data()];
+				if ([[NSFileManager defaultManager] createDirectoryAtPath:ns_crash_dir 
+					withIntermediateDirectories:YES attributes:nil error:nil]) {
+					
+					crash_file_path = crash_dir.path_join(timestamp);
+					crash_file = fopen(crash_file_path.utf8().get_data(), "w");
+					
+					if (crash_file) {
+						fprintf(stderr, "CRASH_REPORTER: Writing to temp: %s\n", crash_file_path.utf8().get_data());
+					}
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 4: Current working directory (last resort)
+	if (!crash_file) {
+		crash_file_path = timestamp;  // Just filename in current dir
 		crash_file = fopen(crash_file_path.utf8().get_data(), "w");
 		
 		if (crash_file) {
-			fprintf(stderr, "CRASH_REPORTER: Writing crash dump to: %s\n", crash_file_path.utf8().get_data());
+			fprintf(stderr, "CRASH_REPORTER: Writing to current dir: %s\n", crash_file_path.utf8().get_data());
+		} else {
+			fprintf(stderr, "CRASH_REPORTER: FAILED to create crash file anywhere!\n");
 		}
 	}
 	

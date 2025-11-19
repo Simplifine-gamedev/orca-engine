@@ -1365,13 +1365,13 @@ def verify_authentication():
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         supabase_user_id = request.headers.get('X-Supabase-User-ID')
         if not supabase_user_id:
-            return None, {"error": "You need to login to the app", "success": False}, 401
+            return None, {"error": "You need to login to the app, this can be done by updating to latest version of the app. Afterwards you can login.", "success": False}, 401
         # Validate the Supabase user ID
         supabase_email = request.headers.get('X-Supabase-Email')
         ok, profile, error_message = verify_supabase_user_id(supabase_user_id.split(',')[0].strip() if supabase_user_id else None, supabase_email)
         if not ok:
             print(f"SUPABASE_AUTH_REQUIRED: Validation failed - {error_message}")
-            return None, {"error": "You need to login to the app", "success": False}, 401
+            return None, {"error": "You need to login to the app, this can be done by updating to latest version of the app. Afterwards you can login.", "success": False}, 401
         # Create a user dict from Supabase profile
         supabase_user = {
             "id": profile.get('id', supabase_user_id.split(',')[0].strip()),

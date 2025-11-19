@@ -29,8 +29,8 @@ gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --project=$PROJECT_ID --command="
 set -e
 echo '🔄 UPDATING BACKEND APPLICATION...'
 
-# Stop service
-sudo systemctl stop godot-ai-backend
+# Stop service (ignore errors if already stopped)
+sudo systemctl stop godot-ai-backend || true
 
 # Extract new code
 cd /opt/godot-ai-backend
@@ -44,23 +44,42 @@ if [ -f '/tmp/backend_update.env' ]; then
     echo '🔐 Environment updated'
 fi
 
-# Update dependencies
+# Update dependencies (continue even if this fails)
+set +e
 source venv/bin/activate
 pip install -r requirements.txt
+PIP_EXIT_CODE=\$?
+set -e
+if [ \$PIP_EXIT_CODE -ne 0 ]; then
+    echo '⚠️  Warning: pip install had errors, but continuing with restart...'
+fi
 
-# Restart service
-sudo systemctl start godot-ai-backend
-sleep 3
+# Always restart service, even if pip install failed
+echo '🔄 Restarting service...'
+sudo systemctl restart godot-ai-backend || sudo systemctl start godot-ai-backend
+sleep 5
 
 # Check status
-sudo systemctl status godot-ai-backend --no-pager
 echo ''
-if sudo systemctl is-active godot-ai-backend > /dev/null; then
+echo '📊 Service Status:'
+sudo systemctl status godot-ai-backend --no-pager || true
+echo ''
+
+# Verify service is running
+if sudo systemctl is-active --quiet godot-ai-backend; then
     echo '✅ Backend updated and running successfully'
+    # Test health endpoint
+    sleep 2
+    if curl -f -s http://localhost:8080/health > /dev/null 2>&1; then
+        echo '✅ Health check passed'
+    else
+        echo '⚠️  Warning: Service is running but health check failed'
+    fi
 else
     echo '❌ Backend failed to start after update'
-    echo 'Logs:'
-    sudo journalctl -u godot-ai-backend --lines=10 --no-pager
+    echo '📋 Recent logs:'
+    sudo journalctl -u godot-ai-backend --lines=20 --no-pager
+    exit 1
 fi
 "
 

@@ -170,8 +170,6 @@ void AuthDialog::show_login() {
 	if (password_input) password_input->set_text("");
 	if (name_input) name_input->set_text("");
 	
-	print_line("ORCA AUTH: Showing login dialog as exclusive popup");
-	
 	// Defer the popup until next frame when dialog is fully in the tree
 	call_deferred("popup_centered");
 }

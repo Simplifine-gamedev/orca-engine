@@ -149,16 +149,114 @@ extern void CrashHandlerException(int signal) {
 		OS::get_singleton()->get_main_loop()->notification(MainLoop::NOTIFICATION_CRASH);
 	}
 
+	// BULLETPROOF CRASH DUMP FILE: Write to disk immediately in case of force quit
+	// Try multiple locations with fallbacks to ensure crash is always saved
+	String crash_file_path;
+	FILE *crash_file = nullptr;
+	time_t now = time(nullptr);
+	String timestamp = vformat("crash_%d.txt", (int64_t)now);
+	
+	// PRIORITY 1: Project directory (preferred location)
+	if (OS::get_singleton() && ProjectSettings::get_singleton() && !crash_file) {
+		String project_dir = ProjectSettings::get_singleton()->globalize_path("res://");
+		if (!project_dir.is_empty()) {
+			String crash_dir = project_dir.path_join("crashes");
+			
+			if (CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr) || 
+				GetLastError() == ERROR_ALREADY_EXISTS) {
+				
+				crash_file_path = crash_dir.path_join(timestamp);
+				crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+				
+				if (crash_file) {
+					fprintf(stderr, "CRASH_REPORTER: Writing to project: %s\n", crash_file_path.utf8().get_data());
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 2: User data directory (fallback 1)
+	if (OS::get_singleton() && !crash_file) {
+		String user_data_dir = OS::get_singleton()->get_user_data_dir();
+		if (!user_data_dir.is_empty()) {
+			String crash_dir = user_data_dir.path_join("crashes");
+			
+			if (CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr) || 
+				GetLastError() == ERROR_ALREADY_EXISTS) {
+				
+				crash_file_path = crash_dir.path_join(timestamp);
+				crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+				
+				if (crash_file) {
+					fprintf(stderr, "CRASH_REPORTER: Writing to user data: %s\n", crash_file_path.utf8().get_data());
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 3: Temp directory (fallback 2)
+	if (OS::get_singleton() && !crash_file) {
+		String temp_dir = OS::get_singleton()->get_temp_path();
+		if (!temp_dir.is_empty()) {
+			String crash_dir = temp_dir.path_join("godot_crashes");
+			
+			if (CreateDirectoryW((LPCWSTR)crash_dir.utf16().get_data(), nullptr) || 
+				GetLastError() == ERROR_ALREADY_EXISTS) {
+				
+				crash_file_path = crash_dir.path_join(timestamp);
+				crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+				
+				if (crash_file) {
+					fprintf(stderr, "CRASH_REPORTER: Writing to temp: %s\n", crash_file_path.utf8().get_data());
+				}
+			}
+		}
+	}
+	
+	// PRIORITY 4: Current working directory (last resort)
+	if (!crash_file) {
+		crash_file_path = timestamp;  // Just filename in current dir
+		crash_file = _wfopen((LPCWSTR)crash_file_path.utf16().get_data(), L"w");
+		
+		if (crash_file) {
+			fprintf(stderr, "CRASH_REPORTER: Writing to current dir: %s\n", crash_file_path.utf8().get_data());
+		} else {
+			fprintf(stderr, "CRASH_REPORTER: FAILED to create crash file anywhere!\n");
+		}
+	}
+	
+	auto write_crash_line = [&](const String &line) {
+		if (crash_file) {
+			fprintf(crash_file, "%s\n", line.utf8().get_data());
+			fflush(crash_file);
+		}
+	};
+
 	print_error("\n================================================================");
 	print_error(vformat("%s: Program crashed with signal %d", __FUNCTION__, signal));
+	
+	String crash_dump = "\n================================================================\n";
+	write_crash_line("\n================================================================");
+	
+	String crash_header = vformat("%s: Program crashed with signal %d", __FUNCTION__, signal);
+	crash_dump += crash_header + "\n";
+	write_crash_line(crash_header);
 
 	// Print the engine version just before, so that people are reminded to include the version in backtrace reports.
+	String version_line;
 	if (String(GODOT_VERSION_HASH).is_empty()) {
-		print_error(vformat("Engine version: %s", GODOT_VERSION_FULL_NAME));
+		version_line = vformat("Engine version: %s", GODOT_VERSION_FULL_NAME);
 	} else {
-		print_error(vformat("Engine version: %s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH));
+		version_line = vformat("Engine version: %s (%s)", GODOT_VERSION_FULL_NAME, GODOT_VERSION_HASH);
 	}
-	print_error(vformat("Dumping the backtrace. %s", msg));
+	print_error(version_line);
+	crash_dump += version_line + "\n";
+	write_crash_line(version_line);
+	
+	String backtrace_header = vformat("Dumping the backtrace. %s", msg);
+	print_error(backtrace_header);
+	crash_dump += backtrace_header + "\n";
+	write_crash_line(backtrace_header);
 
 	String _execpath = OS::get_singleton()->get_executable_path();
 
@@ -181,15 +279,41 @@ extern void CrashHandlerException(int signal) {
 		backtrace_simple(data.state, 1, &trace_callback, &error_callback, reinterpret_cast<void *>(&data));
 	}
 
-	print_error("-- END OF C++ BACKTRACE --");
-	print_error("================================================================");
+	String cpp_end = "-- END OF C++ BACKTRACE --";
+	print_error(cpp_end);
+	crash_dump += cpp_end + "\n";
+	write_crash_line(cpp_end);
+	
+	String separator = "================================================================";
+	print_error(separator);
+	crash_dump += separator + "\n";
+	write_crash_line(separator);
 
 	for (const Ref<ScriptBacktrace> &backtrace : ScriptServer::capture_script_backtraces(false)) {
 		if (!backtrace->is_empty()) {
-			print_error(backtrace->format());
-			print_error(vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper()));
+			String script_trace = backtrace->format();
+			print_error(script_trace);
+			crash_dump += script_trace + "\n";
+			Vector<String> trace_lines = script_trace.split("\n");
+			for (const String &trace_line : trace_lines) {
+				write_crash_line(trace_line);
+			}
+			
+			String script_end = vformat("-- END OF %s BACKTRACE --", backtrace->get_language_name().to_upper());
+			print_error(script_end);
+			crash_dump += script_end + "\n";
+			write_crash_line(script_end);
+			
 			print_error("================================================================");
+			crash_dump += "================================================================\n";
+			write_crash_line("================================================================");
 		}
+	}
+	
+	// Close crash file before exiting
+	if (crash_file) {
+		fclose(crash_file);
+		fprintf(stderr, "CRASH_REPORTER: Crash dump saved to: %s\n", crash_file_path.utf8().get_data());
 	}
 }
 #endif
