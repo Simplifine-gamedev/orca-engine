@@ -161,7 +161,6 @@ void AIChatDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_reindex_project_pressed"), &AIChatDock::_on_reindex_project_pressed);
 	ClassDB::bind_method(D_METHOD("_perform_project_reindex"), &AIChatDock::_perform_project_reindex);
 	ClassDB::bind_method(D_METHOD("_on_reindex_response"), &AIChatDock::_on_reindex_response);
-	ClassDB::bind_method(D_METHOD("_on_import_button_pressed"), &AIChatDock::_on_import_button_pressed);
 	ClassDB::bind_method(D_METHOD("_on_import_file_selected", "file_path"), &AIChatDock::_on_import_file_selected);
 	ClassDB::bind_method(D_METHOD("_on_scene_tree_node_selected"), &AIChatDock::_on_scene_tree_node_selected);
 	ClassDB::bind_method(D_METHOD("_on_files_selected"), &AIChatDock::_on_files_selected);
@@ -2346,14 +2345,6 @@ void AIChatDock::_setup_authentication_ui() {
 	HBoxContainer *toolbar_container = memnew(HBoxContainer);
 	add_child(toolbar_container);
 	
-	// Import conversation button
-	import_button = memnew(Button);
-	import_button->set_text("Import");
-	import_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Load"), SNAME("EditorIcons")));
-	import_button->connect("pressed", callable_mp(this, &AIChatDock::_on_import_button_pressed));
-	import_button->set_tooltip_text("Import conversation from JSON file");
-	toolbar_container->add_child(import_button);
-	
 	// Export conversation button
 	export_button = memnew(Button);
 	export_button->set_text("Export");
@@ -2362,37 +2353,13 @@ void AIChatDock::_setup_authentication_ui() {
 	export_button->set_tooltip_text("Export current conversation to JSON file");
 	toolbar_container->add_child(export_button);
 	
-	// Manual Snapshot button
-	snapshot_button = memnew(Button);
-	snapshot_button->set_text("Save Snapshot");
-	snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("Favorites"), SNAME("EditorIcons")));
-	snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_save_snapshot_pressed));
-	snapshot_button->set_tooltip_text("Save a named snapshot of your entire project");
-	toolbar_container->add_child(snapshot_button);
-	
-	// Restore Snapshot button (manual snapshots)
-	restore_snapshot_button = memnew(Button);
-	restore_snapshot_button->set_text("Snapshots");
-	restore_snapshot_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
-	restore_snapshot_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_snapshots_pressed));
-	restore_snapshot_button->set_tooltip_text("View and restore manual snapshots");
-	toolbar_container->add_child(restore_snapshot_button);
-
-// AI Auto Snapshots button (read-only view of per-message checkpoints)
+	// AI Auto Snapshots button (read-only view of per-message checkpoints)
 	auto_snapshots_button = memnew(Button);
 	auto_snapshots_button->set_text("AI Snapshots");
 	auto_snapshots_button->add_theme_icon_override("icon", get_theme_icon(SNAME("History"), SNAME("EditorIcons")));
 	auto_snapshots_button->connect("pressed", callable_mp(this, &AIChatDock::_on_view_auto_snapshots_pressed));
 	auto_snapshots_button->set_tooltip_text("View automatic snapshots created before each AI response");
 	toolbar_container->add_child(auto_snapshots_button);
-
-	// AI Todo panel button
-	todo_button = memnew(Button);
-	todo_button->set_text("Todos");
-	todo_button->add_theme_icon_override("icon", get_theme_icon(SNAME("ListSelect"), SNAME("EditorIcons")));
-	todo_button->set_tooltip_text("View the AI's working todo list (available after context gathering)");
-	todo_button->connect("pressed", callable_mp(this, &AIChatDock::_on_todo_button_pressed));
-	toolbar_container->add_child(todo_button);
 
 	if (!todo_panel) {
 		todo_panel = memnew(AIChatTodoPanel);

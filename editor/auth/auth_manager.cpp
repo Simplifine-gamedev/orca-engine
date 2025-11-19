@@ -118,10 +118,7 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	_stop_loopback_server();
 	
 	// Initialize Autumn account after successful login
-	// TESTING: Call directly to see if it works at all
-	print_line("ORCA AUTH: About to call initialize_autumn_account()");
 	initialize_autumn_account();
-	print_line("ORCA AUTH: initialize_autumn_account() completed");
 	
 	// Notify the auth dialog if it exists
 	if (auth_dialog) {
@@ -871,26 +868,16 @@ Error AuthManager::make_supabase_request(const String &p_endpoint, const String 
 void AuthManager::initialize_autumn_account() {
 	// Only initialize if user is authenticated
 	if (!is_authenticated || user_id.is_empty()) {
-		print_line("ORCA AUTUMN: Skipping initialization - user not authenticated");
 		return;
 	}
-	
-	print_line("========================================");
-	print_line("ORCA AUTUMN: Starting initialization");
-	print_line("ORCA AUTUMN: User ID: " + user_id);
-	print_line("ORCA AUTUMN: User Email: " + user_email);
-	print_line("========================================");
 	
 	// Call website API directly: https://orcaengine.ai/api/autumn/check
 	// This creates customer + assigns Free plan if new user
-	print_line("ORCA AUTUMN: Connecting to orcaengine.ai...");
 	Ref<HTTPClient> http = HTTPClient::create();
 	Error err = http->connect_to_host("orcaengine.ai", 443, TLSOptions::client());
 	if (err != OK) {
-		print_error("ORCA AUTUMN: Failed to connect to website API (error: " + itos(err) + ")");
 		return;
 	}
-	print_line("ORCA AUTUMN: Connection initiated...");
 	
 	// Wait for connection
 	while (http->get_status() == HTTPClient::STATUS_CONNECTING || http->get_status() == HTTPClient::STATUS_RESOLVING) {
@@ -899,10 +886,8 @@ void AuthManager::initialize_autumn_account() {
 	}
 	
 	if (http->get_status() != HTTPClient::STATUS_CONNECTED) {
-		print_error("ORCA AUTUMN: Could not connect to website API (status: " + itos(http->get_status()) + ")");
 		return;
 	}
-	print_line("ORCA AUTUMN: Connected successfully!");
 	
 	// Prepare headers - send user_id as Bearer token (as per website API spec)
 	Vector<String> headers;
@@ -920,14 +905,11 @@ void AuthManager::initialize_autumn_account() {
 	CharString body_utf8 = body_json.utf8();
 	
 	// Make POST request to /api/autumn/check (auto-creates customer if new)
-	print_line("ORCA AUTUMN: Sending POST request to /api/autumn/check...");
 	err = http->request(HTTPClient::METHOD_POST, "/api/autumn/check", headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
 	
 	if (err != OK) {
-		print_error("ORCA AUTUMN: Failed to make initialization request (error: " + itos(err) + ")");
 		return;
 	}
-	print_line("ORCA AUTUMN: Request sent, waiting for response...");
 	
 	// Wait for response
 	while (http->get_status() == HTTPClient::STATUS_REQUESTING) {
@@ -956,23 +938,9 @@ void AuthManager::initialize_autumn_account() {
 		if (parse_err == OK) {
 			Dictionary check_response = json.get_data();
 			if (!check_response.has("error")) {
-				print_line("ORCA AUTUMN: Successfully initialized Autumn account");
-				// Log quota info from /check response
-				if (check_response.has("balance")) {
-					int balance = check_response.get("balance", 0);
-					int included = check_response.get("included_usage", 0);
-					bool allowed = check_response.get("allowed", false);
-					print_line(vformat("ORCA AUTUMN: Balance: %d/%d AI requests, Allowed: %s", balance, included, allowed ? "Yes" : "No"));
-				}
-			} else {
-				String error_msg = check_response.get("error", "Unknown error");
-				print_line("ORCA AUTUMN: Initialization failed: " + error_msg);
+				// Successfully initialized - no logging needed
 			}
-		} else {
-			print_line("ORCA AUTUMN: Failed to parse response: " + response_text.substr(0, 200));
 		}
-	} else {
-		print_line("ORCA AUTUMN: No response from website API");
 	}
 }
 
