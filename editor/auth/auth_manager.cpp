@@ -14,6 +14,7 @@
 #include "core/os/os.h"
 #include "core/io/file_access.h"
 #include "core/io/dir_access.h"
+#include "core/crypto/crypto.h"
 #include "editor/settings/editor_settings.h"
 
 #ifdef WINDOWS_ENABLED
@@ -36,6 +37,7 @@ void AuthManager::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_user_id"), &AuthManager::get_user_id);
 	ClassDB::bind_method(D_METHOD("get_user_email"), &AuthManager::get_user_email);
 	ClassDB::bind_method(D_METHOD("get_user_name"), &AuthManager::get_user_name);
+	ClassDB::bind_method(D_METHOD("initialize_autumn_account"), &AuthManager::initialize_autumn_account);
 	ADD_SIGNAL(MethodInfo("auth_state_changed"));
 }
 
@@ -115,6 +117,12 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 	print_line("Authentication successful for user: " + user_email);
 	_stop_loopback_server();
 	
+	// Initialize Autumn account after successful login
+	// TESTING: Call directly to see if it works at all
+	print_line("ORCA AUTH: About to call initialize_autumn_account()");
+	initialize_autumn_account();
+	print_line("ORCA AUTH: initialize_autumn_account() completed");
+	
 	// Notify the auth dialog if it exists
 	if (auth_dialog) {
 		auth_dialog->call_deferred("_check_auth_status");
@@ -130,6 +138,10 @@ bool AuthManager::try_auto_login() {
 		// TODO: Verify tokens are still valid by making a test API call
 		is_authenticated = true;
 		print_line("Auto-login successful for user: " + user_email);
+		
+		// Initialize Autumn account after auto-login (deferred to avoid blocking startup)
+		call_deferred("initialize_autumn_account");
+		
 		return true;
 	}
 	// Don't print error - this is expected if user hasn't logged in yet or denied keychain access
@@ -154,7 +166,9 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 	
 	// Make HTTP request to Supabase auth endpoint
 	Ref<HTTPClient> http = HTTPClient::create();
-	Error err = http->connect_to_host(SUPABASE_URL, 443, TLSOptions::client());
+	// Remove https:// prefix from SUPABASE_URL for connect_to_host
+	String host = SUPABASE_URL.replace("https://", "").replace("http://", "");
+	Error err = http->connect_to_host(host, 443, TLSOptions::client());
 	if (err != OK) {
 		print_error("Failed to connect to Supabase for email sign-in");
 		return;
@@ -290,6 +304,10 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 			is_authenticated = true;
 			
 			print_line("Email sign-in successful!");
+			
+			// Initialize Autumn account after successful login (deferred to avoid blocking)
+			call_deferred("initialize_autumn_account");
+			
 			_notify_auth_success();
 		} else {
 			print_error("Invalid sign-in response format");
@@ -305,7 +323,9 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 	
 	// Make HTTP request to Supabase auth endpoint
 	Ref<HTTPClient> http = HTTPClient::create();
-	Error err = http->connect_to_host(SUPABASE_URL, 443, TLSOptions::client());
+	// Remove https:// prefix from SUPABASE_URL for connect_to_host
+	String host = SUPABASE_URL.replace("https://", "").replace("http://", "");
+	Error err = http->connect_to_host(host, 443, TLSOptions::client());
 	if (err != OK) {
 		print_error("Failed to connect to Supabase for email sign-up");
 		return;
@@ -442,6 +462,10 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 			is_authenticated = true;
 			
 			print_line("Email sign-up and auto-login successful!");
+			
+			// Initialize Autumn account after successful sign-up (deferred to avoid blocking)
+			call_deferred("initialize_autumn_account");
+			
 			_notify_auth_success();
 		} else {
 			_notify_auth_error("Sign-up succeeded but auto-login failed");
@@ -766,8 +790,9 @@ void AuthManager::_delete_token_secure(const String &p_key) {
 Error AuthManager::make_supabase_request(const String &p_endpoint, const String &p_method, const String &p_body, String &r_response) {
 	Ref<HTTPClient> http_client = HTTPClient::create();
 	
-	// Parse the Supabase URL
-	Error err = http_client->connect_to_host(SUPABASE_URL, 443, TLSOptions::client());
+	// Parse the Supabase URL - remove https:// prefix for connect_to_host
+	String host = SUPABASE_URL.replace("https://", "").replace("http://", "");
+	Error err = http_client->connect_to_host(host, 443, TLSOptions::client());
 	if (err != OK) {
 		print_error("Failed to connect to Supabase: " + itos(err));
 		return err;
@@ -841,6 +866,114 @@ Error AuthManager::make_supabase_request(const String &p_endpoint, const String 
 	}
 	
 	return OK;
+}
+
+void AuthManager::initialize_autumn_account() {
+	// Only initialize if user is authenticated
+	if (!is_authenticated || user_id.is_empty()) {
+		print_line("ORCA AUTUMN: Skipping initialization - user not authenticated");
+		return;
+	}
+	
+	print_line("========================================");
+	print_line("ORCA AUTUMN: Starting initialization");
+	print_line("ORCA AUTUMN: User ID: " + user_id);
+	print_line("ORCA AUTUMN: User Email: " + user_email);
+	print_line("========================================");
+	
+	// Call website API directly: https://orcaengine.ai/api/autumn/check
+	// This creates customer + assigns Free plan if new user
+	print_line("ORCA AUTUMN: Connecting to orcaengine.ai...");
+	Ref<HTTPClient> http = HTTPClient::create();
+	Error err = http->connect_to_host("orcaengine.ai", 443, TLSOptions::client());
+	if (err != OK) {
+		print_error("ORCA AUTUMN: Failed to connect to website API (error: " + itos(err) + ")");
+		return;
+	}
+	print_line("ORCA AUTUMN: Connection initiated...");
+	
+	// Wait for connection
+	while (http->get_status() == HTTPClient::STATUS_CONNECTING || http->get_status() == HTTPClient::STATUS_RESOLVING) {
+		http->poll();
+		OS::get_singleton()->delay_usec(10000);
+	}
+	
+	if (http->get_status() != HTTPClient::STATUS_CONNECTED) {
+		print_error("ORCA AUTUMN: Could not connect to website API (status: " + itos(http->get_status()) + ")");
+		return;
+	}
+	print_line("ORCA AUTUMN: Connected successfully!");
+	
+	// Prepare headers - send user_id as Bearer token (as per website API spec)
+	Vector<String> headers;
+	headers.push_back("Content-Type: application/json");
+	headers.push_back("Authorization: Bearer " + user_id);
+	if (!user_email.is_empty()) {
+		headers.push_back("X-User-Email: " + user_email);
+	}
+	
+	// Prepare request body for /check endpoint (auto-creates customer with default Free plan)
+	Dictionary body_dict;
+	body_dict["feature_id"] = "ai-requests";
+	body_dict["required_quantity"] = 0;  // Just checking, not consuming quota
+	String body_json = JSON::stringify(body_dict);
+	CharString body_utf8 = body_json.utf8();
+	
+	// Make POST request to /api/autumn/check (auto-creates customer if new)
+	print_line("ORCA AUTUMN: Sending POST request to /api/autumn/check...");
+	err = http->request(HTTPClient::METHOD_POST, "/api/autumn/check", headers, (const uint8_t *)body_utf8.get_data(), body_utf8.length());
+	
+	if (err != OK) {
+		print_error("ORCA AUTUMN: Failed to make initialization request (error: " + itos(err) + ")");
+		return;
+	}
+	print_line("ORCA AUTUMN: Request sent, waiting for response...");
+	
+	// Wait for response
+	while (http->get_status() == HTTPClient::STATUS_REQUESTING) {
+		http->poll();
+		OS::get_singleton()->delay_usec(10000);
+	}
+	
+	// Read response
+	if (http->has_response()) {
+		PackedByteArray rb;
+		while (http->get_status() == HTTPClient::STATUS_BODY) {
+			http->poll();
+			PackedByteArray chunk = http->read_response_body_chunk();
+			if (chunk.size() == 0) {
+				OS::get_singleton()->delay_usec(10000);
+			} else {
+				rb.append_array(chunk);
+			}
+		}
+		
+		String response_text = String::utf8((const char *)rb.ptr(), rb.size());
+		
+		// Parse JSON response from /check endpoint
+		JSON json;
+		Error parse_err = json.parse(response_text);
+		if (parse_err == OK) {
+			Dictionary check_response = json.get_data();
+			if (!check_response.has("error")) {
+				print_line("ORCA AUTUMN: Successfully initialized Autumn account");
+				// Log quota info from /check response
+				if (check_response.has("balance")) {
+					int balance = check_response.get("balance", 0);
+					int included = check_response.get("included_usage", 0);
+					bool allowed = check_response.get("allowed", false);
+					print_line(vformat("ORCA AUTUMN: Balance: %d/%d AI requests, Allowed: %s", balance, included, allowed ? "Yes" : "No"));
+				}
+			} else {
+				String error_msg = check_response.get("error", "Unknown error");
+				print_line("ORCA AUTUMN: Initialization failed: " + error_msg);
+			}
+		} else {
+			print_line("ORCA AUTUMN: Failed to parse response: " + response_text.substr(0, 200));
+		}
+	} else {
+		print_line("ORCA AUTUMN: No response from website API");
+	}
 }
 
 bool AuthManager::_start_loopback_server() {

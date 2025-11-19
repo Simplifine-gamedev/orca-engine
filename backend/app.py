@@ -39,6 +39,7 @@ from auto_update_manager import auto_update_manager
 from tool_logger import log_tool_call, log_tool_result
 from version_checker import version_checker
 from todo_store import TodoStore
+from autumn_integration import AutumnPricingService
 
 # app = Flask(__name__)
 # CORS(app)
@@ -1258,6 +1259,9 @@ def _get_reasoning_params(model_friendly_name: str, model_id: str | None = None)
 
 # Initialize Authentication Manager
 auth_manager = AuthManager()
+
+# Initialize Autumn Pricing Service
+pricing_service = AutumnPricingService()
 
 # Initialize Vector Manager with priority: Weaviate -> Local
 WEAVIATE_URL = os.getenv('WEAVIATE_URL')
@@ -5440,6 +5444,22 @@ def chat():
     3. Executes any tool calls
     4. Streams the final response back to Godot
     """
+
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    # Check Autumn quota BEFORE processing request (don't track yet - track after success)
+    allowed, pricing_info = pricing_service.check_quota(user['id'], "ai-requests", 1)
+    if not allowed:
+        return jsonify({
+            "error": "Monthly request limit exceeded",
+            "pricing_info": pricing_info,
+            "upgrade_url": f"{request.host_url}pricing",
+            "success": False
+        }), 429
+    
     # Robust JSON parse: tolerate stray control chars or accidental non-JSON bytes
     # Do this BEFORE authentication check so we can check for user_id in JSON
     try:
@@ -8458,6 +8478,14 @@ def chat():
                     import traceback
                     traceback.print_exc()
                 
+                # Track usage AFTER successful completion
+                try:
+                    pricing_service.track_usage(user['id'], "ai-requests", 1)
+                    print(f"AUTUMN_USAGE_TRACKED: Tracked 1 AI request for user {user['id']}")
+                except Exception as track_err:
+                    print(f"⚠️  AUTUMN_TRACK_ERROR: Failed to track usage: {track_err}")
+                    # Don't fail the request if tracking fails
+                
                 print(f"BACKEND_DEBUG: About to send final status: completed")
                 yield json.dumps({"status": "completed"}) + '\n'
                 print(f"BACKEND_DEBUG: Final status completed sent")
@@ -9433,6 +9461,42 @@ def auth_callback():
             
     except Exception as e:
         return f"<html><body><h1>Authentication Error</h1><p>{str(e)}</p></body></html>", 500
+
+@app.route('/auth/initialize_autumn', methods=['POST'])
+def initialize_autumn():
+    """Initialize Autumn account after successful Supabase login"""
+    try:
+        # Robust JSON parse
+        try:
+            data = request.get_json()
+        except Exception:
+            raw = request.get_data(cache=False, as_text=True)
+            filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+            data = json.loads(filtered)
+        
+        user_id = data.get('user_id')
+        user_email = data.get('user_email')
+        
+        if not user_id:
+            return jsonify({"error": "user_id required", "success": False}), 400
+        
+        # Initialize Autumn account (creates customer + assigns Free plan if new)
+        customer_data = pricing_service.initialize_customer(user_id, user_email)
+        
+        if "error" in customer_data:
+            return jsonify({
+                "success": False,
+                "error": customer_data.get("error"),
+                "customer_data": None
+            }), 500
+        
+        return jsonify({
+            "success": True,
+            "customer_data": customer_data
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/auth/status', methods=['POST'])
 def auth_status():
@@ -11790,6 +11854,70 @@ def json_rpc_router():
         resp = {'ok': False, 'error_code': 'INTERNAL', 'error': str(e)}
         resp['telemetry'] = _telemetry(False, 'INTERNAL')
         return jsonify(resp), 500
+
+# ===== PRICING ENDPOINTS =====
+
+@app.route('/pricing/customer', methods=['GET'])
+def get_customer_info():
+    """Get customer subscription and usage information"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        customer_data = pricing_service.get_customer_info(user['id'])
+        return jsonify({"success": True, "customer": customer_data})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/pricing/checkout', methods=['POST'])
+def create_checkout():
+    """Create checkout URL for product upgrade/purchase"""
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    try:
+        data = request.get_json()
+        if not data or 'product_id' not in data:
+            return jsonify({"success": False, "error": "product_id is required"}), 400
+        
+        product_id = data.get('product_id')
+        checkout_data = pricing_service.get_checkout_url(user['id'], product_id)
+        
+        return jsonify({"success": True, "checkout": checkout_data})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/pricing/tiers', methods=['GET'])
+def get_pricing_tiers():
+    """Get available pricing tiers"""
+    return jsonify({
+        "success": True,
+        "tiers": {
+            "free": {
+                "product_id": "free",
+                "name": "Free",
+                "price": 0,
+                "requests_per_month": 200,
+                "features": ["Community support"]
+            },
+            "pro": {
+                "product_id": "pro", 
+                "name": "Pro",
+                "price": 20,
+                "requests_per_month": 500,
+                "features": ["Priority support", "Advanced features"]
+            },
+            "proplus": {
+                "product_id": "proplus",
+                "name": "Pro+", 
+                "price": 60,
+                "requests_per_month": 1500,
+                "features": ["Priority support", "Early access", "Team features"]
+            }
+        }
+    })
 
 # Initialize services at module level for Gunicorn compatibility
 # Print 3D service status on startup
