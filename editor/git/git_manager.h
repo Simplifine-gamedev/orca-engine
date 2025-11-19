@@ -64,4 +64,5 @@ public:
 
 private:
 	static GitResult _execute_command(const String &p_executable, const List<String> &p_args, const String &p_working_dir = "");
+	static String _get_git_executable();
 };

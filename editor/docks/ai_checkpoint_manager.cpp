@@ -52,6 +52,7 @@
 #include "editor/file_system/editor_file_system.h"
 #include "editor/script/script_editor_plugin.h"
 #include "editor/ai/editor_tools.h"
+#include "editor/git/git_manager.h"
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_cache.h"
 #include "servers/display_server.h"
@@ -388,22 +389,21 @@ void AICheckpointManager::_ensure_project_gitignore_excludes_checkpoints(const S
 }
 
 bool AICheckpointManager::_git_exec(const String &p_project_root, const List<String> &p_args, String &r_output, int &r_exitcode) {
-	List<String> args;
-	args.push_back("-C");
-	args.push_back(p_project_root);
-	for (const List<String>::Element *E = p_args.front(); E; E = E->next()) {
-		args.push_back(E->get());
+	// Use GitManager for consistent git executable detection across platforms
+	GitManager::GitResult result = GitManager::execute_git_command(p_project_root, p_args);
+	
+	r_output = result.output;
+	r_exitcode = result.exit_code;
+	
+	if (!result.success && !result.message.is_empty()) {
+		// Include error message in output for debugging
+		if (!r_output.is_empty()) {
+			r_output += "\n";
+		}
+		r_output += "Error: " + result.message;
 	}
 
-	// read_stderr=true so we capture Git's error messages into r_output as well.
-	Error err = OS::get_singleton()->execute("git", args, &r_output, &r_exitcode, true, nullptr, false);
-
-	if (err != OK) {
-	}
-	if (r_exitcode != 0) {
-	}
-
-	return err == OK && r_exitcode == 0;
+	return result.success;
 }
 
 bool AICheckpointManager::_init_checkpoint_git_repo(const String &p_checkpoint_dir) {

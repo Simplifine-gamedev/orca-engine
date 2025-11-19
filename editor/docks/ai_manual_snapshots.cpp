@@ -15,6 +15,7 @@
 #include "scene/gui/separator.h"
 #include "scene/resources/style_box_flat.h"
 #include "editor/editor_string_names.h"
+#include "editor/git/git_manager.h"
 
 void AIManualSnapshots::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_create_snapshot_confirmed"), &AIManualSnapshots::_on_create_snapshot_confirmed);
@@ -246,8 +247,6 @@ bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const Strin
 	
 	// Use git operations to rename tag and add metadata
 	List<String> tag_args;
-	tag_args.push_back("-C");
-	tag_args.push_back(project_root);
 	tag_args.push_back("tag");
 	tag_args.push_back("-f");
 	tag_args.push_back(snapshot_tag);
@@ -258,23 +257,18 @@ bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const Strin
 	tag_args.push_back(tag_message);
 	tag_args.push_back(generated_tag); // Tag the same commit
 	
-	String output;
-	int exitcode;
-	Error err = OS::get_singleton()->execute("git", tag_args, &output, &exitcode, false, nullptr, false);
-	
-	if (err != OK || exitcode != 0) {
+	GitManager::GitResult tag_result = GitManager::execute_git_command(project_root, tag_args);
+	if (!tag_result.success) {
 		return false;
 	}
 	
 	// Delete the temporary msg_-1_* tag
 	List<String> delete_temp_args;
-	delete_temp_args.push_back("-C");
-	delete_temp_args.push_back(project_root);
 	delete_temp_args.push_back("tag");
 	delete_temp_args.push_back("-d");
 	delete_temp_args.push_back(generated_tag);
 	
-	OS::get_singleton()->execute("git", delete_temp_args, &output, &exitcode, false, nullptr, false);
+	GitManager::execute_git_command(project_root, delete_temp_args); // Ignore result
 	
 	return true;
 }
@@ -298,17 +292,12 @@ bool AIManualSnapshots::restore_to_snapshot(const String &p_snapshot_tag) {
 	
 	// Actually, we need a different approach - let's directly call git reset
 	List<String> reset_args;
-	reset_args.push_back("-C");
-	reset_args.push_back(project_root);
 	reset_args.push_back("reset");
 	reset_args.push_back("--hard");
 	reset_args.push_back(p_snapshot_tag);
 	
-	String output;
-	int exitcode;
-	Error err = OS::get_singleton()->execute("git", reset_args, &output, &exitcode, false, nullptr, false);
-	
-	if (err != OK || exitcode != 0) {
+	GitManager::GitResult reset_result = GitManager::execute_git_command(project_root, reset_args);
+	if (!reset_result.success) {
 		return false;
 	}
 	
@@ -332,17 +321,12 @@ bool AIManualSnapshots::delete_snapshot(const String &p_snapshot_tag) {
 	
 	// Delete the git tag
 	List<String> delete_args;
-	delete_args.push_back("-C");
-	delete_args.push_back(project_root);
 	delete_args.push_back("tag");
 	delete_args.push_back("-d");
 	delete_args.push_back(p_snapshot_tag);
 	
-	String output;
-	int exitcode;
-	Error err = OS::get_singleton()->execute("git", delete_args, &output, &exitcode, false, nullptr, false);
-	
-	if (err != OK || exitcode != 0) {
+	GitManager::GitResult delete_result = GitManager::execute_git_command(project_root, delete_args);
+	if (!delete_result.success) {
 		return false;
 	}
 	
@@ -361,21 +345,18 @@ Vector<AIManualSnapshots::Snapshot> AIManualSnapshots::get_all_snapshots() {
 	
 	// List all snapshot tags (snapshot_* pattern)
 	List<String> list_args;
-	list_args.push_back("-C");
-	list_args.push_back(project_root);
 	list_args.push_back("tag");
 	list_args.push_back("--list");
 	list_args.push_back("snapshot_*");
 	list_args.push_back("--sort=-creatordate"); // Newest first
 	list_args.push_back("--format=%(refname:short)|%(creatordate:unix)|%(contents:subject)|%(contents:body)");
 	
-	String output;
-	int exitcode;
-	Error err = OS::get_singleton()->execute("git", list_args, &output, &exitcode, false, nullptr, false);
-	
-	if (err != OK || exitcode != 0 || output.strip_edges().is_empty()) {
+	GitManager::GitResult list_result = GitManager::execute_git_command(project_root, list_args);
+	if (!list_result.success || list_result.output.strip_edges().is_empty()) {
 		return snapshots;
 	}
+	
+	String output = list_result.output;
 	
 	// Parse the output
 	PackedStringArray lines = output.strip_edges().split("\n");

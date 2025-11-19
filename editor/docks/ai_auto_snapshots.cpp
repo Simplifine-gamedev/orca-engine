@@ -13,6 +13,7 @@
 #include "core/os/time.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/editor_string_names.h"
+#include "editor/git/git_manager.h"
 
 void AIAutoSnapshots::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_snapshot_item_selected"), &AIAutoSnapshots::_on_snapshot_item_selected);
@@ -160,21 +161,18 @@ Vector<AIAutoSnapshots::AutoSnapshot> AIAutoSnapshots::_get_all_auto_snapshots()
 	}
 
 	List<String> args;
-	args.push_back("-C");
-	args.push_back(checkpoint_dir);
 	args.push_back("tag");
 	args.push_back("--list");
 	args.push_back("msg_*");
 	args.push_back("--sort=-creatordate");
 	args.push_back("--format=%(refname:short)|%(creatordate:unix)|%(contents:subject)");
 
-	String output;
-	int exitcode = 0;
-	Error err = OS::get_singleton()->execute("git", args, &output, &exitcode, false, nullptr, false);
-
-	if (err != OK || exitcode != 0 || output.strip_edges().is_empty()) {
+	GitManager::GitResult result = GitManager::execute_git_command(checkpoint_dir, args);
+	if (!result.success || result.output.strip_edges().is_empty()) {
 		return snapshots;
 	}
+	
+	String output = result.output;
 
 	PackedStringArray lines = output.strip_edges().split("\n");
 	for (int i = 0; i < lines.size(); i++) {
@@ -342,22 +340,19 @@ void AIAutoSnapshots::_populate_folder_tree(const String &p_tag_name) {
 	}
 
 	List<String> args;
-	args.push_back("-C");
-	args.push_back(checkpoint_dir);
 	args.push_back("ls-tree");
 	args.push_back("-r");
 	args.push_back("--name-only");
 	args.push_back(p_tag_name);
 
-	String output;
-	int exitcode = 0;
-	Error err = OS::get_singleton()->execute("git", args, &output, &exitcode, false, nullptr, false);
-
-	if (err != OK || exitcode != 0) {
+	GitManager::GitResult result = GitManager::execute_git_command(checkpoint_dir, args);
+	if (!result.success) {
 		TreeItem *item = folder_tree->create_item(root);
 		item->set_text(0, "Failed to list files for snapshot: " + p_tag_name);
 		return;
 	}
+	
+	String output = result.output;
 
 	output = output.strip_edges();
 	if (output.is_empty()) {

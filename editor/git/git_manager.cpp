@@ -290,12 +290,17 @@ String GitManager::get_current_branch(const String &p_project_path) {
 }
 
 bool GitManager::is_git_available() {
+	String git_executable = _get_git_executable();
+	if (git_executable.is_empty()) {
+		return false;
+	}
+	
 	List<String> version_args;
 	version_args.push_back("--version");
 	
 	String output;
 	int exit_code;
-	Error err = OS::get_singleton()->execute("git", version_args, &output, &exit_code, true, nullptr, false);
+	Error err = OS::get_singleton()->execute(git_executable, version_args, &output, &exit_code, true, nullptr, false);
 	
 	return err == OK && exit_code == 0;
 }
@@ -341,6 +346,15 @@ void GitManager::create_gitattributes(const String &p_project_path) {
 GitManager::GitResult GitManager::execute_git_command(const String &p_project_path, const List<String> &p_args) {
 	GitResult result;
 	
+	// Get the correct git executable for this platform
+	String git_executable = _get_git_executable();
+	if (git_executable.is_empty()) {
+		result.success = false;
+		result.message = "Git not found. Please install Git and ensure it's in your system PATH.";
+		result.exit_code = -1;
+		return result;
+	}
+	
 	// Prepend -C argument to specify working directory
 	List<String> final_args;
 	final_args.push_back("-C");
@@ -353,16 +367,20 @@ GitManager::GitResult GitManager::execute_git_command(const String &p_project_pa
 	
 	String output;
 	int exit_code;
-	Error err = OS::get_singleton()->execute("git", final_args, &output, &exit_code, true, nullptr, false);
+	Error err = OS::get_singleton()->execute(git_executable, final_args, &output, &exit_code, true, nullptr, false);
 	
 	result.output = output;
 	result.exit_code = exit_code;
 	result.success = (err == OK && exit_code == 0);
 	
 	if (!result.success) {
-		result.message = "Git command failed (exit code: " + String::num_int64(exit_code) + ")";
-		if (!output.is_empty()) {
-			result.message += ": " + output;
+		if (err != OK) {
+			result.message = "Failed to execute git command. Error: " + String::num_int64(err) + ". Make sure Git is installed and accessible.";
+		} else {
+			result.message = "Git command failed (exit code: " + String::num_int64(exit_code) + ")";
+			if (!output.is_empty()) {
+				result.message += ": " + output;
+			}
 		}
 	}
 	
@@ -388,4 +406,58 @@ GitManager::GitResult GitManager::_execute_command(const String &p_executable, c
 	}
 	
 	return result;
+}
+
+String GitManager::_get_git_executable() {
+	// List of possible git executables to try
+	Vector<String> git_candidates;
+	
+#ifdef WINDOWS_ENABLED
+	// On Windows, try various common git locations
+	git_candidates.push_back("git.exe");
+	git_candidates.push_back("git");
+	
+	// Common Git installation paths on Windows
+	String program_files = OS::get_singleton()->get_environment("PROGRAMFILES");
+	String program_files_x86 = OS::get_singleton()->get_environment("PROGRAMFILES(X86)");
+	
+	if (!program_files.is_empty()) {
+		git_candidates.push_back(program_files + "/Git/bin/git.exe");
+		git_candidates.push_back(program_files + "/Git/cmd/git.exe");
+	}
+	if (!program_files_x86.is_empty()) {
+		git_candidates.push_back(program_files_x86 + "/Git/bin/git.exe");
+		git_candidates.push_back(program_files_x86 + "/Git/cmd/git.exe");
+	}
+	
+	// Check common user installation paths
+	String user_profile = OS::get_singleton()->get_environment("USERPROFILE");
+	if (!user_profile.is_empty()) {
+		git_candidates.push_back(user_profile + "/AppData/Local/Programs/Git/bin/git.exe");
+		git_candidates.push_back(user_profile + "/AppData/Local/Programs/Git/cmd/git.exe");
+	}
+#else
+	// On Unix-like systems (macOS, Linux)
+	git_candidates.push_back("git");
+	git_candidates.push_back("/usr/bin/git");
+	git_candidates.push_back("/usr/local/bin/git");
+	git_candidates.push_back("/opt/homebrew/bin/git"); // macOS Homebrew on Apple Silicon
+#endif
+	
+	// Test each candidate
+	for (const String &candidate : git_candidates) {
+		List<String> version_args;
+		version_args.push_back("--version");
+		
+		String output;
+		int exit_code;
+		Error err = OS::get_singleton()->execute(candidate, version_args, &output, &exit_code, true, nullptr, false);
+		
+		if (err == OK && exit_code == 0) {
+			return candidate;
+		}
+	}
+	
+	// No git found
+	return "";
 }
