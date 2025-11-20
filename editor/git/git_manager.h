@@ -68,5 +68,6 @@ private:
 	static bool _test_git_executable(const String &p_path);
 #ifdef WINDOWS_ENABLED
 	static String _windows_find_executable_in_path(const String &p_executable);
+	static bool _detect_virtualization_environment();
 #endif
 };
