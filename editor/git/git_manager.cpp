@@ -409,55 +409,142 @@ GitManager::GitResult GitManager::_execute_command(const String &p_executable, c
 }
 
 String GitManager::_get_git_executable() {
+	// Check if git functionality is disabled
+	if (ProjectSettings::get_singleton()->has_setting("ai_chat/disable_git_features")) {
+		if (ProjectSettings::get_singleton()->get_setting("ai_chat/disable_git_features", false)) {
+			return "";
+		}
+	}
+	
+	// Static cache to avoid repeated searches
+	static String cached_git_path = "";
+	static bool search_completed = false;
+	
+	if (search_completed) {
+		return cached_git_path;
+	}
+	
 	// List of possible git executables to try
 	Vector<String> git_candidates;
 	
 #ifdef WINDOWS_ENABLED
-	// On Windows, try various common git locations
+	// WINDOWS PRODUCTION FIX: Use proper Windows path resolution
+	
+	// First, try using Windows 'where' command to find git in PATH
+	String where_result = _windows_find_executable_in_path("git");
+	if (!where_result.is_empty()) {
+		git_candidates.push_back(where_result);
+	}
+	
+	// Add explicit paths for common Windows git installations
 	git_candidates.push_back("git.exe");
 	git_candidates.push_back("git");
 	
-	// Common Git installation paths on Windows
+	// Git for Windows standard installation paths
 	String program_files = OS::get_singleton()->get_environment("PROGRAMFILES");
 	String program_files_x86 = OS::get_singleton()->get_environment("PROGRAMFILES(X86)");
+	String user_profile = OS::get_singleton()->get_environment("USERPROFILE");
 	
 	if (!program_files.is_empty()) {
-		git_candidates.push_back(program_files + "/Git/bin/git.exe");
-		git_candidates.push_back(program_files + "/Git/cmd/git.exe");
+		git_candidates.push_back(program_files + "\\Git\\bin\\git.exe");
+		git_candidates.push_back(program_files + "\\Git\\cmd\\git.exe");
+		git_candidates.push_back(program_files + "\\Git\\mingw64\\bin\\git.exe");
 	}
 	if (!program_files_x86.is_empty()) {
-		git_candidates.push_back(program_files_x86 + "/Git/bin/git.exe");
-		git_candidates.push_back(program_files_x86 + "/Git/cmd/git.exe");
+		git_candidates.push_back(program_files_x86 + "\\Git\\bin\\git.exe");
+		git_candidates.push_back(program_files_x86 + "\\Git\\cmd\\git.exe");
+		git_candidates.push_back(program_files_x86 + "\\Git\\mingw32\\bin\\git.exe");
+	}
+	if (!user_profile.is_empty()) {
+		git_candidates.push_back(user_profile + "\\AppData\\Local\\Programs\\Git\\bin\\git.exe");
+		git_candidates.push_back(user_profile + "\\AppData\\Local\\Programs\\Git\\cmd\\git.exe");
+		git_candidates.push_back(user_profile + "\\AppData\\Local\\Programs\\Git\\mingw64\\bin\\git.exe");
 	}
 	
-	// Check common user installation paths
-	String user_profile = OS::get_singleton()->get_environment("USERPROFILE");
+	// GitHub Desktop git installation
 	if (!user_profile.is_empty()) {
-		git_candidates.push_back(user_profile + "/AppData/Local/Programs/Git/bin/git.exe");
-		git_candidates.push_back(user_profile + "/AppData/Local/Programs/Git/cmd/git.exe");
+		git_candidates.push_back(user_profile + "\\AppData\\Local\\GitHubDesktop\\app-*\\resources\\app\\git\\cmd\\git.exe");
 	}
+	
 #else
-	// On Unix-like systems (macOS, Linux)
+	// Unix-like systems (macOS, Linux)
 	git_candidates.push_back("git");
 	git_candidates.push_back("/usr/bin/git");
 	git_candidates.push_back("/usr/local/bin/git");
 	git_candidates.push_back("/opt/homebrew/bin/git"); // macOS Homebrew on Apple Silicon
 #endif
 	
-	// Test each candidate
+	// Test each candidate with enhanced Windows support
 	for (const String &candidate : git_candidates) {
-		List<String> version_args;
-		version_args.push_back("--version");
-		
-		String output;
-		int exit_code;
-		Error err = OS::get_singleton()->execute(candidate, version_args, &output, &exit_code, true, nullptr, false);
-		
-		if (err == OK && exit_code == 0) {
+		if (_test_git_executable(candidate)) {
+			cached_git_path = candidate;
+			search_completed = true;
 			return candidate;
 		}
 	}
 	
-	// No git found
+	// Mark search as completed even if no git found
+	search_completed = true;
+	cached_git_path = "";
+	
 	return "";
 }
+
+#ifdef WINDOWS_ENABLED
+String GitManager::_windows_find_executable_in_path(const String &p_executable) {
+	// Use Windows 'where' command to find executable in PATH
+	List<String> where_args;
+	where_args.push_back(p_executable);
+	
+	String output;
+	int exit_code;
+	Error err = OS::get_singleton()->execute("where", where_args, &output, &exit_code, true, nullptr, false);
+	
+	if (err == OK && exit_code == 0 && !output.strip_edges().is_empty()) {
+		// 'where' returns first match, which is what we want
+		Vector<String> lines = output.strip_edges().split("\n");
+		if (!lines.is_empty()) {
+			String git_path = lines[0].strip_edges();
+			if (FileAccess::exists(git_path)) {
+				return git_path;
+			}
+		}
+	}
+	
+	return "";
+}
+#endif
+
+bool GitManager::_test_git_executable(const String &p_path) {
+	if (p_path.is_empty()) {
+		return false;
+	}
+	
+	// Skip wildcard paths for now
+	if (p_path.contains("*")) {
+		return false;
+	}
+	
+#ifdef WINDOWS_ENABLED
+	// On Windows, ensure file exists before attempting execution
+	if (p_path.is_absolute_path() && !FileAccess::exists(p_path)) {
+		return false;
+	}
+#endif
+	
+	List<String> version_args;
+	version_args.push_back("--version");
+	
+	String output;
+	int exit_code;
+	Error err = OS::get_singleton()->execute(p_path, version_args, &output, &exit_code, true, nullptr, false);
+	
+	bool is_valid = (err == OK && exit_code == 0 && output.contains("git version"));
+	
+	if (is_valid) {
+		print_line("Git found and verified: " + p_path);
+	}
+	
+	return is_valid;
+}
+

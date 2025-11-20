@@ -227,6 +227,12 @@ bool AIManualSnapshots::create_manual_snapshot(const String &p_name, const Strin
 		return false;
 	}
 	
+	// Check if git is available
+	if (!GitManager::is_git_available()) {
+		print_line("Manual snapshots require Git. Please install Git for Windows to enable this feature.");
+		return false;
+	}
+	
 	
 	// Get project root
 	String project_root = ProjectSettings::get_singleton()->globalize_path("res://");

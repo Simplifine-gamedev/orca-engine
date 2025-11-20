@@ -61,6 +61,11 @@ AICheckpointManager::CheckpointResult AICheckpointManager::create_comprehensive_
 	CheckpointResult result;
 	result.success = false;
 	
+	// Check if git is available - if not, gracefully disable checkpoints
+	if (!GitManager::is_git_available()) {
+		result.message = "Git not available - AI checkpoints disabled. Install Git for Windows to enable checkpoints.";
+		return result;
+	}
 	
 	// Get isolated checkpoint directory (separate from project git)
 	String checkpoint_dir = _get_checkpoint_directory(p_project_root);
@@ -114,6 +119,11 @@ AICheckpointManager::RestoreResult AICheckpointManager::restore_to_checkpoint(co
 	RestoreResult result;
 	result.success = false;
 	
+	// Check if git is available
+	if (!GitManager::is_git_available()) {
+		result.message = "Git not available - cannot restore checkpoints. Install Git for Windows to enable this feature.";
+		return result;
+	}
 	
 	// Get isolated checkpoint directory
 	String checkpoint_dir = _get_checkpoint_directory(p_project_root);
@@ -854,4 +864,5 @@ void AICheckpointManager::_refresh_phase_5_docks() {
 	}
 	
 }
+
 

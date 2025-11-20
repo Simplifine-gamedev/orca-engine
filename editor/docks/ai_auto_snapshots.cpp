@@ -155,6 +155,11 @@ void AIAutoSnapshots::show_auto_snapshots_dialog() {
 Vector<AIAutoSnapshots::AutoSnapshot> AIAutoSnapshots::_get_all_auto_snapshots() {
 	Vector<AutoSnapshot> snapshots;
 
+	// Auto snapshots require git - return empty if unavailable
+	if (!GitManager::is_git_available()) {
+		return snapshots;
+	}
+
 	String checkpoint_dir = _get_checkpoint_directory();
 	if (checkpoint_dir.is_empty() || !DirAccess::exists(checkpoint_dir)) {
 		return snapshots;

@@ -65,4 +65,8 @@ public:
 private:
 	static GitResult _execute_command(const String &p_executable, const List<String> &p_args, const String &p_working_dir = "");
 	static String _get_git_executable();
+	static bool _test_git_executable(const String &p_path);
+#ifdef WINDOWS_ENABLED
+	static String _windows_find_executable_in_path(const String &p_executable);
+#endif
 };
