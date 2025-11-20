@@ -9476,12 +9476,13 @@ def initialize_autumn():
         
         user_id = data.get('user_id')
         user_email = data.get('user_email')
+        user_name = data.get('user_name')
         
         if not user_id:
             return jsonify({"error": "user_id required", "success": False}), 400
         
         # Initialize Autumn account (creates customer + assigns Free plan if new)
-        customer_data = pricing_service.initialize_customer(user_id, user_email)
+        customer_data = pricing_service.initialize_customer(user_id, user_email, user_name)
         
         if "error" in customer_data:
             return jsonify({
