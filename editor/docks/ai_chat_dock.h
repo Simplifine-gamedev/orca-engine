@@ -739,6 +739,9 @@ private:
 	// Emergency conversation saving
 	void _emergency_save_conversations();
 	
+	// Safe restore verification and save
+	void _save_after_restore_verified();
+	
 	// Safe edit message handling
 	void _send_edited_message_safely(int p_message_index, const String &p_content);
 	void _on_restore_and_send_pressed(int p_message_index, const String &p_content);

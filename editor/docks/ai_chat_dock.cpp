@@ -212,6 +212,9 @@ void AIChatDock::_bind_methods() {
 	// Emergency conversation saving
 	ClassDB::bind_method(D_METHOD("_emergency_save_conversations"), &AIChatDock::_emergency_save_conversations);
 	
+	// Safe restore verification and save
+	ClassDB::bind_method(D_METHOD("_save_after_restore_verified"), &AIChatDock::_save_after_restore_verified);
+	
 	// Large file safety methods
 	ClassDB::bind_method(D_METHOD("_retry_load_after_trim", "file_path"), &AIChatDock::_retry_load_after_trim);
 	ClassDB::bind_method(D_METHOD("_attempt_recovery_and_reload"), &AIChatDock::_attempt_recovery_and_reload);
@@ -500,6 +503,23 @@ void AIChatDock::_emergency_save_conversations() {
     
     // Attempt robust save using old system for now (will enhance later)
     _save_conversations();
+}
+
+void AIChatDock::_save_after_restore_verified() {
+    // Only save after restore is fully complete and UI is rebuilt
+    if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+        // Verify conversation has messages before saving
+        if (conversations[current_conversation_index].messages.size() > 0) {
+            _queue_delayed_save();
+        } else {
+            // Empty conversation after restore = something went wrong
+            // Try to recover from backup instead of saving empty state
+            if (conversation_persistence) {
+                conversation_persistence->recover_from_corruption();
+                _load_conversations();
+            }
+        }
+    }
 }
 
 
@@ -1576,7 +1596,39 @@ void AIChatDock::_notification(int p_notification) {
 			}
 			String mode = (!is_dev_env.is_empty() && is_dev_env.to_lower() == "true") ? String("DEV") : String("PROD");
 		} break;
+			case NOTIFICATION_CRASH: {
+				// CRITICAL: Crash detected - perform IMMEDIATE save to prevent data loss
+				
+				// Stop all timers to prevent race conditions
+				if (save_timer) {
+					save_timer->stop();
+				}
+				
+				// Wait for any running save thread to complete
+				if (save_thread_busy && save_thread) {
+					save_thread->wait_to_finish();
+					memdelete(save_thread);
+					save_thread = nullptr;
+					save_thread_busy = false;
+				}
+				
+				// Create emergency backup SYNCHRONOUSLY
+				if (conversation_persistence) {
+					conversation_persistence->create_emergency_backup();
+				}
+				
+				// Perform immediate synchronous save (no delays, no deferred calls)
+				_save_conversations();
+				
+			} break;
 			case NOTIFICATION_EXIT_TREE: {
+				// NEW: Handle orphaned pending save
+				// If save was queued but thread never started, save now
+				if (save_pending && !save_thread_busy) {
+					save_pending = false;
+					_save_conversations();  // Synchronous save before exit
+				}
+				
 				// Final flush save to ensure no data loss on exit
 				if (save_timer) {
 					save_timer->stop();
@@ -2252,7 +2304,7 @@ void AIChatDock::_send_edited_message_safely(int p_message_index, const String &
 	
 	// CRITICAL: Emergency save after editing message
 	if (conversation_persistence) {
-		call_deferred("_emergency_save_conversations");
+		_emergency_save_conversations();  // Immediate, not deferred
 	}
 	
 	// Send the request as if it's a new message
@@ -2951,7 +3003,12 @@ void AIChatDock::_execute_delayed_save() {
 	};
 	
 	SaveData *save_data = memnew(SaveData);
-	save_data->snapshot = memnew(Vector<Conversation>(conversations));
+	{
+		// CRITICAL: Protect conversations vector access with mutex to prevent race conditions
+		// between main thread modifying conversations and background thread reading
+		MutexLock lock(save_mutex);
+		save_data->snapshot = memnew(Vector<Conversation>(conversations));
+	}
 	save_data->instance = this;
 	save_data->file_path = conversations_file_path;
 	
@@ -6042,7 +6099,7 @@ void AIChatDock::_add_message_to_chat(const String &p_role, const String &p_cont
 	
 	// CRITICAL: Emergency save after adding user messages (these are irreplaceable!)
 	if (p_role == "user" && conversation_persistence) {
-		call_deferred("_emergency_save_conversations");
+		_emergency_save_conversations();  // Immediate, not deferred
 	}
 	// Show tool call placeholders immediately for better UX
 	if (p_role == "assistant" && !p_tool_calls.is_empty()) {
@@ -13353,7 +13410,7 @@ void AIChatDock::_create_new_conversation() {
 	
 	// CRITICAL: Emergency save after creating new conversation
 	if (conversation_persistence) {
-		call_deferred("_emergency_save_conversations");
+		_emergency_save_conversations();  // Immediate, not deferred
 	}
 	
 	// Clear pending edits
@@ -17777,7 +17834,7 @@ void AIChatDock::_add_pending_edit(const String &p_tool_call_id, const String &p
 	
 	// CRITICAL: Emergency save after adding pending edits (these are important!)
 	if (conversation_persistence) {
-		call_deferred("_emergency_save_conversations");
+		_emergency_save_conversations();  // Immediate, not deferred
 	}
 	
 }
@@ -18427,10 +18484,11 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     // Rebuild conversation UI
     _rebuild_conversation_ui(chat_history);
     
-    // Save conversation
+    // Save conversation AFTER restore completes and UI is rebuilt
+    // Don't save immediately - wait for restore to complete fully to avoid saving truncated state
     if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
         conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
-        _queue_delayed_save();
+        call_deferred("_save_after_restore_verified");
     }
     
     // Trigger comprehensive editor refresh (5-phase process)

@@ -414,34 +414,39 @@ bool AIConversationPersistence::recover_from_corruption() {
         return false;
     }
     
-    // Find the LARGEST EMERGENCY backup (most likely to contain real data, not empty corruption)
+    // Find the NEWEST valid EMERGENCY backup (most recent state)
     PackedStringArray files = da->get_files();
-    String largest_emergency;
-    int64_t largest_size = 0;
+    String newest_emergency;
+    int64_t newest_time = 0;
     
     for (int i = 0; i < files.size(); i++) {
         String file = files[i];
         if (file.begins_with("EMERGENCY_backup_") && file.ends_with(".simplifine")) {
+            // Extract timestamp from filename: "EMERGENCY_backup_1234567890.simplifine"
+            String time_str = file.substr(17, file.length() - 17 - 11);
+            int64_t time = time_str.to_int();
+            
+            // Validate the backup is not corrupt and has reasonable size
             String backup_path = backup_directory.path_join(file);
             Ref<FileAccess> size_check = FileAccess::open(backup_path, FileAccess::READ);
             if (size_check.is_valid()) {
                 int64_t file_size = size_check->get_length();
                 size_check->close();
                 
-                // Skip tiny files (likely empty conversations or corruption)
-                if (file_size > 1000 && file_size > largest_size) {  
-                    largest_size = file_size;
-                    largest_emergency = file;
+                // Pick newest backup that's not obviously corrupt (> 100 bytes)
+                if (file_size > 100 && time > newest_time) {  
+                    newest_time = time;
+                    newest_emergency = file;
                 }
             }
         }
     }
     
-    if (largest_emergency.is_empty()) {
+    if (newest_emergency.is_empty()) {
         return false;
     }
     
-    String emergency_path = backup_directory.path_join(largest_emergency);
+    String emergency_path = backup_directory.path_join(newest_emergency);
     
     Error err;
     String backup_content = FileAccess::get_file_as_string(emergency_path, &err);
