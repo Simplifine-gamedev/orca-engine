@@ -506,17 +506,24 @@ void AIChatDock::_emergency_save_conversations() {
 }
 
 void AIChatDock::_save_after_restore_verified() {
+    print_line("[RESTORE] Save verification triggered");
     // Only save after restore is fully complete and UI is rebuilt
     if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
+        int message_count = conversations[current_conversation_index].messages.size();
+        print_line("[RESTORE] Current conversation has " + String::num_int64(message_count) + " messages");
+        
         // Verify conversation has messages before saving
-        if (conversations[current_conversation_index].messages.size() > 0) {
+        if (message_count > 0) {
+            print_line("[RESTORE] ✅ Verification passed - queuing delayed save");
             _queue_delayed_save();
         } else {
             // Empty conversation after restore = something went wrong
             // Try to recover from backup instead of saving empty state
+            print_line("[RESTORE] ⚠️ WARNING: Empty conversation detected - attempting recovery");
             if (conversation_persistence) {
                 conversation_persistence->recover_from_corruption();
                 _load_conversations();
+                print_line("[RESTORE] Recovery attempted and conversations reloaded");
             }
         }
     }
@@ -3006,7 +3013,7 @@ void AIChatDock::_execute_delayed_save() {
 	{
 		// CRITICAL: Protect conversations vector access with mutex to prevent race conditions
 		// between main thread modifying conversations and background thread reading
-		MutexLock lock(save_mutex);
+		MutexLock lock(*save_mutex);  // Dereference pointer to get Mutex reference
 		save_data->snapshot = memnew(Vector<Conversation>(conversations));
 	}
 	save_data->instance = this;
@@ -18435,40 +18442,51 @@ void AIChatDock::_on_restore_checkpoint_confirmed() {
 }
 
 bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
+    print_line("[RESTORE] Starting checkpoint restore to message index: " + String::num_int64(p_message_index));
     
     // CRITICAL PRE-RESTORE FIX: Clear ALL preview overlays IMMEDIATELY
     // This was the bug causing NewScript.gd to show old cached content!
     EditorTools::clear_all_preview_overlays();
+    print_line("[RESTORE] Cleared preview overlays");
     
     // Delegate to AICheckpointManager for comprehensive restoration
     String project_root = _get_project_root_path();
+    print_line("[RESTORE] Project root: " + project_root);
     
 	EditorNode *editor_node = EditorNode::get_singleton();
 	bool external_changes_suppressed = false;
 	if (editor_node) {
 		editor_node->set_external_changes_suppressed(true);
 		external_changes_suppressed = true;
+		print_line("[RESTORE] Suppressed external change notifications");
 	}
 
+    print_line("[RESTORE] Calling AICheckpointManager::restore_to_checkpoint()");
     AICheckpointManager::RestoreResult restore_result = 
         AICheckpointManager::restore_to_checkpoint(project_root, p_message_index);
     
     if (!restore_result.success) {
+		print_line("[RESTORE] FAILED: " + restore_result.message);
 		if (external_changes_suppressed && editor_node) {
 			editor_node->set_external_changes_suppressed(false);
 		}
         return false;
     }
     
+    print_line("[RESTORE] Git restore successful!");
+    
     // Restore was successful - now update conversation and UI
     
     // Restore conversation to match the checkpoint
     Vector<AIChatDock::ChatMessage> &chat_history = _get_current_chat_history();
+    int original_size = chat_history.size();
+    print_line("[RESTORE] Chat history before truncation: " + String::num_int64(original_size) + " messages");
     
     int messages_removed = chat_history.size() - (p_message_index + 1);
     while (chat_history.size() > p_message_index + 1) {
         chat_history.remove_at(chat_history.size() - 1);
     }
+    print_line("[RESTORE] Removed " + String::num_int64(messages_removed) + " messages, new size: " + String::num_int64(chat_history.size()));
     
     
     // Clear UI
@@ -18482,16 +18500,19 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
     }
     
     // Rebuild conversation UI
+    print_line("[RESTORE] Rebuilding conversation UI with " + String::num_int64(chat_history.size()) + " messages");
     _rebuild_conversation_ui(chat_history);
     
     // Save conversation AFTER restore completes and UI is rebuilt
     // Don't save immediately - wait for restore to complete fully to avoid saving truncated state
     if (current_conversation_index >= 0 && current_conversation_index < conversations.size()) {
         conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+        print_line("[RESTORE] Queuing deferred save verification (prevents saving truncated state)");
         call_deferred("_save_after_restore_verified");
     }
     
     // Trigger comprehensive editor refresh (5-phase process)
+    print_line("[RESTORE] Queuing comprehensive editor refresh");
     call_deferred("_force_complete_editor_refresh");
     
     // Reopen scripts and scene that were open before
@@ -18516,8 +18537,10 @@ bool AIChatDock::_restore_from_checkpoint(int p_message_index) {
 
 	if (external_changes_suppressed && editor_node) {
 		editor_node->set_external_changes_suppressed(false);
+		print_line("[RESTORE] Re-enabled external change notifications");
 	}
     
+    print_line("[RESTORE] ✅ Restore completed successfully!");
     return true;
 }
 
