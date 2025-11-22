@@ -130,7 +130,7 @@ _godot_tools_template = [
                             "scene.open", "scene.create", "scene.save_as", "scene.instantiate", "scene.instantiate_batch",
                             "scene.analyze", "scene.info", "scene.nodes.get_all",
                             "scene.nodes.find_by_type", "editor.selection.get",
-                            "scene.bulk_configure", "scene.copy_configuration",
+                            "scene.bulk_configure", "scene.copy_configuration", "scene.validate_physics_bodies",
                             # Node CRUD & type
                             "node.create", "node.create_batch", "node.delete", "node.delete_batch", "node.move",
                             "node.type.change", "node.type.set", "node.rename",
@@ -143,12 +143,11 @@ _godot_tools_template = [
                             # Props & methods  
                             "node.props.get", "node.props.set_batch", "node.mesh.set_properties", "node.method.call",
                             # Resources & collisions
-                            "node.assign_resource", "node.add_collision",
+                            "node.assign_resource", "node.add_collision", "node.fix_physics_body",
                             # Signals & connections
                             "signals.list_node_signals", "signals.list_connections",
                             "signals.list_incoming_connections", "signals.connect",
-                            "signals.disconnect", "signals.validate", "signals.open_dialog",
-                            "signals.trace.start", "signals.trace.stop", "signals.trace.events"
+                            "signals.disconnect", "signals.validate", "signals.open_dialog"
                         ],
                         "description": "Operation selector"
                     },
@@ -252,6 +251,10 @@ _godot_tools_template = [
                     # Collision
                     "node_path": {"type": "string"},
                     "shape_type": {"type": "string", "enum": ["rectangle", "circle", "capsule", "box", "box3d", "sphere", "sphere3d", "capsule3d", "convex", "convex3d", "trimesh", "trimesh3d"]},
+                    
+                    # Physics body auto-fix (for node.fix_physics_body)
+                    "fix_mode": {"type": "string", "enum": ["auto", "collision_to_sprite", "sprite_to_collision", "align_only"], "default": "auto", "description": "How to fix physics body issues: 'auto' (fix all issues), 'collision_to_sprite' (resize collision to match sprite), 'sprite_to_collision' (resize/create sprite to match collision), 'align_only' (just align positions)"},
+                    "create_missing": {"type": "boolean", "default": True, "description": "Whether to create missing components (CollisionShape2D or Sprite2D)"},
 
                     # Bulk/copy config
                     "transformations": {"type": "object"},
@@ -319,10 +322,7 @@ _godot_tools_template = [
                     "flags": {"type": "integer"},
                     "node_paths": {"type": "array", "items": {"type": "string"}},
                     "signals": {"type": "array", "items": {"type": "string"}},
-                    "include_args": {"type": "boolean", "default": False},
-                    "max_events": {"type": "integer", "default": 100},
-                    "trace_id": {"type": "string"},
-                    "since_index": {"type": "integer"}
+                    "include_args": {"type": "boolean", "default": False}
                 },
                 "required": ["op"]
             }
@@ -364,7 +364,7 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "resource_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Create/inspect/modify/assign resources, load & assign, import options and reimport, image ops, and spritesheet slicing. IMPORTANT: If 'image.generate_or_edit' includes 'path_to_save', the image is automatically saved - do NOT call 'image.save' separately. Common operations: 'res.create' (create resource), 'res.inspect' (inspect resource), 'image.generate_or_edit' (generate/edit images).",
+            "description": "REQUIRED: Always specify 'op' parameter. Create/inspect/modify/assign resources, load & assign, import options and reimport, image ops, spritesheet slicing, and BATCH image creation. IMPORTANT: If 'image.generate_or_edit', 'image.create_isolated_object', or 'image.create_batch' includes 'path_to_save', images are automatically saved - do NOT call 'image.save' separately. Common operations: 'res.create' (create resource), 'res.inspect' (inspect resource), 'image.generate_or_edit' (single image), 'image.create_isolated_object' (single isolated object), 'image.create_batch' (multiple images in parallel - great for game assets like weapons, characters, items).",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -377,7 +377,7 @@ _godot_tools_template = [
                             "res.load_and_assign", "res.create_and_assign",
                             "import.set_options", "import.reimport",
                             "shader.clear_cache", "shader.force_recompile", "shader.debug_cache",
-                            "image.generate_or_edit", "image.save", "image.slice_spritesheet"
+                            "image.generate_or_edit", "image.create_isolated_object", "image.save", "image.slice_spritesheet", "image.create_batch"
                         ]
                     },
                     "dry_run": {"type": "boolean", "default": False},
@@ -413,12 +413,22 @@ _godot_tools_template = [
                     "description": {"type": "string", "maxLength": 2000, "description": "Text description of the image to generate or edit. Keep descriptions concise (under 2000 chars) for reliable JSON parsing. Focus on key visual elements and style."},
                     "images": {"type": "array", "items": {"type": "string"}, "description": "Array of image IDs to edit (leave empty to generate new image). Use image IDs from previous conversation like 'generated_abc123' or 'edited_def456'"},
                     "style": {"type": "string", "description": "Art style for the image (e.g., 'pixel art', 'photorealistic', '3D render')"},
+                    "image_type": {"type": "string", "enum": ["general", "texture", "sprite", "icon", "background"], "default": "general", "description": "Type of image being generated: 'texture' (seamless tileable material), 'sprite' (character/object), 'icon' (UI symbol), 'background' (scene backdrop), 'general' (any image)"},
                     "size": {"type": "string"},
                     "exact_size": {"type": "string"},
                     "tile_size": {"type": "string"},
                     "grid": {"type": "string"},
                     "resize_filter": {"type": "string", "enum": ["nearest", "bilinear", "bicubic", "lanczos"], "default": "lanczos"},
                     "path_to_save": {"type": "string", "description": "OPTIONAL: Path to save the generated/edited image (e.g., 'res://art/texture.png'). If provided, the image will be automatically saved. If not provided, use the separate 'image.save' operation later."},
+
+                    # Isolated object creation (for icons, symbols, etc.)
+                    "object_description": {"type": "string", "maxLength": 1500, "description": "Description of the standalone object to create (icons, symbols, characters, etc.). For image.create_isolated_object operation only. Will automatically add instructions for white background and transparent extraction."},
+                    "input_image_path": {"type": "string", "description": "Path to input image for editing existing drawings into isolated objects. Used with image.create_isolated_object when editing existing images. Can be a file path or image ID."},
+                    "input_image_id": {"type": "string", "description": "Reference to an image from conversation context. Accepts exact IDs like 'img_123_foo', generated IDs like 'generated_ab12cd34', or numeric forms '#1', '[1]', '1' referring to the Nth most recent image."},
+                    "white_threshold": {"type": "integer", "default": 240, "minimum": 180, "maximum": 255, "description": "RGB threshold for white background detection (180-255). Higher values = more strict white detection. Used with image.create_isolated_object."},
+                    "target_resolution": {"type": "integer", "default": 128, "description": "Target resolution for the isolated object (e.g., 8, 16, 32, 64, 128, 256, 512, 1024). Default is 128x128 for optimal icon/sprite size. Use -1 for original size. Maintains aspect ratio when resizing. Used with image.create_isolated_object."},
+                    # For isolated objects specifically
+                    "object_type": {"type": "string", "enum": ["sprite", "icon"], "default": "sprite", "description": "Type of isolated object: 'sprite' (game characters/objects), 'icon' (UI symbols/buttons). Used with image.create_isolated_object only."},
 
                     # Image save
                     "image_id": {"type": "string", "description": "ID of the image from conversation (e.g., 'generated_abc123', 'edited_def456')"},
@@ -437,7 +447,38 @@ _godot_tools_template = [
                     "tight_crop": {"type": "boolean", "default": True},
                     "padding": {"type": "integer", "default": 0},
                     "fuzzy": {"type": "integer", "default": 2},
-                    "normalize_to": {"type": "string"}
+                    "normalize_to": {"type": "string"},
+
+                    # Batch image creation
+                    "image_requests": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {"type": "string", "maxLength": 1500, "description": "Description of the image to create"},
+                                "method": {"type": "string", "enum": ["general", "isolated_object", "isolated"], "default": "general", "description": "Creation method: 'general' for textures/backgrounds/sprites, 'isolated_object'/'isolated' for transparent objects/icons"},
+                                "style": {"type": "string", "description": "Art style override for this specific image (optional, uses global_style if not specified)"},
+                                "image_type": {"type": "string", "enum": ["general", "texture", "sprite", "icon", "background"], "default": "general", "description": "Type hint for image generation"},
+                                "size": {"type": "string", "description": "Size override for this image (optional, uses global_size if not specified)"},
+                                "exact_size": {"type": "string", "description": "Exact pixel size for this image"},
+                                "input_image_id": {"type": "string", "description": "Optional image ID to edit instead of creating new"},
+                                "object_type": {"type": "string", "enum": ["sprite", "icon"], "default": "sprite", "description": "For isolated objects: 'sprite' or 'icon'"},
+                                "target_resolution": {"type": "integer", "default": 128, "description": "For isolated objects: target resolution"},
+                                "white_threshold": {"type": "integer", "default": 240, "description": "For isolated objects: background removal threshold"},
+                                "path_to_save": {"type": "string", "description": "Optional specific path to save this image"},
+                                "tile_size": {"type": "string", "description": "For spritesheets: tile size"},
+                                "grid": {"type": "string", "description": "For spritesheets: grid layout"},
+                                "resize_filter": {"type": "string", "enum": ["nearest", "bilinear", "bicubic", "lanczos"], "default": "lanczos"}
+                            },
+                            "required": ["description", "method"]
+                        },
+                        "description": "Array of image creation requests. Each request specifies 'method' ('general' or 'isolated_object') and 'description'. Example: [{method: 'isolated_object', description: 'assault rifle icon', object_type: 'icon'}, {method: 'general', description: 'desert battlefield background', image_type: 'background'}]"
+                    },
+                    "global_style": {"type": "string", "description": "Default art style applied to all images in batch (e.g., 'pixel art', 'low poly', 'photorealistic'). Individual requests can override this."},
+                    "global_size": {"type": "string", "default": "1024x1024", "description": "Default size for all images in batch. Individual requests can override this."},
+                    "max_parallel": {"type": "integer", "default": 4, "minimum": 1, "maximum": 8, "description": "Maximum number of images to process in parallel (1-8, default 4)"},
+                    "timeout_per_image": {"type": "integer", "default": 120, "minimum": 30, "maximum": 300, "description": "Timeout per image in seconds (30-300, default 120)"},
+                    "save_base_path": {"type": "string", "description": "Base directory path for auto-saving batch images. If specified, images without individual path_to_save will be auto-saved here with generated names."}
                 },
                 "required": ["op"]
             }
@@ -548,12 +589,12 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "search_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Search across project and Godot docs with ENHANCED CONTEXT. Also provides multi-hop signal propagation, data flow tracing, cross-scene dependencies. Operations: 'project.search' (search files with context), 'signal.trace' (trace signal cascades), 'data_flow.analyze' (variable→signal→UI flow), 'export_var.trace' (trace export variable impacts), 'node_control.analyze' (which scripts control which nodes), 'group.trace_interactions' (group interaction analysis).",
+            "description": "REQUIRED: Always specify 'op' parameter. Search across project and Godot docs with ENHANCED CONTEXT. Operations: 'project.search' (search files with context), 'docs.search' (search Godot docs), 'scene.composition_tree' (analyze scene structure).",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "op": {"type": "string", "enum": ["project.search", "docs.search", "signal.trace", "signal.find_emitters", "signal.find_handlers", "data_flow.analyze", "export_var.trace", "node_control.analyze", "group.trace_interactions", "scene.composition_tree"]},
+                    "op": {"type": "string", "enum": ["project.search", "docs.search", "scene.composition_tree"]},
                     "query": {"type": "string"},
                     "max_results": {"type": "integer", "default": 5},
                     "include_graph": {"type": "boolean", "default": True},
@@ -561,7 +602,6 @@ _godot_tools_template = [
                     "modality_filter": {"type": "string", "enum": ["text", "image", "audio"]},
                     "project_root": {"type": "string"},
                     "project_id": {"type": "string"},
-                    "trace_dependencies": {"type": "boolean", "default": False},
                     "search_mode": {"type": "string", "enum": ["semantic", "keyword", "hybrid", "grep", "auto"], "default": "semantic"},
 
                     # Grep-specific options (only for grep mode)
@@ -573,28 +613,7 @@ _godot_tools_template = [
                     "section_filter": {"type": "string", "enum": ["overview", "methods", "properties", "signals"]},
                     "class_filter": {"type": "string"},
                     "difficulty": {"type": "string", "enum": ["beginner", "intermediate", "advanced"]},
-                    "code_examples_only": {"type": "boolean", "default": False},
-                    
-                    # Signal tracing parameters (for signal.* ops)
-                    "signal_name": {"type": "string", "description": "Signal name to trace (e.g., 'hit', 'game_over', 'score_changed')"},
-                    "file_path": {"type": "string", "description": "File path to start tracing from (e.g., 'player.gd', 'main.tscn')"},
-                    "max_depth": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5, "description": "Maximum cascade depth for multi-hop signal tracing (default: 3)"},
-                    "include_triggered_signals": {"type": "boolean", "default": True, "description": "Include signals triggered by handlers (for full cascade chains)"},
-                    
-                    # Data flow parameters (for data_flow.analyze)
-                    "start_variable": {"type": "string", "description": "Variable name to trace (e.g., 'score', 'health', 'mob_scene')"},
-                    "start_file": {"type": "string", "description": "File containing the variable to trace"},
-                    "include_ui_updates": {"type": "boolean", "default": True, "description": "Track how data flows to UI updates"},
-                    
-                    # Export variable tracing (for export_var.trace)
-                    "export_var_name": {"type": "string", "description": "Export variable name to trace (e.g., 'mob_scene', 'player_scene')"},
-                    
-                    # Node control analysis (for node_control.analyze)
-                    "node_name": {"type": "string", "description": "Node name to analyze control patterns for"},
-                    "scene_file": {"type": "string", "description": "Scene file containing the node"},
-                    
-                    # Group interaction tracing (for group.trace_interactions)
-                    "group_name": {"type": "string", "description": "Group name to trace interactions for (e.g., 'mobs', 'enemies', 'ui_elements')"}
+                    "code_examples_only": {"type": "boolean", "default": False}
                 },
                 "required": ["op"]
             }
@@ -758,27 +777,11 @@ _godot_tools_template = [
                     "op": {
                         "type": "string",
                         "enum": [
-                            # Runtime node properties
+                            # Basic runtime inspection
                             "runtime.node.get_props", "runtime.node.set_prop", 
                             "runtime.node.get_tree", "runtime.node.find_by_type",
-                            # Material/shader inspection
-                            "runtime.material.get", "runtime.material.set_param",
-                            "runtime.material.list_params", "runtime.material.get_shader_code",
-                            # Mesh inspection
-                            "runtime.mesh.get_arrays", "runtime.mesh.get_uv_info",
-                            "runtime.mesh.get_surface_count", "runtime.mesh.get_surface_material",
-                            # Environment/lighting
-                            "runtime.environment.get", "runtime.environment.set",
-                            "runtime.camera.get_exposure",
-                            # Debug helpers
-                            "runtime.watch.add", "runtime.watch.remove", "runtime.watch.get_values",
-                            "runtime.breakpoint.set", "runtime.breakpoint.clear",
                             # Help/info
-                            "runtime.debug.info", "help", "runtime.debug.tree_dump",
-                            # ADVANCED DIAGNOSTICS - The "System Observatory"
-                            "runtime.node.diagnose", "runtime.property.trace",
-                            "runtime.node.list_scripts", "runtime.script.analyze_effects",
-                            "runtime.node.get_full_state", "runtime.script.toggle"
+                            "runtime.debug.info", "help"
                         ],
                         "description": "Runtime inspection operation"
                     },
@@ -788,81 +791,13 @@ _godot_tools_template = [
                     "property": {"type": "string", "description": "Property name to get/set"},
                     "value": {"description": "Value to set for property"},
                     
-                    # Material/shader params
-                    "material_property": {"type": "string", "description": "Material property path (e.g., 'material_override', 'surface_material_override/0')"},
-                    "shader_param": {"type": "string", "description": "Shader parameter name"},
-                    "shader_value": {"description": "Shader parameter value"},
-                    "include_shader_code": {"type": "boolean", "default": False, "description": "Include shader source code"},
                     
-                    # Mesh params
-                    "surface_index": {"type": "integer", "description": "Mesh surface index"},
-                    "array_type": {"type": "string", "enum": ["vertex", "normal", "tangent", "color", "tex_uv", "tex_uv2", "custom0", "custom1", "custom2", "custom3", "bones", "weights", "index"], "description": "Type of mesh array to retrieve"},
-                    
-                    # Environment params
-                    "env_property": {"type": "string", "description": "Environment property (e.g., 'tonemap_mode', 'tonemap_exposure', 'tonemap_white')"},
-                    "env_value": {"description": "Environment property value"},
-                    
-                    # Watch/breakpoint params
-                    "watch_id": {"type": "string", "description": "Unique ID for watch"},
-                    "watch_expression": {"type": "string", "description": "Expression to watch"},
-                    "breakpoint_line": {"type": "integer", "description": "Line number for breakpoint"},
-                    "breakpoint_file": {"type": "string", "description": "Script file for breakpoint"},
                     
                     # Search/filter params
                     "type_filter": {"type": "string", "description": "Node type to filter by"},
                     "max_depth": {"type": "integer", "default": 10, "description": "Maximum tree depth to traverse"},
                     "include_internal": {"type": "boolean", "default": False, "description": "Include internal nodes"},
                     
-                    # ADVANCED DIAGNOSTICS params (System Observatory features)
-                    "script_path": {"type": "string", "description": "Path to script to analyze or toggle"},
-                    "enabled": {"type": "boolean", "description": "Enable/disable script (for runtime.script.toggle)"},
-                    "trace_duration": {"type": "number", "default": 1.0, "description": "How long to trace property changes (seconds)"},
-                    "include_callstack": {"type": "boolean", "default": True, "description": "Include script callstack in trace"},
-                    "compare_to_editor": {"type": "boolean", "default": False, "description": "Compare runtime values to editor values (for diagnose)"}
-                },
-                "required": ["op"]
-            }
-        }
-    },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "todo_manager",
-            "description": "Plan tracker for the AI. ONLY call after you've already run semantic search + graph.walk + file reads and need to organize the next steps.",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": ["todo.list", "todo.add", "todo.add_batch", "todo.update", "todo.remove", "todo.clear"],
-                        "description": "Todo operation (list/add/update/remove/clear)."
-                    },
-                    "project_root": {"type": "string", "description": "Project root/path used to scope the todo list."},
-                    "content": {"type": "string", "description": "Todo text (required for todo.add)."},
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "completed", "cancelled"],
-                        "description": "Status for todo.add/todo.update (defaults to 'pending')."
-                    },
-                    "items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": {"type": "string"},
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                    "default": "pending"
-                                }
-                            },
-                            "required": ["content"]
-                        },
-                        "description": "Batch payload for todo.add_batch"
-                    },
-                    "todo_id": {"type": "string", "description": "Todo identifier for update/remove operations."}
                 },
                 "required": ["op"]
             }

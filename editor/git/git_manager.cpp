@@ -428,15 +428,23 @@ String GitManager::_get_git_executable() {
 	Vector<String> git_candidates;
 	
 #ifdef WINDOWS_ENABLED
-	// WINDOWS PRODUCTION FIX: Use proper Windows path resolution
+	// WINDOWS VM-FRIENDLY FIX: Skip process-based detection in VMs
 	
-	// First, try using Windows 'where' command to find git in PATH
-	String where_result = _windows_find_executable_in_path("git");
-	if (!where_result.is_empty()) {
-		git_candidates.push_back(where_result);
+	// Check if we're in a problematic VM environment
+	bool likely_vm = _detect_virtualization_environment();
+	
+	if (likely_vm) {
+		// VM FALLBACK: Only check file existence, no process execution
+		print_line("Detected VM environment - using file-based git detection");
+	} else {
+		// Try using Windows 'where' command to find git in PATH  
+		String where_result = _windows_find_executable_in_path("git");
+		if (!where_result.is_empty()) {
+			git_candidates.push_back(where_result);
+		}
 	}
 	
-	// Add explicit paths for common Windows git installations
+	// Always add these paths for both VM and native Windows
 	git_candidates.push_back("git.exe");
 	git_candidates.push_back("git");
 	
@@ -479,6 +487,7 @@ String GitManager::_get_git_executable() {
 		if (_test_git_executable(candidate)) {
 			cached_git_path = candidate;
 			search_completed = true;
+			print_line("Selected git executable: " + candidate);
 			return candidate;
 		}
 	}
@@ -487,11 +496,26 @@ String GitManager::_get_git_executable() {
 	search_completed = true;
 	cached_git_path = "";
 	
+#ifdef WINDOWS_ENABLED
+	// Only show this message once, not on every git operation
+	static bool error_shown = false;
+	if (!error_shown) {
+		print_line("Git not found on Windows. AI Chat features requiring git will be disabled.");
+		print_line("To enable: Install Git for Windows from https://git-scm.com/download/win");
+		error_shown = true;
+	}
+#endif
+	
 	return "";
 }
 
 #ifdef WINDOWS_ENABLED
 String GitManager::_windows_find_executable_in_path(const String &p_executable) {
+	// Skip 'where' command in VMs as it often fails
+	if (_detect_virtualization_environment()) {
+		return "";
+	}
+	
 	// Use Windows 'where' command to find executable in PATH
 	List<String> where_args;
 	where_args.push_back(p_executable);
@@ -513,6 +537,38 @@ String GitManager::_windows_find_executable_in_path(const String &p_executable) 
 	
 	return "";
 }
+
+bool GitManager::_detect_virtualization_environment() {
+	// Check for common VM indicators
+	
+	// Check for Parallels Desktop
+	String computer_name = OS::get_singleton()->get_environment("COMPUTERNAME");
+	if (computer_name.contains("Parallels") || computer_name.contains("parallels")) {
+		return true;
+	}
+	
+	// Check for VMware
+	String processor = OS::get_singleton()->get_environment("PROCESSOR_IDENTIFIER");
+	if (processor.contains("VMware") || processor.contains("vmware")) {
+		return true;
+	}
+	
+	// Check for VirtualBox
+	if (processor.contains("VirtualBox") || processor.contains("virtualbox")) {
+		return true;
+	}
+	
+	// Check for Hyper-V
+	if (processor.contains("Hyper-V") || processor.contains("hyper-v")) {
+		return true;
+	}
+	
+	// Check system manufacturer for VM indicators
+	// Note: This would require WMI calls which are complex, so we skip for now
+	
+	// If we can't determine, assume not a VM (safer for compatibility)
+	return false;
+}
 #endif
 
 bool GitManager::_test_git_executable(const String &p_path) {
@@ -526,12 +582,35 @@ bool GitManager::_test_git_executable(const String &p_path) {
 	}
 	
 #ifdef WINDOWS_ENABLED
-	// On Windows, ensure file exists before attempting execution
+	// VM COMPATIBILITY: In problematic VM environments, use file existence only
+	bool is_vm = _detect_virtualization_environment();
+	
+	if (is_vm) {
+		// For VMs, just check if the file exists and assume it's valid
+		if (p_path.is_absolute_path()) {
+			bool exists = FileAccess::exists(p_path);
+			if (exists) {
+				print_line("Git found (VM mode - file check only): " + p_path);
+			}
+			return exists;
+		} else {
+			// For relative paths like "git.exe", assume they work if we're in VM
+			// This is necessary because process execution often fails in VMs
+			if (p_path == "git.exe" || p_path == "git") {
+				print_line("Git assumed available (VM mode): " + p_path);
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	// On Windows (non-VM), ensure file exists before attempting execution
 	if (p_path.is_absolute_path() && !FileAccess::exists(p_path)) {
 		return false;
 	}
 #endif
 	
+	// Normal execution test for non-VM environments
 	List<String> version_args;
 	version_args.push_back("--version");
 	

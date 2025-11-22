@@ -14,6 +14,8 @@
 #include "core/templates/hash_set.h"
 
 class Node;
+class Sprite2D;
+class CollisionShape2D;
 
 class EditorTools : public Object {
 	GDCLASS(EditorTools, Object);
@@ -214,6 +216,10 @@ public:
 	static Dictionary set_node_properties_pattern(const Dictionary &p_args);      // { node_pattern:String, property_pattern:String, value_pattern:Variant }
 	static Dictionary delete_nodes_pattern(const Dictionary &p_args);             // { node_pattern:String }
 	static Dictionary assign_resource_pattern(const Dictionary &p_args);          // { node_pattern:String, property_pattern:String, resource_path_pattern:String }
+	
+	// Scene validation functions
+	static Dictionary validate_scene_physics_bodies();                            // Returns Array of validation warnings for current scene
+	static Dictionary auto_fix_physics_body(const Dictionary &p_args);           // Automatically fix physics body issues
 
 private:
 	// CRITICAL FIX (ORCA-TOOL-731): Scene tree refresh helper to prevent stale node references
@@ -225,4 +231,16 @@ private:
 	// CRITICAL FIX: Parameter normalization and error enhancement
 	static Dictionary _normalize_parameters(const Dictionary &p_args);
 	static Dictionary _create_enhanced_error(const String &p_error_code, const String &p_base_message, const Dictionary &p_context);
+	
+	// Scene validation helper functions
+	static void _check_physics_body_recursive(Node *p_node, Array &p_warnings);
+	static Dictionary _validate_physics_body_completeness(Node *p_physics_body);
+	static Dictionary _check_sprite_collision_alignment(Sprite2D *p_sprite, CollisionShape2D *p_collision, const String &p_body_name);
+	static Rect2 _get_sprite_effective_bounds(Sprite2D *p_sprite);
+	static Rect2 _get_collision_effective_bounds(CollisionShape2D *p_collision);
+	// Physics body auto-fix helper functions
+	static Dictionary _create_matching_collision_shape(Node *p_physics_body, Sprite2D *p_sprite);
+	static Dictionary _create_placeholder_sprite(Node *p_physics_body, CollisionShape2D *p_collision);
+	static Dictionary _resize_collision_to_match_sprite(CollisionShape2D *p_collision, Sprite2D *p_sprite);
+	static Dictionary _align_sprite_and_collision(Sprite2D *p_sprite, CollisionShape2D *p_collision);
 }; 

@@ -26,6 +26,26 @@ CONTEXT MEMORY PROTOCOL:
 - Understand resource dependencies
 - Keep architectural patterns in mind
 
+## Scene Validation Warnings System
+
+If scene validation warnings appear at the end of a user message, they indicate potential physics body setup issues:
+
+**WARNING TYPES:**
+- **Missing Components**: Physics bodies with only Sprite2D (no collision) or only CollisionShape2D (no visual)
+- **Size Mismatches**: Collision shapes that don't match sprite dimensions
+- **Position Misalignments**: Collision and sprite centers that don't align properly
+
+**RESPONSE PROTOCOL:**
+- Address validation warnings when they impact functionality or user requests
+- Explain the issue clearly to help users understand why it matters
+- Fix issues proactively if they would break game mechanics
+- Use `scene_manager(op='scene.validate_physics_bodies')` to check current scene status
+
+## Image Generation
+
+For `image.generate_or_edit` - use `image_type`: "texture" (seamless patterns), "background" (environments), or "general".
+For `image.create_isolated_object` - use `object_type`: "sprite" (game objects/characters) or "icon" (UI symbols).
+
 ## Core Workflow (MANDATORY)
 
 **ALWAYS start by gathering deep context before making ANY changes:**
@@ -185,6 +205,8 @@ The enhanced graph gives you architectural understanding WITHOUT reading every f
 - `scene_manager`: `op='node.create'`, `op='scene.nodes.get_all'`
 - `script_manager`: `op='compile.check'`, `op='script.attach'`
 - `resource_manager`: `op='image.generate_or_edit'`, `op='res.create'`
+  - For `image.generate_or_edit` with a `path`/`path_to_save`, images are saved client-side.
+  - Default save resolution is 128x128 unless you explicitly specify an exact size (e.g. `exact_size: "512x512"`) or a target resolution in the tool arguments.
 - `settings_manager`: `op='project_settings.set'`, `op='autoload.add'`
 - `search_manager`: `op='project.search'`, `op='docs.search'`, `op='signal.trace'`, `op='data_flow.analyze'`, `op='export_var.trace'`, `op='node_control.analyze'`, `op='group.trace_interactions'`, `op='scene.composition_tree'`
 - `graph_manager`: `op='graph.walk'`, `op='graph.neighbors'`

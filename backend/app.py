@@ -40,6 +40,7 @@ from tool_logger import log_tool_call, log_tool_result
 from version_checker import version_checker
 from todo_store import TodoStore
 from autumn_integration import AutumnPricingService
+from nano_banana import generate_image_from_text, generate_image_from_image_and_text, generate_standalone_object, transparent_bg_image_gen
 
 # app = Flask(__name__)
 # CORS(app)
@@ -1196,10 +1197,43 @@ def _get_openai_preferred_model() -> tuple[str, str]:
 
 ALLOWED_CHAT_MODELS = set(MODEL_MAP.keys())
 
-# Keep OpenAI client for image operations (LiteLLM doesn't support images yet)
+# --- Simple In-Memory Image Cache for Edits ---
+# Allows referencing images by image_id (e.g. 'generated_abc123') without requiring the
+# full base64 to be present in conversation history. Prevents token bloat and enables edits.
+from collections import OrderedDict
+_MAX_IMAGE_CACHE = int(os.getenv('IMAGE_CACHE_SIZE', '64'))
+_IMAGE_CACHE = OrderedDict()  # image_id -> {'base64': str, 'width': int|None, 'height': int|None, 'format': str}
+
+def _cache_image(image_id: str, base64_data: str, width: int | None, height: int | None, fmt: str = "png") -> None:
+    try:
+        if not image_id or not base64_data:
+            return
+        if image_id in _IMAGE_CACHE:
+            del _IMAGE_CACHE[image_id]
+        _IMAGE_CACHE[image_id] = {"base64": base64_data, "width": width, "height": height, "format": fmt}
+        # Enforce LRU size
+        while len(_IMAGE_CACHE) > _MAX_IMAGE_CACHE:
+            evicted_id, _ = _IMAGE_CACHE.popitem(last=False)
+            print(f"IMAGE_CACHE: Evicted '{evicted_id}' (LRU)")
+    except Exception as e:
+        print(f"IMAGE_CACHE_ERROR: {e}")
+
+def _get_cached_image(image_id: str) -> dict | None:
+    try:
+        item = _IMAGE_CACHE.get(image_id)
+        if item is None:
+            return None
+        # LRU bump
+        del _IMAGE_CACHE[image_id]
+        _IMAGE_CACHE[image_id] = item
+        return item
+    except Exception:
+        return None
+
+# Keep OpenAI client for other operations (image operations now use Nano Banana/Gemini)
 api_key = os.getenv('OPENAI_API_KEY')
 if not api_key:
-    print("WARNING: OPENAI_API_KEY not set - image operations will fail")
+    print("WARNING: OPENAI_API_KEY not set - some operations may fail")
     client = None
 else:
     client = openai.OpenAI(api_key=api_key)
@@ -1599,7 +1633,7 @@ def process_asset_internal(arguments: dict) -> dict:
 
 # --- Dynamic Image Operation Function ---
 def image_operation_internal(arguments: dict, conversation_messages: list = None) -> dict:
-    """Dynamic image generation or editing using OpenAI Images API.
+    """Dynamic image generation or editing using Nano Banana (Google Gemini 2.5 Flash Image).
 
     Behavior:
     - If no image IDs provided: generate a new image from prompt.
@@ -1611,7 +1645,19 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
     try:
         description = arguments.get('description', '')
         style = arguments.get('style', '')
+        image_type = arguments.get('image_type', 'general')
         image_ids = arguments.get('images', []) or []
+        
+        # CRITICAL FIX: Support both 'images' array AND 'input_image_id' string for editing
+        # Some AI models use input_image_id (singular) instead of images (array)
+        input_image_id = arguments.get('input_image_id') or arguments.get('input_image')
+        
+        print(f"🔍 IMAGE_OP_PARAMS: images_array={image_ids}, input_image_id={input_image_id}")
+        
+        if not image_ids and input_image_id:
+            image_ids = [input_image_id]
+            print(f"✅ IMAGE_OP: Converted input_image_id='{input_image_id}' to images array for editing")
+        
         size = arguments.get('size', '1024x1024')  # optional, may be arbitrary WxH
         # Exact pixel control parameters (optional)
         exact_size = arguments.get('exact_size') or arguments.get('size_exact')
@@ -1633,22 +1679,25 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
         path_to_save = arguments.get('path_to_save') or arguments.get('path')
 
         print("IMAGE_OP DEBUG: Incoming arguments:")
-        print(f"  - description len: {len(description)} | style: '{style}' | size: {size}")
+        print(f"  - description len: {len(description)} | style: '{style}' | image_type: '{image_type}' | size: {size}")
         if exact_size:
             print(f"  - exact_size: {exact_size}")
         if tile_size or grid:
             print(f"  - tile_size: {tile_size} | grid: {grid}")
         if isinstance(image_ids, list):
             print(f"  - requested image ids: {image_ids} (count={len(image_ids)})")
+            if len(image_ids) > 0:
+                print(f"  ✅ MODE: Will attempt to EDIT existing image(s)")
+            else:
+                print(f"  ⚠️  MODE: Will GENERATE new image (no image IDs provided)")
         else:
             print(f"  - images field type: {type(image_ids)} -> {image_ids}")
 
         if not description:
             return {"success": False, "error": "No description provided for image operation"}
 
-        prompt_text = description
-        if style:
-            prompt_text += f", {style} style"
+        # Build final prompt with image type-specific instructions
+        prompt_text = _build_contextualized_prompt(description, image_type, style)
 
         # If spritesheet spec is provided, append strict layout constraints for better consistency
         if isinstance(spritesheet, dict) and (grid or (spritesheet.get('rows') and spritesheet.get('cols'))):
@@ -1689,9 +1738,13 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                     for img in msg['images']:
                         name = img.get('name')
                         b64 = img.get('base64_data')
-                        if name and b64:
+                        if name:
+                            # Track image even if base64 is missing (will try backend cache)
                             available_images[name] = img
-                            print(f"      -> cached image '{name}' (base64 len={len(b64)})")
+                            if b64:
+                                print(f"      -> cached image '{name}' (base64 len={len(b64)})")
+                            else:
+                                print(f"      -> tracked image '{name}' (no base64, will use backend cache)")
                 
                 # Also log tool/assistant markers present in content
                 content_preview = str(msg.get('content', ''))[:120].replace('\n', ' ')
@@ -1699,6 +1752,28 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                     print(f"    - msg[{cm_index}] content mentions image id: '{content_preview}'")
         else:
             print("IMAGE_OP DEBUG: No conversation_messages provided or empty")
+
+        # Build ordered image list and numeric index mapping for convenience
+        ordered_image_keys = list(available_images.keys())
+        index_to_image_key = {str(i + 1): ordered_image_keys[i] for i in range(len(ordered_image_keys))}
+        # Accept brackets or hash-prefixed numbers like "#1", "[1]"
+        def _resolve_numeric_image_id(candidate: str) -> str | None:
+            try:
+                c = str(candidate).strip()
+                # strip wrappers
+                if c.startswith('#'):
+                    c = c[1:]
+                if c.startswith('[') and c.endswith(']'):
+                    c = c[1:-1]
+                # extract leading/trailing digits
+                import re
+                m = re.search(r'(\d+)', c)
+                if not m:
+                    return None
+                idx = m.group(1)
+                return index_to_image_key.get(idx)
+            except Exception:
+                return None
 
         selected_images = []
         for img_id in image_ids:
@@ -1713,6 +1788,33 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                         match = available_images[key]
                         debug_print(f"IMAGE_OP DEBUG: tolerant match for '{img_id}' -> '{key}'")
                         break
+                # Numeric index mapping (e.g., "1", "#1", "[1]") → first seen image
+                if match is None:
+                    resolved_key = _resolve_numeric_image_id(str(img_id))
+                    if resolved_key and resolved_key in available_images:
+                        match = available_images[resolved_key]
+                        debug_print(f"IMAGE_OP DEBUG: numeric index match for '{img_id}' -> '{resolved_key}'")
+                # Backend cache fallback (when frontend didn't include base64 in conversation)
+                if match is None:
+                    cached = _get_cached_image(str(img_id))
+                    if cached and isinstance(cached.get("base64"), str):
+                        match = {
+                            "name": str(img_id),
+                            "base64_data": cached["base64"],
+                        }
+                        print(f"IMAGE_OP: Using backend cached image for '{img_id}' (len={len(cached['base64'])})")
+            
+            # CRITICAL FIX: If found in conversation but no base64_data, try backend cache
+            if match and not match.get('base64_data'):
+                img_name = match.get('name', img_id)
+                cached = _get_cached_image(img_name)
+                if cached and isinstance(cached.get("base64"), str):
+                    match['base64_data'] = cached["base64"]
+                    print(f"IMAGE_OP: Retrieved base64 from cache for '{img_name}' ({len(cached['base64'])} chars)")
+                else:
+                    print(f"IMAGE_OP: WARNING - Image '{img_name}' in conversation but no base64 in cache!")
+                    match = None  # Can't use image without data
+            
             if match:
                 selected_images.append(match)
                 print(f"IMAGE_OP: Selected input image '{img_id}'")
@@ -1721,6 +1823,46 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
 
         print(f"IMAGE_OP DEBUG: available_images keys: {list(available_images.keys())}")
         print(f"IMAGE_OP DEBUG: selected_images count: {len(selected_images)}")
+        
+        if len(image_ids) > 0 and len(selected_images) == 0:
+            print(f"❌ IMAGE_MATCHING_FAILED: Requested {len(image_ids)} image(s) but matched 0!")
+            print(f"   Requested IDs: {image_ids}")
+            print(f"   Available IDs: {list(available_images.keys())}")
+            print(f"   🔍 DEBUGGING:")
+            for req_id in image_ids:
+                print(f"      Trying to match '{req_id}':")
+                if req_id in available_images:
+                    print(f"         ✓ Found exact match!")
+                else:
+                    print(f"         ✗ No exact match")
+                    # Try prefix matching
+                    for avail_key in available_images.keys():
+                        if str(avail_key).startswith(str(req_id)):
+                            print(f"         ✓ Found prefix match: '{avail_key}'")
+                            break
+            print(f"   ⚠️  This means the AI will GENERATE a new image instead of EDITING!")
+        elif len(selected_images) > 0:
+            print(f"✅ IMAGE_MATCHING_SUCCESS: Matched {len(selected_images)} image(s) for editing")
+            for img in selected_images:
+                print(f"   - Will edit: {img.get('name')} ({len(img.get('base64_data', ''))} chars base64)")
+
+        # Frontend-provided direct image data for editing (cloud-safe)
+        # Godot frontend injects 'image_data_for_editing' when AI specifies image IDs to edit.
+        if not selected_images:
+            try:
+                images_for_editing = arguments.get('image_data_for_editing') or []
+                if isinstance(images_for_editing, list) and images_for_editing:
+                    for idx, item in enumerate(images_for_editing):
+                        if isinstance(item, dict):
+                            b64 = item.get('base64_data')
+                            name = item.get('name') or f"edit_input_{idx}"
+                            if isinstance(b64, str) and len(b64) > 0:
+                                selected_images.append({"name": name, "base64_data": b64})
+                                print(f"IMAGE_OP: Using frontend-injected image data '{name}' (len={len(b64)})")
+                if selected_images:
+                    print(f"IMAGE_OP DEBUG: selected_images (from image_data_for_editing) count: {len(selected_images)}")
+            except Exception as e:
+                print(f"IMAGE_OP DEBUG: Failed to parse image_data_for_editing: {e}")
 
         # Helpers for size parsing and provider compatibility
         def _parse_size_str(val: str | None) -> tuple[int | None, int | None]:
@@ -1803,18 +1945,26 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
 
         # If no images selected, do text-to-image generation
         if not selected_images:
-            print("IMAGE_OP: Generating new image from prompt using Images API")
-            gen = client.images.generate(model="gpt-image-1", prompt=prompt_text, size=provider_size)
-            if not gen.data or not getattr(gen.data[0], 'b64_json', None):
-                return {"success": False, "error": "Image generation returned no data"}
-
-            image_base64 = gen.data[0].b64_json
+            print("IMAGE_OP: Generating new image from prompt using Nano Banana (Gemini)")
+            try:
+                image_base64, gen_w, gen_h = generate_image_from_text(
+                    prompt=prompt_text,
+                    size=provider_size
+                )
+            except Exception as e:
+                return {"success": False, "error": f"Image generation failed: {str(e)}"}
+            
             # Resize to exact target if requested
             image_base64, out_w, out_h = _maybe_resize_b64_to_exact(image_base64, t_w, t_h)
             
             # Generate unique image ID for conversation tracking
             image_id = f"generated_{uuid.uuid4().hex[:8]}"
-            
+            # Cache image for future edit references by ID
+            try:
+                _cache_image(image_id, image_base64, out_w, out_h, "png")
+            except Exception as _ce:
+                print(f"IMAGE_CACHE_STORE_ERROR: {image_id}: {_ce}")
+                
             result = {
                 "success": True,
                 "image_id": image_id,
@@ -1822,6 +1972,7 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 "image_data": image_base64,
                 "prompt": description,
                 "style": style,
+                "image_type": image_type,
                 "format": "png",
                 "width": out_w,
                 "height": out_h,
@@ -1843,53 +1994,32 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
             return result
 
         # If images provided, do an edit on the first one
-        print("IMAGE_OP: Performing edit on provided image using Images API")
+        print("IMAGE_OP: Performing edit on provided image using Nano Banana (Gemini)")
         first_img = selected_images[0]
         try:
-            img_bytes = base64.b64decode(first_img['base64_data'])
-            print(f"IMAGE_OP DEBUG: decoded first image bytes: {len(img_bytes)}")
+            input_image_base64 = first_img['base64_data']
+            print(f"IMAGE_OP DEBUG: input image base64 length: {len(input_image_base64)}")
         except Exception as decode_err:
-            return {"success": False, "error": f"Failed to decode input image '{first_img.get('name','unknown')}': {decode_err}"}
+            return {"success": False, "error": f"Failed to get input image '{first_img.get('name','unknown')}': {decode_err}"}
 
-        # Re-encode to PNG to ensure a valid image mimetype and structure
         try:
-            pil_image = Image.open(io.BytesIO(img_bytes))
-            print(f"IMAGE_OP DEBUG: PIL loaded size: {pil_image.size} | mode: {pil_image.mode}")
-        except Exception as pil_err:
-            return {"success": False, "error": f"Failed to load input image: {pil_err}"}
-
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                temp_path = tmp.name
-                pil_image.save(tmp, format="PNG")
-
-            with open(temp_path, "rb") as img_fh:
-                # Prefer images.edits if available in SDK; otherwise fall back to images.edit
-                images_api = getattr(client, 'images')
-                print(f"IMAGE_OP DEBUG: Using images API method: {'edits' if hasattr(images_api, 'edits') else 'edit'} | prompt len={len(prompt_text)}")
-                if hasattr(images_api, 'edits'):
-                    edit = images_api.edits(model="gpt-image-1", image=img_fh, prompt=prompt_text, size=provider_size)
-                else:
-                    # Older SDKs
-                    edit = images_api.edit(model="gpt-image-1", image=img_fh, prompt=prompt_text, size=provider_size)
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
-
-        if not edit.data or not getattr(edit.data[0], 'b64_json', None):
-            print("IMAGE_OP DEBUG: Edit API returned no data or missing b64_json")
-            return {"success": False, "error": "Image edit returned no data"}
-
-        image_base64 = edit.data[0].b64_json
+            image_base64, gen_w, gen_h = generate_image_from_image_and_text(
+                image_base64=input_image_base64,
+                prompt=prompt_text,
+                size=provider_size
+            )
+        except Exception as e:
+            return {"success": False, "error": f"Image editing failed: {str(e)}"}
         # Resize to exact target if requested
         image_base64, out_w, out_h = _maybe_resize_b64_to_exact(image_base64, t_w, t_h)
         
         # Generate unique image ID for edited image
         image_id = f"edited_{uuid.uuid4().hex[:8]}"
+        # Cache image for future edit references by ID
+        try:
+            _cache_image(image_id, image_base64, out_w, out_h, "png")
+        except Exception as _ce:
+            print(f"IMAGE_CACHE_STORE_ERROR: {image_id}: {_ce}")
         
         result = {
             "success": True,
@@ -1898,6 +2028,7 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
             "image_data": image_base64,
             "prompt": description,
             "style": style,
+            "image_type": image_type,
             "format": "png",
             "width": out_w,
             "height": out_h,
@@ -1921,6 +2052,657 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
     except Exception as e:
         print(f"IMAGE_OP ERROR: {str(e)}")
         return {"success": False, "error": f"Image operation failed: {str(e)}"}
+
+
+# --- Isolated Object Creation Function ---
+def create_isolated_object_internal(arguments: dict, conversation_messages: list = None) -> dict:
+    """Create isolated objects (icons, symbols, characters) with transparent backgrounds.
+    
+    This function generates standalone objects intended for use as game assets, icons,
+    or symbols. It automatically adds instructions for white background generation 
+    and removes the background to create transparent PNGs.
+    
+    Args:
+        arguments: Dictionary containing:
+            - object_description: Description of the object to create
+            - input_image_path: Optional input image path/ID for editing existing images
+            - size: Target size (default "1024x1024")
+            - white_threshold: RGB threshold for background detection (default 240)
+            - path_to_save: Optional path to save the image
+    
+    Returns:
+        Dictionary with success status, image data, and metadata
+    """
+    try:
+        object_description = arguments.get('object_description', '')
+        input_image_path = arguments.get('input_image_path')
+        size = arguments.get('size', '1024x1024')
+        white_threshold = int(arguments.get('white_threshold', 240))
+        target_resolution = arguments.get('target_resolution', 128)  # Default 128x128 for icons
+        path_to_save = arguments.get('path_to_save')
+        object_type = arguments.get('object_type', 'sprite')  # Default to sprite for isolated objects
+        
+        if not object_description:
+            return {"success": False, "error": "object_description is required"}
+        
+        print(f"ISOLATED_OBJECT: Creating isolated object: {object_description}")
+        
+        # If input image provided, use transparent_bg_image_gen (edit existing)
+        if input_image_path:
+            print(f"ISOLATED_OBJECT: Editing existing image: {input_image_path}")
+            
+            # Check if it's an image ID from conversation or a file path
+            image_base64_input = None
+            if input_image_path.startswith(('generated_', 'edited_', 'isolated_')):
+                # It's an image ID - get from conversation
+                available_images = {}
+                if conversation_messages:
+                    for msg in conversation_messages:
+                        if not isinstance(msg, dict):
+                            continue
+                        if 'images' in msg and isinstance(msg['images'], list):
+                            for img in msg['images']:
+                                name = img.get('name')
+                                b64 = img.get('base64_data')
+                                if name and b64:
+                                    available_images[name] = img
+                # Numeric and tolerant resolution for IDs as well
+                resolved_key = None
+                if input_image_path in available_images:
+                    resolved_key = input_image_path
+                else:
+                    # Try tolerant prefix match
+                    for key in available_images.keys():
+                        if str(key).startswith(str(input_image_path)):
+                            resolved_key = key
+                            break
+                    # Try numeric resolution
+                    if resolved_key is None:
+                        try:
+                            c = str(input_image_path).strip()
+                            if c.startswith('#'):
+                                c = c[1:]
+                            if c.startswith('[') and c.endswith(']'):
+                                c = c[1:-1]
+                            import re
+                            m = re.search(r'(\d+)', c)
+                            if m:
+                                # Build ordered list
+                                ordered_keys = list(available_images.keys())
+                                idx = int(m.group(1)) - 1
+                                if 0 <= idx < len(ordered_keys):
+                                    resolved_key = ordered_keys[idx]
+                        except Exception:
+                            pass
+                if resolved_key and resolved_key in available_images:
+                    image_base64_input = available_images[resolved_key]['base64_data']
+                else:
+                    return {"success": False, "error": f"Image ID '{input_image_path}' not found in conversation"}
+            else:
+                # Assume it's a file path - pass as-is to transparent_bg_image_gen
+                image_base64_input = input_image_path
+            
+            try:
+                # Build contextualized prompt for isolated object editing
+                contextualized_prompt = _build_contextualized_prompt(object_description, object_type, 'pixel art')
+                
+                image_base64, width, height = transparent_bg_image_gen(
+                    image_input=image_base64_input,
+                    prompt=contextualized_prompt,
+                    size=size,
+                    white_threshold=white_threshold
+                )
+            except Exception as e:
+                return {"success": False, "error": f"Image editing failed: {str(e)}"}
+                
+            # Generate unique image ID for edited isolated object
+            image_id = f"isolated_{uuid.uuid4().hex[:8]}"
+            
+        else:
+            # No input image - generate new isolated object
+            print(f"ISOLATED_OBJECT: Generating new isolated object")
+            
+            try:
+                # Build contextualized prompt for isolated object  
+                contextualized_prompt = _build_contextualized_prompt(object_description, object_type, 'pixel art')
+                
+                image_base64, width, height = generate_standalone_object(
+                    prompt=contextualized_prompt,
+                    size=size,
+                    white_threshold=white_threshold
+                )
+            except Exception as e:
+                return {"success": False, "error": f"Image generation failed: {str(e)}"}
+                
+            # Generate unique image ID for new isolated object
+            image_id = f"isolated_{uuid.uuid4().hex[:8]}"
+        
+        # Apply downsampling if requested (default 128x128 for icons)
+        final_image_base64 = image_base64
+        final_width = width
+        final_height = height
+        
+        if target_resolution and target_resolution > 0:
+            print(f"ISOLATED_OBJECT: Applying downsampling to {target_resolution}x{target_resolution}")
+            try:
+                # Decode the image for resizing
+                import base64
+                from PIL import Image
+                import io
+                
+                image_bytes = base64.b64decode(image_base64)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                
+                # Calculate new size maintaining aspect ratio
+                original_width, original_height = pil_image.size
+                aspect_ratio = original_width / original_height
+                
+                if aspect_ratio > 1:  # Wider than tall
+                    new_width = target_resolution
+                    new_height = int(target_resolution / aspect_ratio)
+                else:  # Taller than wide or square
+                    new_height = target_resolution
+                    new_width = int(target_resolution * aspect_ratio)
+                
+                # Ensure minimum size of 1 pixel
+                new_width = max(1, new_width)
+                new_height = max(1, new_height)
+                
+                # Resize using high-quality resampling (good for icons)
+                resized_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Convert back to base64
+                buffer = io.BytesIO()
+                resized_image.save(buffer, format='PNG')
+                buffer.seek(0)
+                final_image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                final_width = new_width
+                final_height = new_height
+                
+                print(f"ISOLATED_OBJECT: Downsampled from {original_width}x{original_height} to {final_width}x{final_height}")
+                
+            except Exception as resize_err:
+                print(f"ISOLATED_OBJECT: Downsampling failed: {resize_err}, using original size")
+                # Continue with original image if downsampling fails
+        
+        # Cache the final image for future references
+        try:
+            _cache_image(image_id, final_image_base64, final_width, final_height, "png")
+        except Exception as _ce:
+            print(f"IMAGE_CACHE_STORE_ERROR: {image_id}: {_ce}")
+        
+        result = {
+            "success": True,
+            "image_id": image_id,
+            "image_name": image_id,  # For backward compatibility
+            "image_data": final_image_base64,
+            "prompt": object_description,
+            "object_type": "isolated_object",
+            "format": "png",
+            "width": final_width,
+            "height": final_height,
+            "original_size": f"{width}x{height}" if target_resolution and target_resolution > 0 else None,
+            "target_resolution": target_resolution,
+            "has_transparent_background": True,
+            "white_threshold": white_threshold,
+            "input_image": input_image_path if input_image_path else None
+        }
+        
+        if path_to_save:
+            result["path_to_save"] = path_to_save
+            
+        print(f"ISOLATED_OBJECT: Created isolated object {image_id}: {final_width}x{final_height}")
+        return result
+        
+    except Exception as e:
+        print(f"ISOLATED_OBJECT ERROR: {str(e)}")
+        return {"success": False, "error": f"Isolated object creation failed: {str(e)}"}
+
+
+# --- Batch Image Generation Function ---
+def create_images_batch_internal(arguments: dict, conversation_messages: list = None) -> dict:
+    """Create multiple images in parallel using batch processing.
+    
+    This function processes multiple image generation requests simultaneously,
+    supporting both general image generation and isolated object creation.
+    Each request can be either text-to-image or image editing.
+    
+    Args:
+        arguments: Dictionary containing:
+            - image_requests: Array of image request objects
+            - global_style: Optional global style to apply to all images
+            - global_size: Optional global size for all images
+            - max_parallel: Maximum number of parallel processes (default: 4)
+            - timeout_per_image: Timeout per image in seconds (default: 120)
+            - save_base_path: Base directory for saving images (optional)
+    
+    Returns:
+        Dictionary with success status, results array, and timing information
+    """
+    import concurrent.futures
+    import threading
+    from typing import Dict, Any
+    
+    try:
+        image_requests = arguments.get('image_requests', [])
+        if not image_requests or not isinstance(image_requests, list):
+            return {"success": False, "error": "image_requests array is required"}
+        
+        if len(image_requests) == 0:
+            return {"success": False, "error": "At least one image request is required"}
+        
+        # Validate max batch size to prevent resource exhaustion
+        max_batch_size = int(os.getenv('MAX_BATCH_IMAGE_SIZE', '10'))
+        if len(image_requests) > max_batch_size:
+            return {
+                "success": False, 
+                "error": f"Batch size {len(image_requests)} exceeds maximum allowed ({max_batch_size}). Break into smaller batches."
+            }
+        
+        # Global settings
+        global_style = arguments.get('global_style', '')
+        global_size = arguments.get('global_size', '1024x1024')
+        max_parallel = min(arguments.get('max_parallel', 4), 8)  # Cap at 8 for resource safety
+        timeout_per_image = arguments.get('timeout_per_image', 120)  # 2 minutes per image
+        save_base_path = arguments.get('save_base_path', '')
+        
+        print(f"BATCH_IMAGE: Processing {len(image_requests)} image requests with max_parallel={max_parallel}")
+        
+        # Validate each request structure
+        valid_requests = []
+        validation_errors = []
+        
+        for i, req in enumerate(image_requests):
+            if not isinstance(req, dict):
+                validation_errors.append(f"Request {i}: Must be an object/dictionary")
+                continue
+                
+            method = req.get('method', 'general')
+            description = req.get('description', '').strip()
+            
+            if not description:
+                validation_errors.append(f"Request {i}: 'description' is required")
+                continue
+            
+            if method not in ['general', 'isolated_object', 'isolated']:
+                validation_errors.append(f"Request {i}: 'method' must be 'general', 'isolated_object', or 'isolated'")
+                continue
+            
+            # Normalize method name
+            if method == 'isolated':
+                req['method'] = 'isolated_object'
+            
+            valid_requests.append((i, req))
+        
+        if validation_errors:
+            return {
+                "success": False,
+                "error": "Request validation failed",
+                "validation_errors": validation_errors,
+                "valid_requests": len(valid_requests),
+                "total_requests": len(image_requests)
+            }
+        
+        print(f"BATCH_IMAGE: {len(valid_requests)} valid requests after validation")
+        
+        # Thread-safe result collector
+        results_lock = threading.Lock()
+        batch_results = {}
+        
+        def process_single_image_request(request_data: tuple) -> None:
+            """Process a single image request in a separate thread"""
+            request_index, req = request_data
+            request_id = f"batch_{request_index:02d}_{uuid.uuid4().hex[:6]}"
+            thread_start_time = time.time()
+            
+            try:
+                import threading
+                thread_id = threading.current_thread().ident
+                print(f"BATCH_IMAGE_WORKER: [Thread-{thread_id}] Starting request {request_index} ({request_id}) at {thread_start_time}")
+                
+                method = req.get('method', 'general')
+                description = req.get('description', '')
+                
+                # Apply global settings with request-specific overrides
+                style = req.get('style', global_style)
+                size = req.get('size', global_size)
+                image_type = req.get('image_type', 'general')
+                input_image = req.get('input_image_id', '')
+                path_to_save = req.get('path_to_save', '')
+                
+                # Auto-generate save path if base path provided
+                if not path_to_save and save_base_path:
+                    # Create descriptive filename from request
+                    safe_desc = ''.join(c if c.isalnum() or c in '_-' else '_' for c in description[:30])
+                    filename = f"{safe_desc}_{request_index:02d}.png"
+                    path_to_save = os.path.join(save_base_path, filename).replace('\\', '/')
+                
+                # Process request based on method
+                generation_start = time.time()
+                print(f"BATCH_IMAGE_WORKER: [Thread-{thread_id}] Starting {method} generation for request {request_index} at {generation_start}")
+                
+                if method == 'isolated_object':
+                    # Use isolated object creation
+                    isolated_args = {
+                        'object_description': description,
+                        'input_image_path': input_image if input_image else None,
+                        'size': size,
+                        'white_threshold': req.get('white_threshold', 240),
+                        'target_resolution': req.get('target_resolution', 128),
+                        'path_to_save': path_to_save,
+                        'object_type': req.get('object_type', 'sprite')
+                    }
+                    result = create_isolated_object_internal(isolated_args, conversation_messages)
+                else:
+                    # Use general image generation/editing
+                    image_args = {
+                        'description': description,
+                        'images': [input_image] if input_image else [],
+                        'style': style,
+                        'image_type': image_type,
+                        'size': size,
+                        'exact_size': req.get('exact_size'),
+                        'tile_size': req.get('tile_size'),
+                        'grid': req.get('grid'),
+                        'resize_filter': req.get('resize_filter', 'lanczos'),
+                        'path_to_save': path_to_save
+                    }
+                    result = image_operation_internal(image_args, conversation_messages)
+                
+                generation_end = time.time()
+                generation_duration = generation_end - generation_start
+                thread_total_duration = generation_end - thread_start_time
+                
+                print(f"BATCH_IMAGE_WORKER: [Thread-{thread_id}] Completed request {request_index} ({request_id})")
+                print(f"  - Generation time: {generation_duration:.2f}s")
+                print(f"  - Total thread time: {thread_total_duration:.2f}s")
+                
+                # Enhance result with batch metadata
+                if result.get('success'):
+                    result['batch_index'] = request_index
+                    result['request_id'] = request_id
+                    result['method'] = method
+                    result['original_description'] = description
+                    
+                    print(f"BATCH_IMAGE_WORKER: Completed request {request_index} ({request_id}) - {result.get('image_id', 'no_id')}")
+                else:
+                    print(f"BATCH_IMAGE_WORKER: Failed request {request_index} ({request_id}) - {result.get('error', 'unknown error')}")
+                
+                # Thread-safe result storage
+                with results_lock:
+                    batch_results[request_index] = result
+                    
+            except Exception as e:
+                print(f"BATCH_IMAGE_WORKER: Exception in request {request_index} ({request_id}): {e}")
+                error_result = {
+                    "success": False,
+                    "error": f"Image generation failed: {str(e)}",
+                    "batch_index": request_index,
+                    "request_id": request_id,
+                    "method": req.get('method', 'unknown'),
+                    "original_description": req.get('description', '')
+                }
+                with results_lock:
+                    batch_results[request_index] = error_result
+        
+        # Execute batch processing with ThreadPoolExecutor for better resource management
+        start_time = time.time()
+        
+        # Track parallel execution timing
+        submission_times = {}
+        completion_times = {}
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            print(f"BATCH_IMAGE: ThreadPool created with {max_parallel} workers at {start_time}")
+            
+            # Submit all requests and track submission timing
+            future_to_index = {}
+            for req_data in valid_requests:
+                submission_time = time.time()
+                future = executor.submit(process_single_image_request, req_data)
+                future_to_index[future] = req_data[0]
+                submission_times[req_data[0]] = submission_time
+                print(f"BATCH_IMAGE: Submitted request {req_data[0]} at {submission_time} (offset: +{submission_time - start_time:.3f}s)")
+            
+            print(f"BATCH_IMAGE: All {len(future_to_index)} requests submitted in {time.time() - start_time:.3f}s")
+            
+            # Wait for completion with overall timeout protection
+            overall_timeout = timeout_per_image * len(image_requests) + 60  # Extra 60 seconds buffer
+            completed_count = 0
+            
+            try:
+                for future in concurrent.futures.as_completed(future_to_index, timeout=overall_timeout):
+                    completion_time = time.time()
+                    completed_count += 1
+                    request_index = future_to_index[future]
+                    completion_times[request_index] = completion_time
+                    
+                    # Calculate timing for this specific request
+                    request_total_time = completion_time - submission_times.get(request_index, start_time)
+                    
+                    try:
+                        future.result()  # This will raise exception if the request failed
+                        print(f"BATCH_IMAGE_PROGRESS: Request {request_index} completed at {completion_time} (took {request_total_time:.2f}s) - {completed_count}/{len(valid_requests)} total")
+                    except Exception as e:
+                        print(f"BATCH_IMAGE_ERROR: Request {request_index} failed: {e}")
+                        # Error was already stored in process_single_image_request
+                    
+                    # Yield progress to prevent timeout in streaming context
+                    if hasattr(threading.current_thread(), 'batch_progress_callback'):
+                        try:
+                            threading.current_thread().batch_progress_callback(completed_count, len(valid_requests))
+                        except:
+                            pass
+            
+            except concurrent.futures.TimeoutError:
+                print(f"BATCH_IMAGE_TIMEOUT: Overall timeout ({overall_timeout}s) exceeded - {completed_count}/{len(valid_requests)} completed")
+                # Don't return error - partial results are still valuable
+        
+        processing_time = time.time() - start_time
+        
+        # Analyze parallel execution effectiveness
+        parallel_analysis = _analyze_parallel_execution(submission_times, completion_times, start_time)
+        
+        # Collect final results in order
+        ordered_results = []
+        successful_count = 0
+        failed_count = 0
+        
+        for i, _ in valid_requests:
+            if i in batch_results:
+                result = batch_results[i]
+                ordered_results.append(result)
+                if result.get('success'):
+                    successful_count += 1
+                else:
+                    failed_count += 1
+            else:
+                # Request was not completed (timeout or other issue)
+                timeout_result = {
+                    "success": False,
+                    "error": "Request timed out or was not completed",
+                    "batch_index": i,
+                    "request_id": f"timeout_{i}",
+                    "method": image_requests[i].get('method', 'unknown'),
+                    "original_description": image_requests[i].get('description', '')
+                }
+                ordered_results.append(timeout_result)
+                failed_count += 1
+        
+        # Calculate theoretical sequential time for comparison
+        if successful_count > 0:
+            avg_individual_time = processing_time / successful_count  # This assumes sequential
+            theoretical_sequential = avg_individual_time * successful_count
+            theoretical_parallel = avg_individual_time  # Perfect parallel would be just one image time
+            efficiency_gain = (theoretical_sequential - processing_time) / theoretical_sequential * 100 if theoretical_sequential > 0 else 0
+        else:
+            efficiency_gain = 0
+            theoretical_sequential = 0
+            theoretical_parallel = 0
+        
+        # Generate batch summary
+        batch_summary = {
+            "total_requested": len(image_requests),
+            "valid_requests": len(valid_requests),
+            "successful": successful_count,
+            "failed": failed_count,
+            "processing_time_seconds": round(processing_time, 2),
+            "average_time_per_image": round(processing_time / max(1, successful_count), 2),
+            "parallel_workers_used": max_parallel,
+            "timeout_per_image": timeout_per_image,
+            "parallel_analysis": parallel_analysis,
+            "efficiency_gain_percent": round(efficiency_gain, 1),
+            "theoretical_sequential_time": round(theoretical_sequential, 2),
+            "theoretical_perfect_parallel_time": round(theoretical_parallel, 2)
+        }
+        
+        print(f"BATCH_IMAGE_COMPLETE: {successful_count}/{len(valid_requests)} successful in {processing_time:.2f}s")
+        print(f"PARALLEL_ANALYSIS: {parallel_analysis['execution_type']} - {parallel_analysis['overlap_percentage']:.1f}% time overlap")
+        if efficiency_gain > 0:
+            print(f"EFFICIENCY_GAIN: {efficiency_gain:.1f}% faster than sequential (expected: {theoretical_sequential:.2f}s)")
+        else:
+            print(f"EFFICIENCY_ANALYSIS: No gain detected - likely sequential execution")
+        
+        # Collect successful image IDs and metadata for conversation tracking
+        generated_images = []
+        saved_files = []
+        
+        for result in ordered_results:
+            if result.get('success'):
+                image_info = {
+                    "image_id": result.get('image_id'),
+                    "image_name": result.get('image_name', result.get('image_id')),
+                    "method": result.get('method'),
+                    "description": result.get('original_description'),
+                    "format": result.get('format', 'png'),
+                    "width": result.get('width'),
+                    "height": result.get('height')
+                }
+                generated_images.append(image_info)
+                
+                if result.get('path_to_save'):
+                    saved_files.append({
+                        "image_id": result.get('image_id'),
+                        "saved_to": result.get('path_to_save')
+                    })
+        
+        return {
+            "success": successful_count > 0,  # Success if at least one image was generated
+            "batch_summary": batch_summary,
+            "results": ordered_results,
+            "generated_images": generated_images,
+            "saved_files": saved_files,
+            "message": f"Batch completed: {successful_count} successful, {failed_count} failed out of {len(valid_requests)} valid requests"
+        }
+        
+    except Exception as e:
+        print(f"BATCH_IMAGE_ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": f"Batch image generation failed: {str(e)}"}
+
+
+def _analyze_parallel_execution(submission_times: dict, completion_times: dict, batch_start_time: float) -> dict:
+    """
+    Analyze timing data to determine if requests were actually executed in parallel.
+    
+    Returns analysis with execution type and overlap metrics.
+    """
+    try:
+        if not submission_times or not completion_times:
+            return {"execution_type": "unknown", "overlap_percentage": 0, "details": "No timing data available"}
+        
+        # Build execution windows for each request
+        execution_windows = []
+        for request_index in submission_times.keys():
+            if request_index in completion_times:
+                start = submission_times[request_index]
+                end = completion_times[request_index]
+                execution_windows.append({
+                    'index': request_index,
+                    'start': start,
+                    'end': end,
+                    'duration': end - start,
+                    'start_offset': start - batch_start_time,
+                    'end_offset': end - batch_start_time
+                })
+        
+        if len(execution_windows) < 2:
+            return {"execution_type": "single_request", "overlap_percentage": 0, "details": "Only one request tracked"}
+        
+        # Sort by start time
+        execution_windows.sort(key=lambda x: x['start'])
+        
+        # Calculate overlap between execution windows
+        total_parallel_time = 0
+        total_execution_time = sum(w['duration'] for w in execution_windows)
+        
+        # Check for overlapping time intervals
+        overlapping_pairs = 0
+        total_overlap_duration = 0
+        
+        for i in range(len(execution_windows)):
+            for j in range(i + 1, len(execution_windows)):
+                window_a = execution_windows[i]
+                window_b = execution_windows[j]
+                
+                # Calculate overlap between window_a and window_b
+                overlap_start = max(window_a['start'], window_b['start'])
+                overlap_end = min(window_a['end'], window_b['end'])
+                
+                if overlap_start < overlap_end:
+                    # There is overlap
+                    overlap_duration = overlap_end - overlap_start
+                    total_overlap_duration += overlap_duration
+                    overlapping_pairs += 1
+                    
+                    print(f"PARALLEL_TIMING: Request {window_a['index']} and {window_b['index']} overlapped for {overlap_duration:.2f}s")
+        
+        # Calculate metrics
+        overlap_percentage = (total_overlap_duration / max(total_execution_time, 0.001)) * 100
+        
+        # Determine execution type based on overlap
+        if overlap_percentage > 50:
+            execution_type = "truly_parallel"
+        elif overlap_percentage > 10:
+            execution_type = "partially_parallel" 
+        elif overlapping_pairs > 0:
+            execution_type = "minimal_overlap"
+        else:
+            execution_type = "sequential"
+        
+        # Additional analysis: check start time gaps
+        start_time_gaps = []
+        for i in range(1, len(execution_windows)):
+            gap = execution_windows[i]['start'] - execution_windows[i-1]['start']
+            start_time_gaps.append(gap)
+        
+        avg_start_gap = sum(start_time_gaps) / len(start_time_gaps) if start_time_gaps else 0
+        
+        details = {
+            "overlapping_pairs": overlapping_pairs,
+            "total_overlap_duration": round(total_overlap_duration, 2),
+            "average_start_gap": round(avg_start_gap, 3),
+            "execution_windows": len(execution_windows)
+        }
+        
+        # Sequential detection: if average gap between starts is close to average execution time
+        if len(execution_windows) > 1 and avg_start_gap > 0:
+            avg_duration = total_execution_time / len(execution_windows)
+            if avg_start_gap > (avg_duration * 0.8):  # 80% of average duration
+                execution_type = "likely_sequential"
+                details["sequential_indicator"] = f"avg_gap({avg_start_gap:.2f}s) > 80% of avg_duration({avg_duration:.2f}s)"
+        
+        return {
+            "execution_type": execution_type,
+            "overlap_percentage": round(overlap_percentage, 1),
+            "details": details
+        }
+        
+    except Exception as e:
+        print(f"PARALLEL_ANALYSIS_ERROR: {e}")
+        return {"execution_type": "analysis_failed", "overlap_percentage": 0, "details": f"Analysis error: {str(e)}"}
+
 
 # --- Backend Spritesheet Slicing Function ---
 def slice_spritesheet_internal(arguments: dict) -> dict:
@@ -4827,10 +5609,22 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
         # Backend-processed image operations
         if op == "image.generate_or_edit":
             # Route to existing image operation function
+            input_img_id = arguments.get('input_image_id')
+            input_img = arguments.get('input_image')
+            images_array = arguments.get('images', [])
+            
+            print(f"🔄 RESOURCE_MGR→IMAGE_OP: Forwarding image.generate_or_edit")
+            print(f"   - input_image_id: {input_img_id}")
+            print(f"   - images array: {images_array}")
+            
             image_args = {
                 'description': arguments.get('description'),
-                'images': arguments.get('images', []),
+                'images': images_array,
+                # CRITICAL FIX: Pass through input_image_id for editing support
+                'input_image_id': input_img_id,
+                'input_image': input_img,
                 'style': arguments.get('style'),
+                'image_type': arguments.get('image_type', 'general'),
                 'size': arguments.get('size'),
                 'exact_size': arguments.get('exact_size'),
                 'tile_size': arguments.get('tile_size'),
@@ -4839,6 +5633,92 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
                 'path_to_save': arguments.get('path_to_save')
             }
             return image_operation_internal(image_args, conversation_messages)
+            
+        elif op == "image.create_isolated_object":
+            # Route to isolated object creation function
+            # For isolated objects, use object_type (sprite/icon)
+            object_type = arguments.get('object_type', 'sprite')
+            
+            # Enable referencing user-uploaded or prior images via IDs or numeric indices (e.g., "#1", "[2]")
+            input_image_path = arguments.get('input_image_path')  # direct path or base64 (legacy)
+            input_image_id = arguments.get('input_image_id') or arguments.get('input_image')  # new flexible identifier
+            
+            resolved_b64: str | None = None
+            try:
+                if input_image_id and not input_image_path:
+                    # Gather available images from prior conversation messages (same logic as image_operation_internal)
+                    available_images: dict[str, dict] = {}
+                    if conversation_messages:
+                        print(f"ISOLATED_OBJECT DEBUG: Resolving input_image_id from conversation (messages={len(conversation_messages)})")
+                        cm_index = -1
+                        for msg in conversation_messages:
+                            cm_index += 1
+                            if not isinstance(msg, dict):
+                                continue
+                            if 'images' in msg and isinstance(msg['images'], list):
+                                for img in msg['images']:
+                                    name = img.get('name')
+                                    b64 = img.get('base64_data')
+                                    if name and b64:
+                                        available_images[name] = img
+                        # Build index mapping preserving insertion order
+                        ordered_keys = list(available_images.keys())
+                        index_to_key = {str(i + 1): ordered_keys[i] for i in range(len(ordered_keys))}
+                        
+                        def _resolve_numeric_image_id(candidate: str) -> str | None:
+                            try:
+                                c = str(candidate).strip()
+                                if c.startswith('#'):
+                                    c = c[1:]
+                                if c.startswith('[') and c.endswith(']'):
+                                    c = c[1:-1]
+                                import re
+                                m = re.search(r'(\d+)', c)
+                                if not m:
+                                    return None
+                                idx = m.group(1)
+                                return index_to_key.get(idx)
+                            except Exception:
+                                return None
+                        
+                        resolved_key = None
+                        # Direct match
+                        if input_image_id in available_images:
+                            resolved_key = input_image_id
+                        else:
+                            # Tolerant prefix match
+                            for key in available_images.keys():
+                                if str(key).startswith(str(input_image_id)):
+                                    resolved_key = key
+                                    break
+                            # Numeric forms (#1, [1], 1)
+                            if not resolved_key:
+                                rk = _resolve_numeric_image_id(str(input_image_id))
+                                if rk and rk in available_images:
+                                    resolved_key = rk
+                        if resolved_key:
+                            resolved_b64 = available_images[resolved_key].get('base64_data')
+                            print(f"ISOLATED_OBJECT: Resolved input_image_id '{input_image_id}' -> '{resolved_key}' (len={len(resolved_b64 or '')})")
+                        else:
+                            # Backend cache fallback (generated images previously cached)
+                            cached = _get_cached_image(str(input_image_id))
+                            if cached and isinstance(cached.get("base64"), str):
+                                resolved_b64 = cached["base64"]
+                                print(f"ISOLATED_OBJECT: Using backend cached image for '{input_image_id}' (len={len(resolved_b64)})")
+            except Exception as _e:
+                print(f"ISOLATED_OBJECT WARN: Failed to resolve input_image_id '{input_image_id}': {_e}")
+            
+            isolated_args = {
+                'object_description': arguments.get('object_description'),
+                # Prefer resolved base64 from id; fallback to provided path; the internal handler accepts base64 as 'input_image_path'
+                'input_image_path': resolved_b64 or input_image_path,
+                'size': arguments.get('size', '1024x1024'),
+                'white_threshold': arguments.get('white_threshold', 240),
+                'target_resolution': arguments.get('target_resolution', 128),
+                'path_to_save': arguments.get('path_to_save'),
+                'object_type': object_type
+            }
+            return create_isolated_object_internal(isolated_args, conversation_messages)
             
         elif op == "image.slice_spritesheet":
             # Route to existing spritesheet slicing function
@@ -4858,6 +5738,18 @@ def resource_manager_internal(arguments: dict, conversation_messages: list = Non
                 'normalize_to': arguments.get('normalize_to')
             }
             return slice_spritesheet_internal(slice_args)
+            
+        elif op == "image.create_batch":
+            # Route to batch image creation function
+            batch_args = {
+                'image_requests': arguments.get('image_requests', []),
+                'global_style': arguments.get('global_style', ''),
+                'global_size': arguments.get('global_size', '1024x1024'),
+                'max_parallel': arguments.get('max_parallel', 4),
+                'timeout_per_image': arguments.get('timeout_per_image', 120),
+                'save_base_path': arguments.get('save_base_path', '')
+            }
+            return create_images_batch_internal(batch_args, conversation_messages)
             
         
         # All resource operations should be handled by frontend (direct Godot engine access needed)
@@ -5427,6 +6319,57 @@ def search_conversation_history():
         print(f"SEARCH_CONVERSATION_ERROR: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+def _build_contextualized_prompt(description, image_type, style):
+    """Build a prompt with type-specific instructions for better image generation"""
+    
+    # Start with base description
+    prompt_text = description
+    
+    # Add style if specified
+    if style:
+        prompt_text += f", {style} style"
+    
+    # Add concise image type-specific instructions
+    if image_type == "texture":
+        prompt_text += ". Create a seamless, tileable pattern covering the entire image. No objects or characters - pure material texture only."
+    elif image_type == "sprite" or image_type == "icon":
+        prompt_text += ". Center the subject with clear boundaries and transparent background where appropriate."
+    elif image_type == "background":
+        prompt_text += ". Create an atmospheric environment backdrop without focal interactive elements."
+    
+    return prompt_text
+
+def _get_scene_validation_warnings(request_data):
+    """Get current scene validation warnings from the frontend validation system"""
+    try:
+        # Check if warnings were passed in the request context
+        context = request_data.get('context', {})
+        if isinstance(context, dict):
+            warnings = context.get('scene_validation_warnings', [])
+            if warnings:
+                # Flatten and ensure all warnings are strings
+                flattened_warnings = []
+                for warning in warnings:
+                    if isinstance(warning, str):
+                        flattened_warnings.append(warning)
+                    elif isinstance(warning, (list, tuple)):
+                        # Flatten nested lists/arrays
+                        for sub_warning in warning:
+                            if isinstance(sub_warning, str):
+                                flattened_warnings.append(sub_warning)
+                    else:
+                        # Convert other types to string
+                        flattened_warnings.append(str(warning))
+                
+                if flattened_warnings:
+                    print(f"SCENE_VALIDATION: Found {len(flattened_warnings)} warnings from frontend")
+                    return flattened_warnings
+        
+        return []
+    except Exception as e:
+        print(f"Scene validation error: {e}")
+        return []
+
 @app.route('/chat', methods=['POST'])
 def chat():
     # DEBUGGING: Log chat requests  
@@ -5526,6 +6469,9 @@ def chat():
     messages = data.get('messages', [])
     context = data.get('context') or {}
     requested_model = data.get('model')
+    
+    # Store context in Flask g for access by helper functions
+    g.editor_context = context
     chat_mode = str((data.get('mode') or 'agent')).lower().strip()
     print(f"CHAT_MODE_DEBUG: Raw mode from request: {repr(data.get('mode'))}, parsed chat_mode: '{chat_mode}'")
     model = get_validated_chat_model(requested_model)  # Restrict to allowed models
@@ -5627,6 +6573,38 @@ def chat():
             # CRITICAL DEBUG: Log conversation state before processing
             print(f"CONVERSATION_INIT: Starting conversation with {len(conversation_messages)} messages")
             print(f"CONVERSATION_BREAKDOWN: {total_user_messages} user, {total_assistant_messages} assistant, {total_tool_messages} tool messages")
+            
+            # Add simple scene validation warnings to the last user message
+            scene_warnings = _get_scene_validation_warnings(data)
+            if scene_warnings and conversation_messages:
+                # Find the last user message and append warnings
+                for i in range(len(conversation_messages) - 1, -1, -1):
+                    if conversation_messages[i].get('role') == 'user':
+                        original_content = conversation_messages[i].get('content', '')
+                        
+                        # Ensure original_content is a string (handle list/object cases)
+                        if isinstance(original_content, list):
+                            original_content = ' '.join(str(block) for block in original_content)
+                        elif not isinstance(original_content, str):
+                            original_content = str(original_content)
+                        
+                        # Keep warnings very simple and clean
+                        clean_warnings = []
+                        for warning in scene_warnings:
+                            warning_str = str(warning).strip()
+                            if len(warning_str) > 200:  # Safety limit - truncate if too long
+                                warning_str = warning_str[:200] + "..."
+                            clean_warnings.append(warning_str)
+                        
+                        if clean_warnings:
+                            warnings_text = "\n\n--- SCENE ISSUES ---\n"
+                            for warning in clean_warnings:
+                                warnings_text += f"⚠️ {warning}\n"
+                            warnings_text += "\nNOTE: Address these issues if relevant to your request."
+                            
+                            conversation_messages[i]['content'] = original_content + warnings_text
+                            print(f"SCENE_VALIDATION: Added {len(clean_warnings)} clean warnings to user message")
+                        break
             
             # Validate conversation structure for tool call consistency
             unmatched_tool_calls = []
@@ -6165,14 +7143,58 @@ def chat():
                                     content = re.sub(r'"image_data":"[^"]{1000,}"', '"image_data":"[STRIPPED]"', content)
                                     clean_msg['content'] = content
                     
-                    # Handle images intelligently - AGGRESSIVE filtering to prevent token explosion
+                    # Handle images intelligently - preserve image_url parts sent by frontend
                     if 'images' in msg and isinstance(msg['images'], list):
                         images = msg['images']
-                        # Only include images from the LAST message and only if it's a user message
                         is_last_message = i == len(conversation_messages) - 1
                         
-                        if is_last_message and role == 'user' and len(images) <= 1:
-                            # Only send 1 most recent user image to avoid token explosion
+                        # CRITICAL FIX: Check if content is already a properly formatted array with image_url parts
+                        # The frontend sends images correctly - we should preserve them, not destroy them!
+                        content_is_multimodal_array = isinstance(clean_msg.get('content'), list)
+                        
+                        if content_is_multimodal_array and role == 'user':
+                            # Frontend already formatted this properly with image_url parts for USER messages
+                            # Just ensure we track recent image names for reference
+                            if is_last_message:
+                                for img in images:
+                                    img_name = img.get('name', 'recent_image')
+                                    recent_images.append(img_name)
+                            # Leave content array intact - it already has the image_url parts!
+                            # But REMOVE the top-level images array to prevent duplication
+                            clean_msg.pop('images', None)
+                            pass
+                        elif role == 'assistant':
+                            # CRITICAL FIX: Cache assistant images in backend, then strip from conversation
+                            # This allows multi-turn editing without token explosion
+                            # Works on GCP VM in prod, localhost for dev
+                            for img in images:
+                                img_name = img.get('name')
+                                img_b64 = img.get('base64_data')
+                                if img_name and img_b64:
+                                    # Cache with proper signature: (image_id, base64_data, width, height, format)
+                                    orig_size = img.get('original_size', {})
+                                    width = orig_size.get('x') if isinstance(orig_size, dict) else None
+                                    height = orig_size.get('y') if isinstance(orig_size, dict) else None
+                                    mime = img.get('mime_type', 'image/png')
+                                    fmt = 'png' if 'png' in mime else 'jpg'
+                                    
+                                    _cache_image(img_name, img_b64, width, height, fmt)
+                                    print(f"ASSISTANT_IMAGE_CACHE: Stored '{img_name}' ({len(img_b64)} chars) in backend cache")
+                            
+                            # Strip base64 from conversation to prevent token explosion
+                            lightweight_images = []
+                            for img in images:
+                                lightweight_img = {
+                                    'name': img.get('name'),
+                                    'mime_type': img.get('mime_type', 'image/png'),
+                                    'original_size': img.get('original_size'),
+                                    # NO base64_data - cached in backend for retrieval
+                                }
+                                lightweight_images.append(lightweight_img)
+                            clean_msg['images'] = lightweight_images
+                            print(f"ASSISTANT_IMAGES: Stripped base64 from {len(images)} image(s), kept metadata + cached for editing")
+                        elif is_last_message and role == 'user' and len(images) <= 1:
+                            # Legacy path: content is a string, need to convert to multimodal format
                             content_array = []
                             
                             if clean_msg['content']:
@@ -6181,19 +7203,20 @@ def chat():
                                     "text": clean_msg['content']
                                 })
                             
-                            # Add ONLY the first image - but NEVER include base64 to prevent context explosion
+                            # Add the first image as proper image_url (not text placeholder!)
                             if len(images) > 0 and images[0].get('base64_data'):
                                 img = images[0]
-                                # CRITICAL FIX: Replace base64 with small placeholder to prevent 500k+ char explosion
                                 content_array.append({
-                                    "type": "text",
-                                    "text": f"[Image: {img.get('name', 'attached_image')} - {img.get('mime_type', 'image/png')} - available for reference]"
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{img.get('mime_type', 'image/png')};base64,{img['base64_data']}"
+                                    }
                                 })
                                 recent_images.append(img.get('name', 'recent_image'))
                             
                             clean_msg['content'] = content_array
                         else:
-                            # For ALL other cases, strip images completely and just reference
+                            # For ALL other cases, just reference images by name
                             image_names = [img.get('name', 'image') for img in images[:3]]  # Max 3 names
                             if clean_msg['content']:
                                 clean_msg['content'] += f"\n[Referenced images: {', '.join(image_names)}]"
@@ -6218,6 +7241,15 @@ def chat():
                                         try:
                                             import json as _json
                                             parsed_args = _json.loads(sanitized_args)
+                                            
+                                            # CRITICAL FIX: Strip image_data_for_editing from tool arguments
+                                            # This was causing 4MB+ requests from old conversations
+                                            if 'image_data_for_editing' in parsed_args:
+                                                old_size = len(_json.dumps(parsed_args))
+                                                parsed_args.pop('image_data_for_editing', None)
+                                                new_size = len(_json.dumps(parsed_args))
+                                                print(f"TOOL_ARGS_STRIP: Removed image_data_for_editing ({old_size} -> {new_size} chars)")
+                                            
                                             parsed_args = _strip_heavy_fields_recursive(parsed_args)
                                             fn['arguments'] = _json.dumps(parsed_args, separators=(",", ":"))
                                         except Exception:
@@ -6340,34 +7372,79 @@ def chat():
                             m = dict(msg)
                             content = m.get('content')
                             if isinstance(content, list):
-                                first_text = None
-                                first_image = None
+                                # CRITICAL FIX: Preserve ALL parts in the content array, not just first text and first image!
+                                # The frontend sends numbered image markers like "*[Image 1 ID: name]*" which are crucial for AI to reference images
+                                new_content = []
                                 for part in content:
                                     if not isinstance(part, dict):
                                         continue
                                     t = part.get('type')
-                                    if t == 'text' and first_text is None:
-                                        first_text = {"type": "text", "text": str(part.get('text', ''))}
-                                    elif t == 'image_url' and first_image is None:
+                                    if t == 'text':
+                                        # Preserve all text parts (including image ID markers)
+                                        new_content.append({"type": "text", "text": str(part.get('text', ''))})
+                                    elif t == 'image_url':
+                                        # Preserve all images and downscale large data URIs
                                         url = str(part.get('image_url', {}).get('url', ''))
-                                        # Downscale large data URIs
                                         if url.startswith('data:image/') and ';base64,' in url:
                                             url = _strip_heavy_fields_recursive(url)
-                                        first_image = {"type": "image_url", "image_url": {"url": url}}
-                                new_content = []
-                                if first_text:
-                                    new_content.append(first_text)
-                                if first_image:
-                                    new_content.append(first_image)
+                                        new_content.append({"type": "image_url", "image_url": {"url": url}})
+                                
                                 if new_content:
                                     m['content'] = new_content
                             normalized.append(m)
-                        except Exception:
+                        except Exception as e:
+                            print(f"VISION_NORMALIZE_ERROR: {e}")
                             normalized.append(msg)
                     return normalized
 
                 print("VISION_NORMALIZE: Normalizing user messages to OpenAI image_url format")
+                
+                # DEBUG: Log messages BEFORE normalization
+                print("🔍 DEBUG_BEFORE_NORMALIZE: Message structure:")
+                for idx, msg in enumerate(openai_messages_send):
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content')
+                    has_images_array = 'images' in msg
+                    print(f"  [{idx}] role={role}, has_images_array={has_images_array}")
+                    if isinstance(content, list):
+                        print(f"       content is array with {len(content)} parts:")
+                        for pidx, part in enumerate(content[:10]):  # Show first 10 parts
+                            if isinstance(part, dict):
+                                part_type = part.get('type', 'unknown')
+                                if part_type == 'text':
+                                    text_preview = str(part.get('text', ''))[:80].replace('\n', ' ')
+                                    print(f"         [{pidx}] {part_type}: '{text_preview}'")
+                                elif part_type == 'image_url':
+                                    url = part.get('image_url', {}).get('url', '')
+                                    url_preview = url[:60] + '...' if len(url) > 60 else url
+                                    print(f"         [{pidx}] {part_type}: {url_preview}")
+                    else:
+                        content_preview = str(content)[:100].replace('\n', ' ')
+                        print(f"       content is string: '{content_preview}'")
+                
                 openai_messages_send = _normalize_openai_vision(openai_messages_send)
+                
+                # DEBUG: Log messages AFTER normalization
+                print("🔍 DEBUG_AFTER_NORMALIZE: Message structure:")
+                for idx, msg in enumerate(openai_messages_send):
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content')
+                    print(f"  [{idx}] role={role}")
+                    if isinstance(content, list):
+                        print(f"       content is array with {len(content)} parts:")
+                        for pidx, part in enumerate(content[:10]):
+                            if isinstance(part, dict):
+                                part_type = part.get('type', 'unknown')
+                                if part_type == 'text':
+                                    text_preview = str(part.get('text', ''))[:80].replace('\n', ' ')
+                                    print(f"         [{pidx}] {part_type}: '{text_preview}'")
+                                elif part_type == 'image_url':
+                                    url = part.get('image_url', {}).get('url', '')
+                                    url_preview = url[:60] + '...' if len(url) > 60 else url
+                                    print(f"         [{pidx}] {part_type}: {url_preview}")
+                    else:
+                        content_preview = str(content)[:100].replace('\n', ' ')
+                        print(f"       content is string: '{content_preview}'")
                 
                 # FINAL VALIDATION: Check message sizes before sending
                 total_message_chars = sum(len(str(msg.get('content', ''))) for msg in openai_messages_send)
@@ -6515,6 +7592,34 @@ def chat():
                             # CRITICAL: Filter out internal Godot parameters before calling LiteLLM
                             litellm_params = {k: v for k, v in completion_params.items() 
                                             if not k.startswith('_godot')}
+                            
+                            # DEBUG: Log final messages being sent to LiteLLM
+                            print("🚀 LITELLM_FINAL: Messages being sent to AI:")
+                            for idx, msg in enumerate(litellm_params.get('messages', [])):
+                                role = msg.get('role', 'unknown')
+                                content = msg.get('content')
+                                content_type = type(content).__name__
+                                print(f"  [{idx}] role={role}, content_type={content_type}")
+                                if isinstance(content, list):
+                                    print(f"       ✓ Content is LIST with {len(content)} parts (multimodal format):")
+                                    for pidx, part in enumerate(content[:15]):  # Show first 15 parts
+                                        if isinstance(part, dict):
+                                            part_type = part.get('type', 'unknown')
+                                            if part_type == 'text':
+                                                text_preview = str(part.get('text', ''))[:100].replace('\n', ' ')
+                                                print(f"         [{pidx}] TEXT: '{text_preview}'")
+                                            elif part_type == 'image_url':
+                                                url = part.get('image_url', {}).get('url', '')
+                                                if url.startswith('data:image/'):
+                                                    mime = url.split(';')[0].replace('data:', '')
+                                                    size_estimate = len(url.split(',')[1]) if ',' in url else 0
+                                                    print(f"         [{pidx}] IMAGE: {mime}, ~{size_estimate} chars base64")
+                                                else:
+                                                    print(f"         [{pidx}] IMAGE: {url[:80]}")
+                                else:
+                                    content_preview = str(content)[:150].replace('\n', ' ')
+                                    print(f"       ✗ Content is {content_type} (not list): '{content_preview}'")
+                            
                             response = completion(**litellm_params)
                         except Exception as e_comp:
                             err_msg = str(e_comp).lower()
@@ -6938,7 +8043,7 @@ def chat():
                         
                         # resource_manager: only image operations need backend
                         elif func_name == "resource_manager":
-                            return op in ["image.generate_or_edit", "image.slice_spritesheet"]
+                            return op in ["image.generate_or_edit", "image.create_isolated_object", "image.slice_spritesheet", "image.create_batch"]
                         
                         # graph_manager: neighbors require backend graph data
                         elif func_name == "graph_manager":
@@ -8212,25 +9317,62 @@ def chat():
                             log_tool_result("resource_manager", tool_id, rm_result, duration_ms=0)
                             
                             # Prepare compact tool result for conversation history to avoid token bloat
-                            tool_result_for_openai = {
-                                "success": rm_result.get("success"),
-                                # Pass through high-signal fields only
-                                "op": (arguments.get("op") if isinstance(arguments, dict) else None),
-                                "image_id": rm_result.get("image_id"),
-                                "image_name": rm_result.get("image_name"),
-                                "message": rm_result.get("message"),
-                                "prompt": rm_result.get("prompt"),
-                                "style": rm_result.get("style"),
-                                "format": rm_result.get("format"),
-                                "width": rm_result.get("width"),
-                                "height": rm_result.get("height"),
-                                "input_images": rm_result.get("input_images", 0),
-                                "requested_images": rm_result.get("requested_images", 0),
-                                "edited_from": rm_result.get("edited_from")
-                            }
-                            # Include slice hint if provided
-                            if isinstance(rm_result.get("slice_hint"), dict):
-                                tool_result_for_openai["slice_hint"] = rm_result.get("slice_hint")
+                            op = arguments.get("op") if isinstance(arguments, dict) else None
+                            
+                            # CRITICAL FIX: Handle batch results specially to prevent token explosion
+                            if op == "image.create_batch" and "results" in rm_result:
+                                # For batch operations, create a compact summary without base64 data
+                                batch_summary = rm_result.get("batch_summary", {})
+                                generated_images = rm_result.get("generated_images", [])
+                                
+                                # Create compact image reference list for AI
+                                image_refs = []
+                                for img in generated_images:
+                                    image_refs.append({
+                                        "image_id": img.get("image_id"),
+                                        "image_name": img.get("image_name", img.get("image_id")),
+                                        "method": img.get("method"),
+                                        "description": img.get("description", "")[:100],  # Truncate description
+                                        "format": img.get("format"),
+                                        "width": img.get("width"),
+                                        "height": img.get("height")
+                                    })
+                                
+                                tool_result_for_openai = {
+                                    "success": rm_result.get("success"),
+                                    "op": op,
+                                    "batch_operation": True,
+                                    "total_images_generated": batch_summary.get("successful", 0),
+                                    "total_requests": batch_summary.get("total_requested", 0),
+                                    "failed_count": batch_summary.get("failed", 0),
+                                    "processing_time": batch_summary.get("processing_time_seconds", 0),
+                                    "parallel_workers": batch_summary.get("parallel_workers_used", 0),
+                                    "generated_images": image_refs,  # Compact references only
+                                    "saved_files": rm_result.get("saved_files", []),
+                                    "message": rm_result.get("message", "")
+                                }
+                                print(f"BATCH_TOKEN_SAFE: Prepared compact batch result with {len(image_refs)} image refs (no base64 data)")
+                                
+                            else:
+                                # Single image or other operations - use existing logic
+                                tool_result_for_openai = {
+                                    "success": rm_result.get("success"),
+                                    "op": op,
+                                    "image_id": rm_result.get("image_id"),
+                                    "image_name": rm_result.get("image_name"),
+                                    "message": rm_result.get("message"),
+                                    "prompt": rm_result.get("prompt"),
+                                    "style": rm_result.get("style"),
+                                    "format": rm_result.get("format"),
+                                    "width": rm_result.get("width"),
+                                    "height": rm_result.get("height"),
+                                    "input_images": rm_result.get("input_images", 0),
+                                    "requested_images": rm_result.get("requested_images", 0),
+                                    "edited_from": rm_result.get("edited_from")
+                                }
+                                # Include slice hint if provided
+                                if isinstance(rm_result.get("slice_hint"), dict):
+                                    tool_result_for_openai["slice_hint"] = rm_result.get("slice_hint")
 
                             tool_results_for_history.append({
                                 "tool_call_id": tool_id,
@@ -9595,6 +10737,34 @@ def auth_logout():
         
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
+
+@app.route('/templates', methods=['GET'])
+def get_templates():
+    """Get list of available project templates"""
+    try:
+        # Try to load from base_game_v2.json
+        json_path = os.path.join(os.path.dirname(__file__), 'base_game_v2.json')
+        
+        if not os.path.exists(json_path):
+            # Fallback: return empty array if file doesn't exist
+            return jsonify({
+                'success': True,
+                'templates': []
+            })
+        
+        with open(json_path, 'r', encoding='utf-8') as f:
+            templates_data = json.load(f)
+        
+        # Return as array directly (the file is already an array)
+        return jsonify(templates_data)
+        
+    except Exception as e:
+        print(f"TEMPLATES_ERROR: Failed to load templates: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'templates': []
+        }), 500
 
 @app.route('/index_status', methods=['POST'])
 def check_index_status():

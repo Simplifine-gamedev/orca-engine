@@ -47,6 +47,8 @@
 #include "editor/project_manager/project_list.h"
 #include "editor/project_manager/project_tag.h"
 #include "editor/project_manager/quick_settings_dialog.h"
+#include "editor/project_manager/template_selector_dialog.h"
+#include "editor/auth/auth_manager.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "editor/themes/editor_theme_manager.h"
@@ -254,6 +256,9 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 
 			// Sidebar.
 			create_btn->set_button_icon(get_editor_theme_icon(SNAME("Add")));
+			if (template_btn) {
+				template_btn->set_button_icon(get_editor_theme_icon(SNAME("FileList")));
+			}
 			import_btn->set_button_icon(get_editor_theme_icon(SNAME("Load")));
 			scan_btn->set_button_icon(get_editor_theme_icon(SNAME("Search")));
 			open_btn->set_button_icon(get_editor_theme_icon(SNAME("Edit")));
@@ -270,6 +275,9 @@ void ProjectManager::_update_theme(bool p_skip_creation) {
 			tag_edit_error->add_theme_color_override(SceneStringName(font_color), get_theme_color("error_color", EditorStringName(Editor)));
 
 			create_btn->add_theme_constant_override("h_separation", get_theme_constant(SNAME("sidebar_button_icon_separation"), SNAME("ProjectManager")));
+			if (template_btn) {
+				template_btn->add_theme_constant_override("h_separation", get_theme_constant(SNAME("sidebar_button_icon_separation"), SNAME("ProjectManager")));
+			}
 			import_btn->add_theme_constant_override("h_separation", get_theme_constant(SNAME("sidebar_button_icon_separation"), SNAME("ProjectManager")));
 			scan_btn->add_theme_constant_override("h_separation", get_theme_constant(SNAME("sidebar_button_icon_separation"), SNAME("ProjectManager")));
 			open_btn->add_theme_constant_override("h_separation", get_theme_constant(SNAME("sidebar_button_icon_separation"), SNAME("ProjectManager")));
@@ -693,6 +701,61 @@ void ProjectManager::_import_project() {
 void ProjectManager::_new_project() {
 	project_dialog->set_mode(ProjectDialog::MODE_NEW);
 	project_dialog->show_dialog();
+}
+
+void ProjectManager::_start_from_template() {
+	// Check if user is authenticated
+	AuthManager *auth_manager = AuthManager::get_singleton();
+	if (!auth_manager || !auth_manager->get_is_authenticated()) {
+		_show_error(TTR("Please sign in to use templates. You can sign in from Quick Settings > Account."));
+		return;
+	}
+	
+	if (template_selector_dialog) {
+		template_selector_dialog->popup_centered(Size2(800, 600) * EDSCALE);
+	}
+}
+
+void ProjectManager::_on_template_confirmed() {
+	if (!template_selector_dialog) {
+		return;
+	}
+	
+	Dictionary template_info = template_selector_dialog->get_selected_template();
+	if (template_info.is_empty()) {
+		return;
+	}
+	
+	_create_project_from_template(template_info);
+}
+
+void ProjectManager::_create_project_from_template(const Dictionary &p_template) {
+	String template_name = p_template.get("name", "");
+	String repo_url = p_template.get("repo_url", "");
+	String subdir = p_template.get("subdir", "");
+	
+	if (repo_url.is_empty()) {
+		_show_error(TTR("Invalid template: missing repository URL."));
+		return;
+	}
+	
+	// Show project dialog to get project name and path
+	project_dialog->set_mode(ProjectDialog::MODE_NEW);
+	
+	// Pre-fill project name with template name (cleaned up for use as folder name)
+	String clean_name = template_name;
+	clean_name = clean_name.replace(" (Official)", "");
+	clean_name = clean_name.replace(" ", "_");
+	clean_name = clean_name.to_lower();
+	project_dialog->set_project_name(clean_name);
+	
+	// Store template info for later use
+	project_dialog->set_meta("template_repo_url", repo_url);
+	project_dialog->set_meta("template_subdir", subdir);
+	project_dialog->set_meta("is_template", true);
+	project_dialog->set_meta("template_display_name", template_name);
+	
+	project_dialog->show_dialog(false); // Don't reset name since we just set it
 }
 
 void ProjectManager::_rename_project() {
@@ -1459,17 +1522,38 @@ ProjectManager::ProjectManager() {
 		local_projects_vb->set_name("LocalProjectsTab");
 		_add_main_view(MAIN_VIEW_PROJECTS, TTRC("Projects"), Ref<Texture2D>(), local_projects_vb);
 
-		// Project list's top bar.
+		// Project list's top bar with prominent action buttons
 		{
+			VBoxContainer *top_bar_vb = memnew(VBoxContainer);
+			local_projects_vb->add_child(top_bar_vb);
+			
+			// Action buttons row - prominent primary actions
+			HBoxContainer *action_buttons = memnew(HBoxContainer);
+			action_buttons->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+			action_buttons->add_theme_constant_override("separation", 12 * EDSCALE);
+			top_bar_vb->add_child(action_buttons);
+			
+			create_btn = memnew(Button);
+			create_btn->set_text(TTRC("Create New Project"));
+			create_btn->set_shortcut(ED_SHORTCUT("project_manager/new_project", TTRC("New Project"), KeyModifierMask::CMD_OR_CTRL | Key::N));
+			create_btn->set_custom_minimum_size(Size2(200, 40) * EDSCALE);
+			create_btn->set_flat(false);
+			create_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_new_project));
+			action_buttons->add_child(create_btn);
+
+			template_btn = memnew(Button);
+			template_btn->set_text(TTRC("Start from Template"));
+			template_btn->set_custom_minimum_size(Size2(200, 40) * EDSCALE);
+			template_btn->set_flat(false);
+			template_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_start_from_template));
+			action_buttons->add_child(template_btn);
+
+			top_bar_vb->add_child(memnew(HSeparator));
+			
+			// Search and filter row
 			HBoxContainer *hb = memnew(HBoxContainer);
 			hb->set_h_size_flags(Control::SIZE_EXPAND_FILL);
-			local_projects_vb->add_child(hb);
-
-			create_btn = memnew(Button);
-			create_btn->set_text(TTRC("Create"));
-			create_btn->set_shortcut(ED_SHORTCUT("project_manager/new_project", TTRC("New Project"), KeyModifierMask::CMD_OR_CTRL | Key::N));
-			create_btn->connect(SceneStringName(pressed), callable_mp(this, &ProjectManager::_new_project));
-			hb->add_child(create_btn);
+			top_bar_vb->add_child(hb);
 
 			import_btn = memnew(Button);
 			import_btn->set_text(TTRC("Import"));
@@ -1765,6 +1849,10 @@ ProjectManager::ProjectManager() {
 		project_dialog->connect("project_created", callable_mp(this, &ProjectManager::_on_project_created));
 		project_dialog->connect("project_duplicated", callable_mp(this, &ProjectManager::_on_project_duplicated));
 		add_child(project_dialog);
+
+		template_selector_dialog = memnew(TemplateSelectorDialog);
+		template_selector_dialog->connect(SceneStringName(confirmed), callable_mp(this, &ProjectManager::_on_template_confirmed));
+		add_child(template_selector_dialog);
 
 		error_dialog = memnew(AcceptDialog);
 		error_dialog->set_title(TTRC("Error"));
