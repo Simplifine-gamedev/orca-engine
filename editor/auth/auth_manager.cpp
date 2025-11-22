@@ -881,6 +881,19 @@ void AuthManager::initialize_autumn_account() {
 	Dictionary body_dict;
 	body_dict["feature_id"] = "ai-requests";
 	body_dict["required_quantity"] = 0;  // Just checking, not consuming quota
+	
+	// Include customer_data in request body (email and name) so Autumn can record them
+	if (!user_email.is_empty() || !user_name.is_empty()) {
+		Dictionary customer_data;
+		if (!user_email.is_empty()) {
+			customer_data["email"] = user_email;
+		}
+		if (!user_name.is_empty()) {
+			customer_data["name"] = user_name;
+		}
+		body_dict["customer_data"] = customer_data;
+	}
+	
 	String body_json = JSON::stringify(body_dict);
 	CharString body_utf8 = body_json.utf8();
 	

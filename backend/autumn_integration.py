@@ -108,7 +108,7 @@ class AutumnPricingService:
             print(f"❌ AUTUMN_TRACK: EXCEPTION - {e}")
             return False
     
-    def initialize_customer(self, user_id: str, user_email: str = None) -> Dict:
+    def initialize_customer(self, user_id: str, user_email: str = None, user_name: str = None) -> Dict:
         """
         Initialize Autumn account for a user (creates customer + assigns Free plan if new)
         Uses /check endpoint which auto-creates customers (GET /customer does not)
@@ -125,13 +125,23 @@ class AutumnPricingService:
             if user_email:
                 headers['X-User-Email'] = user_email
             
+            # Prepare request body with customer_data so Autumn can record email/name
+            request_body = {
+                "feature_id": "ai-requests",
+                "required_quantity": 0  # Just checking, not consuming
+            }
+            
+            # Include customer_data in request body if email is provided
+            if user_email:
+                request_body["customer_data"] = {
+                    "email": user_email,
+                    "name": user_name or user_email.split('@')[0]  # Use provided name or email prefix
+                }
+            
             response = requests.post(
                 f"{self.base_url}/check",
                 headers=headers,
-                json={
-                    "feature_id": "ai-requests",
-                    "required_quantity": 0  # Just checking, not consuming
-                },
+                json=request_body,
                 timeout=10
             )
             
