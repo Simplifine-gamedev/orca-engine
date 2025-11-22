@@ -1,0 +1,177 @@
+[
+  {
+    "id": "godot_official_2d_platformer_demo",
+    "name": "2D Platformer Demo (Official)",
+    "repo_url": "https://github.com/godotengine/godot-demo-projects.git",
+    "subdir": "2d/platformer",
+    "license": "MIT (Godot demo projects)"
+  },
+  {
+    "id": "godot_official_3d_platformer_demo",
+    "name": "3D Platformer Demo (Official)",
+    "repo_url": "https://github.com/godotengine/godot-demo-projects.git",
+    "subdir": "3d/platformer",
+    "license": "MIT (Godot demo projects)"
+  },
+  {
+    "id": "godot_official_physics_platformer_demo",
+    "name": "Physics Platformer Demo (Official)",
+    "repo_url": "https://github.com/godotengine/godot-demo-projects.git",
+    "subdir": "2d/physics_platformer",
+    "license": "MIT (Godot demo projects)"
+  },
+  {
+    "id": "godot_official_tps_demo",
+    "name": "TPS Demo (Third Person Shooter, Official)",
+    "repo_url": "https://github.com/godotengine/tps-demo.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "maaack_godot_game_template",
+    "name": "Godot Game Template",
+    "repo_url": "https://github.com/Maaack/Godot-Game-Template.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "g2p_2d_platformer_starter_kit",
+    "name": "2D Platformer - Starter Kit (G2P Studios)",
+    "repo_url": "https://github.com/AdilDevStuff/2D-Platformer-Starter-Kit.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "brett_chalupa_2d_platformer_starter",
+    "name": "Godot 2D Platformer Starter Kit (Brett Chalupa)",
+    "repo_url": "https://github.com/brettchalupa/godot_2d_platformer.git",
+    "subdir": null,
+    "license": "Code CC0; assets CC0/CC-BY"
+  },
+  {
+    "id": "gdquest_open_2d_platformer",
+    "name": "Open 2D Platformer (GDQuest)",
+    "repo_url": "https://github.com/gdquest-demos/godot-platformer-2d.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "stefh_2d_topdown_template",
+    "name": "Godot 2D Top-Down Template (Stefh)",
+    "repo_url": "https://github.com/stesproject/godot-2d-topdown-template.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "noidexe_topdown_action_rpg_template",
+    "name": "Top-down Action RPG Template (NoidEXE)",
+    "repo_url": "https://github.com/NoidEXE/top-down-action-rpg-template.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "bozar_godot4_roguelike_tutorial",
+    "name": "Godot 4 Roguelike Tutorial (Bozar)",
+    "repo_url": "https://github.com/Bozar/godot-4-roguelike-tutorial.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "quiver_topdown_shooter_core",
+    "name": "Top-down Shooter Core (Quiver)",
+    "repo_url": "https://github.com/quiver-dev/top-down-shooter-core.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "quiver_tiny_wizard_demo",
+    "name": "Tiny Wizard (Quiver demo)",
+    "repo_url": "https://github.com/quiver-dev/tiny-wizard-demo.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "quiver_outpost_assault_tower_defense",
+    "name": "Outpost Assault – Tower Defense (Quiver)",
+    "repo_url": "https://github.com/quiver-dev/tower-defense-godot4.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "godot_tactical_rpg_demo",
+    "name": "Godot Tactical RPG Demo",
+    "repo_url": "https://github.com/ramaureirac/godot-tactical-rpg.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "survivors_starter_kit",
+    "name": "Survivors Starter Kit (DarkRewar)",
+    "repo_url": "https://github.com/DarkRewar/SurvivorsStarterKit.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "kenney_3d_platformer_starter_kit",
+    "name": "Starter Kit 3D Platformer (Kenney)",
+    "repo_url": "https://github.com/KenneyNL/Starter-Kit-3D-Platformer.git",
+    "subdir": null,
+    "license": "MIT (code), CC0 assets"
+  },
+  {
+    "id": "kenney_fps_starter_kit",
+    "name": "Starter Kit FPS (Kenney)",
+    "repo_url": "https://github.com/KenneyNL/Starter-Kit-FPS.git",
+    "subdir": null,
+    "license": "MIT (code), CC0 assets"
+  },
+  {
+    "id": "kenney_city_builder_starter_kit",
+    "name": "Starter Kit City Builder (Kenney)",
+    "repo_url": "https://github.com/KenneyNL/Starter-Kit-City-Builder.git",
+    "subdir": null,
+    "license": "MIT (code), CC0 assets"
+  },
+  {
+    "id": "whimfoome_first_person_starter",
+    "name": "First Person Starter (Whimfoome)",
+    "repo_url": "https://github.com/Whimfoome/godot-FirstPersonStarter.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "cogito_immersive_sim_template",
+    "name": "COGITO: Immersive Sim Template",
+    "repo_url": "https://github.com/Phazorknight/Cogito.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "dialogic_visual_novel_template",
+    "name": "Dialogic Visual Novel Template",
+    "repo_url": "https://github.com/Dialogic-Godot/visual-novel-template.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "rakugo_visual_novel_kit",
+    "name": "Rakugo Visual Novel Kit",
+    "repo_url": "https://github.com/rakugoteam/VisualNovelKit.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "waffleawt_godot42_card_game_starter",
+    "name": "Godot 4.2 Card Game Starter Template",
+    "repo_url": "https://github.com/WaffleAWT/Godot-4.2-Card-Game-Starter-Template.git",
+    "subdir": null,
+    "license": "MIT"
+  },
+  {
+    "id": "chun_card_framework",
+    "name": "Card Framework (Godot 4)",
+    "repo_url": "https://github.com/chun92/card-framework.git",
+    "subdir": null,
+    "license": "MIT"
+  }
+]

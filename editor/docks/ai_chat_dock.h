@@ -269,6 +269,9 @@ private:
 	String pending_save_image_data; // Base64 image data to save
 	String pending_save_image_format; // "png" or "jpg"
 	
+	// Batch image display cache (prevents token leak by storing UI data separately)
+	HashMap<String, String> _batch_image_display_cache; // image_id -> base64_data for UI only
+	
 	// For saving 3D models
 	String pending_save_model_data; // Base64 GLB data to save
 	String pending_save_model_prompt; // Original prompt for filename generation
@@ -808,6 +811,12 @@ private:
 	
 	// Track actively running apply_edit tools to coordinate diff display
 	HashMap<String, Array> active_edit_tools; // file_path -> [tool_call_ids] of tools currently executing
+	
+	// Scene validation system
+	Array scene_validation_warnings; // Store current validation warnings for AI context
+	void _validate_scene_on_startup();
+	void _validate_scene_after_operation();
+	void _add_scene_validation_warning(const String &p_warning);
 	
 	// Robust conversation persistence
 	AIConversationPersistence *conversation_persistence = nullptr;

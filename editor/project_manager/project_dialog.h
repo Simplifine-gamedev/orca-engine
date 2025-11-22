@@ -39,6 +39,7 @@ class EditorFileDialog;
 class LineEdit;
 class OptionButton;
 class TextureRect;
+class Thread;
 
 class ProjectDialog : public ConfirmationDialog {
 	GDCLASS(ProjectDialog, ConfirmationDialog);
@@ -88,6 +89,32 @@ private:
 	LineEdit *install_path = nullptr;
 	TextureRect *project_status_rect = nullptr;
 	TextureRect *install_status_rect = nullptr;
+	
+	Label *progress_label = nullptr;
+	void _show_progress(const String &p_message);
+	void _hide_progress();
+	
+	// Thread for async git clone
+	struct CloneTaskData {
+		ProjectDialog *dialog = nullptr;
+		String git_executable;
+		List<String> clone_args;
+		String temp_clone_dir;
+		String repo_url;
+		String subdir;
+		String project_path;
+		bool create_dir;
+		Error result = OK;
+		int exit_code = 0;
+		String output;
+		bool done = false;
+	};
+	
+	CloneTaskData *clone_task = nullptr;
+	Thread *clone_thread = nullptr;
+	static void _clone_thread_func(void *p_userdata);
+	void _on_clone_complete();
+	bool is_cloning = false;
 
 	OptionButton *vcs_metadata_selection = nullptr;
 

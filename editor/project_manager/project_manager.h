@@ -49,6 +49,7 @@ class ProjectList;
 class QuickSettingsDialog;
 class RichTextLabel;
 class TabContainer;
+class TemplateSelectorDialog;
 class VBoxContainer;
 
 class ProjectManager : public Control {
@@ -152,6 +153,7 @@ class ProjectManager : public Control {
 	PanelContainer *project_list_panel = nullptr;
 
 	Button *create_btn = nullptr;
+	Button *template_btn = nullptr;
 	Button *import_btn = nullptr;
 	Button *scan_btn = nullptr;
 	Button *open_btn = nullptr;
@@ -179,6 +181,7 @@ class ProjectManager : public Control {
 	ConfirmationDialog *open_recovery_mode_ask = nullptr;
 
 	ProjectDialog *project_dialog = nullptr;
+	TemplateSelectorDialog *template_selector_dialog = nullptr;
 
 	void _scan_projects();
 	void _run_project();
@@ -191,6 +194,8 @@ class ProjectManager : public Control {
 	void _install_project(const String &p_zip_path, const String &p_title);
 	void _import_project();
 	void _new_project();
+	void _start_from_template();
+	void _create_project_from_template(const Dictionary &p_template);
 	void _rename_project();
 	void _duplicate_project();
 	void _duplicate_project_with_action(PostDuplicateAction p_action);
@@ -206,6 +211,7 @@ class ProjectManager : public Control {
 	void _on_project_duplicated(const String &p_original_path, const String &p_duplicate_path, bool p_edit);
 	void _on_projects_updated();
 	void _on_open_options_selected(int p_option);
+	void _on_template_confirmed();
 	void _on_recovery_mode_popup_open_normal();
 	void _on_recovery_mode_popup_open_recovery();
 

@@ -1,0 +1,278 @@
+[
+    {
+      "id": "godot_2d_platformer_demo_official",
+      "title": "2D Platformer Demo (Official)",
+      "type": "demo",
+      "genres": ["platformer"],
+      "dimensions": "2D",
+      "engine_version": "4.2+",
+      "license": "MIT (Godot demo projects)",
+      "repo_or_page": "https://github.com/godotengine/godot-demo-projects",
+      "notes": "Official Godot sample: basic 2D platformer with CharacterBody2D movement, collisions, camera and collectibles."
+    },
+    {
+      "id": "godot_3d_platformer_demo_official",
+      "title": "3D Platformer Demo (Official)",
+      "type": "demo",
+      "genres": ["platformer"],
+      "dimensions": "3D",
+      "engine_version": "4.2+",
+      "license": "MIT (Godot demo projects)",
+      "repo_or_page": "https://github.com/godotengine/godot-demo-projects",
+      "notes": "Official 3D platformer demo with third‑person character controller, moving platforms and pickups."
+    },
+    {
+      "id": "godot_physics_platformer_demo_official",
+      "title": "Physics Platformer Demo (Official)",
+      "type": "demo",
+      "genres": ["platformer", "physics"],
+      "dimensions": "2D",
+      "engine_version": "4.2+",
+      "license": "MIT (Godot demo projects)",
+      "repo_or_page": "https://github.com/godotengine/godot-demo-projects",
+      "notes": "Official 2D physics platformer using RigidBody2D to showcase forces, collisions and physics-based movement."
+    },
+    {
+      "id": "godot_tps_demo_official",
+      "title": "TPS Demo (Third Person Shooter)",
+      "type": "demo",
+      "genres": ["third-person shooter", "action"],
+      "dimensions": "3D",
+      "engine_version": "4.5+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/godotengine/tps-demo",
+      "notes": "High‑quality third‑person shooter demo with aiming, enemies, advanced lighting and effects."
+    },
+    {
+      "id": "maaack_game_template",
+      "title": "Godot Game Template",
+      "type": "template",
+      "genres": ["framework", "multi-genre"],
+      "dimensions": "2D",
+      "engine_version": "4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/Maaack/Godot-Game-Template",
+      "notes": "General game skeleton with menus, save system, options, localization and scene management."
+    },
+    {
+      "id": "g2p_2d_platformer_starter_kit",
+      "title": "2D Platformer - Starter Kit (G2P Studios)",
+      "type": "template",
+      "genres": ["platformer"],
+      "dimensions": "2D",
+      "engine_version": "4.4+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/AdilDevStuff/2D-Platformer-Starter-Kit",
+      "notes": "Juicy 2D platformer starter with animated player, two demo levels, score, SFX and documented code."
+    },
+    {
+      "id": "brett_2d_platformer_starter_kit",
+      "title": "Godot 2D Platformer Starter Kit (Brett Chalupa)",
+      "type": "template",
+      "genres": ["platformer"],
+      "dimensions": "2D",
+      "engine_version": "4.0+",
+      "license": "Code CC0; assets CC0/CC-BY",
+      "repo_or_page": "https://github.com/brettchalupa/godot_2d_platformer",
+      "notes": "Complete 2D platformer (3 levels, music, SFX, main menu). Template code is public domain."
+    },
+    {
+      "id": "gdquest_open_2d_platformer",
+      "title": "Open 2D Platformer (GDQuest)",
+      "type": "template",
+      "genres": ["platformer", "metroidvania"],
+      "dimensions": "2D",
+      "engine_version": "3.x / 4.x variants",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/gdquest-demos/godot-platformer-2d",
+      "notes": "Advanced open‑source platformer with modular character, enemies and level design patterns (GDQuest course demo)."
+    },
+    {
+      "id": "stes_topdown_template",
+      "title": "Godot 2D Top-Down Template (Stefh)",
+      "type": "template",
+      "genres": ["top-down", "action-adventure", "RPG"],
+      "dimensions": "2D",
+      "engine_version": "4.4+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/stesproject/godot-2d-topdown-template",
+      "notes": "Big top‑down framework with state machines, inventory, dialog, save/load, health bars and more."
+    },
+    {
+      "id": "noidexe_topdown_action_rpg",
+      "title": "Top-down Action RPG Template (NoidEXE)",
+      "type": "template",
+      "genres": ["top-down", "action RPG"],
+      "dimensions": "2D",
+      "engine_version": "4.2+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/NoidEXE/top-down-action-rpg-template",
+      "notes": "Zelda‑like action RPG starter with enemies, combat and basic progression systems."
+    },
+    {
+      "id": "bozar_godot4_roguelike_tutorial",
+      "title": "Godot 4 Roguelike Tutorial (Bozar)",
+      "type": "template",
+      "genres": ["roguelike", "turn-based"],
+      "dimensions": "2D",
+      "engine_version": "4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/Bozar/godot-4-roguelike-tutorial",
+      "notes": "Turn‑based roguelike with FOV, random dungeons, simple combat and a full written/tutorial series."
+    },
+    {
+      "id": "quiver_top_down_shooter_core",
+      "title": "Top-down Shooter Core (Quiver)",
+      "type": "template",
+      "genres": ["top-down shooter", "action"],
+      "dimensions": "2D",
+      "engine_version": "4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/quiver-dev/top-down-shooter-core",
+      "notes": "Modular shooter core: weapons, enemies, rooms and supporting systems for top‑down action games."
+    },
+    {
+      "id": "quiver_tiny_wizard",
+      "title": "Tiny Wizard (Quiver demo)",
+      "type": "demo",
+      "genres": ["top-down shooter", "roguelite"],
+      "dimensions": "2D",
+      "engine_version": "4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/quiver-dev/tiny-wizard-demo",
+      "notes": "Binding‑of‑Isaac‑style open source room‑based shooter built on Quiver's Top‑Down Shooter Core."
+    },
+    {
+      "id": "quiver_outpost_assault_tower_defense",
+      "title": "Outpost Assault – Tower Defense (Quiver)",
+      "type": "template",
+      "genres": ["tower defense", "strategy"],
+      "dimensions": "2D",
+      "engine_version": "4.0+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/quiver-dev/tower-defense-godot4",
+      "notes": "Open source 2D tile‑based tower defense template for Godot 4 (Outpost Assault) built by Quiver."
+    },
+    {
+      "id": "ramaureirac_tactical_rpg",
+      "title": "Godot Tactical RPG Demo",
+      "type": "template",
+      "genres": ["tactics", "turn-based", "RPG"],
+      "dimensions": "2D",
+      "engine_version": "4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/ramaureirac/godot-tactical-rpg",
+      "notes": "Grid‑based tactical RPG sample with movement ranges, pathfinding and tile‑based attacks."
+    },
+    {
+      "id": "darkrewar_survivors_starter_kit",
+      "title": "Survivors Starter Kit (DarkRewar)",
+      "type": "template",
+      "genres": ["arena survival", "action roguelite"],
+      "dimensions": "2D",
+      "engine_version": "4.4+ (C#)",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/DarkRewar/SurvivorsStarterKit",
+      "notes": "Vampire Survivors‑style kit in C#: player stats, spells, hordes, bosses, upgrades and minimal UI."
+    },
+    {
+      "id": "kenney_3d_platformer_starter_kit",
+      "title": "Starter Kit 3D Platformer (Kenney)",
+      "type": "template",
+      "genres": ["platformer"],
+      "dimensions": "3D",
+      "engine_version": "4.3+",
+      "license": "MIT (code), CC0 assets",
+      "repo_or_page": "https://github.com/KenneyNL/Starter-Kit-3D-Platformer",
+      "notes": "Stylized 3D platformer starter with character controller, coins, falling platforms and gamepad support."
+    },
+    {
+      "id": "kenney_fps_starter_kit",
+      "title": "Starter Kit FPS (Kenney)",
+      "type": "template",
+      "genres": ["FPS", "shooter"],
+      "dimensions": "3D",
+      "engine_version": "4.3+",
+      "license": "MIT (code), CC0 assets",
+      "repo_or_page": "https://github.com/KenneyNL/Starter-Kit-FPS",
+      "notes": "First‑person shooter kit with guns, enemies, pickups and CC0 models, textures and sounds."
+    },
+    {
+      "id": "kenney_city_builder_starter_kit",
+      "title": "Starter Kit City Builder (Kenney)",
+      "type": "template",
+      "genres": ["city builder", "simulation"],
+      "dimensions": "3D",
+      "engine_version": "4.3+",
+      "license": "MIT (code), CC0 assets",
+      "repo_or_page": "https://github.com/KenneyNL/Starter-Kit-City-Builder",
+      "notes": "3D city‑builder template using GridMap: building placement, camera controls, save/load and CC0 city assets."
+    },
+    {
+      "id": "whimfoome_first_person_starter",
+      "title": "First Person Starter (Whimfoome)",
+      "type": "template",
+      "genres": ["FPS", "first-person"],
+      "dimensions": "3D",
+      "engine_version": "4.2+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/Whimfoome/godot-FirstPersonStarter",
+      "notes": "Well‑tuned first‑person controller with smooth movement, slopes, sprinting and air control."
+    },
+    {
+      "id": "phazor_cogito_immersive_sim",
+      "title": "COGITO: Immersive Sim Template",
+      "type": "template",
+      "genres": ["immersive sim", "first-person"],
+      "dimensions": "3D",
+      "engine_version": "4.4+",
+      "license": "MIT",
+      "repo_or_page": "https://godotengine.org/asset-library/asset/2536",
+      "notes": "Immersive‑sim style first‑person kit focused on interactable objects, inventory and systemic gameplay."
+    },
+    {
+      "id": "dialogic_visual_novel_template",
+      "title": "Dialogic Visual Novel Template",
+      "type": "template",
+      "genres": ["visual novel", "narrative"],
+      "dimensions": "2D",
+      "engine_version": "3.x/4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/Dialogic-Godot/visual-novel-template",
+      "notes": "Visual novel starter built around Dialogic: dialogue UI, choices, basic menus and flow control."
+    },
+    {
+      "id": "rakugo_visual_novel_kit",
+      "title": "Rakugo Visual Novel Kit",
+      "type": "template",
+      "genres": ["visual novel", "narrative"],
+      "dimensions": "2D",
+      "engine_version": "3.x/4.x",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/rakugoteam/VisualNovelKit",
+      "notes": "Ren’Py‑like VN kit with scripting API, menus, history, save/load and example project."
+    },
+    {
+      "id": "waffle_card_game_starter",
+      "title": "Godot 4.2 Card Game Starter Template",
+      "type": "template",
+      "genres": ["card game", "deckbuilder"],
+      "dimensions": "2D",
+      "engine_version": "4.2+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/WaffleAWT/Godot-4.2-Card-Game-Starter-Template",
+      "notes": "Turn‑based card battler starter (Slay‑the‑Spire‑style) built for Godot 4.2."
+    },
+    {
+      "id": "chunuiyu_card_framework",
+      "title": "Card Framework (Godot 4)",
+      "type": "framework",
+      "genres": ["card game", "toolkit"],
+      "dimensions": "2D",
+      "engine_version": "4.4+",
+      "license": "MIT",
+      "repo_or_page": "https://github.com/chun92/card-framework",
+      "notes": "Flexible card-game toolkit for Solitaire, TCGs and deckbuilding roguelikes with drag‑and‑drop card handling."
+    }
+  ]
+  

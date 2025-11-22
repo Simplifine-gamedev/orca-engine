@@ -1569,6 +1569,10 @@ void AIChatDock::_notification(int p_notification) {
 			
 			// Auto-verify saved authentication when everything is fully ready
 			_auto_verify_saved_credentials();
+			
+			// Run scene validation check on startup
+			call_deferred("_validate_scene_on_startup");
+			
 			// Debug: Log environment mode and resolved endpoint
 			String is_dev_env = OS::get_singleton()->get_environment("IS_DEV");
 			if (is_dev_env.is_empty()) {
@@ -3134,8 +3138,8 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 	Vector2i original_size = Vector2i(image->get_width(), image->get_height());
 	attached_file.original_size = original_size;
 	
-	// Check if image needs to be downsampled (max 1024px on any side)
-	const int MAX_DIMENSION = 1024;
+	// Check if image needs to be downsampled (max 512px on any side to keep prompts manageable)
+	const int MAX_DIMENSION = 512;
 	Vector2i target_size = _calculate_downsampled_size(original_size, MAX_DIMENSION);
 	
 	if (target_size != original_size) {
@@ -3148,12 +3152,15 @@ void AIChatDock::_process_image_attachment_async(const String &p_file_path, cons
 	
 	attached_file.display_size = target_size;
 	
-	// Convert to base64 for API transmission
+	// Convert to base64 for API transmission (favor JPEG unless alpha is required)
 	Vector<uint8_t> buffer;
-	if (attached_file.mime_type == "image/jpeg" || attached_file.mime_type == "image/jpg") {
-		buffer = image->save_jpg_to_buffer(0.85f); // Good quality JPEG
+	bool has_alpha = image->detect_alpha();
+	if (!has_alpha) {
+		buffer = image->save_jpg_to_buffer(0.85f); // Compress aggressively to keep tokens < limit
+		attached_file.mime_type = "image/jpeg";
 	} else {
 		buffer = image->save_png_to_buffer();
+		attached_file.mime_type = "image/png";
 	}
 	
 	if (buffer.size() == 0) {
@@ -3224,7 +3231,65 @@ void AIChatDock::_request_token_count() {
 	
 	// Prepare request data
 	Dictionary request_data;
-	request_data["messages"] = messages_array;
+	// CRITICAL: Strip heavy image data for token counting to avoid false explosions
+	{
+		Array safe_messages;
+		safe_messages.resize(messages_array.size());
+		
+		for (int i = 0; i < messages_array.size(); i++) {
+			Dictionary msg = messages_array[i];
+			
+			// Remove top-level images array (contains base64)
+			if (msg.has("images")) {
+				msg.erase("images");
+			}
+			
+			// Replace any image_url content parts with lightweight placeholders
+			if (msg.has("content")) {
+				Variant content_v = msg["content"];
+				if (content_v.get_type() == Variant::ARRAY) {
+					Array content_arr = content_v;
+					Array safe_content;
+					safe_content.resize(content_arr.size());
+					
+					for (int j = 0; j < content_arr.size(); j++) {
+						Variant part_v = content_arr[j];
+						if (part_v.get_type() == Variant::DICTIONARY) {
+							Dictionary part = part_v;
+							String part_type = part.get("type", "");
+							if (part_type == "image_url") {
+								Dictionary placeholder;
+								placeholder["type"] = "text";
+								placeholder["text"] = "[image omitted]";
+								safe_content[j] = placeholder;
+							} else {
+								// Limit excessively long text fragments
+								if (part_type == "text") {
+									String t = part.get("text", "");
+									if (t.length() > 4000) {
+										part["text"] = t.substr(0, 4000) + "...";
+									}
+								}
+								safe_content[j] = part;
+							}
+						} else {
+							safe_content[j] = part_v;
+						}
+					}
+					msg["content"] = safe_content;
+				} else if (content_v.get_type() == Variant::STRING) {
+					String s = content_v;
+					if (s.length() > 10000) {
+						msg["content"] = s.substr(0, 10000) + "...";
+					}
+				}
+			}
+			
+			safe_messages[i] = msg;
+		}
+		
+		request_data["messages"] = safe_messages;
+	}
 	request_data["model"] = model;
 	
 	String json_data = JSON::stringify(request_data);
@@ -6181,51 +6246,181 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	}
 	
 	// Store the original tool arguments for proper UI recreation
-	// CRITICAL: Store the FULL result with image_data for UI rendering
+	// CRITICAL FIX: Create stripped version for conversation, full version for UI
 	msg.tool_results.clear();
-	msg.tool_results.push_back(p_result); // Keep FULL result including image_data for UI
+	
+	// Create stripped result for conversation storage (prevents token explosion)
+	Dictionary stripped_result = p_result.duplicate(true);
+	
+	// BATCH RESULT STRIPPING: Remove image_data from batch results
+	if (p_name == "resource_manager" && stripped_result.has("results")) {
+		Variant results_v = stripped_result["results"];
+		if (results_v.get_type() == Variant::ARRAY) {
+			Array batch_results = results_v;
+			Array clean_results;
+			
+			for (int i = 0; i < batch_results.size(); i++) {
+				if (batch_results[i].get_type() == Variant::DICTIONARY) {
+					Dictionary item = batch_results[i].duplicate(true);
+					// CRITICAL: Remove the massive base64 field
+					item.erase("image_data");
+					clean_results.push_back(item);
+				} else {
+					clean_results.push_back(batch_results[i]);
+				}
+			}
+			
+			stripped_result["results"] = clean_results;
+			print_line("CONVERSATION_STRIP: Removed base64 data from " + itos(batch_results.size()) + " batch results in tool_results");
+		}
+	}
+	
+	// SINGLE RESULT STRIPPING: Remove image_data from single image results too
+	stripped_result.erase("image_data");
+	stripped_result.erase("base64");
+	stripped_result.erase("data_uri"); 
+	stripped_result.erase("glb_data");
+	stripped_result.erase("asset_data");
+	
+	msg.tool_results.push_back(stripped_result); // Conversation-safe version (no base64)
 	msg.tool_results.push_back(p_args); // Store args as second element
 
 	// If this is an image generation/edit result OR screenshot, attach the image to the message so
 	// subsequent requests can reference it via top-level 'images' (derived at serialization).
-	if ((p_name == "image_operation" || p_name == "resource_manager" || p_name == "runtime_manager" || p_name == "runtime_inspector") && p_result.get("success", false) && p_result.has("image_data")) {
-		AIChatDock::AttachedFile gen_file;
-		gen_file.path = "generated://tool_result";
-        
-        // Use backend-provided image_id if available, otherwise fallback to timestamp
-        String backend_image_id = p_result.get("image_id", "");
-        String backend_image_name = p_result.get("image_name", "");
-        if (!backend_image_id.is_empty()) {
-            gen_file.name = backend_image_id;
-        } else if (!backend_image_name.is_empty()) {
-            gen_file.name = backend_image_name;
-        } else {
-            // Check if this is a screenshot
-            String image_type = p_result.get("image_type", "");
-            if (image_type == "screenshot") {
-                String target = p_result.get("target", "viewport");
-                gen_file.name = "screenshot_" + target + "_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
-            } else {
-                // Fallback for backward compatibility
-                gen_file.name = String("generated_") + String::num_int64(OS::get_singleton()->get_ticks_msec());
-            }
-        }
-        
-		gen_file.content = "";
-		gen_file.is_image = true;
-		gen_file.mime_type = "image/png";
-		gen_file.base64_data = p_result.get("image_data", "");
-		msg.attached_files.push_back(gen_file);
+	if ((p_name == "image_operation" || p_name == "resource_manager" || p_name == "runtime_manager" || p_name == "runtime_inspector") && p_result.get("success", false)) {
+		// Check for batch image results first (MEMORY-SAFE HANDLING)
+		if (p_result.has("results") && p_name == "resource_manager") {
+			Variant results_v = p_result["results"];
+			if (results_v.get_type() == Variant::ARRAY) {
+				Array batch_results = results_v;
+				Vector<String> generated_image_names;  // Use Vector instead of Array for memory safety
+				
+				print_line("BATCH_IMAGE_PROCESSING: Processing " + itos(batch_results.size()) + " batch results");
+				
+				// Process each successful result in the batch with bounds checking
+				for (int i = 0; i < batch_results.size() && i < 20; i++) {  // Cap at 20 for memory safety
+					Variant item_v = batch_results[i];
+					if (item_v.get_type() != Variant::DICTIONARY) {
+						print_line("BATCH_IMAGE_WARNING: Item " + itos(i) + " is not a dictionary, skipping");
+						continue;
+					}
+					
+					Dictionary batch_item = item_v;
+					bool item_success = batch_item.get("success", false);
+					String item_image_data = batch_item.get("image_data", "");
+					
+					print_line("BATCH_IMAGE_ITEM: " + itos(i) + " success=" + (item_success ? "true" : "false") + 
+							  " has_data=" + (item_image_data.is_empty() ? "false" : "true"));
+					
+					if (item_success && !item_image_data.is_empty()) {
+						// CRITICAL FIX: Handle auto-save BEFORE adding to conversation
+						Variant save_path_v = batch_item.get("path_to_save", "");
+						String save_path = (save_path_v.get_type() == Variant::STRING) ? String(save_path_v) : "";
+						
+						if (!save_path.is_empty()) {
+							print_line("BATCH_AUTO_SAVE: Auto-saving item " + itos(i) + " to " + save_path);
+							bool save_success = _save_base64_image_to_path(item_image_data, save_path);
+							if (save_success) {
+								print_line("BATCH_AUTO_SAVE: Successfully saved " + save_path);
+							} else {
+								print_line("BATCH_AUTO_SAVE: FAILED to save " + save_path);
+							}
+						}
+						
+						// CRITICAL FIX: Create lightweight AttachedFile for conversation (NO base64 data)
+						AIChatDock::AttachedFile gen_file;
+						gen_file.path = "generated://batch_" + itos(i);
+						
+						// Use backend-provided image_id with safe conversion
+						Variant id_var = batch_item.get("image_id", "");
+						String backend_image_id = (id_var.get_type() == Variant::STRING) ? String(id_var) : "";
+						Variant name_var = batch_item.get("image_name", "");
+						String backend_image_name = (name_var.get_type() == Variant::STRING) ? String(name_var) : "";
+						
+						if (!backend_image_id.is_empty()) {
+							gen_file.name = backend_image_id;
+						} else if (!backend_image_name.is_empty()) {
+							gen_file.name = backend_image_name;
+						} else {
+							gen_file.name = "batch_" + itos(i) + "_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+						}
+						
+						gen_file.content = "";
+						gen_file.is_image = true;
+						gen_file.mime_type = "image/png";
+						gen_file.base64_data = item_image_data; // KEEP for conversation persistence
+						
+						// Also cache for UI performance (redundant but safe)
+						_batch_image_display_cache[gen_file.name] = item_image_data;
+						
+						// Add lightweight reference to conversation (no base64)
+						msg.attached_files.push_back(gen_file);
+						generated_image_names.push_back(gen_file.name);
+						
+						print_line("BATCH_IMAGE_ATTACH: Added " + gen_file.name + " reference (no base64 for conversation)");
+					}
+				}
+				
+				// Add batch summary to tool result content (SAFE)
+				if (generated_image_names.size() > 0) {
+					result_for_content["batch_generated"] = true;
+					result_for_content["batch_successful_count"] = generated_image_names.size();
+					result_for_content["batch_total_count"] = batch_results.size();
+					
+					// Build a safe image names list
+					String image_list = "";
+					for (int i = 0; i < generated_image_names.size(); i++) {
+						if (i > 0) image_list += ", ";
+						image_list += generated_image_names[i];
+					}
+					result_for_content["image_names_list"] = image_list;
+					
+					print_line("BATCH_IMAGE_SUMMARY: " + itos(generated_image_names.size()) + " image references added (no token leak)");
+				}
+				
+				// Skip single image handling since we processed batch
+			}
+		}
+		// Single image handling (existing logic) - only if no batch was processed
+		else if (p_result.has("image_data")) {
+			AIChatDock::AttachedFile gen_file;
+			gen_file.path = "generated://tool_result";
+			
+			// Use backend-provided image_id if available, otherwise fallback to timestamp
+			String backend_image_id = p_result.get("image_id", "");
+			String backend_image_name = p_result.get("image_name", "");
+			if (!backend_image_id.is_empty()) {
+				gen_file.name = backend_image_id;
+			} else if (!backend_image_name.is_empty()) {
+				gen_file.name = backend_image_name;
+			} else {
+				// Check if this is a screenshot
+				String image_type = p_result.get("image_type", "");
+				if (image_type == "screenshot") {
+					String target = p_result.get("target", "viewport");
+					gen_file.name = "screenshot_" + target + "_" + String::num_int64(OS::get_singleton()->get_ticks_msec());
+				} else {
+					// Fallback for backward compatibility
+					gen_file.name = String("generated_") + String::num_int64(OS::get_singleton()->get_ticks_msec());
+				}
+			}
+			
+			gen_file.content = "";
+			gen_file.is_image = true;
+			gen_file.mime_type = "image/png";
+			gen_file.base64_data = p_result.get("image_data", "");
+			msg.attached_files.push_back(gen_file);
 
-        // Expose the image identifier in the tool message content for the model to reference
-        result_for_content["image_name"] = gen_file.name;
-        
-        // For screenshots, also add screenshot-specific metadata
-        if (p_result.get("image_type", "") == "screenshot") {
-            result_for_content["screenshot_captured"] = true;
-            result_for_content["screenshot_target"] = p_result.get("target", "viewport");
-            result_for_content["screenshot_filename"] = p_result.get("filename", "");
-        }
+			// Expose the image identifier in the tool message content for the model to reference
+			result_for_content["image_name"] = gen_file.name;
+			
+			// For screenshots, also add screenshot-specific metadata
+			if (p_result.get("image_type", "") == "screenshot") {
+				result_for_content["screenshot_captured"] = true;
+				result_for_content["screenshot_target"] = p_result.get("target", "viewport");
+				result_for_content["screenshot_filename"] = p_result.get("filename", "");
+			}
+		}
 	}
 
     // AGGRESSIVE PERFORMANCE FIX: Provide model with smart summary and cap UI data processing
@@ -6476,6 +6671,48 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
                 return v;
         }
     };
+
+    // CRITICAL BATCH FIX: Strip batch image data before serialization to prevent token explosion
+    if (p_name == "resource_manager" && content_to_serialize.has("results")) {
+        Variant results_v = content_to_serialize["results"];
+        if (results_v.get_type() == Variant::ARRAY) {
+            Array batch_results = results_v;
+            Array stripped_results;
+            
+            // Strip image_data from each batch result but keep metadata
+            for (int i = 0; i < batch_results.size(); i++) {
+                if (batch_results[i].get_type() == Variant::DICTIONARY) {
+                    Dictionary item = batch_results[i];
+                    
+                    // CRITICAL: Remove the massive base64 image_data field
+                    item.erase("image_data");
+                    
+                    // Keep essential fields for AI reference
+                    Dictionary clean_item;
+                    clean_item["success"] = item.get("success", false);
+                    clean_item["image_id"] = item.get("image_id", "");
+                    clean_item["image_name"] = item.get("image_name", "");
+                    clean_item["method"] = item.get("method", "");
+                    clean_item["format"] = item.get("format", "");
+                    clean_item["width"] = item.get("width", 0);
+                    clean_item["height"] = item.get("height", 0);
+                    clean_item["path_to_save"] = item.get("path_to_save", "");
+                    clean_item["original_description"] = item.get("original_description", "");
+                    clean_item["batch_index"] = item.get("batch_index", i);
+                    if (item.has("error")) {
+                        clean_item["error"] = item.get("error", "");
+                    }
+                    
+                    stripped_results.push_back(clean_item);
+                } else {
+                    stripped_results.push_back(batch_results[i]);
+                }
+            }
+            
+            content_to_serialize["results"] = stripped_results;
+            print_line("BATCH_STRIP: Removed base64 data from " + itos(batch_results.size()) + " batch results for conversation storage");
+        }
+    }
 
     content_to_serialize = strip_heavy_recursive(content_to_serialize);
     
@@ -9405,10 +9642,165 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			}
 		}
     } else if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager" || p_tool_name == "runtime_manager" || p_tool_name == "runtime_inspector") && p_success) {
-        // Special handling for image generation results (image_operation, resource_manager with image ops, and screenshot captures)
+        // Special handling for image generation results (image_operation, resource_manager with image ops, screenshot captures, and BATCH generation)
         String base64_data = p_result.get("image_data", "");
         String op = p_args.get("op", p_args.get("operation", ""));
 		
+        // BATCH IMAGE HANDLING: Check for batch results array first
+        if (base64_data.is_empty() && p_result.has("results") && op == "image.create_batch") {
+            Variant results_v = p_result["results"];
+            if (results_v.get_type() == Variant::ARRAY) {
+                Array batch_results = results_v;
+                print_line("FRONTEND BATCH: Processing " + itos(batch_results.size()) + " batch image results");
+                
+                // Create a batch container to hold all images
+                VBoxContainer *batch_container = memnew(VBoxContainer);
+                p_content_vbox->add_child(batch_container);
+                
+                // Add batch header
+                HBoxContainer *batch_header = memnew(HBoxContainer);
+                batch_container->add_child(batch_header);
+                
+                Label *batch_icon = memnew(Label);
+                batch_icon->add_theme_icon_override("icon", get_theme_icon(SNAME("Grid"), SNAME("EditorIcons")));
+                batch_header->add_child(batch_icon);
+                
+                Label *batch_title = memnew(Label);
+                Dictionary batch_summary = p_result.get("batch_summary", Dictionary());
+                int successful = batch_summary.get("successful", batch_results.size());
+                int total = batch_summary.get("total_requested", batch_results.size());
+                batch_title->set_text("Batch Image Generation (" + itos(successful) + "/" + itos(total) + " successful)");
+                batch_title->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+                batch_title->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+                batch_header->add_child(batch_title);
+                
+                // Add processing time info
+                if (batch_summary.has("processing_time_seconds")) {
+                    Label *timing_info = memnew(Label);
+                    float proc_time = batch_summary.get("processing_time_seconds", 0.0f);
+                    timing_info->set_text("Processed in " + String::num(proc_time, 1) + "s");
+                    timing_info->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.7));
+                    batch_header->add_child(timing_info);
+                }
+                
+                // Process each result in the batch with memory safety
+                int max_batch_display = MIN(batch_results.size(), 20);  // Cap at 20 for UI performance
+                for (int i = 0; i < max_batch_display; i++) {
+                    Variant item_v = batch_results[i];
+                    if (item_v.get_type() != Variant::DICTIONARY) {
+                        continue;  // Skip invalid items safely
+                    }
+                    Dictionary batch_item = item_v;
+                    bool item_success = batch_item.get("success", false);
+                    
+                    // Create container for this batch item
+                    VBoxContainer *item_container = memnew(VBoxContainer);
+                    batch_container->add_child(item_container);
+                    
+                    // Add item separator (except for first item)
+                    if (i > 0) {
+                        HSeparator *sep = memnew(HSeparator);
+                        batch_container->add_child(sep);
+                        batch_container->move_child(sep, batch_container->get_child_count() - 2); // Move before item_container
+                    }
+                    
+                    if (item_success && batch_item.has("image_data")) {
+                        Variant image_data_v = batch_item.get("image_data", "");
+                        String item_image_data = (image_data_v.get_type() == Variant::STRING) ? String(image_data_v) : "";
+                        
+                        if (!item_image_data.is_empty() && item_image_data.length() > 100) {  // Sanity check for valid base64
+                            // Add item header
+                            HBoxContainer *item_header = memnew(HBoxContainer);
+                            item_container->add_child(item_header);
+                            
+                            Label *item_index = memnew(Label);
+                            int batch_index = batch_item.get("batch_index", i);
+                            item_index->set_text(itos(batch_index + 1) + ".");
+                            item_index->add_theme_color_override("font_color", get_theme_color(SNAME("accent_color"), SNAME("Editor")));
+                            item_header->add_child(item_index);
+                            
+                            Label *item_desc = memnew(Label);
+                            Variant desc_v = batch_item.get("original_description", "");
+                            String desc = (desc_v.get_type() == Variant::STRING) ? String(desc_v) : ("Generated Image " + itos(i + 1));
+                            if (desc.length() > 60) {
+                                desc = desc.substr(0, 60) + "...";
+                            }
+                            item_desc->set_text(desc);
+                            item_desc->add_theme_font_override("font", get_theme_font(SNAME("bold"), SNAME("EditorFonts")));
+                            item_header->add_child(item_desc);
+                            
+                            // Add method badge
+                            Label *method_badge = memnew(Label);
+                            Variant method_v = batch_item.get("method", "general");
+                            String method = (method_v.get_type() == Variant::STRING) ? String(method_v) : "general";
+                            method_badge->set_text("[" + method + "]");
+                            method_badge->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1,1,1,0.6));
+                            item_header->add_child(method_badge);
+                            
+                            // Use lazy loading for batch images (MEMORY-SAFE)
+                            Dictionary img_metadata;
+                            Variant prompt_v = batch_item.get("original_description", "");
+                            String safe_prompt = (prompt_v.get_type() == Variant::STRING) ? String(prompt_v) : ("Batch Image " + itos(i + 1));
+                            img_metadata["prompt"] = safe_prompt;
+                            img_metadata["model"] = "Batch Generation";
+                            img_metadata["path"] = "generated://batch_" + itos(i);
+                            
+                            Variant id_v = batch_item.get("image_id", "");
+                            String safe_id = (id_v.get_type() == Variant::STRING) ? String(id_v) : ("batch_" + itos(i));
+                            img_metadata["image_id"] = safe_id;
+                            img_metadata["name"] = safe_id;
+                            img_metadata["method"] = method;
+                            img_metadata["batch_index"] = batch_index;
+                            
+                            // Use cached data for UI display (prevents token leak)
+                            String cached_data = "";
+                            if (_batch_image_display_cache.has(safe_id)) {
+                                cached_data = _batch_image_display_cache[safe_id];
+                            }
+                            
+                            if (!cached_data.is_empty()) {
+                                AIImageLazyLoader::create_lazy_image_placeholder(cached_data, img_metadata, item_container);
+                            } else {
+                                // Fallback if cache missed
+                                print_line("BATCH_UI_WARNING: No cached data for " + safe_id + ", using direct data");
+                                AIImageLazyLoader::create_lazy_image_placeholder(item_image_data, img_metadata, item_container);
+                            }
+                        }
+                    } else {
+                        // Handle failed batch items
+                        HBoxContainer *error_header = memnew(HBoxContainer);
+                        item_container->add_child(error_header);
+                        
+                        Label *error_index = memnew(Label);
+                        int batch_index = batch_item.get("batch_index", i);
+                        error_index->set_text(itos(batch_index + 1) + ".");
+                        error_index->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+                        error_header->add_child(error_index);
+                        
+                            Label *error_desc = memnew(Label);
+                            Variant desc_v = batch_item.get("original_description", "");
+                            String desc = (desc_v.get_type() == Variant::STRING) ? String(desc_v) : ("Item " + itos(i + 1));
+                            if (desc.length() > 40) {
+                                desc = desc.substr(0, 40) + "...";
+                            }
+                            error_desc->set_text(desc + " [FAILED]");
+                        error_desc->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+                        error_header->add_child(error_desc);
+                        
+                        Label *error_msg = memnew(Label);
+                        String error_text = String(batch_item.get("error", "Unknown error"));
+                        error_msg->set_text("Error: " + error_text);
+                        error_msg->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+                        error_msg->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+                        item_container->add_child(error_msg);
+                    }
+                }
+                
+                // Skip the single image handling since we processed the batch
+                return;
+            }
+        }
+        
         // If top-level image_data missing, try nested screenshots array (screenshot.capture returns array)
         if (base64_data.is_empty() && p_result.has("screenshots")) {
             Variant shots_v = p_result["screenshots"];
@@ -10854,21 +11246,78 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 	
 	// If the tool provided a path_to_save for images, save it now (non-intrusive for other tools)
 	if ((p_tool_name == "image_operation" || p_tool_name == "resource_manager") && p_success) {
-		String path_to_save = p_args.get("path_to_save", "");
-		if (path_to_save.is_empty()) path_to_save = p_args.get("path", "");
-		String image_b64 = p_result.get("image_data", "");
-		if (!path_to_save.is_empty() && !image_b64.is_empty()) {
-			bool ok = _save_base64_image_to_path(image_b64, path_to_save);
-			if (ok) {
-				Label *saved = memnew(Label);
-				saved->set_text("Saved image: " + path_to_save.get_file());
-				saved->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
-				p_content_vbox->add_child(saved);
-			} else {
-				Label *err = memnew(Label);
-				err->set_text("Failed to save image to: " + path_to_save);
-				err->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
-				p_content_vbox->add_child(err);
+		// BATCH IMAGE AUTO-SAVE: Handle batch results with path_to_save
+		if (p_result.has("results") && p_args.get("op", "") == "image.create_batch") {
+			Variant results_v = p_result["results"];
+			if (results_v.get_type() == Variant::ARRAY) {
+				Array batch_results = results_v;
+				int saved_count = 0;
+				int failed_count = 0;
+				
+				print_line("BATCH_AUTO_SAVE: Processing " + itos(batch_results.size()) + " batch items for auto-save");
+				
+				for (int i = 0; i < batch_results.size() && i < 20; i++) {
+					Variant item_v = batch_results[i];
+					if (item_v.get_type() == Variant::DICTIONARY) {
+						Dictionary batch_item = item_v;
+						bool item_success = batch_item.get("success", false);
+						
+						if (item_success) {
+							Variant save_path_v = batch_item.get("path_to_save", "");
+							String save_path = (save_path_v.get_type() == Variant::STRING) ? String(save_path_v) : "";
+							String item_image_data = batch_item.get("image_data", "");
+							
+							if (!save_path.is_empty() && !item_image_data.is_empty()) {
+								print_line("BATCH_AUTO_SAVE: Auto-saving batch item " + itos(i) + " to " + save_path);
+								bool ok = _save_base64_image_to_path(item_image_data, save_path);
+								if (ok) {
+									saved_count++;
+									print_line("BATCH_AUTO_SAVE: Successfully saved " + save_path);
+								} else {
+									failed_count++;
+									print_line("BATCH_AUTO_SAVE: FAILED to save " + save_path);
+								}
+							}
+						}
+					}
+				}
+				
+				// Show batch save summary
+				if (saved_count > 0 || failed_count > 0) {
+					Label *batch_save_summary = memnew(Label);
+					String summary_text = "Batch Save: " + itos(saved_count) + " saved";
+					if (failed_count > 0) {
+						summary_text += ", " + itos(failed_count) + " failed";
+					}
+					batch_save_summary->set_text(summary_text);
+					
+					if (failed_count > 0) {
+						batch_save_summary->add_theme_color_override("font_color", get_theme_color(SNAME("warning_color"), SNAME("Editor")));
+					} else {
+						batch_save_summary->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+					}
+					p_content_vbox->add_child(batch_save_summary);
+				}
+			}
+		} 
+		// SINGLE IMAGE AUTO-SAVE: Handle single image results (existing logic)
+		else {
+			String path_to_save = p_args.get("path_to_save", "");
+			if (path_to_save.is_empty()) path_to_save = p_args.get("path", "");
+			String image_b64 = p_result.get("image_data", "");
+			if (!path_to_save.is_empty() && !image_b64.is_empty()) {
+				bool ok = _save_base64_image_to_path(image_b64, path_to_save);
+				if (ok) {
+					Label *saved = memnew(Label);
+					saved->set_text("Saved image: " + path_to_save.get_file());
+					saved->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+					p_content_vbox->add_child(saved);
+				} else {
+					Label *err = memnew(Label);
+					err->set_text("Failed to save image to: " + path_to_save);
+					err->add_theme_color_override("font_color", get_theme_color(SNAME("error_color"), SNAME("Editor")));
+					p_content_vbox->add_child(err);
+				}
 			}
 		}
 	}
@@ -11346,6 +11795,11 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	if (p_tool_results.size() > 1) {
 		args = p_tool_results[1]; // Args are stored as second element
 	}
+	
+	// Check if this operation needs validation (e.g., node creation that might affect physics bodies)
+	if (result.has("validation_needed") && result.get("validation_needed", false)) {
+		call_deferred("_validate_scene_after_operation");
+	}
 
 	// Create the tool result UI
 	VBoxContainer *tool_container = memnew(VBoxContainer);
@@ -11535,9 +11989,12 @@ void AIChatDock::_send_chat_request() {
 					content_array.push_back(text_part);
 				}
 				
-							// Add images and text files
+			// Add images and text files
+			int __img_idx = 0;
+			Array images_data; // For backend tool context
 			for (const AttachedFile &file : msg.attached_files) {
 				if (file.is_image) {
+					__img_idx++;
 					Dictionary image_part;
 					image_part["type"] = "image_url";
 					Dictionary image_url;
@@ -11545,11 +12002,20 @@ void AIChatDock::_send_chat_request() {
 					image_part["image_url"] = image_url;
 					content_array.push_back(image_part);
 					
-            // Add image ID marker; and promote to top-level 'images' for backend tool context
+            // Add image ID marker
             Dictionary text_part;
             text_part["type"] = "text";
-            text_part["text"] = "\n*[Image ID: " + file.name + "]*";
+            text_part["text"] = "\n*[Image " + itos(__img_idx) + " ID: " + file.name + "]*";
             content_array.push_back(text_part);
+            
+            // CRITICAL FIX: Promote to top-level 'images' array for backend tool context
+            // This allows backend tools (image_operation, resource_manager) to find and edit images
+            Dictionary image_info;
+            image_info["name"] = file.name;
+            image_info["mime_type"] = file.mime_type;
+            image_info["base64_data"] = file.base64_data;
+            image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
+            images_data.push_back(image_info);
 				} else {
 					// Add text files as text content
 					Dictionary text_part;
@@ -11560,6 +12026,11 @@ void AIChatDock::_send_chat_request() {
 			}
 				
 				api_msg["content"] = content_array;
+				
+				// Add top-level images array for backend tool context
+				if (!images_data.is_empty()) {
+					api_msg["images"] = images_data;
+				}
 			} else {
 				// Legacy format for text-only attachments
 				String combined_content = msg.content;
@@ -11926,8 +12397,11 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			}
 			
 					// Add images and text files
+		int __img_idx = 0;
+		Array images_data; // For backend tool context
 		for (const AttachedFile &file : p_msg.attached_files) {
 			if (file.is_image) {
+				__img_idx++;
 				Dictionary image_part;
 				image_part["type"] = "image_url";
 				Dictionary image_url;
@@ -11935,11 +12409,20 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 				image_part["image_url"] = image_url;
 				content_array.push_back(image_part);
 				
-				// Add image ID as text so AI knows how to reference it
+				// Add numbered image ID as text so AI knows how to reference it
 				Dictionary text_part;
 				text_part["type"] = "text";
-				text_part["text"] = "\n*[Image ID: " + file.name + "]*";
+				text_part["text"] = "\n*[Image " + itos(__img_idx) + " ID: " + file.name + "]*";
 				content_array.push_back(text_part);
+				
+				// CRITICAL FIX: Promote to top-level 'images' array for backend tool context
+				// This allows backend tools (image_operation, resource_manager) to find and edit images
+				Dictionary image_info;
+				image_info["name"] = file.name;
+				image_info["mime_type"] = file.mime_type;
+				image_info["base64_data"] = file.base64_data;
+				image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
+				images_data.push_back(image_info);
 			} else {
 				// Add text files as text content
 				Dictionary text_part;
@@ -11950,6 +12433,11 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 		}
 			
 			api_msg["content"] = content_array;
+			
+			// Add top-level images array for backend tool context
+			if (!images_data.is_empty()) {
+				api_msg["images"] = images_data;
+			}
 		} else {
 			// Legacy format for text-only attachments
 			String combined_content;
@@ -11981,17 +12469,30 @@ Dictionary AIChatDock::_build_api_message(const ChatMessage &p_msg) {
 			}
 			
 			if (has_images) {
-						// For assistant messages with images, we need to structure them for OpenAI
-		// Since OpenAI doesn't support assistant messages with image content,
-		// we'll include the images as a special marker in the content
-		String content_with_images = p_msg.content;
-		content_with_images += "\n\n**Generated Images:**";
-		
-		for (const AttachedFile &file : p_msg.attached_files) {
-			if (file.is_image) {
-				content_with_images += "\n- Image ID: `" + file.name + "`";
-			}
-		}
+				// For assistant messages with images, we need to structure them for OpenAI
+				// Since OpenAI doesn't support assistant messages with image content,
+				// we'll include the images as a special marker in the content
+				String content_with_images = p_msg.content;
+				
+				// Check if this is likely a batch generation result (multiple images)
+				int image_count = 0;
+				for (const AttachedFile &file : p_msg.attached_files) {
+					if (file.is_image) {
+						image_count++;
+					}
+				}
+				
+				if (image_count > 1) {
+					content_with_images += "\n\n**Generated Images Batch (" + itos(image_count) + " images):**";
+				} else {
+					content_with_images += "\n\n**Generated Images:**";
+				}
+				
+				for (const AttachedFile &file : p_msg.attached_files) {
+					if (file.is_image) {
+						content_with_images += "\n- Image ID: `" + file.name + "`";
+					}
+				}
 				
 				api_msg["content"] = content_with_images;
 				
@@ -12142,6 +12643,15 @@ void AIChatDock::_finalize_chat_request() {
 	Dictionary context;
 	context["project_root"] = _get_project_root_path();
 	context["machine_id"] = get_machine_id();
+	
+	// Add scene validation warnings to context
+	Dictionary validation_result = EditorTools::validate_scene_physics_bodies();
+	if (validation_result.get("success", false) && validation_result.has("warnings")) {
+		Array warnings = validation_result["warnings"];
+		if (warnings.size() > 0) {
+			context["scene_validation_warnings"] = warnings;
+		}
+	}
 	
 	// Add comprehensive project structure to context
 	Dictionary context_args;
@@ -12436,108 +12946,16 @@ void AIChatDock::_finalize_chat_request() {
 }
 
 void AIChatDock::_inject_image_data_into_tool_calls(Array &p_messages) {
-	// CLOUD-SAFE IMAGE INJECTION: Only inject image data when AI specifically requests image editing
-	// This prevents images from being stored in conversation history while still allowing editing
+	// CLOUD-SAFE IMAGE INJECTION: Disabled to prevent token explosion
+	// The backend receives images in the top-level 'images' array and caches them
+	// Backend cache + images array = no need for frontend injection
+	// This prevents 3MB+ HTTP requests with redundant base64 data
 	
+	// Works on GCP VM in prod and localhost for dev
+	print_line("IMAGE_INJECTION: Skipped (backend caching handles all image editing)");
 	
-	// Build image lookup from current chat history
-	HashMap<String, AttachedFile> available_images;
-	Vector<AIChatDock::ChatMessage> &history = _get_current_chat_history();
-	
-	for (const ChatMessage &msg : history) {
-		for (const AttachedFile &file : msg.attached_files) {
-			if (file.is_image && !file.name.is_empty() && !file.base64_data.is_empty()) {
-				available_images[file.name] = file;
-			}
-		}
-	}
-	
-	
-	// Scan messages for image editing tool calls
-	for (int i = 0; i < p_messages.size(); i++) {
-		Dictionary msg = p_messages[i];
-		if (msg.get("role", "") != "assistant" || !msg.has("tool_calls")) {
-			continue;
-		}
-		
-		Array tool_calls = msg.get("tool_calls", Array());
-		bool modified = false;
-		
-		for (int j = 0; j < tool_calls.size(); j++) {
-			Dictionary tool_call = tool_calls[j];
-			Dictionary function_dict = tool_call.get("function", Dictionary());
-			String function_name = function_dict.get("name", "");
-			
-			// Only process image editing tools
-			if (function_name != "image_operation" && function_name != "resource_manager") {
-				continue;
-			}
-			
-			String arguments_str = function_dict.get("arguments", "{}");
-			Ref<JSON> args_json;
-			args_json.instantiate();
-			
-			if (args_json->parse(arguments_str) == OK) {
-				Dictionary args = args_json->get_data();
-				
-				// Check if this is an image editing operation that needs image data
-				bool needs_images = false;
-				Array requested_image_ids;
-				
-				if (function_name == "image_operation" && args.has("images")) {
-					requested_image_ids = args.get("images", Array());
-					needs_images = !requested_image_ids.is_empty();
-				} else if (function_name == "resource_manager") {
-					String op = args.get("op", "");
-					if (op == "image.generate_or_edit" && args.has("images")) {
-						requested_image_ids = args.get("images", Array());
-						needs_images = !requested_image_ids.is_empty();
-					}
-				}
-				
-				if (needs_images && !requested_image_ids.is_empty()) {
-					
-					Array image_data_array;
-					for (int k = 0; k < requested_image_ids.size(); k++) {
-						String image_id = requested_image_ids[k];
-						
-						if (available_images.has(image_id)) {
-							const AttachedFile &file = available_images[image_id];
-							Dictionary image_info;
-							image_info["name"] = file.name;
-							image_info["mime_type"] = file.mime_type;
-							image_info["base64_data"] = file.base64_data;
-							image_info["original_size"] = Vector2(file.original_size.x, file.original_size.y);
-							image_data_array.push_back(image_info);
-							
-						} else {
-						}
-					}
-					
-					// Inject image data into tool call arguments
-					if (!image_data_array.is_empty()) {
-						args["image_data_for_editing"] = image_data_array;
-						
-						// Update the arguments string in the tool call
-						Ref<JSON> updated_json;
-						updated_json.instantiate();
-						String updated_args = updated_json->stringify(args);
-						function_dict["arguments"] = updated_args;
-						tool_call["function"] = function_dict;
-						tool_calls[j] = tool_call;
-						modified = true;
-						
-					}
-				}
-			}
-		}
-		
-		// Update the message if we modified any tool calls
-		if (modified) {
-			msg["tool_calls"] = tool_calls;
-			p_messages[i] = msg;
-		}
-	}
+	// Suppress unused parameter warning
+	(void)p_messages;
 }
 
 bool AIChatDock::_is_busy() {
@@ -12907,6 +13325,10 @@ void AIChatDock::clear_current_conversation() {
 
 		// Clear pending edits
 		pending_edits.clear();
+		
+		// CRITICAL: Clear batch image display cache to prevent memory leaks
+		_batch_image_display_cache.clear();
+		print_line("BATCH_CACHE: Cleared batch image display cache");
     if (pending_edits_banner && !pending_edits_banner->is_queued_for_deletion()) {
         call_deferred("_update_pending_edits_banner");
     }
@@ -14671,10 +15093,28 @@ bool AIChatDock::_save_base64_image_to_path(const String &p_base64_data, const S
 		return false;
 	}
 	
-	// CRASH PROTECTION: Validate file path and create directory safely
+	// Decode to Image for validation and resizing
+	Ref<Image> img;
+	img.instantiate();
+	String ext = p_file_path.get_extension().to_lower();
+	Error load_err = OK;
+	if (ext == "jpg" || ext == "jpeg") {
+		load_err = img->load_jpg_from_buffer(image_data);
+	} else {
+		// Default to PNG
+		load_err = img->load_png_from_buffer(image_data);
+	}
+	if (load_err != OK) {
+		return false;
+	}
+	
+	// CRITICAL FIX: Preserve original image dimensions from backend
+	// Don't force resize to 128x128 - respect the exact_size parameter from AI requests
+	print_line("AI_AUTOSAVE: Saving image at original size: " + String(Vector2i(img->get_width(), img->get_height())));
+	
+	// Ensure directory exists
 	String abs_path = ProjectSettings::get_singleton()->globalize_path(p_file_path);
 	String dir_path = abs_path.get_base_dir();
-	
 	if (!DirAccess::dir_exists_absolute(dir_path)) {
 		Error dir_err = DirAccess::make_dir_recursive_absolute(dir_path);
 		if (dir_err != OK) {
@@ -14682,48 +15122,62 @@ bool AIChatDock::_save_base64_image_to_path(const String &p_base64_data, const S
 		}
 	}
 	
-	// CRASH PROTECTION: Safe file operations
+	// Save using buffer method (same as manual save that works)
+	Vector<uint8_t> png_buffer;
+	if (ext == "jpg" || ext == "jpeg") {
+		png_buffer = img->save_jpg_to_buffer();
+	} else {
+		png_buffer = img->save_png_to_buffer();
+	}
+	
+	if (png_buffer.size() == 0) {
+		print_line("AI_AUTOSAVE_ERROR: Failed to generate buffer for " + p_file_path);
+		return false;
+	}
+	
+	// Write buffer to file
 	Ref<FileAccess> file = FileAccess::open(abs_path, FileAccess::WRITE);
 	if (file.is_null()) {
 		return false;
 	}
 	
-	file->store_buffer(image_data);
+	file->store_buffer(png_buffer);
 	Error close_err = file->get_error();
 	file->close();
 	
 	if (close_err != OK) {
 		return false;
 	}
-	
 
-	// CRASH PROTECTION: Safely notify editor file system
+	print_line("AI_AUTOSAVE: Successfully saved " + String(Vector2i(img->get_width(), img->get_height())) + " image to " + p_file_path);
+
+	// Use EXACT same import process as manual save (no deferred calls)
 	EditorFileSystem *fs = EditorFileSystem::get_singleton();
 	if (fs) {
-		fs->update_file(p_file_path);
+		fs->update_file(p_file_path); // Use res:// path like manual save
 		
-		// CRASH PROTECTION: Safe timer creation for debounced scan
-		SceneTree *tree = get_tree();
-		if (tree) {
-			static uint64_t s_last_scan_request_ms = 0;
-			s_last_scan_request_ms = OS::get_singleton()->get_ticks_msec();
-			uint64_t scheduled_at = s_last_scan_request_ms;
-			
-			Ref<SceneTreeTimer> timer = tree->create_timer(0.4, true);
-			if (timer.is_valid()) {
-				// CRASH PROTECTION: Use deferred call to avoid immediate connection issues
-				call_deferred("_connect_timer_safely", timer, scheduled_at);
+		Vector<String> to_reimport;
+		to_reimport.push_back(p_file_path); // Use res:// path like manual save
+		fs->reimport_files(to_reimport);
+		
+		// Clear resource cache for both paths
+		if (ResourceCache::has(p_file_path)) {
+			Ref<Resource> cached = ResourceCache::get_ref(p_file_path);
+			if (cached.is_valid()) {
+				cached->reload_from_file();
+			}
+		}
+		if (ResourceCache::has(abs_path)) {
+			Ref<Resource> cached = ResourceCache::get_ref(abs_path);
+			if (cached.is_valid()) {
+				cached->reload_from_file();
 			}
 		}
 		
-		// CRASH PROTECTION: Safe reimport with error handling
-		Vector<String> to_reimport;
-		to_reimport.push_back(p_file_path);
+		// Immediate scan like manual save
+		fs->scan_changes();
 		
-		// Use deferred call to prevent re-entrancy crashes
-		call_deferred("_safe_reimport_files", to_reimport);
-		
-	} else {
+		print_line("AI_AUTOSAVE: Import complete for " + p_file_path);
 	}
 	
 	return true;
@@ -14762,11 +15216,19 @@ void AIChatDock::_safe_reimport_files(const Vector<String> &p_files) {
 	
 	// CRASH PROTECTION: Safe resource cache clearing
 	for (const String &file_path : p_files) {
+		// Try absolute path first
 		if (ResourceCache::has(file_path)) {
 			Ref<Resource> cached = ResourceCache::get_ref(file_path);
 			if (cached.is_valid()) {
-				// reload_from_file() returns void, not Error
 				cached->reload_from_file();
+			}
+		}
+		// Also try project-local (res://) path
+		String res_path = ProjectSettings::get_singleton()->localize_path(file_path);
+		if (ResourceCache::has(res_path)) {
+			Ref<Resource> cached2 = ResourceCache::get_ref(res_path);
+			if (cached2.is_valid()) {
+				cached2->reload_from_file();
 			}
 		}
 	}
@@ -15746,7 +16208,16 @@ Dictionary AIChatDock::get_file_enhanced_context(const String &p_file_path) {
 }
 
 String AIChatDock::get_conversation_image(const String &p_image_id) const {
-	// Search through current conversation for image with matching ID
+	// PRIORITY 1: Check batch image display cache first (prevents token leak)
+	if (_batch_image_display_cache.has(p_image_id)) {
+		String cached_data = _batch_image_display_cache[p_image_id];
+		if (!cached_data.is_empty()) {
+			print_line("BATCH_IMAGE_RETRIEVE: Found " + p_image_id + " in display cache");
+			return cached_data;
+		}
+	}
+	
+	// PRIORITY 2: Search through current conversation for image with matching ID (legacy)
 	if (current_conversation_index < 0 || current_conversation_index >= conversations.size()) {
 		return "";
 	}
@@ -19550,4 +20021,77 @@ void AIChatDock::_retry_load_after_trim(const String &p_file_path) {
 
 void AIChatDock::_attempt_recovery_and_reload() {
 	// Just log and continue - don't delete anything
+}
+
+void AIChatDock::_validate_scene_on_startup() {
+	// Run scene validation to catch physics body issues
+	Dictionary validation_result = EditorTools::validate_scene_physics_bodies();
+	
+	if (validation_result.get("success", false)) {
+		Array warnings = validation_result.get("warnings", Array());
+		
+		if (warnings.size() > 0) {
+			// Add validation warnings to chat
+			for (int i = 0; i < warnings.size(); i++) {
+				String warning = warnings[i];
+				_add_scene_validation_warning(warning);
+			}
+			
+			// Store warnings for AI context
+			scene_validation_warnings = warnings;
+			
+			print_line("AI Chat Dock: Found " + String::num_int64(warnings.size()) + " scene validation issues");
+		} else {
+			print_line("AI Chat Dock: Scene validation passed - no issues found");
+			scene_validation_warnings.clear();
+		}
+	}
+}
+
+void AIChatDock::_add_scene_validation_warning(const String &p_warning) {
+	// Add to chat as system message with distinctive styling
+	String role = "system";
+	String content = "⚠️ Scene Issue: " + p_warning;
+	Array empty_tool_calls;
+	
+	// Add directly to chat without user interaction
+	_add_message_to_chat(role, content, empty_tool_calls);
+	
+	// Also show as a status notification for immediate visibility
+	_show_status_notification("scene_validation", p_warning, "[SCENE]", 8.0);
+}
+
+void AIChatDock::_validate_scene_after_operation() {
+	// Run validation after node operations to catch any new issues
+	Dictionary validation_result = EditorTools::validate_scene_physics_bodies();
+	
+	if (validation_result.get("success", false)) {
+		Array warnings = validation_result.get("warnings", Array());
+		Array new_warnings;
+		
+		// Only show warnings that weren't already shown
+		for (int i = 0; i < warnings.size(); i++) {
+			String warning = warnings[i];
+			bool already_shown = false;
+			
+			for (int j = 0; j < scene_validation_warnings.size(); j++) {
+				if (String(scene_validation_warnings[j]) == warning) {
+					already_shown = true;
+					break;
+				}
+			}
+			
+			if (!already_shown) {
+				new_warnings.append(warning);
+				_add_scene_validation_warning(warning);
+			}
+		}
+		
+		// Update stored warnings
+		scene_validation_warnings = warnings;
+		
+		if (new_warnings.size() > 0) {
+			print_line("AI Chat Dock: Found " + String::num_int64(new_warnings.size()) + " new scene validation issues after operation");
+		}
+	}
 }

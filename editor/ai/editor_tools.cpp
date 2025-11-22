@@ -28,6 +28,15 @@
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
+// Scene validation includes
+#include "scene/2d/sprite_2d.h"
+#include "scene/2d/physics/collision_shape_2d.h"
+#include "scene/2d/physics/collision_object_2d.h"
+#include "scene/resources/2d/rectangle_shape_2d.h"
+#include "scene/resources/2d/circle_shape_2d.h"
+#include "scene/resources/2d/capsule_shape_2d.h"
+#include "scene/resources/image_texture.h"
+#include "core/io/image.h"
 #include "editor/file_system/editor_file_system.h"
 #include "core/io/image.h"
 #include "editor/settings/editor_settings.h"
@@ -412,6 +421,7 @@ Dictionary EditorTools::reimport_resource(const Dictionary &p_args) {
         OS::get_singleton()->delay_usec(1000 * 50); // 50ms
         if ((int)(OS::get_singleton()->get_ticks_msec() - start) > timeout_ms) {
             out["ok"] = false;
+            out["success"] = false; // Add success field for UI compatibility
             out["error_code"] = "IMPORT_TIMEOUT";
             out["error"] = "Timed out waiting for reimport";
             return out;
@@ -419,6 +429,8 @@ Dictionary EditorTools::reimport_resource(const Dictionary &p_args) {
     }
 
     out["ok"] = true;
+    out["success"] = true; // Add success field for UI compatibility
+    out["message"] = "Reimport completed successfully";
     return out;
 }
 
@@ -1956,6 +1968,14 @@ Dictionary EditorTools::create_node(const Dictionary &p_args) {
 		}
 		result["warnings"] = warning_text;
 		result["message"] = "Node created successfully, but has warnings: " + warning_text;
+	}
+	
+	// If we created a Sprite2D or CollisionShape2D, or the parent is a physics body, 
+	// add a flag to indicate validation is needed
+	if (Object::cast_to<Sprite2D>(new_node) || Object::cast_to<CollisionShape2D>(new_node) || 
+		Object::cast_to<CollisionObject2D>(parent)) {
+		result["validation_needed"] = true;
+		result["validation_target"] = parent->get_path();
 	}
 	
 	return result;
@@ -8800,6 +8820,8 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 			collision_args["node_path"] = p_args["path"];
 		}
 		return add_collision_shape(collision_args);
+	} else if (operation == "node.fix_physics_body") {
+		return auto_fix_physics_body(p_args);
 	} else if (operation == "node.create_and_configure_batch") {
 		return create_and_configure_nodes_batch(p_args);
 	} else if (operation == "node.assign_resources_batch") {
@@ -8814,6 +8836,8 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 		return delete_nodes_pattern(p_args);
 	} else if (operation == "node.assign_resource_pattern") {
 		return assign_resource_pattern(p_args);
+	} else if (operation == "scene.validate_physics_bodies") {
+		return validate_scene_physics_bodies();
 	} else if (operation.begins_with("groups.") || operation.begins_with("signals.")) {
 		// Fix parameter translation: editor_introspect expects "operation" not "op"
 		Dictionary introspect_args = p_args;
@@ -13489,5 +13513,458 @@ Dictionary EditorTools::assign_resource_pattern(const Dictionary &p_args) {
 		result["failures"] = failures;
 	}
 	result["message"] = "Assigned resources to " + String::num_int64(total_assigned) + "/" + String::num_int64(matching_nodes.size()) + " nodes matching pattern '" + node_pattern + "'";
+	return result;
+}
+
+// --- Scene Validation Functions ---
+
+Dictionary EditorTools::validate_scene_physics_bodies() {
+	Dictionary result;
+	Array warnings;
+	
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	if (!scene_root) {
+		result["success"] = true;
+		result["warnings"] = warnings;
+		result["message"] = "No scene open";
+		return result;
+	}
+	
+	_check_physics_body_recursive(scene_root, warnings);
+	
+	result["success"] = true;
+	result["warnings"] = warnings;
+	result["warning_count"] = warnings.size();
+	result["message"] = warnings.size() > 0 ? 
+		"Found " + String::num_int64(warnings.size()) + " validation issues" : 
+		"No validation issues found";
+	
+	return result;
+}
+
+void EditorTools::_check_physics_body_recursive(Node *p_node, Array &p_warnings) {
+	// Check if this node is a physics body
+	if (Object::cast_to<CollisionObject2D>(p_node)) {
+		Dictionary validation_result = _validate_physics_body_completeness(p_node);
+		if (validation_result.has("warnings")) {
+			Array body_warnings = validation_result["warnings"];
+			for (int i = 0; i < body_warnings.size(); i++) {
+				p_warnings.append(body_warnings[i]);
+			}
+		}
+	}
+	
+	// Recurse through children
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_check_physics_body_recursive(p_node->get_child(i), p_warnings);
+	}
+}
+
+Dictionary EditorTools::_validate_physics_body_completeness(Node *p_physics_body) {
+	Dictionary result;
+	Array warnings;
+	String body_name = p_physics_body->get_name();
+	
+	Sprite2D *sprite = nullptr;
+	CollisionShape2D *collision = nullptr;
+	
+	// Find sprite and collision components
+	for (int i = 0; i < p_physics_body->get_child_count(); i++) {
+		Node *child = p_physics_body->get_child(i);
+		
+		if (!sprite) sprite = Object::cast_to<Sprite2D>(child);
+		if (!collision) collision = Object::cast_to<CollisionShape2D>(child);
+	}
+	
+	// Check for missing components
+	if (sprite && !collision) {
+		warnings.append("Physics body '" + body_name + "' has visual (Sprite2D) but no collision shape - objects won't interact physically");
+	}
+	
+	if (!sprite && collision) {
+		warnings.append("Physics body '" + body_name + "' has collision but no visual representation (Sprite2D)");
+	}
+	
+	// Check for size mismatches
+	if (sprite && collision) {
+		Dictionary mismatch_check = _check_sprite_collision_alignment(sprite, collision, body_name);
+		if (mismatch_check.has("warnings")) {
+			Array alignment_warnings = mismatch_check["warnings"];
+			for (int i = 0; i < alignment_warnings.size(); i++) {
+				warnings.append(alignment_warnings[i]);
+			}
+		}
+	}
+	
+	result["warnings"] = warnings;
+	return result;
+}
+
+Dictionary EditorTools::_check_sprite_collision_alignment(Sprite2D *p_sprite, CollisionShape2D *p_collision, const String &p_body_name) {
+	Dictionary result;
+	Array warnings;
+	
+	if (!p_sprite->get_texture().is_valid() || !p_collision->get_shape().is_valid()) {
+		warnings.append("Physics body '" + p_body_name + "' has incomplete sprite or collision resource assignment");
+		result["warnings"] = warnings;
+		return result;
+	}
+	
+	// Get actual sprite bounds
+	Rect2 sprite_rect = _get_sprite_effective_bounds(p_sprite);
+	Rect2 collision_rect = _get_collision_effective_bounds(p_collision);
+	
+	if (sprite_rect.size.length() == 0 || collision_rect.size.length() == 0) {
+		warnings.append("Physics body '" + p_body_name + "' has invalid bounds calculation");
+		result["warnings"] = warnings;
+		return result;
+	}
+	
+	// Check size mismatch (allow 15% tolerance for minor differences)
+	Vector2 size_diff = (sprite_rect.size - collision_rect.size).abs();
+	Vector2 tolerance = collision_rect.size * 0.15; // 15% tolerance
+	
+	if (size_diff.x > tolerance.x || size_diff.y > tolerance.y) {
+		String size_warning = String("Physics body '") + p_body_name + "' has collision/sprite size mismatch";
+		warnings.append(size_warning);
+	}
+	
+	// Check position alignment (allow 10 pixel tolerance)
+	Vector2 pos_diff = (sprite_rect.get_center() - collision_rect.get_center()).abs();
+	if (pos_diff.x > 10.0 || pos_diff.y > 10.0) {
+		String pos_warning = String("Physics body '") + p_body_name + "' has position misalignment";
+		warnings.append(pos_warning);
+	}
+	
+	result["warnings"] = warnings;
+	return result;
+}
+
+Rect2 EditorTools::_get_sprite_effective_bounds(Sprite2D *p_sprite) {
+	if (!p_sprite->get_texture().is_valid()) {
+		return Rect2();
+	}
+	
+	Vector2 texture_size = p_sprite->get_texture()->get_size();
+	Vector2 global_pos = p_sprite->get_global_position();
+	
+	if (p_sprite->is_centered()) {
+		return Rect2(global_pos - texture_size * 0.5, texture_size);
+	} else {
+		return Rect2(global_pos, texture_size);
+	}
+}
+
+Rect2 EditorTools::_get_collision_effective_bounds(CollisionShape2D *p_collision) {
+	if (!p_collision->get_shape().is_valid()) {
+		return Rect2();
+	}
+	
+	// Handle RectangleShape2D
+	Ref<RectangleShape2D> rect_shape = p_collision->get_shape();
+	if (rect_shape.is_valid()) {
+		Vector2 size = rect_shape->get_size();
+		Vector2 global_pos = p_collision->get_global_position();
+		return Rect2(global_pos - size * 0.5, size); // CollisionShape2D is always centered
+	}
+	
+	// Handle CircleShape2D
+	Ref<CircleShape2D> circle_shape = p_collision->get_shape();
+	if (circle_shape.is_valid()) {
+		float radius = circle_shape->get_radius();
+		Vector2 size = Vector2(radius * 2, radius * 2);
+		Vector2 global_pos = p_collision->get_global_position();
+		return Rect2(global_pos - size * 0.5, size);
+	}
+	
+	// Handle CapsuleShape2D
+	Ref<CapsuleShape2D> capsule_shape = p_collision->get_shape();
+	if (capsule_shape.is_valid()) {
+		float radius = capsule_shape->get_radius();
+		float height = capsule_shape->get_height();
+		Vector2 size = Vector2(radius * 2, height);
+		Vector2 global_pos = p_collision->get_global_position();
+		return Rect2(global_pos - size * 0.5, size);
+	}
+	
+	// Fallback for other shape types - return a small default rect
+	Vector2 global_pos = p_collision->get_global_position();
+	return Rect2(global_pos - Vector2(16, 16), Vector2(32, 32));
+}
+
+Dictionary EditorTools::auto_fix_physics_body(const Dictionary &p_args) {
+	Dictionary result;
+	
+	if (!p_args.has("node_path")) {
+		result["success"] = false;
+		result["message"] = "Missing required parameter: 'node_path'";
+		return result;
+	}
+	
+	String node_path = p_args["node_path"];
+	Node *physics_body = _get_node_from_path(node_path, result);
+	if (!physics_body) {
+		return result; // Error already set by _get_node_from_path
+	}
+	
+	if (!Object::cast_to<CollisionObject2D>(physics_body)) {
+		result["success"] = false;
+		result["message"] = "Node is not a 2D physics body (StaticBody2D, RigidBody2D, etc.)";
+		return result;
+	}
+	
+	Array fixes_applied;
+	Array warnings;
+	
+	Sprite2D *sprite = nullptr;
+	CollisionShape2D *collision = nullptr;
+	
+	// Find existing sprite and collision components
+	for (int i = 0; i < physics_body->get_child_count(); i++) {
+		Node *child = physics_body->get_child(i);
+		if (!sprite) sprite = Object::cast_to<Sprite2D>(child);
+		if (!collision) collision = Object::cast_to<CollisionShape2D>(child);
+	}
+	
+	// Fix 1: Create missing collision shape
+	if (sprite && !collision) {
+		Dictionary collision_result = _create_matching_collision_shape(physics_body, sprite);
+		if (collision_result.get("success", false)) {
+			fixes_applied.append("Created CollisionShape2D to match Sprite2D");
+			// Update collision reference for further fixes
+			String collision_path = collision_result.get("collision_path", "");
+			if (!collision_path.is_empty()) {
+				collision = Object::cast_to<CollisionShape2D>(_get_node_from_path(collision_path, result));
+			}
+		} else {
+			warnings.append("Failed to create missing collision shape: " + String(collision_result.get("message", "")));
+		}
+	}
+	
+	// Fix 2: Create missing sprite (placeholder)
+	if (!sprite && collision) {
+		Dictionary sprite_result = _create_placeholder_sprite(physics_body, collision);
+		if (sprite_result.get("success", false)) {
+			fixes_applied.append("Created placeholder Sprite2D for physics body");
+			// Update sprite reference for further fixes
+			String sprite_path = sprite_result.get("sprite_path", "");
+			if (!sprite_path.is_empty()) {
+				sprite = Object::cast_to<Sprite2D>(_get_node_from_path(sprite_path, result));
+			}
+		} else {
+			warnings.append("Failed to create missing sprite: " + String(sprite_result.get("message", "")));
+		}
+	}
+	
+	// Fix 3: Resize collision shape to match sprite
+	if (sprite && collision && sprite->get_texture().is_valid()) {
+		Dictionary resize_result = _resize_collision_to_match_sprite(collision, sprite);
+		if (resize_result.get("success", false)) {
+			fixes_applied.append("Resized collision shape to match sprite dimensions");
+		} else if (resize_result.has("message")) {
+			warnings.append("Could not resize collision shape: " + String(resize_result.get("message", "")));
+		}
+	}
+	
+	// Fix 4: Align positions
+	if (sprite && collision) {
+		Dictionary align_result = _align_sprite_and_collision(sprite, collision);
+		if (align_result.get("success", false)) {
+			fixes_applied.append("Aligned sprite and collision positions");
+		} else if (align_result.has("message")) {
+			warnings.append("Could not align positions: " + String(align_result.get("message", "")));
+		}
+	}
+	
+	result["success"] = fixes_applied.size() > 0;
+	result["fixes_applied"] = fixes_applied;
+	result["fix_count"] = fixes_applied.size();
+	
+	if (warnings.size() > 0) {
+		result["warnings"] = warnings;
+	}
+	
+	if (fixes_applied.size() > 0) {
+		result["message"] = "Applied " + String::num_int64(fixes_applied.size()) + " fixes to physics body '" + physics_body->get_name() + "'";
+		// Mark scene as modified
+		EditorNode::get_singleton()->get_edited_scene()->set_edited(true);
+		_refresh_scene_tree();
+	} else {
+		result["message"] = "No fixes needed for physics body '" + physics_body->get_name() + "'";
+	}
+	
+	return result;
+}
+
+Dictionary EditorTools::_create_matching_collision_shape(Node *p_physics_body, Sprite2D *p_sprite) {
+	Dictionary result;
+	
+	if (!p_sprite->get_texture().is_valid()) {
+		result["success"] = false;
+		result["message"] = "Sprite has no texture to match";
+		return result;
+	}
+	
+	Vector2 sprite_size = p_sprite->get_texture()->get_size();
+	
+	// Create CollisionShape2D node
+	Node *collision_shape = (Node *)ClassDB::instantiate("CollisionShape2D");
+	if (!collision_shape) {
+		result["success"] = false;
+		result["message"] = "Failed to create CollisionShape2D";
+		return result;
+	}
+	
+	collision_shape->set_name("CollisionShape2D");
+	p_physics_body->add_child(collision_shape);
+	
+	// Set owner
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	if (scene_root) {
+		collision_shape->set_owner(scene_root);
+	}
+	
+	// Create RectangleShape2D resource matching sprite size
+	Ref<RectangleShape2D> shape_resource;
+	shape_resource.instantiate();
+	shape_resource->set_size(sprite_size);
+	
+	// Assign shape to CollisionShape2D
+	CollisionShape2D *collision_node = Object::cast_to<CollisionShape2D>(collision_shape);
+	if (collision_node) {
+		collision_node->set_shape(shape_resource);
+	}
+	
+	result["success"] = true;
+	result["collision_path"] = collision_shape->get_path();
+	result["created_size"] = sprite_size;
+	return result;
+}
+
+Dictionary EditorTools::_create_placeholder_sprite(Node *p_physics_body, CollisionShape2D *p_collision) {
+	Dictionary result;
+	
+	if (!p_collision->get_shape().is_valid()) {
+		result["success"] = false;
+		result["message"] = "Collision shape is invalid";
+		return result;
+	}
+	
+	// Create Sprite2D node
+	Node *sprite_node = (Node *)ClassDB::instantiate("Sprite2D");
+	if (!sprite_node) {
+		result["success"] = false;
+		result["message"] = "Failed to create Sprite2D";
+		return result;
+	}
+	
+	sprite_node->set_name("Sprite2D");
+	p_physics_body->add_child(sprite_node);
+	
+	// Set owner
+	Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+	if (scene_root) {
+		sprite_node->set_owner(scene_root);
+	}
+	
+	// Create placeholder texture matching collision size
+	Rect2 collision_bounds = _get_collision_effective_bounds(p_collision);
+	Vector2 texture_size = collision_bounds.size;
+	
+	if (texture_size.x <= 0 || texture_size.y <= 0) {
+		texture_size = Vector2(64, 64); // Default size
+	}
+	
+	// Create a simple colored rectangle texture
+	Ref<Image> image;
+	image.instantiate();
+	image->initialize_data(int(texture_size.x), int(texture_size.y), false, Image::FORMAT_RGBA8);
+	image->fill(Color(0.5, 0.7, 1.0, 1.0)); // Light blue placeholder
+	
+	Ref<ImageTexture> texture;
+	texture.instantiate();
+	texture->set_image(image);
+	
+	Sprite2D *sprite_2d = Object::cast_to<Sprite2D>(sprite_node);
+	if (sprite_2d) {
+		sprite_2d->set_texture(texture);
+		sprite_2d->set_centered(true);
+	}
+	
+	result["success"] = true;
+	result["sprite_path"] = sprite_node->get_path();
+	result["created_size"] = texture_size;
+	return result;
+}
+
+Dictionary EditorTools::_resize_collision_to_match_sprite(CollisionShape2D *p_collision, Sprite2D *p_sprite) {
+	Dictionary result;
+	
+	if (!p_sprite->get_texture().is_valid() || !p_collision->get_shape().is_valid()) {
+		result["success"] = false;
+		result["message"] = "Invalid sprite texture or collision shape";
+		return result;
+	}
+	
+	Vector2 sprite_size = p_sprite->get_texture()->get_size();
+	
+	// Handle RectangleShape2D
+	Ref<RectangleShape2D> rect_shape = p_collision->get_shape();
+	if (rect_shape.is_valid()) {
+		rect_shape->set_size(sprite_size);
+		result["success"] = true;
+		result["new_size"] = sprite_size;
+		result["shape_type"] = "RectangleShape2D";
+		return result;
+	}
+	
+	// Handle CircleShape2D (use smaller dimension as radius)
+	Ref<CircleShape2D> circle_shape = p_collision->get_shape();
+	if (circle_shape.is_valid()) {
+		float radius = MIN(sprite_size.x, sprite_size.y) * 0.5;
+		circle_shape->set_radius(radius);
+		result["success"] = true;
+		result["new_radius"] = radius;
+		result["shape_type"] = "CircleShape2D";
+		return result;
+	}
+	
+	// Handle CapsuleShape2D
+	Ref<CapsuleShape2D> capsule_shape = p_collision->get_shape();
+	if (capsule_shape.is_valid()) {
+		float radius = sprite_size.x * 0.5;
+		float height = sprite_size.y;
+		capsule_shape->set_radius(radius);
+		capsule_shape->set_height(height);
+		result["success"] = true;
+		result["new_radius"] = radius;
+		result["new_height"] = height;
+		result["shape_type"] = "CapsuleShape2D";
+		return result;
+	}
+	
+	result["success"] = false;
+	result["message"] = "Unsupported collision shape type for auto-resize";
+	return result;
+}
+
+Dictionary EditorTools::_align_sprite_and_collision(Sprite2D *p_sprite, CollisionShape2D *p_collision) {
+	Dictionary result;
+	
+	// Get current positions
+	Vector2 sprite_pos = p_sprite->get_position();
+	Vector2 collision_pos = p_collision->get_position();
+	
+	// Calculate target position (use collision as reference)
+	Vector2 target_pos = collision_pos;
+	
+	// Align sprite to collision center
+	p_sprite->set_position(target_pos);
+	
+	result["success"] = true;
+	result["old_sprite_position"] = sprite_pos;
+	result["new_sprite_position"] = target_pos;
+	result["alignment_offset"] = target_pos - sprite_pos;
+	
 	return result;
 }
