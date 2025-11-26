@@ -14,6 +14,8 @@
 #include "ai_checkpoint_manager.h"
 #include "ai_manual_snapshots.h"
 #include "ai_auto_snapshots.h"
+#include "ai_animation_tracker.h"
+#include "ai_animation_ui.h"
 #include "ai_conversation_persistence.h"
 #include "ai_chat_save_coordinator.h"
 #include "editor/auth/auth_manager.h"
@@ -52,6 +54,7 @@
 #include "scene/gui/label.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/option_button.h"
+#include "scene/gui/spin_box.h"
 #include "scene/gui/panel.h"
 #include "scene/gui/panel_container.h"
 #include "scene/gui/rich_text_label.h"
@@ -5437,6 +5440,7 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			backend_only_tools.insert("generate_3d_model");
 			backend_only_tools.insert("todo_manager");
 			backend_only_tools.insert("search_manager"); // Default backend-only unless explicitly allowed
+			backend_only_tools.insert("2d_animation_manager"); // 2D animation generation and management
 		}
 		
 		// SPECIAL HANDLING: search_manager needs mode-aware backend routing
@@ -6925,6 +6929,12 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	if (add_response_start > 0) {
 	}
 	
+	// ASYNC TRACKING: Start polling for 2d_animation_manager jobs IMMEDIATELY
+	if (p_name == "2d_animation_manager" && p_result.get("success", false)) {
+		print_line("🎬 ANIM_UI: Detected animation job, starting tracker...");
+		_track_animation_job_from_result(p_tool_call_id, p_result);
+	}
+	
 	call_deferred("_scroll_to_bottom");
 }
 
@@ -7270,6 +7280,30 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             return "Could not generate image" + (!error_message.is_empty() ? ": " + error_message : "");
         } else if (p_tool_name == "resource_manager" && actual_op == "image.slice_spritesheet") {
             return "Could not slice spritesheet" + (!error_message.is_empty() ? ": " + error_message : "");
+        } else if (p_tool_name == "2d_animation_manager") {
+            String op = p_args.get("op", "");
+            if (op == "create") {
+                return "Animation project created successfully";
+            } else             if (op == "status") {
+                String status = p_result.get("status", "unknown");
+                if (status == "completed") {
+                    Array completed_anims = p_result.get("completed_animations", Array());
+                    int completed_count = completed_anims.size();
+                    return "Animation generation completed: " + String::num_int64(completed_count) + " animations ready";
+                } else if (status == "processing") {
+                    return "Animation generation in progress...";
+                } else {
+                    return "Animation status: " + status;
+                }
+            } else if (op == "edit") {
+                return "Animation edited successfully";
+            } else if (op == "list_my_animations") {
+                int total = p_result.get("total_count", 0);
+                return "Loaded " + String::num_int64(total) + " sprite animation(s)";
+            } else if (op == "list_jobs") {
+                int total = p_result.get("total_returned", 0);
+                return "Listed " + String::num_int64(total) + " animation project(s)";
+            }
         }
         
         // Fallback to generic friendly message
@@ -7292,8 +7326,33 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
         return "Searching asset library...";
     } else if (p_tool_name == "install_godot_asset") {
         return "Installing asset...";
-    } else if (p_tool_name == "generate_3d_model") {
+	} else if (p_tool_name == "generate_3d_model") {
         return "Generating 3D model...";
+    } else if (p_tool_name == "2d_animation_manager") {
+        // Parse arguments to show specific operation
+        Ref<JSON> json;
+        json.instantiate();
+        Error err = json->parse(p_arguments_str);
+        if (err == OK) {
+            Dictionary args = json->get_data();
+            String op = args.get("op", "");
+            
+            if (op == "create") {
+                String user_request = args.get("user_request", "animations");
+                return "Creating sprite animations: " + user_request.substr(0, 40) + (user_request.length() > 40 ? "..." : "");
+            } else if (op == "status") {
+                String job_id = args.get("job_id", "");
+                return "Checking animation generation status...";
+            } else if (op == "edit") {
+                String edit_request = args.get("edit_request", "");
+                return "Editing animation: " + edit_request.substr(0, 30) + (edit_request.length() > 30 ? "..." : "");
+            } else if (op == "list_my_animations") {
+                return "Loading your sprite animations...";
+            } else if (op == "list_jobs") {
+                return "Listing animation projects...";
+            }
+        }
+        return "Managing sprite animations...";
     } else if (p_tool_name == "slice_spritesheet") {
         return "Slicing spritesheet...";
     } else if (p_tool_name == "check_for_app_updates") {
@@ -8223,6 +8282,26 @@ void AIChatDock::_update_tool_placeholder_with_result(const ChatMessage &p_tool_
     // Open image tool results by default for better UX
     if (p_tool_message.name == "image_operation" || (result.get("success", false) && result.has("image_data"))) {
         content_panel->set_visible(true);
+    }
+    
+    // UNIFIED UI: Handle animation UI the same way as real-time
+    // For completed animations, show the beautiful result panel
+    if (p_tool_message.name == "2d_animation_manager" && success) {
+        String status = result.get("status", "");
+        String op = result.get("op", result.get("operation", ""));
+        
+        // For completed jobs or jobs with completed_animations, show result panel
+        Array completed_anims = result.get("completed_animations", Array());
+        if (status == "completed" || !completed_anims.is_empty()) {
+            // Replace content with beautiful result panel
+            for (int i = content_vbox->get_child_count() - 1; i >= 0; i--) {
+                content_vbox->get_child(i)->queue_free();
+            }
+            AIAnimationUI::create_animation_result_panel(content_vbox, result, this);
+            
+            // Auto-expand for completed animations
+            content_panel->set_visible(true);
+        }
     }
     
     // CRITICAL: After updating tool result, reposition streaming indicator to the END
@@ -10058,6 +10137,89 @@ void AIChatDock::_create_tool_specific_ui(VBoxContainer *p_content_vbox, const S
 			json_hidden->add_theme_color_override("font_color", get_theme_color(SNAME("font_color"), SNAME("Editor")) * Color(1, 1, 1, 0.6));
 			p_content_vbox->add_child(json_hidden);
 		}
+	} else if (p_tool_name == "2d_animation_manager" && p_success) {
+		// Use beautiful AIAnimationUI components
+		String op = p_result.get("op", "");
+		// Also check "operation" field (used by add_branch)
+		if (op.is_empty()) {
+			op = p_result.get("operation", "");
+		}
+		
+		if (op == "list_my_animations") {
+			Array animations_list = p_result.get("animations", Array());
+			int total_count = p_result.get("total_count", 0);
+			AIAnimationUI::create_numbered_animation_list(p_content_vbox, animations_list, total_count, this);
+			
+		} else if (op == "create" || op == "add_branch") {
+			// Job tracking UI is created by _track_animation_job_from_result
+			// Show message - the beautiful panel replaces the placeholder
+			String job_id = p_result.get("job_id", "");
+			String message = p_result.get("message", op == "add_branch" ? "Adding animation to project" : "Animation job created");
+			String project_name = p_result.get("project_name", "");
+			
+			Label *info = memnew(Label);
+			String info_text = message;
+			if (!project_name.is_empty() && op == "add_branch") {
+				info_text += "\nProject: " + project_name;
+			}
+			info_text += "\n\nProgress will update automatically.";
+			info->set_text(info_text);
+			info->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			info->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(info);
+			
+		} else if (op == "status") {
+			// Manual status check result  
+			String status = p_result.get("status", "unknown");
+			String message = p_result.get("message", "");
+			Dictionary progress = p_result.get("progress", Dictionary());
+			
+			// Show status badge
+			Label *badge = AIAnimationUI::create_status_badge(status, p_content_vbox);
+			p_content_vbox->add_child(badge);
+			
+			// Show progress if available
+			if (!progress.is_empty()) {
+				String progress_msg = AIAnimationUI::format_progress_message(progress);
+				Label *progress_label = memnew(Label);
+				progress_label->set_text(progress_msg);
+				progress_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+				p_content_vbox->add_child(progress_label);
+			}
+			
+			// Show completion data if completed
+			if (status == "completed") {
+				AIAnimationUI::create_animation_result_panel(p_content_vbox, p_result, this);
+			}
+			
+		} else if (op == "edit") {
+			// Edit operation - show message, tracking UI is in placeholder
+			String job_id = p_result.get("job_id", "");
+			String message = p_result.get("message", "Animation edit in progress");
+			String target = p_result.get("animation_ref", p_result.get("target_animation", ""));
+			bool is_async = p_result.get("async", false);
+			
+			Label *edit_label = memnew(Label);
+			String info_text = message;
+			if (!target.is_empty()) {
+				info_text += "\nTarget: " + target;
+			}
+			if (is_async && !job_id.is_empty()) {
+				info_text += "\n\nProgress will update automatically.";
+			}
+			edit_label->set_text(info_text);
+			edit_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			edit_label->add_theme_color_override("font_color", get_theme_color(SNAME("success_color"), SNAME("Editor")));
+			p_content_vbox->add_child(edit_label);
+			
+		} else {
+			String message = p_result.get("message", "Operation completed");
+			Label *generic_label = memnew(Label);
+			generic_label->set_text(message);
+			generic_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+			p_content_vbox->add_child(generic_label);
+		}
+		
 	} else if (p_tool_name == "search_across_project" && p_success) {
 		uint64_t render_start = OS::get_singleton()->get_ticks_msec();
 		
@@ -11983,6 +12145,42 @@ void AIChatDock::_apply_tool_result_deferred(const String &p_tool_call_id, const
 	_create_tool_specific_ui(content_vbox, p_tool_name, result, success, args);
 
 	tool_calls_ui_applied.insert(p_tool_call_id);
+	
+	// UNIFIED UI: Handle animation UI the same way as real-time
+	// For completed animations, show the beautiful result panel
+	if (p_tool_name == "2d_animation_manager" && success) {
+		String status = result.get("status", "");
+		String job_id = result.get("job_id", "");
+		String op = result.get("op", result.get("operation", ""));
+		
+		// Use p_tool_results[0] which has the full UI data including URLs
+		// The 'result' from content is clean (no URLs) for AI
+		Dictionary ui_data = result;
+		if (p_tool_results.size() > 0) {
+			Dictionary full_result = p_tool_results[0];
+			if (full_result.has("thumbnail_urls")) {
+				ui_data = full_result;  // Use full result with URLs for UI
+				status = ui_data.get("status", status);
+			}
+		}
+		
+		// For completed jobs or jobs that have completed_animations, show the result panel
+		Array completed_anims = ui_data.get("completed_animations", Array());
+		
+		if (status == "completed" || !completed_anims.is_empty()) {
+			// Replace content with beautiful result panel
+			for (int i = content_vbox->get_child_count() - 1; i >= 0; i--) {
+				content_vbox->get_child(i)->queue_free();
+			}
+			// Use UI data which has the URLs for thumbnails
+			AIAnimationUI::create_animation_result_panel(content_vbox, ui_data, this);
+			
+			// Auto-expand for completed animations
+			if (content_panel) {
+				content_panel->set_visible(true);
+			}
+		}
+	}
 }
 
 void AIChatDock::_on_tool_output_toggled(Control *p_content) {
@@ -14423,12 +14621,18 @@ AIChatDock::AIChatDock() {
 	add_child(diff_viewer);
 	diff_viewer->connect("diff_accepted", callable_mp(this, &AIChatDock::_on_diff_accepted));
 
-	// Start the AI tool server
+	// Start the AI tool server (not available on web platform)
+#ifndef WEB_ENABLED
 	tool_server.instantiate();
 	Error err = tool_server->listen(8001);
 	if (err == OK) {
+		print_line("AI Chat: Tool server started on port 8001");
 	} else {
+		print_line("AI Chat: Tool server failed to start (tools will use cloud mode)");
 	}
+#else
+	print_line("AI Chat: Web mode - using cloud tools (no local TCP server)");
+#endif
 	
 	// Initialize embedding system
 	call_deferred("_initialize_embedding_system");
@@ -14448,6 +14652,15 @@ AIChatDock::AIChatDock() {
 	// Initialize AI auto snapshots viewer
 	auto_snapshots.instantiate();
 	auto_snapshots->initialize(this);
+	
+	// Initialize 2D animation tracker for async job monitoring
+	animation_tracker.instantiate();
+	// Use _get_api_base_url() for correct port (5050 in dev, production in prod)
+	String anim_api_base = _get_api_base_url();
+	animation_tracker->initialize(anim_api_base, this);
+	animation_tracker->set_on_job_completed(callable_mp(this, &AIChatDock::_on_animation_job_completed));
+	animation_tracker->set_on_job_failed(callable_mp(this, &AIChatDock::_on_animation_job_failed));
+	print_line("🎬 ANIMATION_TRACKER: Initialized with API base: " + anim_api_base);
 	
 	// Initialize enhanced graph parser for world-class context
 	enhanced_graph_parser.instantiate();
@@ -15367,6 +15580,300 @@ void AIChatDock::_on_save_image_location_selected(const String &p_file_path) {
 	pending_save_image_format = "";
 }
 
+// ==================== Animation Export ====================
+
+void AIChatDock::_on_export_animation_pressed(Button *p_button) {
+	if (!p_button) {
+		return;
+	}
+	
+	// Get animation info from button metadata
+	String animation_id = p_button->get_meta("animation_id", "");
+	String project_id = p_button->get_meta("project_id", "");
+	
+	if (animation_id.is_empty() || project_id.is_empty()) {
+		print_line("Export: Missing animation_id or project_id");
+		return;
+	}
+	
+	print_line("Export animation: " + animation_id + " from project " + project_id);
+	
+	// Store for later use
+	pending_export_animation_id = animation_id;
+	pending_export_project_id = project_id;
+	
+	// Create options dialog if not exists
+	if (!anim_export_options_dialog) {
+		anim_export_options_dialog = memnew(ConfirmationDialog);
+		anim_export_options_dialog->set_title("Export Animation");
+		anim_export_options_dialog->set_ok_button_text("Export");
+		add_child(anim_export_options_dialog);
+		
+		VBoxContainer *vbox = memnew(VBoxContainer);
+		vbox->add_theme_constant_override("separation", 12);
+		anim_export_options_dialog->add_child(vbox);
+		
+		// Resolution option
+		HBoxContainer *res_row = memnew(HBoxContainer);
+		vbox->add_child(res_row);
+		
+		Label *res_label = memnew(Label);
+		res_label->set_text("Resolution:");
+		res_label->set_custom_minimum_size(Size2(100, 0));
+		res_row->add_child(res_label);
+		
+		anim_export_resolution_spin = memnew(SpinBox);
+		anim_export_resolution_spin->set_min(32);
+		anim_export_resolution_spin->set_max(512);
+		anim_export_resolution_spin->set_step(32);
+		anim_export_resolution_spin->set_value(128);
+		anim_export_resolution_spin->set_suffix(" px");
+		res_row->add_child(anim_export_resolution_spin);
+		
+		// Format option
+		HBoxContainer *format_row = memnew(HBoxContainer);
+		vbox->add_child(format_row);
+		
+		Label *format_label = memnew(Label);
+		format_label->set_text("Format:");
+		format_label->set_custom_minimum_size(Size2(100, 0));
+		format_row->add_child(format_label);
+		
+		anim_export_format_option = memnew(OptionButton);
+		anim_export_format_option->add_item("Sprite Sheet (PNG)", 0);
+		anim_export_format_option->add_item("Animated GIF", 1);
+		anim_export_format_option->add_item("Individual Frames", 2);
+		anim_export_format_option->select(0);
+		format_row->add_child(anim_export_format_option);
+		
+		// Info label
+		Label *info_label = memnew(Label);
+		info_label->set_text("Animation: " + animation_id);
+		info_label->add_theme_color_override("font_color", Color(0.7, 0.7, 0.7));
+		vbox->add_child(info_label);
+		
+		anim_export_options_dialog->connect("confirmed", callable_mp(this, &AIChatDock::_on_anim_export_dialog_confirmed));
+	}
+	
+	// Update info label
+	VBoxContainer *vbox = Object::cast_to<VBoxContainer>(anim_export_options_dialog->get_child(0));
+	if (vbox && vbox->get_child_count() > 2) {
+		Label *info_label = Object::cast_to<Label>(vbox->get_child(2));
+		if (info_label) {
+			info_label->set_text("Animation: " + animation_id);
+		}
+	}
+	
+	anim_export_options_dialog->popup_centered(Size2(350, 150));
+}
+
+void AIChatDock::_on_anim_export_dialog_confirmed() {
+	if (pending_export_animation_id.is_empty() || pending_export_project_id.is_empty()) {
+		return;
+	}
+	
+	// Get selected options
+	int resolution = (int)anim_export_resolution_spin->get_value();
+	int format_idx = anim_export_format_option->get_selected();
+	
+	String format;
+	String file_ext;
+	switch (format_idx) {
+		case 0:
+			format = "sprite_sheet";
+			file_ext = "png";
+			break;
+		case 1:
+			format = "gif";
+			file_ext = "gif";
+			break;
+		case 2:
+			format = "frames";
+			file_ext = "png";
+			break;
+		default:
+			format = "sprite_sheet";
+			file_ext = "png";
+	}
+	
+	// Store format info
+	pending_export_animation_id = pending_export_animation_id + "|" + format + "|" + itos(resolution);
+	
+	// Create file dialog if not exists
+	if (!anim_export_file_dialog) {
+		anim_export_file_dialog = memnew(EditorFileDialog);
+		anim_export_file_dialog->set_file_mode(EditorFileDialog::FILE_MODE_SAVE_FILE);
+		anim_export_file_dialog->set_access(EditorFileDialog::ACCESS_FILESYSTEM);
+		add_child(anim_export_file_dialog);
+		anim_export_file_dialog->connect("file_selected", callable_mp(this, &AIChatDock::_on_anim_export_file_selected));
+	}
+	
+	// Configure dialog for format
+	anim_export_file_dialog->clear_filters();
+	if (format == "gif") {
+		anim_export_file_dialog->add_filter("*.gif", "Animated GIF");
+	} else {
+		anim_export_file_dialog->add_filter("*.png", "PNG Image");
+	}
+	
+	// Set default filename
+	String anim_name = pending_export_animation_id.get_slice("|", 0);
+	anim_export_file_dialog->set_current_file(anim_name + "_" + itos(resolution) + "px." + file_ext);
+	anim_export_file_dialog->popup_centered(Size2(800, 600));
+}
+
+void AIChatDock::_on_anim_export_file_selected(const String &p_path) {
+	if (p_path.is_empty() || pending_export_animation_id.is_empty()) {
+		return;
+	}
+	
+	// Parse stored info: "animation_id|format|resolution"
+	String animation_id = pending_export_animation_id.get_slice("|", 0);
+	String format = pending_export_animation_id.get_slice("|", 1);
+	int resolution = pending_export_animation_id.get_slice("|", 2).to_int();
+	
+	print_line("Exporting animation: " + animation_id + " at " + itos(resolution) + "px as " + format);
+	
+	// Make request to backend (use Flask proxy to animation server)
+	String api_base = _get_api_base_url();
+	
+	// Create HTTP request (or cancel existing one)
+	if (anim_export_request) {
+		// Cancel any existing request
+		if (anim_export_request->get_http_client_status() != HTTPClient::STATUS_DISCONNECTED) {
+			anim_export_request->cancel_request();
+		}
+	} else {
+		anim_export_request = memnew(HTTPRequest);
+		add_child(anim_export_request);
+		anim_export_request->set_use_threads(true);
+		anim_export_request->connect("request_completed", callable_mp(this, &AIChatDock::_on_anim_export_request_completed));
+	}
+	
+	// Store path for callback
+	anim_export_request->set_meta("save_path", p_path);
+	anim_export_request->set_meta("format", format);
+	
+	// Build JSON body
+	Dictionary body;
+	body["project_id"] = pending_export_project_id;
+	body["animation_id"] = animation_id;
+	body["resolution"] = resolution;
+	body["format"] = format;
+	
+	String json_body = JSON::stringify(body);
+	
+	PackedStringArray headers;
+	headers.push_back("Content-Type: application/json");
+	
+	Error err = anim_export_request->request(api_base + "/animation/export", headers, HTTPClient::METHOD_POST, json_body);
+	if (err != OK) {
+		print_line("Failed to start export request: " + itos(err));
+	}
+	
+	// Clear pending
+	pending_export_animation_id = "";
+	pending_export_project_id = "";
+}
+
+void AIChatDock::_trigger_auto_export(const String &p_anim_id, const String &p_project_id, const String &p_save_path, int p_resolution, const String &p_format) {
+	// Delegate to AIAnimationUI
+	AIAnimationUI::trigger_auto_export(p_anim_id, p_project_id, p_save_path, p_resolution, p_format, this);
+}
+
+void AIChatDock::_on_anim_export_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
+	if (!anim_export_request) {
+		print_line("Export request completed but anim_export_request is null");
+		return;
+	}
+	
+	String save_path = anim_export_request->get_meta("save_path", "");
+	String format = anim_export_request->get_meta("format", "sprite_sheet");
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
+		String error_msg = "Export failed: HTTP " + itos(p_response_code);
+		if (p_body.size() > 0) {
+			error_msg += "\n" + String::utf8((const char *)p_body.ptr(), p_body.size());
+		}
+		print_line(error_msg);
+		if (EditorNode::get_singleton()) {
+			EditorNode::get_singleton()->show_warning("Export failed. Check console for details.");
+		}
+		return;
+	}
+	
+	// Parse response
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	Ref<JSON> json;
+	json.instantiate();
+	Error parse_err = json->parse(response_text);
+	if (parse_err != OK) {
+		print_line("Failed to parse export response");
+		return;
+	}
+	
+	Dictionary result = json->get_data();
+	
+	if (!result.get("success", false)) {
+		print_line("Export failed: " + String(result.get("error", "Unknown error")));
+		return;
+	}
+	
+	// Save the file based on format
+	if (format == "sprite_sheet") {
+		String base64_data = result.get("sprite_sheet_base64", "");
+		if (!base64_data.is_empty()) {
+			Vector<uint8_t> image_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(base64_data);
+			Ref<FileAccess> file = FileAccess::open(save_path, FileAccess::WRITE);
+			if (file.is_valid()) {
+				file->store_buffer(image_data);
+				file->close();
+				print_line("Saved sprite sheet to: " + save_path);
+			}
+		}
+	} else if (format == "gif") {
+		String base64_data = result.get("gif_base64", "");
+		if (!base64_data.is_empty()) {
+			Vector<uint8_t> gif_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(base64_data);
+			Ref<FileAccess> file = FileAccess::open(save_path, FileAccess::WRITE);
+			if (file.is_valid()) {
+				file->store_buffer(gif_data);
+				file->close();
+				print_line("Saved GIF to: " + save_path);
+			}
+		}
+	} else if (format == "frames") {
+		// Save individual frames
+		Array frames = result.get("frames_base64", Array());
+		String base_path = save_path.get_base_dir();
+		String base_name = save_path.get_file().get_basename();
+		
+		for (int i = 0; i < frames.size(); i++) {
+			String frame_base64 = frames[i];
+			Vector<uint8_t> frame_data = CoreBind::Marshalls::get_singleton()->base64_to_raw(frame_base64);
+			String frame_path = base_path + "/" + base_name + "_" + itos(i + 1).pad_zeros(3) + ".png";
+			
+			Ref<FileAccess> file = FileAccess::open(frame_path, FileAccess::WRITE);
+			if (file.is_valid()) {
+				file->store_buffer(frame_data);
+				file->close();
+			}
+		}
+		print_line("Saved " + itos(frames.size()) + " frames to: " + base_path);
+	}
+	
+	// Notify editor
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->scan();
+	}
+	
+	if (EditorNode::get_singleton()) {
+		int num_frames = result.get("num_frames", 0);
+		int resolution = result.get("resolution", 128);
+		EditorNode::get_singleton()->show_warning("Exported successfully!\n" + itos(num_frames) + " frames at " + itos(resolution) + "px");
+	}
+}
+
 void AIChatDock::_on_import_button_pressed() {
 	
 	// Show file dialog to select JSON file
@@ -15964,6 +16471,27 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 			String description = args.get("description", "image");
 			return "Processing image: " + description.substr(0, 40) + (description.length() > 40 ? "..." : "");
 		}
+	} else if (p_tool_name == "2d_animation_manager") {
+		String op = args.get("op", "");
+		
+		if (op == "create") {
+			String user_request = args.get("user_request", "animations");
+			return "Creating sprite animations: " + user_request.substr(0, 35) + (user_request.length() > 35 ? "..." : "");
+		} else if (op == "add_branch") {
+			String project_ref = args.get("project_ref", args.get("project_id", "project"));
+			String branch_request = args.get("branch_request", "new animation");
+			return "Adding to " + project_ref + ": " + branch_request.substr(0, 30) + (branch_request.length() > 30 ? "..." : "");
+		} else if (op == "status") {
+			return "Checking animation generation progress...";
+		} else if (op == "edit") {
+			String edit_request = args.get("edit_request", "edit");
+			return "Editing animation: " + edit_request.substr(0, 30) + (edit_request.length() > 30 ? "..." : "");
+		} else if (op == "list_my_animations") {
+			return "Loading your sprite animations from Supabase...";
+		} else if (op == "list_jobs") {
+			return "Listing recent animation projects...";
+		}
+		return "Managing sprite animations...";
 	} else if (p_tool_name == "search_manager") {
 		if (op == "project.search") {
 			String query = args.get("query", "");
@@ -20093,6 +20621,393 @@ void AIChatDock::_update_todo_panel_config() {
 	todo_panel->set_api_base(api_endpoint);
 	todo_panel->set_auth_token(auth_token);
 	todo_panel->set_project_root(ProjectSettings::get_singleton()->globalize_path("res://"));
+}
+
+// Animation tracker callbacks
+
+void AIChatDock::_on_animation_job_completed(const String &p_job_id, const String &p_tool_call_id, const Dictionary &p_result) {
+	print_line("ANIM_COMPLETE: Job " + p_job_id + " finished! Updating UI and conversation...");
+	
+	// Extract completion data
+	String supabase_project_id = p_result.get("supabase_project_id", p_result.get("project_id", ""));
+	Dictionary progress = p_result.get("progress", Dictionary());
+	
+	// New format: completed_animations is an array of dicts with {id, name, thumbnail_url, ...}
+	Array completed_animations_data = p_result.get("completed_animations", Array());
+	Array completed_anims;
+	Array thumbnail_urls;
+	
+	if (!completed_animations_data.is_empty()) {
+		// New format with thumbnail URLs and frame URLs for animated thumbnails
+		for (int i = 0; i < completed_animations_data.size(); i++) {
+			Dictionary anim_data = completed_animations_data[i];
+			String anim_name = anim_data.get("name", anim_data.get("id", "unknown"));
+			completed_anims.push_back(anim_name);
+			
+			String thumb_url = anim_data.get("thumbnail_url", "");
+			Array frame_urls = anim_data.get("frame_urls", Array());
+			
+			if (!thumb_url.is_empty() || !frame_urls.is_empty()) {
+				Dictionary thumb_info;
+				thumb_info["name"] = anim_name;
+				thumb_info["url"] = thumb_url;
+				thumb_info["frame_urls"] = frame_urls;  // For animated thumbnails
+				thumbnail_urls.push_back(thumb_info);
+			}
+		}
+		print_line("ANIM_COMPLETE: Found " + itos(completed_anims.size()) + " animations with " + itos(thumbnail_urls.size()) + " thumbnails");
+	} else {
+		// Legacy format: extract from progress dict
+		Array progress_keys = progress.keys();
+		for (int i = 0; i < progress_keys.size(); i++) {
+			String key = progress_keys[i];
+			String value = progress.get(key, "");
+			if (value == "completed" && key != "supabase_uploaded") {
+				completed_anims.push_back(key);
+			}
+		}
+	}
+	
+	// Create CLEAN AI result (no URLs - AI doesn't need them)
+	Dictionary ai_result;
+	ai_result["success"] = true;
+	ai_result["op"] = "create";
+	ai_result["status"] = "completed";
+	ai_result["message"] = "Animation generation completed! " + itos(completed_anims.size()) + " animations are now available.";
+	ai_result["animations_created"] = completed_anims;  // Just names, no URLs
+	ai_result["next_steps"] = "Use list_my_animations to see numbered references. Use download operation to save files.";
+	
+	// Create UI-specific result (includes URLs for thumbnails)
+	Dictionary completion_result;
+	completion_result["success"] = true;
+	completion_result["op"] = "create";
+	completion_result["status"] = "completed";
+	completion_result["job_id"] = p_job_id;
+	completion_result["supabase_project_id"] = supabase_project_id;
+	completion_result["completed_animations"] = completed_anims;
+	completion_result["thumbnail_urls"] = thumbnail_urls;  // For UI to load and display
+	
+	// Update conversation history
+	// - msg.content = CLEAN result for AI (no URLs)
+	// - tool_results[0] = FULL result for UI (with URLs for thumbnails)
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	for (int i = chat_history.size() - 1; i >= 0; i--) {
+		ChatMessage &msg = chat_history.write[i];
+		if (msg.role == "tool" && msg.tool_call_id == p_tool_call_id) {
+			Ref<JSON> json;
+			json.instantiate();
+			msg.content = json->stringify(ai_result);  // CLEAN result for AI - no URLs!
+			
+			if (!msg.tool_results.is_empty()) {
+				msg.tool_results[0] = completion_result;  // FULL result for UI - has URLs
+			}
+			
+			print_line("ANIM_COMPLETE: Updated conversation history");
+			break;
+		}
+	}
+	
+	// Replace the tracking UI with beautiful completion panel
+	if (chat_container) {
+		PanelContainer *placeholder = Object::cast_to<PanelContainer>(
+			chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false)
+		);
+		
+		if (placeholder && placeholder->get_child_count() > 0) {
+			VBoxContainer *vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+			if (vbox) {
+				// Clear tracking UI
+				for (int i = vbox->get_child_count() - 1; i >= 0; i--) {
+					Node *child = vbox->get_child(i);
+					child->queue_free();
+				}
+				
+				// Create beautiful completion panel
+				AIAnimationUI::create_animation_result_panel(vbox, completion_result, this);
+			}
+		}
+	}
+	
+	// Auto-export if requested
+	if (p_result.get("auto_export", false)) {
+		String export_dest = p_result.get("export_destination", "");
+		int export_res = p_result.get("export_resolution", 128);
+		String export_fmt = p_result.get("export_format", "sprite_sheet");
+		
+		print_line("AUTO_EXPORT: Triggering export to " + export_dest + " at " + itos(export_res) + "px");
+		
+		// Export each animation
+		for (int i = 0; i < completed_animations_data.size(); i++) {
+			Dictionary anim_data = completed_animations_data[i];
+			String anim_id = anim_data.get("id", anim_data.get("name", ""));
+			if (anim_id.is_empty()) continue;
+			
+			// Determine save path
+			String save_path = export_dest;
+			if (save_path.ends_with("/")) {
+				// Directory - create file per animation
+				save_path += anim_id + (export_fmt == "gif" ? ".gif" : ".png");
+			} else if (completed_animations_data.size() > 1) {
+				// Multiple anims but single file path - append animation name
+				String base = save_path.get_basename();
+				String ext = save_path.get_extension();
+				save_path = base + "_" + anim_id + "." + ext;
+			}
+			
+			// Store info and trigger export request
+			pending_export_animation_id = anim_id + "|" + export_fmt + "|" + itos(export_res);
+			pending_export_project_id = supabase_project_id;
+			
+			// Make the export request (similar to manual export)
+			_trigger_auto_export(anim_id, supabase_project_id, save_path, export_res, export_fmt);
+		}
+		
+		// Add export info to AI result
+		ai_result["saved_to"] = export_dest;
+		ai_result["resolution"] = export_res;
+		ai_result["format"] = export_fmt;
+		ai_result["message"] = String(ai_result["message"]) + " Sprite sheets saved to: " + export_dest;
+		
+		// Update conversation history with export info (re-update msg.content)
+		for (int i = chat_history.size() - 1; i >= 0; i--) {
+			ChatMessage &msg = chat_history.write[i];
+			if (msg.role == "tool" && msg.tool_call_id == p_tool_call_id) {
+				Ref<JSON> json;
+				json.instantiate();
+				msg.content = json->stringify(ai_result);  // CLEAN result for AI
+				break;
+			}
+		}
+	}
+	
+	// Save conversation
+	if (current_conversation_index >= 0) {
+		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+		_queue_delayed_save();
+	}
+	
+	// Show success notification
+	String notif_msg = "Sprite animations ready! " + itos(completed_anims.size()) + " animations completed.";
+	if (p_result.get("auto_export", false)) {
+		notif_msg += " Exported to " + String(p_result.get("export_destination", ""));
+	}
+	_show_status_notification("success", notif_msg, "[ANIM]", 8.0);
+}
+
+void AIChatDock::_on_animation_job_failed(const String &p_job_id, const String &p_tool_call_id, const String &p_error) {
+	print_line("ANIM_FAILED: Job " + p_job_id + " failed: " + p_error);
+	
+	// Create a failure tool result
+	Dictionary failure_result;
+	failure_result["success"] = false;
+	failure_result["status"] = "failed";
+	failure_result["job_id"] = p_job_id;
+	failure_result["error"] = p_error;
+	failure_result["message"] = "Animation generation failed: " + p_error;
+	
+	// Update conversation history
+	Vector<ChatMessage> &chat_history = _get_current_chat_history();
+	for (int i = chat_history.size() - 1; i >= 0; i--) {
+		ChatMessage &msg = chat_history.write[i];
+		if (msg.role == "tool" && msg.tool_call_id == p_tool_call_id) {
+			Ref<JSON> json;
+			json.instantiate();
+			msg.content = json->stringify(failure_result);
+			
+			if (!msg.tool_results.is_empty()) {
+				msg.tool_results[0] = failure_result;
+			}
+			break;
+		}
+	}
+	
+	// Update UI
+	if (chat_container) {
+		PanelContainer *placeholder = Object::cast_to<PanelContainer>(
+			chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false)
+		);
+		
+		if (placeholder) {
+			for (int i = 0; i < placeholder->get_child_count(); i++) {
+				VBoxContainer *vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(i));
+				if (vbox) {
+					for (int j = 0; j < vbox->get_child_count(); j++) {
+						Label *label = Object::cast_to<Label>(vbox->get_child(j));
+						if (label && String(label->get_name()).begins_with("anim_status_")) {
+							label->set_text("❌ Animation generation failed: " + p_error);
+							label->add_theme_color_override("font_color", Color(0.9, 0.3, 0.3));
+							break;
+						}
+					}
+					break;
+				}
+			}
+		}
+	}
+	
+	// Save updated conversation
+	if (current_conversation_index >= 0) {
+		conversations.write[current_conversation_index].last_modified_timestamp = _get_timestamp();
+		_queue_delayed_save();
+	}
+	
+	// Show error notification
+	_show_status_notification("connection_error", "Animation generation failed: " + p_error, "[ERROR]", 8.0);
+}
+
+void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, const Dictionary &p_result) {
+	print_line("🎬 TRACK_ANIM: Entering _track_animation_job_from_result");
+	print_line("   Tool call ID: " + p_tool_call_id);
+	
+	// Debug: Print all keys in result
+	Array keys = p_result.keys();
+	print_line("   Result keys: " + String::num_int64(keys.size()));
+	for (int i = 0; i < keys.size() && i < 10; i++) {
+		String key = keys[i];
+		print_line("     - " + key + ": " + String(p_result.get(key, "")));
+	}
+	
+	// Check if this is an async operation that needs tracking
+	String op = p_result.get("op", "");
+	// Also check "operation" field (used by add_branch)
+	if (op.is_empty()) {
+		op = p_result.get("operation", "");
+	}
+	print_line("   op=" + op);
+	
+	// Check for async flag or job_id
+	bool is_async = p_result.get("async", false);
+	String job_id = p_result.get("job_id", "");
+	print_line("   job_id=" + job_id + ", async=" + String(is_async ? "true" : "false"));
+	
+	if (job_id.is_empty()) {
+		print_line("   No job_id found, skipping tracker");
+		return;
+	}
+	
+	// Track "create", "add_branch", and "edit" ops (or unset ops with job_id, or async ops)
+	if (!op.is_empty() && op != "create" && op != "add_branch" && op != "edit") {
+		print_line("   op is not trackable, skipping (op=" + op + ")");
+		return;
+	}
+	
+	String user_request = p_result.get("user_request", p_result.get("message", "Animation generation"));
+	print_line("   user_request: " + user_request.substr(0, 50) + "...");
+	
+	// Find the UI panel for this tool call
+	PanelContainer *ui_panel = nullptr;
+	if (chat_container) {
+		String panel_name = "tool_placeholder_" + p_tool_call_id;
+		print_line("   Looking for panel: " + panel_name);
+		ui_panel = Object::cast_to<PanelContainer>(
+			chat_container->find_child(panel_name, true, false)
+		);
+		print_line("   UI panel found: " + String(ui_panel != nullptr ? "YES" : "NO"));
+	} else {
+		print_line("   ❌ chat_container is null!");
+	}
+	
+	bool tracker_valid = animation_tracker.is_valid();
+	print_line("   Animation tracker valid: " + String(tracker_valid ? "YES" : "NO"));
+	
+	if (ui_panel && tracker_valid) {
+		print_line("   ✅ Creating beautiful animation panel...");
+		
+		// Clear basic UI and replace with beautiful AIAnimationUI panel
+		if (ui_panel->get_child_count() > 0) {
+			Node *first_child = ui_panel->get_child(0);
+			print_line("   First child type: " + first_child->get_class());
+			
+			// The placeholder might have HBoxContainer (from backend) or VBoxContainer (from frontend)
+			// We need to clear it and add a VBox for our beautiful panel
+			VBoxContainer *vbox = Object::cast_to<VBoxContainer>(first_child);
+			HBoxContainer *hbox = Object::cast_to<HBoxContainer>(first_child);
+			
+			if (hbox) {
+				print_line("   Found HBox (backend tool placeholder) - replacing with VBox...");
+				// Clear the HBox content
+				for (int i = hbox->get_child_count() - 1; i >= 0; i--) {
+					hbox->get_child(i)->queue_free();
+				}
+				// Remove the HBox and create a VBox
+				hbox->queue_free();
+				
+				vbox = memnew(VBoxContainer);
+				ui_panel->add_child(vbox);
+			}
+			
+			if (vbox) {
+				print_line("   Found/created VBox with " + String::num_int64(vbox->get_child_count()) + " children, clearing...");
+				
+				// Clear existing content
+				for (int i = vbox->get_child_count() - 1; i >= 0; i--) {
+					Node *child = vbox->get_child(i);
+					child->queue_free();
+				}
+				
+				// Create beautiful job tracking panel inside the tool placeholder
+				print_line("   Creating AIAnimationUI panel...");
+				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+				print_line("   ✅ Panel created!");
+			} else {
+				print_line("   ❌ First child is not VBoxContainer or HBoxContainer: " + first_child->get_class());
+				// Create a new VBox anyway
+				vbox = memnew(VBoxContainer);
+				ui_panel->add_child(vbox);
+				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+				print_line("   ✅ Created new VBox and panel!");
+			}
+		} else {
+			print_line("   ❌ UI panel has no children, creating VBox...");
+			VBoxContainer *vbox = memnew(VBoxContainer);
+			ui_panel->add_child(vbox);
+			AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+			print_line("   ✅ Created VBox and panel!");
+		}
+		
+		// Extract export params if present
+		String export_dest = p_result.get("export_destination", "");
+		int export_res = p_result.get("export_resolution", 128);
+		String export_fmt = p_result.get("export_format", "sprite_sheet");
+		
+		// Start tracking with export params
+		print_line("   Starting job tracking...");
+		animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest, export_res, export_fmt);
+		print_line("✅ ANIM_TRACKER: Started polling for job " + job_id);
+	} else {
+		print_line("   ❌ Cannot track: ui_panel=" + String(ui_panel ? "valid" : "null") + 
+			", tracker=" + String(tracker_valid ? "valid" : "invalid"));
+		
+		// If panel not found, try to create one
+		if (!ui_panel && chat_container && tracker_valid) {
+			print_line("   Attempting to create placeholder manually...");
+			_create_backend_tool_placeholder(p_tool_call_id, "2d_animation_manager");
+			
+			ui_panel = Object::cast_to<PanelContainer>(
+				chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false)
+			);
+			
+			if (ui_panel) {
+				print_line("   ✅ Created placeholder, now creating animation panel...");
+				VBoxContainer *vbox = memnew(VBoxContainer);
+				
+				// Clear existing children
+				for (int i = ui_panel->get_child_count() - 1; i >= 0; i--) {
+					ui_panel->get_child(i)->queue_free();
+				}
+				
+				ui_panel->add_child(vbox);
+				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+				
+				// Extract export params
+				String export_dest2 = p_result.get("export_destination", "");
+				int export_res2 = p_result.get("export_resolution", 128);
+				String export_fmt2 = p_result.get("export_format", "sprite_sheet");
+				animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest2, export_res2, export_fmt2);
+				print_line("✅ ANIM_TRACKER: Started polling for job " + job_id + " (fallback path)");
+			}
+		}
+	}
 }
 
 // SIMPLE SAFETY METHODS: Handle large files without deleting user data

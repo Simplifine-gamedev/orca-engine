@@ -802,6 +802,73 @@ _godot_tools_template = [
                 "required": ["op"]
             }
         }
+    },
+    
+    {
+        "type": "function",
+        "function": {
+            "name": "2d_animation_manager",
+            "description": "REQUIRED: Always specify 'op' parameter. Create and manage 2D sprite animations using the AI animation server. Generate complete animation sets (idle, walk, attack, etc.) from text descriptions with optional style reference images. Animations are stored in Supabase and return sprite sheets, transparent GIFs, and individual frames. Common operations: 'create' (create animation project), 'status' (check progress), 'edit' (modify animations), 'list_jobs' (list recent projects).",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": [
+                            "list_my_animations",  # List all animations with permanent refs (P1, P1.1, etc.)
+                            "create",              # Create new animation project
+                            "status",              # Check job/project status
+                            "edit",                # Edit existing animation
+                            "list_jobs",           # List recent animation projects
+                            "add_branch",          # Add animation to existing project
+                            "download"             # Download animation files to project
+                        ],
+                        "description": "Animation operations. 'list_my_animations' shows all animations with PERMANENT refs (P1=project, P1.1=animation). 'create' generates new project. 'download' fetches files using refs. 'edit' modifies animations. 'add_branch' adds animation to project. Refs like P10 and P10.1 are stable - same ref always means same animation."
+                    },
+                    
+                    # CREATE operation parameters
+                    "user_request": {"type": "string", "maxLength": 2000, "description": "Natural language description of the animations to create. Example: 'Create a pixel-art knight with idle, walk, and attack animations'. Keep descriptions focused and under 2000 chars for reliable processing."},
+                    "reference_image_ids": {"type": "array", "items": {"type": "string"}, "description": "OPTIONAL: Array of image IDs from conversation to use as style reference. The AI will extract the character/object and use it as the base style for all animations. Can reference numbered images like '#1', named IDs like 'generated_abc123', or recent images. Multiple images will be composed together."},
+                    "reference_description": {"type": "string", "maxLength": 1000, "description": "OPTIONAL: If reference_image_ids provided, describe what should be isolated/extracted from the image (e.g., 'the knight character in the center', 'the blue robot'). If not provided, AI will try to extract the main subject automatically."},
+                    "target_resolution": {"type": "string", "enum": ["8x8", "64x64", "128x128", "256x256", "512x512"], "default": "128x128", "description": "Frame resolution for sprite animations. '64x64' for retro pixel-art, '128x128' for balanced quality (default), '256x256' for HD sprites, '512x512' for high-detail sprites."},
+                    "execute_immediately": {"type": "boolean", "default": True, "description": "Whether to start animation generation immediately (recommended). If false, only creates the graph plan without generating videos."},
+                    "upload_to_supabase": {"type": "boolean", "default": True, "description": "Whether to upload results to Supabase for persistent storage (recommended). Required for 'edit' operation to work later."},
+                    
+                    # AUTO-EXPORT parameters (optional - if specified, animations are automatically saved when complete)
+                    "export_destination": {"type": "string", "description": "OPTIONAL: Project path to auto-save animations when complete. E.g., 'res://sprites/hero/' for folder or 'res://sprites/hero.png' for single sheet. If specified, animations export automatically without user interaction."},
+                    "export_resolution": {"type": "integer", "default": 128, "minimum": 32, "maximum": 512, "description": "Resolution for exported sprites. Default 128. Use 64 for pixel art, 256 for HD."},
+                    "export_format": {"type": "string", "enum": ["sprite_sheet", "frames", "gif", "all"], "default": "sprite_sheet", "description": "Export format: 'sprite_sheet' (horizontal PNG), 'frames' (individual PNGs), 'gif' (animated), 'all' (everything). After export, use Godot's SpriteFrames editor to slice the sheet."},
+                    
+                    # STATUS operation parameters
+                    "job_id": {"type": "string", "description": "Job ID returned from 'create' operation. Used to check generation progress."},
+                    
+                    # EDIT operation parameters
+                    "project_id": {"type": "string", "description": "Project ID (UUID). Can also use animation_ref instead for easier reference."},
+                    "animation_ref": {"type": "string", "description": "Animation or project reference (e.g., 'P1.1', 'P10.2' for animation, 'P1' for whole project). Permanent refs from list_my_animations."},
+                    "edit_request": {"type": "string", "maxLength": 1500, "description": "What to change. Examples: 'make it faster', 'add 4 more frames', 'make the attack swing wider'."},
+                    "auto_regenerate": {"type": "boolean", "default": True, "description": "Regenerate animation immediately (recommended). If false, only updates prompts."},
+                    
+                    # ADD_BRANCH operation parameters
+                    "branch_request": {"type": "string", "maxLength": 1500, "description": "Description of new animation to add. Example: 'add a death animation' or 'add running animation'. Use with project_id='P1' to specify which project."},
+                    "project_ref": {"type": "string", "description": "Project reference from list_my_animations (e.g., 'P1', 'P2'). Easier than using raw project_id UUID."},
+                    
+                    # LIST_JOBS parameters
+                    "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100, "description": "Maximum number of recent jobs to return for 'list_jobs' operation."},
+                    
+                    # LIST_MY_ANIMATIONS parameters  
+                    "refresh": {"type": "boolean", "default": True, "description": "For 'list_my_animations': whether to fetch fresh data from Supabase (recommended). If false, uses cached data."},
+                    "user_id": {"type": "string", "description": "User ID to fetch animations for (optional, defaults to current user)."},
+                    
+                    # DOWNLOAD operation parameters
+                    "animation_number": {"type": "string", "description": "Reference to download. Use 'P1.1', 'P10.2' for single animations, or 'P1', 'P10' for entire projects (all animations). Refs are permanent - get them from list_my_animations."},
+                    "animation_url": {"type": "string", "description": "Direct Supabase URL to download. Use this if you have the URL directly instead of a reference."},
+                    "destination_path": {"type": "string", "description": "Local project path. For single files: 'res://sprites/hero_idle.png'. For projects: 'res://sprites/knight/' (directory)."},
+                    "file_type": {"type": "string", "enum": ["sprite_sheet", "animated_gif", "thumbnail", "frames", "all"], "default": "sprite_sheet", "description": "What to download: 'sprite_sheet' (PNG), 'animated_gif', 'thumbnail' (64x64), 'frames' (individual PNGs), 'all'."}
+                },
+                "required": ["op"]
+            }
+        }
     }
 ]
 

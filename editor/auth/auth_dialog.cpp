@@ -117,7 +117,10 @@ void AuthDialog::_on_sign_in_pressed() {
 	AuthManager *auth = AuthManager::get_singleton();
 	if (auth) {
 		auth->open_web_login();
+#ifndef WEB_ENABLED
+		// On desktop, show waiting message (web platform handles this differently)
 		show_waiting();
+#endif
 	}
 }
 
@@ -527,6 +530,10 @@ void AuthDialog::_on_email_sign_in_pressed() {
 	// Call AuthManager
 	AuthManager *auth = AuthManager::get_singleton();
 	if (auth) {
+#ifdef WEB_ENABLED
+		show_error("Email sign-in is not available in the web editor.\n\nPlease use 'Sign in with Google' instead, or use the desktop app for email login.");
+		return;
+#endif
 		show_waiting();
 		auth->sign_in_with_email(email, password);
 	}
@@ -560,6 +567,10 @@ void AuthDialog::_on_email_sign_up_pressed() {
 	// Call AuthManager
 	AuthManager *auth = AuthManager::get_singleton();
 	if (auth) {
+#ifdef WEB_ENABLED
+		show_error("Email sign-up is not available in the web editor.\n\nPlease use the desktop app to create an account.");
+		return;
+#endif
 		show_waiting();
 		auth->sign_up_with_email(email, password, name);
 	}

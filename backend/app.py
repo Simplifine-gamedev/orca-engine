@@ -987,6 +987,28 @@ def log_request_end(response):
                 elif gcp_duration > 60:
                     print(f"GCP_VERY_SLOW_REQUEST: 🚨 Request took {gcp_duration:.2f}s - serious hang risk!")
         
+        # FIX: Remove duplicate CORS headers that cause "cannot contain more than one origin" error
+        # This can happen when both Flask-CORS and GCP load balancer add CORS headers
+        # The browser error "Access-Control-Allow-Origin cannot contain more than one origin"
+        # occurs when multiple headers OR comma-separated origins are present
+        cors_headers_to_dedupe = [
+            'Access-Control-Allow-Origin',
+            'Access-Control-Allow-Methods', 
+            'Access-Control-Allow-Headers',
+            'Access-Control-Allow-Credentials'
+        ]
+        for cors_header in cors_headers_to_dedupe:
+            # Get all values for this header (werkzeug stores multiples as list)
+            values = response.headers.getlist(cors_header)
+            if len(values) > 1:
+                # Multiple headers with same name - keep only first (or use '*' for Allow-Origin)
+                first_value = values[0] if cors_header != 'Access-Control-Allow-Origin' else '*'
+                # Remove all instances
+                while cors_header in response.headers:
+                    del response.headers[cors_header]
+                # Add back single value
+                response.headers[cors_header] = first_value
+        
         # Add anonymized hints only; never content
         uid = request.headers.get('X-User-ID') if request else None
         mid = request.headers.get('X-Machine-ID') if request else None
@@ -1018,6 +1040,11 @@ MODEL_3D_ENABLED = bool(
     MODEL_3D_SECRET_KEY
 )
 print(f"DEBUG RESULT: MODEL_3D_ENABLED={MODEL_3D_ENABLED}")
+
+# 2D Animation Server Configuration
+# Set ANIMATION_SERVER_URL in .env (defaults to localhost for local testing)
+ANIMATION_SERVER_URL = os.getenv('ANIMATION_SERVER_URL', 'http://127.0.0.1:8001')
+print(f"ANIMATION_SERVER_URL: {ANIMATION_SERVER_URL}")
 
 # Supabase Crash Reporting Integration (matches logging_server.py pattern)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
@@ -1204,6 +1231,12 @@ from collections import OrderedDict
 _MAX_IMAGE_CACHE = int(os.getenv('IMAGE_CACHE_SIZE', '64'))
 _IMAGE_CACHE = OrderedDict()  # image_id -> {'base64': str, 'width': int|None, 'height': int|None, 'format': str}
 
+# --- Animation Projects Cache for Cross-Chat Reuse ---
+# Similar to image cache, allows AI to reference animations across conversations
+# Animations are numbered (#1, #2, etc.) for easy AI reference
+_MAX_ANIMATION_CACHE = int(os.getenv('ANIMATION_CACHE_SIZE', '32'))
+_ANIMATION_CACHE = OrderedDict()  # user_id -> {project_id -> animation_data}
+
 def _cache_image(image_id: str, base64_data: str, width: int | None, height: int | None, fmt: str = "png") -> None:
     try:
         if not image_id or not base64_data:
@@ -1229,6 +1262,244 @@ def _get_cached_image(image_id: str) -> dict | None:
         return item
     except Exception:
         return None
+
+def _cache_user_animations(user_id: str, projects: list[dict]) -> None:
+    """Cache user's animation projects for easy cross-chat reference"""
+    try:
+        if not user_id or not projects:
+            return
+        
+        # Create user entry if doesn't exist
+        if user_id not in _ANIMATION_CACHE:
+            _ANIMATION_CACHE[user_id] = OrderedDict()
+        
+        user_cache = _ANIMATION_CACHE[user_id]
+        
+        # Cache each project
+        for project in projects:
+            project_id = project.get('id') or project.get('project_id')
+            if project_id:
+                user_cache[project_id] = project
+        
+        # Enforce LRU size per user
+        while len(user_cache) > _MAX_ANIMATION_CACHE:
+            evicted_id, _ = user_cache.popitem(last=False)
+            print(f"ANIMATION_CACHE: Evicted project '{evicted_id}' for user '{user_id}' (LRU)")
+        
+    except Exception as e:
+        print(f"ANIMATION_CACHE_ERROR: {e}")
+
+def _get_animations_from_supabase(user_id: str) -> dict:
+    """
+    Get all animations for a user DIRECTLY from Supabase (stateless).
+    
+    Uses the stored user_ref columns (P1, P2, P1.1, P1.2, etc.) for stable references.
+    No cache needed - refs are permanent in the database.
+    
+    Returns:
+    - 'projects': Hierarchical list for AI display
+    - 'animation_lookup': Dict of animation_ref -> data (for download/edit)
+    - 'project_lookup': Dict of project_ref -> data (for download all/add_branch)
+    """
+    try:
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+        
+        if not supabase_url or not supabase_key:
+            print("ANIMATION_FETCH: Supabase not configured")
+            return {'projects': [], 'animation_lookup': {}, 'project_lookup': {}, 'total_animations': 0, 'total_projects': 0}
+        
+        headers = {
+            'apikey': supabase_key,
+            'Authorization': f'Bearer {supabase_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Fetch projects with their refs
+        projects_url = f"{supabase_url}/rest/v1/animation_projects"
+        params = {
+            'user_id': f'eq.{user_id}',
+            'select': 'id,user_ref,project_name,created_at',
+            'order': 'user_ref.asc'
+        }
+        proj_response = requests.get(projects_url, headers=headers, params=params, timeout=10)
+        proj_response.raise_for_status()
+        db_projects = proj_response.json()
+        
+        if not db_projects:
+            return {'projects': [], 'animation_lookup': {}, 'project_lookup': {}, 'total_animations': 0, 'total_projects': 0}
+        
+        # Fetch all animations for this user's projects
+        project_ids = [p['id'] for p in db_projects]
+        animations_url = f"{supabase_url}/rest/v1/animations"
+        anim_params = {
+            'project_id': f'in.({",".join(project_ids)})',
+            'select': '*',
+            'order': 'user_ref.asc'
+        }
+        anim_response = requests.get(animations_url, headers=headers, params=anim_params, timeout=10)
+        anim_response.raise_for_status()
+        db_animations = anim_response.json()
+        
+        # Group animations by project
+        anims_by_project = {}
+        for anim in db_animations:
+            pid = anim['project_id']
+            if pid not in anims_by_project:
+                anims_by_project[pid] = []
+            anims_by_project[pid].append(anim)
+        
+        # Build output structures
+        projects = []
+        animation_lookup = {}  # P1.1 -> animation data
+        project_lookup = {}    # P1 -> project data
+        total_anims = 0
+        
+        for proj in db_projects:
+            project_id = proj['id']
+            project_ref = proj.get('user_ref') or f"P{len(projects)+1}"
+            project_name = proj.get('project_name') or 'Unnamed'
+            
+            proj_anims = anims_by_project.get(project_id, [])
+            if not proj_anims:
+                continue
+            
+            project_animations = []
+            project_urls = []
+            
+            for anim in proj_anims:
+                anim_ref = anim.get('user_ref') or f"{project_ref}.{len(project_animations)+1}"
+                anim_id = anim.get('animation_id') or 'unknown'
+                status = anim.get('status') or 'unknown'
+                
+                # Get URLs
+                sprite_url = anim.get('sprite_sheet_url') or anim.get('sprite_sheet_transparent_url') or ''
+                gif_url = anim.get('animated_gif_url') or anim.get('animated_gif_transparent_url') or ''
+                thumb_url = anim.get('thumbnail_url') or ''
+                frames = anim.get('downsampled_frame_urls') or []
+                
+                # Build assets string
+                assets = []
+                if sprite_url: assets.append("sprite")
+                if gif_url: assets.append("gif")
+                if frames: assets.append(f"{len(frames)}f")
+                if thumb_url: assets.append("thumb")
+                
+                status_icon = "✓" if status == 'completed' else "⏳"
+                
+                project_animations.append({
+                    'ref': anim_ref,
+                    'name': anim_id,
+                    'status': status_icon,
+                    'assets': ",".join(assets) if assets else "..."
+                })
+                
+                # Animation lookup for download/edit
+                animation_lookup[anim_ref] = {
+                    'project_id': project_id,
+                    'project_ref': project_ref,
+                    'project_name': project_name,
+                    'animation_id': anim_id,
+                    'sprite_sheet_url': sprite_url,
+                    'animated_gif_url': gif_url,
+                    'thumbnail_url': thumb_url,
+                    'frame_urls': frames,
+                    'status': status
+                }
+                
+                project_urls.append({
+                    'ref': anim_ref,
+                    'animation_id': anim_id,
+                    'sprite_sheet_url': sprite_url,
+                    'animated_gif_url': gif_url,
+                    'thumbnail_url': thumb_url,
+                    'frame_urls': frames
+                })
+                
+                total_anims += 1
+            
+            projects.append({
+                'ref': project_ref,
+                'name': project_name,
+                'count': len(project_animations),
+                'animations': project_animations
+            })
+            
+            project_lookup[project_ref] = {
+                'project_id': project_id,
+                'project_name': project_name,
+                'animations': project_urls
+            }
+        
+        print(f"ANIMATION_FETCH: Loaded {total_anims} animations across {len(projects)} projects for user {user_id}")
+        
+        return {
+            'projects': projects,
+            'animation_lookup': animation_lookup,
+            'project_lookup': project_lookup,
+            'total_animations': total_anims,
+            'total_projects': len(projects)
+        }
+    
+    except Exception as e:
+        import traceback
+        print(f"ANIMATION_FETCH_ERROR: {e}")
+        traceback.print_exc()
+        return {'projects': [], 'animation_lookup': {}, 'project_lookup': {}, 'total_animations': 0, 'total_projects': 0}
+
+def _fetch_user_animations_from_supabase(user_id: str) -> list[dict]:
+    """Fetch all animation projects for a user from Supabase"""
+    try:
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+        
+        if not supabase_url or not supabase_key:
+            print("ANIMATION_FETCH: Supabase not configured")
+            return []
+        
+        # Query animation_projects table
+        projects_url = f"{supabase_url}/rest/v1/animation_projects"
+        headers = {
+            'apikey': supabase_key,
+            'Authorization': f'Bearer {supabase_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        params = {
+            'user_id': f'eq.{user_id}',
+            'select': '*'
+        }
+        
+        response = requests.get(projects_url, headers=headers, params=params, timeout=10)
+        response.raise_for_status()
+        projects = response.json()
+        
+        # For each project, fetch its animations
+        enriched_projects = []
+        for project in projects:
+            project_id = project.get('id')
+            
+            # Fetch animations for this project
+            animations_url = f"{supabase_url}/rest/v1/animations"
+            anim_params = {
+                'project_id': f'eq.{project_id}',
+                'select': '*',
+                'order': 'animation_id.asc'
+            }
+            
+            anim_response = requests.get(animations_url, headers=headers, params=anim_params, timeout=10)
+            anim_response.raise_for_status()
+            animations = anim_response.json()
+            
+            project['animations'] = animations
+            enriched_projects.append(project)
+        
+        print(f"ANIMATION_FETCH: Loaded {len(enriched_projects)} projects for user {user_id}")
+        return enriched_projects
+        
+    except Exception as e:
+        print(f"ANIMATION_FETCH_ERROR: {e}")
+        return []
 
 # Keep OpenAI client for other operations (image operations now use Nano Banana/Gemini)
 api_key = os.getenv('OPENAI_API_KEY')
@@ -1993,18 +2264,27 @@ def image_operation_internal(arguments: dict, conversation_messages: list = None
                 result["path_to_save"] = path_to_save
             return result
 
-        # If images provided, do an edit on the first one
-        print("IMAGE_OP: Performing edit on provided image using Nano Banana (Gemini)")
-        first_img = selected_images[0]
-        try:
-            input_image_base64 = first_img['base64_data']
-            print(f"IMAGE_OP DEBUG: input image base64 length: {len(input_image_base64)}")
-        except Exception as decode_err:
-            return {"success": False, "error": f"Failed to get input image '{first_img.get('name','unknown')}': {decode_err}"}
+        # If images provided, edit/composite using ALL of them (Gemini supports up to 14!)
+        print(f"IMAGE_OP: Performing edit/composition with {len(selected_images)} image(s) using Nano Banana (Gemini)")
+        
+        # Extract base64 data from all selected images
+        input_images_base64 = []
+        for img in selected_images:
+            try:
+                img_b64 = img['base64_data']
+                img_name = img.get('name', 'unknown')
+                print(f"  - Input image '{img_name}': {len(img_b64)} chars base64")
+                input_images_base64.append(img_b64)
+            except Exception as decode_err:
+                print(f"  - ERROR: Failed to get base64 for image '{img.get('name','unknown')}': {decode_err}")
+                return {"success": False, "error": f"Failed to get input image '{img.get('name','unknown')}': {decode_err}"}
 
         try:
+            # Pass all images to Gemini (supports multi-image composition!)
+            # If single image: edits that image
+            # If multiple images: composes/merges them
             image_base64, gen_w, gen_h = generate_image_from_image_and_text(
-                image_base64=input_image_base64,
+                image_base64=input_images_base64 if len(input_images_base64) > 1 else input_images_base64[0],
                 prompt=prompt_text,
                 size=provider_size
             )
@@ -6020,6 +6300,829 @@ def capture_screenshot_internal(arguments: dict) -> dict:
         "arguments_to_forward": arguments
     }
 
+def animation_2d_manager_internal(arguments: dict, conversation_messages: list = None, current_user: dict = None) -> dict:
+    """
+    Manage 2D sprite animations using the AI animation server.
+    
+    Supports:
+    - Creating animation projects from text descriptions with optional reference images
+    - Checking generation status and progress
+    - Editing existing animations via natural language
+    - Listing recent animation projects
+    - Adding new animations to existing projects
+    
+    The animation server runs on localhost for dev, GCP VM for production.
+    """
+    try:
+        # Check for tool generation failures
+        if isinstance(arguments, dict) and arguments.get("_tool_gen_failure"):
+            failure_type = arguments.get("_tool_gen_failure")
+            original_size = arguments.get("_original_size", "unknown")
+            
+            error_msg = (
+                f"Tool call failed due to large content ({original_size} characters). "
+                "This is likely because the content was very big, make the content smaller and apply fewer edits."
+            )
+            
+            print(f"🚨 2D_ANIM_TOOL_GEN_FAILURE: {failure_type} with size {original_size}")
+            return {"success": False, "error": error_msg}
+        
+        op = arguments.get('op', '')
+        if not op:
+            print("🚨 2D_ANIMATION_MANAGER ERROR: Missing 'op' parameter!")
+            print("📋 RECEIVED ARGUMENTS:")
+            for key, value in arguments.items():
+                if isinstance(value, str) and len(value) > 200:
+                    display_value = value[:200] + "... (truncated)"
+                else:
+                    display_value = value
+                print(f"   {key}: {display_value}")
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+        
+        # Use global ANIMATION_SERVER_URL configured at startup
+        animation_server_url = ANIMATION_SERVER_URL
+        print(f"2D_ANIM: Using animation server: {animation_server_url}")
+        
+        # Get user context safely
+        user_id = (current_user or {}).get('id') if current_user else 'anonymous'
+        
+        # ==================== LIST_MY_ANIMATIONS OPERATION ====================
+        if op == "list_my_animations":
+            user_id_param = arguments.get('user_id') or user_id
+            
+            print(f"2D_ANIM_LIST: Fetching animations for user {user_id_param} (stateless, from DB)")
+            
+            # Get data directly from Supabase (stateless - no cache)
+            data = _get_animations_from_supabase(user_id_param)
+            projects = data.get('projects', [])
+            total_anims = data.get('total_animations', 0)
+            total_projects = data.get('total_projects', 0)
+            
+            # Format hierarchical output for AI
+            # Example:
+            # P1: Viking Character (2 animations)
+            #   P1.1: viking_idle ✓ [sprite,gif,4f,thumb]
+            #   P1.2: viking_walk ✓ [sprite,gif,8f]
+            # P10: Dark Daemon (2 animations)
+            #   P10.1: idle ✓ [sprite,gif]
+            #   P10.2: walk ✓ [sprite,gif]
+            
+            formatted_projects = []
+            for proj in projects:
+                anim_lines = []
+                for anim in proj.get('animations', []):
+                    anim_lines.append(f"  {anim['ref']}: {anim['name']} {anim['status']} [{anim['assets']}]")
+                formatted_projects.append({
+                    'ref': proj['ref'],
+                    'name': proj['name'],
+                    'count': proj['count'],
+                    'animations': anim_lines
+                })
+            
+            return {
+                "success": True,
+                "op": "list_my_animations",
+                "total_projects": total_projects,
+                "total_animations": total_anims,
+                "projects": formatted_projects,
+                "message": f"You have {total_anims} animation(s) across {total_projects} project(s). Refs are permanent (P1, P1.1, etc).",
+                "usage_examples": [
+                    "download P1.1 sprite_sheet to res://sprites/viking_idle.png",
+                    "download P10 all to res://sprites/daemon/  (ALL animations in project)",
+                    "edit P1.2 - make it faster with 12 frames",
+                    "add_branch P10 - add a death animation"
+                ]
+            }
+        
+        # ==================== CREATE OPERATION ====================
+        elif op == "create":
+            user_request = arguments.get('user_request', '')
+            if not user_request:
+                return {"success": False, "error": "user_request is required for create operation"}
+            
+            reference_image_ids = arguments.get('reference_image_ids', []) or []
+            reference_description = arguments.get('reference_description', '')
+            target_resolution = arguments.get('target_resolution', '128x128')
+            execute_immediately = arguments.get('execute_immediately', True)
+            upload_to_supabase = arguments.get('upload_to_supabase', True)
+            
+            print(f"2D_ANIM_CREATE: Request='{user_request}', resolution={target_resolution}, refs={len(reference_image_ids)}")
+            
+            # Extract reference images from conversation if provided
+            reference_image_base64 = None
+            if reference_image_ids and conversation_messages:
+                print(f"2D_ANIM_CREATE: Extracting {len(reference_image_ids)} reference image(s) from conversation")
+                
+                # Gather available images from conversation (same logic as image_operation_internal)
+                available_images = {}
+                for msg in conversation_messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    if 'images' in msg and isinstance(msg['images'], list):
+                        for img in msg['images']:
+                            name = img.get('name')
+                            b64 = img.get('base64_data')
+                            if name:
+                                available_images[name] = img
+                
+                # Build index mapping
+                ordered_keys = list(available_images.keys())
+                index_to_key = {str(i + 1): ordered_keys[i] for i in range(len(ordered_keys))}
+                
+                def _resolve_numeric_id(candidate: str) -> str | None:
+                    try:
+                        c = str(candidate).strip()
+                        if c.startswith('#'):
+                            c = c[1:]
+                        if c.startswith('[') and c.endswith(']'):
+                            c = c[1:-1]
+                        import re
+                        m = re.search(r'(\d+)', c)
+                        if not m:
+                            return None
+                        idx = m.group(1)
+                        return index_to_key.get(idx)
+                    except Exception:
+                        return None
+                
+                # Resolve all reference images
+                selected_images = []
+                for img_id in reference_image_ids:
+                    match = None
+                    if img_id in available_images:
+                        match = available_images[img_id]
+                    else:
+                        # Try tolerant matching
+                        for key in available_images.keys():
+                            if str(key).startswith(str(img_id)):
+                                match = available_images[key]
+                                print(f"2D_ANIM: Tolerant match '{img_id}' -> '{key}'")
+                                break
+                        # Numeric resolution
+                        if match is None:
+                            resolved_key = _resolve_numeric_id(str(img_id))
+                            if resolved_key and resolved_key in available_images:
+                                match = available_images[resolved_key]
+                                print(f"2D_ANIM: Numeric match '{img_id}' -> '{resolved_key}'")
+                        # Backend cache fallback
+                        if match is None:
+                            cached = _get_cached_image(str(img_id))
+                            if cached and isinstance(cached.get("base64"), str):
+                                match = {
+                                    "name": str(img_id),
+                                    "base64_data": cached["base64"],
+                                }
+                                print(f"2D_ANIM: Backend cache match for '{img_id}'")
+                    
+                    # Retrieve base64 from cache if not in conversation
+                    if match and not match.get('base64_data'):
+                        img_name = match.get('name', img_id)
+                        cached = _get_cached_image(img_name)
+                        if cached and isinstance(cached.get("base64"), str):
+                            match['base64_data'] = cached["base64"]
+                            print(f"2D_ANIM: Retrieved base64 from cache for '{img_name}'")
+                    
+                    if match and match.get('base64_data'):
+                        selected_images.append(match)
+                        print(f"2D_ANIM: Selected reference image '{img_id}'")
+                
+                # Generate isolated object from reference image(s)
+                if selected_images:
+                    print(f"2D_ANIM: Creating isolated character from {len(selected_images)} reference image(s)")
+                    
+                    # Prepare description for isolation
+                    isolation_prompt = reference_description or "the main character or object in the center"
+                    isolation_full_desc = f"Extract and isolate: {isolation_prompt}. Pure white background, no shadows, no effects, perfectly centered."
+                    
+                    # Use isolated object creation to extract character
+                    isolated_args = {
+                        'object_description': isolation_full_desc,
+                        'input_image_path': selected_images[0]['base64_data'] if len(selected_images) == 1 else None,
+                        'size': '1024x1024',
+                        'white_threshold': 250,  # Very strict white background
+                        'target_resolution': -1,  # Keep original size for animation server
+                        'object_type': 'sprite'
+                    }
+                    
+                    # If multiple images, compose them first
+                    if len(selected_images) > 1:
+                        print(f"2D_ANIM: Composing {len(selected_images)} reference images into single character")
+                        # Use image_operation to compose multiple images
+                        compose_args = {
+                            'description': f"Combine these images into a single unified character on pure white background: {isolation_prompt}",
+                            'images': [img['name'] for img in selected_images],
+                            'style': 'clean pixel art',
+                            'image_type': 'sprite',
+                            'size': '1024x1024'
+                        }
+                        compose_result = image_operation_internal(compose_args, conversation_messages)
+                        
+                        if compose_result.get('success'):
+                            isolated_args['input_image_path'] = compose_result['image_data']
+                            print(f"2D_ANIM: Composed images successfully, now isolating...")
+                        else:
+                            return {"success": False, "error": f"Failed to compose reference images: {compose_result.get('error')}"}
+                    
+                    isolated_result = create_isolated_object_internal(isolated_args, conversation_messages)
+                    
+                    if not isolated_result.get('success'):
+                        return {"success": False, "error": f"Failed to create isolated character: {isolated_result.get('error')}"}
+                    
+                    # Store isolated image base64 for cloud-safe transmission
+                    reference_image_base64 = isolated_result['image_data']
+                    print(f"2D_ANIM: Created isolated character ({len(reference_image_base64)} chars base64)")
+                else:
+                    reference_image_base64 = None
+            
+            # Call animation server /create endpoint
+            try:
+                create_payload = {
+                    "user_request": user_request,
+                    "user_id": user_id,
+                    "target_resolution": target_resolution,
+                    "execute": execute_immediately,
+                    "upload_to_supabase": upload_to_supabase
+                }
+                
+                # Add reference image (base64 for cloud, None if no reference)
+                if reference_image_base64:
+                    create_payload["source_image_base64"] = reference_image_base64
+                    if reference_description:
+                        create_payload["source_image_description"] = reference_description
+                    print(f"2D_ANIM: Added base64 reference image to payload ({len(reference_image_base64)} chars)")
+                
+                print(f"2D_ANIM: Calling animation server /create endpoint")
+                response = requests.post(
+                    f"{animation_server_url}/create",
+                    json=create_payload,
+                    timeout=120  # Allow time for graph creation (can take 30-60s with AI planning)
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                # Auto-refresh animation cache when job completes
+                job_id = result.get("job_id")
+                
+                # Get export params if specified
+                export_destination = arguments.get('export_destination', '')
+                export_resolution = arguments.get('export_resolution', 128)
+                export_format = arguments.get('export_format', 'sprite_sheet')
+                
+                response_data = {
+                    "success": True,
+                    "job_id": job_id,
+                    "op": "create",
+                    "status": result.get("status"),
+                    "message": f"Animation project created! Job ID: {job_id}.",
+                    "graph_created": result.get("graph_created", False),
+                    "graph_path": result.get("graph_path"),
+                    "progress": result.get("progress", {}),
+                    "estimated_time": "3-5 minutes for completion",
+                }
+                
+                # Include export params for auto-export on completion
+                if export_destination:
+                    response_data["export_destination"] = export_destination
+                    response_data["export_resolution"] = export_resolution
+                    response_data["export_format"] = export_format
+                    response_data["message"] += f" Will auto-export to {export_destination} when complete."
+                
+                return response_data
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"2D_ANIM_CREATE_ERROR: {error_msg}")
+                
+                # Check for specific timeout error
+                if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+                    return {
+                        "success": False,
+                        "op": "create",
+                        "error": f"Animation server timeout: {error_msg}",
+                        "message": "The animation server took too long to respond. This usually means the server is busy or not running.",
+                        "troubleshooting": [
+                            "1. Check if animation server is running on port 8001",
+                            "2. Check animation server logs for errors",
+                            "3. Server may be processing other jobs - try again in 30 seconds"
+                        ]
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "op": "create",
+                        "error": f"Failed to create animation: {error_msg}",
+                        "message": f"Animation creation failed: {error_msg}"
+                    }
+        
+        # ==================== STATUS OPERATION ====================
+        elif op == "status":
+            job_id = arguments.get('job_id', '')
+            if not job_id:
+                return {"success": False, "error": "job_id is required for status operation"}
+            
+            try:
+                print(f"2D_ANIM_STATUS: Checking status for job {job_id}")
+                response = requests.get(
+                    f"{animation_server_url}/status/{job_id}",
+                    timeout=10
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                status = result.get("status", "unknown")
+                progress = result.get("progress", {})
+                
+                # Build helpful status message
+                if status == "completed":
+                    supabase_id = result.get("supabase_project_id") or result.get("project_id")
+                    message = f"Animation generation completed! Project ID: {supabase_id}"
+                    
+                    # Count completed animations
+                    completed_anims = [k for k, v in progress.items() if v == "completed" and k != "supabase_uploaded"]
+                    
+                    # Auto-refresh cache when job completes so animations are immediately available
+                    try:
+                        projects = _fetch_user_animations_from_supabase(user_id)
+                        if projects:
+                            _cache_user_animations(user_id, projects)
+                            numbered_data = _get_numbered_animations_for_conversation(user_id)
+                            print(f"2D_ANIM_STATUS: Auto-refreshed cache - {numbered_data['total_animations']} animations now available")
+                    except Exception as cache_err:
+                        print(f"2D_ANIM_STATUS: Cache refresh failed: {cache_err}")
+                    
+                    return {
+                        "success": True,
+                        "job_id": job_id,
+                        "status": status,
+                        "supabase_project_id": supabase_id,
+                        "progress": progress,
+                        "completed_animations": completed_anims,
+                        "message": message,
+                        "next_steps": [
+                            "Animations are now available! Use list_my_animations to see them with numbered references",
+                            f"Edit animations using: 2d_animation_manager(op='edit', project_id='{supabase_id}', edit_request='make attack faster')",
+                            "Download sprite sheets using the animation IDs or numbered references"
+                        ]
+                    }
+                elif status == "failed":
+                    return {
+                        "success": False,
+                        "job_id": job_id,
+                        "status": status,
+                        "error": result.get("error", "Animation generation failed"),
+                        "progress": progress,
+                        "message": "Animation generation failed. Check error details."
+                    }
+                else:
+                    # In progress
+                    current_level = progress.get("current_level", 0)
+                    total_levels = progress.get("levels", 0)
+                    current_anim = progress.get("stage", "unknown")
+                    
+                    return {
+                        "success": True,
+                        "job_id": job_id,
+                        "status": status,
+                        "progress": progress,
+                        "current_level": current_level,
+                        "total_levels": total_levels,
+                        "message": f"Animation generation in progress: Level {current_level}/{total_levels}, Stage: {current_anim}",
+                        "estimated_remaining": "Check again in 10-30 seconds"
+                    }
+                
+            except Exception as e:
+                print(f"2D_ANIM_STATUS_ERROR: {e}")
+                return {"success": False, "error": f"Failed to check status: {str(e)}"}
+        
+        # ==================== EDIT OPERATION ====================
+        elif op == "edit":
+            # Accept either project_id, animation_ref (#1, #2), or project_ref (P1, P2)
+            project_id = arguments.get('project_id', '')
+            animation_ref = arguments.get('animation_ref', '') or arguments.get('animation_number', '')
+            edit_request = arguments.get('edit_request', '')
+            auto_regenerate = arguments.get('auto_regenerate', True)
+            
+            if not edit_request:
+                return {"success": False, "error": "edit_request is required (describe what to change)"}
+            
+            # Resolve reference to project_id
+            actual_project_id = project_id
+            target_animation = None
+            
+            if animation_ref:
+                # Resolve animation reference using stateless DB lookup
+                ref_clean = animation_ref.strip().upper()
+                data = _get_animations_from_supabase(user_id)
+                
+                is_project_ref = ref_clean.startswith('P') and '.' not in ref_clean
+                is_animation_ref = '.' in ref_clean
+                
+                if is_project_ref:
+                    # Project reference (P1, P10)
+                    project_lookup = data.get('project_lookup', {})
+                    if ref_clean not in project_lookup:
+                        return {
+                            "success": False,
+                            "error": f"Project {ref_clean} not found. Use list_my_animations to see available.",
+                            "available": list(project_lookup.keys())[:10]
+                        }
+                    actual_project_id = project_lookup[ref_clean]['project_id']
+                elif is_animation_ref:
+                    # Animation reference (P1.1, P10.2)
+                    animation_lookup = data.get('animation_lookup', {})
+                    if ref_clean not in animation_lookup:
+                        return {
+                            "success": False,
+                            "error": f"Animation {ref_clean} not found. Use list_my_animations to see available.",
+                            "available": list(animation_lookup.keys())[:15]
+                        }
+                    anim_data = animation_lookup[ref_clean]
+                    actual_project_id = anim_data['project_id']
+                    target_animation = anim_data['animation_id']
+                    print(f"2D_ANIM_EDIT: Resolved {ref_clean} -> project {actual_project_id}, animation {target_animation}")
+                else:
+                    return {"success": False, "error": f"Invalid ref '{ref_clean}'. Use P1 for projects or P1.1 for animations."}
+            
+            if not actual_project_id:
+                return {"success": False, "error": "Need project_id, animation_ref (#1, #2), or project_ref (P1, P2)"}
+            
+            try:
+                print(f"2D_ANIM_EDIT: Editing project {actual_project_id} - '{edit_request}'")
+                
+                edit_payload = {
+                    "tree_id": actual_project_id,
+                    "edit_request": edit_request,
+                    "user_id": user_id,
+                    "target_resolution": arguments.get('target_resolution', '128x128'),
+                    "auto_regenerate": auto_regenerate
+                }
+                
+                # If targeting specific animation, add to edit request
+                if target_animation:
+                    edit_payload["target_animation"] = target_animation
+                    edit_payload["edit_request"] = f"For the '{target_animation}' animation: {edit_request}"
+                
+                # Quick request - server returns immediately with job_id
+                response = requests.post(
+                    f"{animation_server_url}/edit",
+                    json=edit_payload,
+                    timeout=10  # Short timeout since it returns immediately
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                # Handle async response (status: "accepted")
+                job_id = result.get("job_id")
+                is_async = result.get("status") == "accepted"
+                
+                if is_async and job_id:
+                    # Return async response for frontend tracking
+                    return {
+                        "success": True,
+                        "async": True,
+                        "job_id": job_id,
+                        "op": "edit",
+                        "operation": "edit",
+                        "project_id": actual_project_id,
+                        "animation_ref": animation_ref or None,
+                        "target_animation": target_animation,
+                        "edit_request": edit_request,
+                        "auto_regenerate": auto_regenerate,
+                        "status_url": f"/animation/status/{job_id}",
+                        "message": f"Edit started for {animation_ref or actual_project_id}. Processing in background.",
+                        "estimated_time": "1-4 minutes depending on regeneration",
+                        "next_steps": [
+                            f"Track progress at /animation/status/{job_id}",
+                            "The edit will apply changes and regenerate if requested",
+                            "Use list_my_animations when complete to see results"
+                        ]
+                    }
+                elif result.get("success"):
+                    # Synchronous success (shouldn't happen with new async endpoint, but handle anyway)
+                    edited_anims = result.get("edits_applied", {})
+                    regen_results = result.get("regeneration_results", {})
+                    
+                    message = f"Successfully edited {len(edited_anims)} animation(s)"
+                    if target_animation:
+                        message = f"Edited '{target_animation}'"
+                    if regen_results:
+                        message += f", regenerated {len(regen_results)} animation(s)"
+                    
+                    return {
+                        "success": True,
+                        "project_id": actual_project_id,
+                        "animation_ref": animation_ref or None,
+                        "target_animation": target_animation,
+                        "edit_plan": result.get("edit_plan", {}),
+                        "edits_applied": edited_anims,
+                        "regeneration_results": regen_results,
+                        "needs_regeneration": result.get("needs_regeneration", []),
+                        "message": message,
+                        "next_steps": [
+                            "Updated animations are now in Supabase",
+                            "Use list_my_animations to see the updated data",
+                            "Download updated files with download operation"
+                        ]
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": result.get("error", "Edit failed"),
+                        "edits_applied": result.get("edits_applied", {}),
+                        "message": "Animation edit failed. Check error details."
+                    }
+                
+            except Exception as e:
+                print(f"2D_ANIM_EDIT_ERROR: {e}")
+                return {"success": False, "error": f"Failed to edit animation: {str(e)}"}
+        
+        # ==================== LIST_JOBS OPERATION ====================
+        elif op == "list_jobs":
+            limit = arguments.get('limit', 20)
+            
+            try:
+                print(f"2D_ANIM_LIST: Listing last {limit} jobs")
+                response = requests.get(
+                    f"{animation_server_url}/jobs",
+                    params={"limit": limit},
+                    timeout=10
+                )
+                response.raise_for_status()
+                jobs = response.json()
+                
+                # Format jobs for better readability
+                formatted_jobs = []
+                for job in jobs:
+                    formatted_job = {
+                        "job_id": job.get("job_id"),
+                        "status": job.get("status"),
+                        "user_request": job.get("user_request", "")[:100] + "..." if len(job.get("user_request", "")) > 100 else job.get("user_request", ""),
+                        "created_at": job.get("created_at"),
+                        "supabase_project_id": job.get("supabase_project_id") or job.get("project_id"),
+                        "animations_completed": len([k for k, v in job.get("progress", {}).items() if v == "completed"])
+                    }
+                    formatted_jobs.append(formatted_job)
+                
+                return {
+                    "success": True,
+                    "jobs": formatted_jobs,
+                    "total_returned": len(formatted_jobs),
+                    "message": f"Found {len(formatted_jobs)} recent animation project(s)"
+                }
+                
+            except Exception as e:
+                print(f"2D_ANIM_LIST_ERROR: {e}")
+                return {"success": False, "error": f"Failed to list jobs: {str(e)}"}
+        
+        # ==================== ADD_BRANCH OPERATION ====================
+        elif op == "add_branch":
+            project_ref = arguments.get('project_id', '') or arguments.get('project_ref', '')
+            branch_request = arguments.get('branch_request', '')
+            execute_immediately = arguments.get('execute_immediately', True)
+            upload_to_supabase = arguments.get('upload_to_supabase', True)
+            
+            if not project_ref:
+                return {"success": False, "error": "project_id or project_ref (P1, P2) is required for add_branch operation"}
+            if not branch_request:
+                return {"success": False, "error": "branch_request is required (describe the animation to add)"}
+            
+            try:
+                # Resolve project reference (P1, P2) to actual project_id
+                actual_project_id = project_ref
+                project_name = "unknown"
+                
+                ref_upper = project_ref.strip().upper()
+                is_project_ref = ref_upper.startswith('P') and '.' not in ref_upper
+                
+                if is_project_ref:
+                    # It's a project reference like P1, P10 - use stateless DB lookup
+                    data = _get_animations_from_supabase(user_id)
+                    project_lookup = data.get('project_lookup', {})
+                    
+                    if ref_upper not in project_lookup:
+                        return {
+                            "success": False,
+                            "error": f"Project {ref_upper} not found. Use 'list_my_animations' to see available projects.",
+                            "available_projects": list(project_lookup.keys())[:10] if project_lookup else ["(no projects found)"]
+                        }
+                    
+                    actual_project_id = project_lookup[ref_upper]['project_id']
+                    project_name = project_lookup[ref_upper]['project_name']
+                    print(f"2D_ANIM_BRANCH: Resolved {ref_upper} -> {actual_project_id} ({project_name})")
+                
+                print(f"2D_ANIM_BRANCH: Adding animation to project {actual_project_id} ({project_name}): '{branch_request}'")
+                
+                branch_payload = {
+                    "project_id": actual_project_id,
+                    "user_request": branch_request,
+                    "user_id": user_id,
+                    "execute": execute_immediately,
+                    "upload_to_supabase": upload_to_supabase
+                }
+                
+                # Quick request - server returns immediately
+                response = requests.post(
+                    f"{animation_server_url}/add_branch/{actual_project_id}",
+                    json=branch_payload,
+                    timeout=10  # Quick timeout since it returns immediately
+                )
+                response.raise_for_status()
+                result = response.json()
+                
+                # Handle async response (status: "accepted")
+                job_id = result.get("job_id")
+                is_async = result.get("status") == "accepted"
+                
+                anim_result_for_history = {
+                    "success": True,
+                    "async": is_async,
+                    "job_id": job_id,
+                    "project_ref": project_ref,
+                    "project_id": actual_project_id,
+                    "project_name": project_name,
+                    "operation": "add_branch",
+                    "request": branch_request,
+                    "status_url": f"/animation/status/{job_id}" if job_id else None,
+                    "message": f"Adding new animation to {project_name} ({project_ref}). Generation started in background.",
+                    "estimated_time": "2-4 minutes for animation generation",
+                    "next_steps": [
+                        f"Track progress at: {animation_server_url}/status/{job_id}" if job_id else "Processing...",
+                        "The new animation will appear in the project when complete",
+                        "Use list_my_animations to see the updated project"
+                    ]
+                }
+                
+                return anim_result_for_history
+                
+            except requests.exceptions.RequestException as e:
+                print(f"2D_ANIM_BRANCH_ERROR: {e}")
+                return {"success": False, "error": f"Failed to add animation: {str(e)}. Is the animation server running?"}
+            except Exception as e:
+                print(f"2D_ANIM_BRANCH_ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                return {"success": False, "error": f"Failed to add animation branch: {str(e)}"}
+        
+        # ==================== DOWNLOAD OPERATION ====================
+        # Supports:
+        # - Single animation: animation_number="#3" 
+        # - Project (all anims): animation_number="P1"
+        # - Direct URL: animation_url="https://..."
+        elif op == "download":
+            animation_number = arguments.get('animation_number', '')
+            animation_url = arguments.get('animation_url', '')
+            destination_path = arguments.get('destination_path', '')
+            file_type = arguments.get('file_type', 'sprite_sheet')
+            
+            if not destination_path:
+                return {"success": False, "error": "destination_path is required (e.g., 'res://sprites/hero_idle.png' or 'res://sprites/knight/' for project downloads)"}
+            
+            if not animation_number and not animation_url:
+                return {"success": False, "error": "Either animation_number (e.g., '#1' or 'P1') or animation_url is required"}
+            
+            try:
+                # Get data from Supabase (stateless)
+                data = _get_animations_from_supabase(user_id)
+                animation_lookup = data.get('animation_lookup', {})
+                project_lookup = data.get('project_lookup', {})
+                
+                download_tasks = []  # List of (anim_name, file_type, url, dest_path)
+                
+                ref = animation_number.strip().upper() if animation_number else ''
+                
+                # Determine if it's a project ref (P1, P10) or animation ref (P1.1, P10.2)
+                is_project_ref = ref.startswith('P') and '.' not in ref
+                is_animation_ref = '.' in ref  # P1.1, P10.2 etc.
+                
+                # ====== PROJECT-LEVEL DOWNLOAD (P1, P10, etc.) ======
+                if is_project_ref:
+                    if ref not in project_lookup:
+                        return {
+                            "success": False,
+                            "error": f"Project {ref} not found. Use 'list_my_animations' to see projects.",
+                            "available_projects": list(project_lookup.keys())[:10]
+                        }
+                    
+                    project_data = project_lookup[ref]
+                    project_name = project_data.get('project_name', 'project')
+                    animations = project_data.get('animations', [])
+                    
+                    print(f"2D_ANIM_DOWNLOAD: Downloading ALL animations from {ref}: {project_name}")
+                    
+                    dest_dir = destination_path if destination_path.endswith('/') else destination_path + '/'
+                    
+                    for anim in animations:
+                        anim_id = anim.get('animation_id', 'unknown')
+                        
+                        if file_type in ['all', 'sprite_sheet'] and anim.get('sprite_sheet_url'):
+                            download_tasks.append((anim_id, 'sprite_sheet', anim['sprite_sheet_url'], f"{dest_dir}{anim_id}_spritesheet.png"))
+                        if file_type in ['all', 'animated_gif'] and anim.get('animated_gif_url'):
+                            download_tasks.append((anim_id, 'animated_gif', anim['animated_gif_url'], f"{dest_dir}{anim_id}.gif"))
+                        if file_type in ['all', 'thumbnail'] and anim.get('thumbnail_url'):
+                            download_tasks.append((anim_id, 'thumbnail', anim['thumbnail_url'], f"{dest_dir}{anim_id}_thumb.gif"))
+                        if file_type == 'frames' and anim.get('frame_urls'):
+                            for i, frame_url in enumerate(anim['frame_urls']):
+                                download_tasks.append((anim_id, f'frame_{i+1:03d}', frame_url, f"{dest_dir}{anim_id}/frame_{i+1:03d}.png"))
+                
+                # ====== SINGLE ANIMATION DOWNLOAD (P1.1, P10.2, etc.) ======
+                elif is_animation_ref:
+                    if ref not in animation_lookup:
+                        return {
+                            "success": False,
+                            "error": f"Animation {ref} not found. Use 'list_my_animations' to see animations.",
+                            "available": list(animation_lookup.keys())[:15]
+                        }
+                    
+                    anim_data = animation_lookup[ref]
+                    anim_name = anim_data.get('animation_id', 'animation')
+                    print(f"2D_ANIM_DOWNLOAD: Found animation {ref}: {anim_name}")
+                    
+                    base_path = destination_path
+                    if destination_path.endswith('/'):
+                        base_path = f"{destination_path}{anim_name}"
+                    
+                    if file_type in ['all', 'sprite_sheet'] and anim_data.get('sprite_sheet_url'):
+                        dest = base_path if file_type == 'sprite_sheet' else f"{base_path}_spritesheet.png"
+                        download_tasks.append((anim_name, 'sprite_sheet', anim_data['sprite_sheet_url'], dest))
+                    
+                    if file_type in ['all', 'animated_gif'] and anim_data.get('animated_gif_url'):
+                        dest = base_path if file_type == 'animated_gif' else f"{base_path}.gif"
+                        download_tasks.append((anim_name, 'animated_gif', anim_data['animated_gif_url'], dest))
+                    
+                    if file_type in ['all', 'thumbnail'] and anim_data.get('thumbnail_url'):
+                        dest = base_path if file_type == 'thumbnail' else f"{base_path}_thumb.gif"
+                        download_tasks.append((anim_name, 'thumbnail', anim_data['thumbnail_url'], dest))
+                    
+                    if file_type == 'frames' and anim_data.get('frame_urls'):
+                        frames_dir = f"{base_path}_frames/" if not destination_path.endswith('/') else f"{destination_path}frames/"
+                        for i, frame_url in enumerate(anim_data['frame_urls']):
+                            download_tasks.append((anim_name, f'frame_{i+1:03d}', frame_url, f"{frames_dir}frame_{i+1:03d}.png"))
+                
+                # ====== DIRECT URL DOWNLOAD ======
+                elif animation_url:
+                    download_tasks.append(('direct', 'file', animation_url, destination_path))
+                
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Invalid reference '{animation_number}'. Use 'P1.1' for animations or 'P1' for projects.",
+                        "examples": ["P1.1", "P10.2", "P1", "P10"]
+                    }
+                
+                if not download_tasks:
+                    return {
+                        "success": False,
+                        "error": f"No '{file_type}' files available for {ref}",
+                        "hint": "Try file_type='all' to see what's available, or 'sprite_sheet', 'animated_gif', 'thumbnail', 'frames'"
+                    }
+                
+                # Generate download commands (AI will execute these via terminal_manager)
+                download_commands = []
+                for anim_name, ftype, url, dest in download_tasks:
+                    download_commands.append({
+                        "animation": anim_name,
+                        "type": ftype,
+                        "destination": dest,
+                        "command": f'curl -sS -o "{dest}" "{url}"'
+                    })
+                
+                # Determine if we need to create directories
+                dirs_needed = set()
+                for cmd in download_commands:
+                    dir_path = os.path.dirname(cmd['destination'])
+                    if dir_path and dir_path != '.':
+                        dirs_needed.add(dir_path)
+                
+                return {
+                    "success": True,
+                    "op": "download",
+                    "reference": ref or "direct_url",
+                    "total_files": len(download_commands),
+                    "directories_to_create": list(dirs_needed),
+                    "downloads": download_commands,
+                    "message": f"Ready to download {len(download_commands)} file(s).",
+                    "instructions": [
+                        f"1. Create directories: {', '.join(dirs_needed)}" if dirs_needed else "1. No directories needed",
+                        "2. Execute the curl commands via terminal_manager",
+                        "3. Refresh the FileSystem dock to see the files"
+                    ]
+                }
+                
+            except Exception as e:
+                print(f"2D_ANIM_DOWNLOAD_ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                return {"success": False, "error": f"Download operation failed: {str(e)}"}
+        
+        else:
+            return {"success": False, "error": f"Unknown 2d_animation_manager operation: {op}"}
+        
+    except Exception as e:
+        print(f"2D_ANIMATION_MANAGER_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": f"2D animation manager operation failed: {str(e)}"}
+
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
     
@@ -6060,6 +7163,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return terminal_manager_internal(arguments)
     elif function_name == "todo_manager":
         return todo_manager_internal(arguments, None)
+    elif function_name == "2d_animation_manager":
+        return animation_2d_manager_internal(arguments, None, None)
     # Legacy individual tools (maintain backward compatibility)
     elif function_name == "image_operation":
         return image_operation_internal(arguments)
@@ -8009,6 +9114,10 @@ def chat():
                                    "slice_spritesheet", "search_godot_assets", "install_godot_asset", "generate_3d_model"]:
                         return True
                     
+                    # 2D animation manager - always backend (calls animation server)
+                    if func_name == "2d_animation_manager":
+                        return True
+                    
                     # Parse arguments to check operation
                     try:
                         import json as _json_parse
@@ -8152,6 +9261,13 @@ def chat():
                     original_tool_calls_for_history = []
                     for i, func in backend_calls.items():
                         tool_id = tool_ids[i]
+                        tool_name = func.get("name", "").strip()
+                        
+                        # CRITICAL FIX: Validate tool name is not empty before creating tool call
+                        if not tool_name:
+                            print(f"🚨 EMPTY_TOOL_NAME_DETECTED: Tool call {tool_id} has empty name! Skipping to prevent OpenAI API error")
+                            print(f"🚨 This tool call will be dropped to prevent: 'Invalid input[1].name: empty string'")
+                            continue
                         
                         # CRITICAL: Detect tool argument corruption before sanitization
                         original_args = func["arguments"]
@@ -8159,14 +9275,14 @@ def chat():
                         
                         # Log corruption detection
                         if len(original_args) > 1000 and sanitized_args == "{}":
-                            print(f"🚨 TOOL_CORRUPTION_DETECTED: {func['name']} arguments ({len(original_args)} chars) sanitized to empty!")
+                            print(f"🚨 TOOL_CORRUPTION_DETECTED: {tool_name} arguments ({len(original_args)} chars) sanitized to empty!")
                             print(f"🚨 Original args preview: {original_args[:200]}...")
                             print(f"🚨 This is the ROOT CAUSE of the 'missing op parameter' bug!")
                         
                         original_tool_calls_for_history.append({
                             "id": tool_id,
                             "type": "function",
-                            "function": {"name": func["name"], "arguments": sanitized_args},
+                            "function": {"name": tool_name, "arguments": sanitized_args},
                         })
                     
                     # Send executing_tools to frontend BEFORE executing backend tools
@@ -9248,6 +10364,92 @@ def chat():
                                 "content": json.dumps(todo_result)
                             })
                         
+                        elif func["name"] == "2d_animation_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            print("=" * 80)
+                            print(f"🎬 BACKEND TOOL CALLED: 2d_animation_manager")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            try:
+                                arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
+                            except json.JSONDecodeError:
+                                arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            
+                            yield json.dumps({"tool_starting": "2d_animation_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            # Execute with conversation context for image resolution
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_animation_mgr():
+                                try:
+                                    _tool_result_holder["result"] = animation_2d_manager_internal(arguments, conversation_messages, user)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_animation_mgr, daemon=True)
+                            t.start()
+                            timeout_start = time.time()
+                            max_timeout = 300  # 5 minutes max for animation operations (can be slow)
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during 2d_animation_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: 2d_animation_manager exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Animation operation timed out after {max_timeout} seconds"}) + '\n'
+                                    return
+                                time.sleep(0.1)
+                            anim_result = _tool_result_holder["result"] or {"success": False, "error": "2d_animation_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "2d_animation_manager",
+                                "tool_result": anim_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Prepare compact result for conversation history
+                            # CRITICAL: Include 'animations' and 'projects' for list operations!
+                            anim_result_for_history = {
+                                "success": anim_result.get("success"),
+                                "op": arguments.get("op"),
+                                "job_id": anim_result.get("job_id"),
+                                "project_id": anim_result.get("project_id") or anim_result.get("supabase_project_id"),
+                                "status": anim_result.get("status"),
+                                "message": anim_result.get("message"),
+                                "error": anim_result.get("error"),  # CRITICAL: Preserve error details!
+                                "troubleshooting": anim_result.get("troubleshooting", []),
+                                "next_steps": anim_result.get("next_steps", []),
+                                # CRITICAL: Include these for list_my_animations to work!
+                                "projects": anim_result.get("projects"),  # Hierarchical project list
+                                "usage_examples": anim_result.get("usage_examples", [])
+                            }
+                            # Remove None values to keep response clean
+                            anim_result_for_history = {k: v for k, v in anim_result_for_history.items() if v is not None}
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "2d_animation_manager",
+                                "content": json.dumps(anim_result_for_history)
+                            })
+                        
                         elif func["name"] == "resource_manager":
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
@@ -9428,13 +10630,20 @@ def chat():
                 print(f"FRONTEND_PROCESSING: Creating tool calls for history from {len(tool_call_aggregator)} remaining tools")
                 for i, func in tool_call_aggregator.items():
                     tool_id = tool_ids[i]
+                    tool_name = func.get("name", "").strip()
+                    
+                    # CRITICAL FIX: Validate tool name is not empty before creating tool call
+                    if not tool_name:
+                        print(f"🚨 EMPTY_TOOL_NAME_DETECTED: Frontend tool call {tool_id} has empty name! Skipping to prevent OpenAI API error")
+                        continue
+                    
                     tool_call_entry = {
                         "id": tool_id,
                         "type": "function",
-                        "function": {"name": func["name"], "arguments": _sanitize_tool_arguments(func["arguments"])},
+                        "function": {"name": tool_name, "arguments": _sanitize_tool_arguments(func["arguments"])},
                     }
                     original_tool_calls_for_history.append(tool_call_entry)
-                    print(f"FRONTEND_TOOL_CALL: Created tool call for {func['name']} (ID: {tool_id})")
+                    print(f"FRONTEND_TOOL_CALL: Created tool call for {tool_name} (ID: {tool_id})")
                     
                 print(f"FRONTEND_PROCESSING: Created {len(original_tool_calls_for_history)} tool calls for history")
                 
@@ -9457,7 +10666,14 @@ def chat():
                     tool_calls_for_frontend = []
                     for i, func in tool_call_aggregator.items():
                         tool_id = tool_ids[i]
-                        print(f"FRONTEND_PROCESSING: Processing tool {func['name']} with id {tool_id}")
+                        tool_name = func.get("name", "").strip()
+                        
+                        # CRITICAL FIX: Validate tool name is not empty
+                        if not tool_name:
+                            print(f"🚨 EMPTY_TOOL_NAME_DETECTED: Frontend tool {tool_id} has empty name! Skipping to prevent OpenAI API error")
+                            continue
+                        
+                        print(f"FRONTEND_PROCESSING: Processing tool {tool_name} with id {tool_id}")
                         
                         # CRITICAL: Detect argument corruption for frontend tools too
                         original_args = func["arguments"]
@@ -9465,14 +10681,14 @@ def chat():
                         
                         # Log corruption detection
                         if len(original_args) > 1000 and sanitized_args == "{}":
-                            print(f"🚨 FRONTEND_TOOL_CORRUPTION: {func['name']} arguments ({len(original_args)} chars) sanitized to empty!")
+                            print(f"🚨 FRONTEND_TOOL_CORRUPTION: {tool_name} arguments ({len(original_args)} chars) sanitized to empty!")
                             print(f"🚨 Original args preview: {original_args[:200]}...")
                             print(f"🚨 This will cause 'missing op parameter' error in frontend tool execution!")
                         
                         tool_calls_for_frontend.append({
                             "id": tool_id,
                             "function": {
-                                "name": func["name"],
+                                "name": tool_name,
                                 "arguments": sanitized_args
                             }
                         })
@@ -13059,6 +14275,112 @@ def create_checkout():
         return jsonify({"success": True, "checkout": checkout_data})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/animation/status/<job_id>', methods=['GET'])
+def check_animation_status(job_id: str):
+    """Proxy endpoint for animation server status checks"""
+    try:
+        # Use global ANIMATION_SERVER_URL
+        animation_server_url = ANIMATION_SERVER_URL
+        
+        print(f"ANIMATION_STATUS_PROXY: Checking status for job {job_id}")
+        
+        response = requests.get(
+            f"{animation_server_url}/status/{job_id}",
+            timeout=5  # Short timeout - should be fast
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        print(f"ANIMATION_STATUS_PROXY: Got status: {result.get('status', 'unknown')}")
+        
+        # Check if completed and auto-refresh cache
+        if result.get("status") == "completed":
+            # Try to get user from request headers (may not be available for GET)
+            user_id = request.headers.get('X-User-ID', 'anonymous')
+            try:
+                projects = _fetch_user_animations_from_supabase(user_id)
+                if projects:
+                    print(f"ANIMATION_STATUS_POLL: Auto-refreshed cache for user {user_id}")
+            except Exception as cache_err:
+                print(f"ANIMATION_STATUS_POLL: Cache refresh failed: {cache_err}")
+        
+        return jsonify(result)
+        
+    except requests.exceptions.Timeout:
+        print(f"ANIMATION_STATUS_PROXY_TIMEOUT: Job {job_id} - animation server took too long")
+        return jsonify({
+            "success": False,
+            "status": "pending",  # Return pending status so frontend keeps polling
+            "error": "Animation server busy, retrying..."
+        }), 202  # 202 Accepted = still processing
+        
+    except requests.exceptions.ConnectionError as e:
+        print(f"ANIMATION_STATUS_PROXY_CONN_ERROR: {e}")
+        return jsonify({
+            "success": False,
+            "status": "pending",
+            "error": "Animation server connection error, retrying..."
+        }), 202
+        
+    except Exception as e:
+        print(f"ANIMATION_STATUS_PROXY_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "status": "unknown",
+            "error": f"Failed to check animation status: {str(e)}"
+        }), 500
+
+@app.route('/animation/export', methods=['POST'])
+def export_animation_proxy():
+    """Proxy endpoint for animation export requests"""
+    try:
+        animation_server_url = ANIMATION_SERVER_URL
+        
+        data = request.get_json() or {}
+        project_id = data.get('project_id', '')
+        animation_id = data.get('animation_id', '')
+        resolution = data.get('resolution', 128)
+        format = data.get('format', 'sprite_sheet')
+        
+        print(f"ANIMATION_EXPORT_PROXY: project={project_id}, anim={animation_id}, res={resolution}, format={format}")
+        
+        response = requests.post(
+            f"{animation_server_url}/export",
+            json=data,
+            timeout=60  # Longer timeout for export processing
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        print(f"ANIMATION_EXPORT_PROXY: Export completed for {animation_id}")
+        
+        return jsonify(result)
+        
+    except requests.exceptions.Timeout:
+        print(f"ANIMATION_EXPORT_PROXY_TIMEOUT: Export took too long")
+        return jsonify({
+            "success": False,
+            "error": "Export timeout - animation server took too long"
+        }), 504
+        
+    except requests.exceptions.ConnectionError as e:
+        print(f"ANIMATION_EXPORT_PROXY_CONN_ERROR: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Cannot connect to animation server"
+        }), 503
+        
+    except Exception as e:
+        print(f"ANIMATION_EXPORT_PROXY_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": f"Export failed: {str(e)}"
+        }), 500
 
 @app.route('/pricing/tiers', methods=['GET'])
 def get_pricing_tiers():

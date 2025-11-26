@@ -57,6 +57,7 @@ class HTTPClient;
 class HTTPRequest;
 class Node;
 class OptionButton;
+class SpinBox;
 class RichTextLabel;
 class ScrollContainer;
 class StyleBoxFlat;
@@ -73,6 +74,7 @@ class UserMessageHandler;
 class StreamingIndicator;
 class AIManualSnapshots;
 class AIAutoSnapshots;
+class AIAnimationTracker;
 class AIChatTodoPanel;
 // Missing forward declarations for types referenced as pointers
 class Timer;
@@ -108,6 +110,7 @@ private:
 	Ref<AIManualSnapshots> manual_snapshots;
 	Ref<AIAutoSnapshots> auto_snapshots;
 	Ref<AIEnhancedGraphParser> enhanced_graph_parser;
+	Ref<AIAnimationTracker> animation_tracker;
 	// Helper to find RichTextLabel recursively.
 	static RichTextLabel *find_rich_text_label_in_children(Node *p_node) {
 		if (!p_node) {
@@ -205,6 +208,14 @@ private:
 	EditorFileDialog *export_dialog = nullptr;
 	EditorFileDialog *import_dialog = nullptr;
 	AcceptDialog *image_warning_dialog = nullptr;
+	// Animation export
+	EditorFileDialog *anim_export_file_dialog = nullptr;
+	ConfirmationDialog *anim_export_options_dialog = nullptr;
+	SpinBox *anim_export_resolution_spin = nullptr;
+	OptionButton *anim_export_format_option = nullptr;
+	String pending_export_animation_id;
+	String pending_export_project_id;
+	HTTPRequest *anim_export_request = nullptr;
 	ConfirmationDialog *restore_checkpoint_dialog = nullptr;
 
 	// Embedding system state
@@ -408,6 +419,10 @@ private:
 	void _safe_reimport_files(const Vector<String> &p_files);
 	void _on_save_image_pressed(const String &p_base64_data, const String &p_format);
 	void _on_save_image_location_selected(const String &p_file_path);
+	// Animation export helpers (main handler is public)
+	void _on_anim_export_dialog_confirmed();
+	void _on_anim_export_file_selected(const String &p_path);
+	void _on_anim_export_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_save_3d_model_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path);
 	void _on_import_3d_model_to_scene_pressed(const String &p_glb_data, const String &p_prompt, const String &p_save_path);
 	void _on_3d_model_save_location_selected(const String &p_file_path);
@@ -644,6 +659,11 @@ private:
 	void _on_todo_button_pressed();
 	void _update_todo_panel_config();
 	
+	// Animation tracker callbacks
+	void _on_animation_job_completed(const String &p_job_id, const String &p_tool_call_id, const Dictionary &p_result);
+	void _on_animation_job_failed(const String &p_job_id, const String &p_tool_call_id, const String &p_error);
+	void _track_animation_job_from_result(const String &p_tool_call_id, const Dictionary &p_result);
+	
 	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);
 	void _on_auth_dialog_action(const StringName &p_action);
 	void _on_auth_provider_selected(int p_id);
@@ -791,6 +811,10 @@ public:
 	// Unified accept/reject system for all sources (tool call, diff editor, script save)
 	void _handle_apply_edit_accepted(const String &p_file_path, const String &p_content);
 	void _handle_apply_edit_rejected(const String &p_file_path);
+	
+	// Animation export (public for AIAnimationUI access)
+	void _on_export_animation_pressed(Button *p_button);
+	void _trigger_auto_export(const String &p_anim_id, const String &p_project_id, const String &p_save_path, int p_resolution, const String &p_format);
 	
 private:
 	

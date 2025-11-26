@@ -17,6 +17,10 @@
 #include "core/crypto/crypto.h"
 #include "editor/settings/editor_settings.h"
 
+#ifdef WEB_ENABLED
+#include "platform/web/api/javascript_bridge_singleton.h"
+#endif
+
 #ifdef WINDOWS_ENABLED
 #include <windows.h>
 #include <wincred.h>
@@ -51,6 +55,23 @@ AuthManager::~AuthManager() {
 }
 
 void AuthManager::open_web_login() {
+#ifdef WEB_ENABLED
+	// On web platform, use JavaScript Supabase auth
+	print_line("AI Chat: Starting Google OAuth via JavaScript bridge...");
+	
+	JavaScriptBridge *js = JavaScriptBridge::get_singleton();
+	if (js) {
+		// Call the JavaScript function we defined in index.html
+		js->eval("orcaSignInWithGoogle()");
+		
+		// Set up a callback to check for auth completion
+		// The page will reload after OAuth, so we check session on next load
+		_notify_auth_info("Please complete sign-in in your browser.\nThe page will reload after authentication.");
+	} else {
+		_notify_auth_error("JavaScript bridge not available.\nPlease try refreshing the page.");
+	}
+	return;
+#else
 	String login_url = LOGIN_URL;
 
 	if (_start_loopback_server()) {
@@ -59,6 +80,7 @@ void AuthManager::open_web_login() {
 		login_url += login_url.contains("?") ? "&" + redirect_param : "?" + redirect_param;
 	}
 	OS::get_singleton()->shell_open(login_url);
+#endif
 }
 
 bool AuthManager::handle_deep_link(const String &p_url) {
@@ -122,6 +144,32 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 }
 
 bool AuthManager::try_auto_login() {
+#ifdef WEB_ENABLED
+	// On web platform, check if there's a session from Supabase
+	JavaScriptBridge *js = JavaScriptBridge::get_singleton();
+	if (js) {
+		// Check for existing session asynchronously
+		Variant result = js->eval("(async () => { return await orcaGetAuthTokens(); })()");
+		if (result.get_type() == Variant::STRING && !String(result).is_empty()) {
+			String tokens_json = result;
+			JSON json;
+			if (json.parse(tokens_json) == OK) {
+				Dictionary tokens = json.get_data();
+				if (tokens.has("access_token") && tokens.has("user_id")) {
+					access_token = tokens["access_token"];
+					refresh_token = tokens.has("refresh_token") ? String(tokens["refresh_token"]) : "";
+					user_id = tokens["user_id"];
+					user_email = tokens.has("email") ? String(tokens["email"]) : "";
+					user_name = tokens.has("name") ? String(tokens["name"]) : "";
+					is_authenticated = true;
+					print_line("AI Chat: Web session restored for " + user_email);
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+#else
 	// Try to load stored tokens, but fail silently if keychain access is denied
 	// This prevents keychain prompts from blocking app startup
 	if (load_stored_tokens()) {
@@ -135,6 +183,7 @@ bool AuthManager::try_auto_login() {
 	}
 	// Don't print error - this is expected if user hasn't logged in yet or denied keychain access
 	return false;
+#endif
 }
 
 void AuthManager::sign_out() {
@@ -150,6 +199,12 @@ void AuthManager::sign_out() {
 }
 
 void AuthManager::sign_in_with_email(const String &p_email, const String &p_password) {
+#ifdef WEB_ENABLED
+	// Web platform cannot use blocking HTTP requests - show message to user
+	print_line("AI Chat: Email sign-in is not available on web platform. Please use the web-based authentication.");
+	_notify_auth_error("Email sign-in is not available in the web editor.\n\nPlease use 'Sign in with Google' or access the desktop app for email login.");
+	return;
+#else
 	// Make HTTP request to Supabase auth endpoint
 	Ref<HTTPClient> http = HTTPClient::create();
 	// Remove https:// prefix from SUPABASE_URL for connect_to_host
@@ -299,9 +354,16 @@ void AuthManager::sign_in_with_email(const String &p_email, const String &p_pass
 	} else {
 		_notify_auth_error("Network error occurred");
 	}
+#endif // !WEB_ENABLED
 }
 
 void AuthManager::sign_up_with_email(const String &p_email, const String &p_password, const String &p_name) {
+#ifdef WEB_ENABLED
+	// Web platform cannot use blocking HTTP requests
+	print_line("AI Chat: Email sign-up is not available on web platform.");
+	_notify_auth_error("Email sign-up is not available in the web editor.\n\nPlease use the desktop app to create an account, or sign up at orcaengine.ai");
+	return;
+#else
 	// Make HTTP request to Supabase auth endpoint
 	Ref<HTTPClient> http = HTTPClient::create();
 	// Remove https:// prefix from SUPABASE_URL for connect_to_host
@@ -451,6 +513,7 @@ void AuthManager::sign_up_with_email(const String &p_email, const String &p_pass
 	} else {
 		_notify_auth_error("Network error during sign-up");
 	}
+#endif // !WEB_ENABLED
 }
 
 void AuthManager::store_tokens(const String &p_access_token, const String &p_refresh_token, const String &p_user_id, const String &p_email, const String &p_name) {
@@ -764,6 +827,56 @@ void AuthManager::_delete_token_secure(const String &p_key) {
 }
 #endif
 
+#ifdef WEB_ENABLED
+// Web platform - use file-based storage in the virtual filesystem (IndexedDB backed)
+// Note: This is stored in the browser's IndexedDB via Emscripten's virtual filesystem
+bool AuthManager::_store_token_secure(const String &p_key, const String &p_value) {
+	String secure_dir = _get_auth_storage_dir();
+	_ensure_auth_storage_dir_exists(secure_dir);
+	
+	String file_path = secure_dir.path_join(_get_secure_storage_key(p_key));
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		print_error("Web: Failed to store token in file: " + file_path);
+		return false;
+	}
+	
+	file->store_string(p_value);
+	file->close();
+	
+	return true;
+}
+
+String AuthManager::_retrieve_token_secure(const String &p_key) {
+	String file_path = _get_auth_storage_dir().path_join(_get_secure_storage_key(p_key));
+	
+	if (!FileAccess::exists(file_path)) {
+		return String();
+	}
+	
+	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::READ);
+	if (file.is_null()) {
+		return String();
+	}
+	
+	String value = file->get_as_text();
+	file->close();
+	
+	return value;
+}
+
+void AuthManager::_delete_token_secure(const String &p_key) {
+	String file_path = _get_auth_storage_dir().path_join(_get_secure_storage_key(p_key));
+	
+	if (FileAccess::exists(file_path)) {
+		Ref<DirAccess> dir = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+		if (dir.is_valid()) {
+			dir->remove(file_path);
+		}
+	}
+}
+#endif
+
 Error AuthManager::make_supabase_request(const String &p_endpoint, const String &p_method, const String &p_body, String &r_response) {
 	Ref<HTTPClient> http_client = HTTPClient::create();
 	
@@ -851,6 +964,11 @@ void AuthManager::initialize_autumn_account() {
 		return;
 	}
 	
+#ifdef WEB_ENABLED
+	// Skip Autumn initialization on web - billing is handled differently
+	print_line("AI Chat: Skipping Autumn account initialization on web platform");
+	return;
+#else
 	// Call website API directly: https://orcaengine.ai/api/autumn/check
 	// This creates customer + assigns Free plan if new user
 	Ref<HTTPClient> http = HTTPClient::create();
@@ -935,9 +1053,14 @@ void AuthManager::initialize_autumn_account() {
 			}
 		}
 	}
+#endif // !WEB_ENABLED
 }
 
 bool AuthManager::_start_loopback_server() {
+#ifdef WEB_ENABLED
+	// TCP servers are not available on web platform
+	return false;
+#else
 	_stop_loopback_server();
 
 	loopback_server.instantiate();
@@ -956,6 +1079,7 @@ bool AuthManager::_start_loopback_server() {
 	loopback_port = 0;
 	loopback_deadline_msec = 0;
 	return false;
+#endif
 }
 
 void AuthManager::_stop_loopback_server() {

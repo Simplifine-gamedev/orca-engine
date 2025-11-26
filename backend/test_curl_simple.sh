@@ -50,3 +50,4 @@ curl -X POST "$BACKEND_URL/chat" \
 echo ""
 echo "Test complete. Check the output above for tool_result containing image data."
 
+

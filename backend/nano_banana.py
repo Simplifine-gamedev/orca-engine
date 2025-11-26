@@ -15,6 +15,13 @@ from google.genai import types
 
 def get_gemini_client():
     """Initialize and return Gemini client"""
+    # Prefer Vertex AI when enabled (higher quotas, OAuth/ADC auth)
+    use_vertex = str(os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "")).lower() == "true"
+    if use_vertex:
+        # Vertex AI: do NOT pass api_key; relies on ADC/OAuth (gcloud auth application-default login
+        # or GOOGLE_APPLICATION_CREDENTIALS pointing to a service account JSON)
+        return genai.Client()
+    # Public API fallback
     api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
     if not api_key:
         raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY environment variable not set")
@@ -218,15 +225,15 @@ def generate_image_from_text(
 
 
 def generate_image_from_image_and_text(
-    image_base64: str,
+    image_base64: str | list[str],
     prompt: str,
     size: str = "1024x1024"
 ) -> Tuple[str, Optional[int], Optional[int]]:
     """
-    Generate/Edit an image from an existing image and text prompt using Gemini 2.5 Flash Image model.
+    Generate/Edit an image from one or more existing images and text prompt using Gemini 2.5 Flash Image model.
     
     Args:
-        image_base64: Base64 encoded input image
+        image_base64: Base64 encoded input image(s) - can be a single string or list of strings
         prompt: Text description for image editing/generation
         size: Target size string (e.g., "1024x1024") - used to determine aspect ratio
     
@@ -236,21 +243,70 @@ def generate_image_from_image_and_text(
     try:
         client = get_gemini_client()
         
-        # Decode base64 image
-        image_bytes = base64.b64decode(image_base64)
-        pil_image = Image.open(io.BytesIO(image_bytes))
+        # Handle both single image and multiple images
+        input_images = []
+        if isinstance(image_base64, list):
+            print(f"NANO_BANANA: Processing {len(image_base64)} input images for multi-image composition")
+            for idx, img_b64 in enumerate(image_base64):
+                image_bytes = base64.b64decode(img_b64)
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                input_images.append(pil_image)
+                print(f"  - Image {idx+1}: {pil_image.size}")
+        else:
+            # Single image (backward compatibility)
+            image_bytes = base64.b64decode(image_base64)
+            pil_image = Image.open(io.BytesIO(image_bytes))
+            input_images.append(pil_image)
+            print(f"NANO_BANANA: Processing 1 input image: {pil_image.size}")
         
         # Build config - aspect ratio is handled automatically by the model
         config = types.GenerateContentConfig(
             response_modalities=['Image']
         )
         
-        # Generate image with image + text input
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=[prompt, pil_image],
-            config=config
-        )
+        # Generate image with prompt + all input images
+        # Gemini supports up to 14 reference images!
+        contents = [prompt] + input_images
+        
+        # Retry logic for transient Gemini errors
+        max_retries = 3
+        last_error = None
+        response = None
+        
+        for attempt in range(1, max_retries + 1):
+            print(f"NANO_BANANA: Calling Gemini API with {len(input_images)} image(s)... (attempt {attempt}/{max_retries})")
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash-image",
+                    contents=contents,
+                    config=config
+                )
+                print(f"NANO_BANANA: Gemini API returned response")
+                
+                # Check if response has content
+                if response.candidates and len(response.candidates) > 0:
+                    candidate = response.candidates[0]
+                    if candidate.content and candidate.content.parts:
+                        break  # Success!
+                
+                # Empty response - retry
+                last_error = "No content parts in response"
+                print(f"NANO_BANANA: Empty response, retrying... ({attempt}/{max_retries})")
+                if attempt < max_retries:
+                    import time
+                    time.sleep(2)  # Brief delay before retry
+                    
+            except Exception as api_err:
+                last_error = str(api_err)
+                print(f"NANO_BANANA: Gemini API call FAILED: {api_err}")
+                if attempt < max_retries:
+                    import time
+                    time.sleep(2)
+                else:
+                    raise
+        
+        if not response or not response.candidates:
+            raise ValueError(f"Gemini failed after {max_retries} attempts: {last_error}")
         
         # Extract image from response
         # Response structure: response.candidates[0].content.parts[0].inline_data
