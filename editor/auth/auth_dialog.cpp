@@ -11,10 +11,14 @@
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/margin_container.h"
 #include "scene/gui/separator.h"
+#include "scene/main/scene_tree.h"
+#include "servers/display_server.h"
 
 void AuthDialog::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("_on_sign_in_pressed"), &AuthDialog::_on_sign_in_pressed);
 	ClassDB::bind_method(D_METHOD("_on_create_account_pressed"), &AuthDialog::_on_create_account_pressed);
+	ClassDB::bind_method(D_METHOD("_on_copy_url_pressed"), &AuthDialog::_on_copy_url_pressed);
+	ClassDB::bind_method(D_METHOD("_reset_copy_button_text"), &AuthDialog::_reset_copy_button_text);
 	ClassDB::bind_method(D_METHOD("_check_auth_status"), &AuthDialog::_check_auth_status);
 	ClassDB::bind_method(D_METHOD("_on_email_sign_in_pressed"), &AuthDialog::_on_email_sign_in_pressed);
 	ClassDB::bind_method(D_METHOD("_on_email_sign_up_pressed"), &AuthDialog::_on_email_sign_up_pressed);
@@ -114,13 +118,18 @@ AuthDialog::~AuthDialog() {
 }
 
 void AuthDialog::_on_sign_in_pressed() {
+	print_line("ORCA AUTH: User clicked 'Sign in with Google' button");
 	AuthManager *auth = AuthManager::get_singleton();
 	if (auth) {
+		print_line("ORCA AUTH: AuthManager singleton found, calling open_web_login()");
 		auth->open_web_login();
 #ifndef WEB_ENABLED
 		// On desktop, show waiting message (web platform handles this differently)
+		print_line("ORCA AUTH: Showing waiting dialog");
 		show_waiting();
 #endif
+	} else {
+		print_line("ORCA AUTH: ERROR - AuthManager singleton is NULL!");
 	}
 }
 
@@ -128,6 +137,53 @@ void AuthDialog::_on_create_account_pressed() {
 	// Open browser to signup page
 	OS::get_singleton()->shell_open("https://orcaengine.ai/desktop-login.html?tab=email");
 	show_waiting();
+}
+
+void AuthDialog::_on_copy_url_pressed() {
+	print_line("ORCA AUTH: User clicked 'Copy Login URL' button");
+	if (!pending_login_url.is_empty()) {
+		print_line("ORCA AUTH: Copying URL to clipboard: " + pending_login_url);
+		DisplayServer::get_singleton()->clipboard_set(pending_login_url);
+		copy_url_button->set_text("Copied! Now paste in browser");
+		print_line("ORCA AUTH: URL copied to clipboard successfully");
+		
+		// Reset button text after 3 seconds
+		SceneTree *tree = Object::cast_to<SceneTree>(OS::get_singleton()->get_main_loop());
+		if (tree) {
+			tree->create_timer(3.0)->connect("timeout", callable_mp(this, &AuthDialog::_reset_copy_button_text));
+		}
+	} else {
+		print_line("ORCA AUTH: ERROR - pending_login_url is empty!");
+	}
+}
+
+void AuthDialog::show_url_fallback(const String &p_url) {
+	print_line("ORCA AUTH: show_url_fallback() called - browser failed to open");
+	print_line("ORCA AUTH: Fallback URL: " + p_url);
+	
+	waiting_for_callback = true; // Still waiting for auth callback
+	pending_login_url = p_url;
+	
+	title_label->set_text("Browser Could Not Open");
+	description_label->set_visible(false);
+	status_label->set_text("Your system couldn't open the browser automatically.\n\nPlease copy the login URL below and paste it in your browser to sign in:");
+	status_label->set_visible(true);
+	
+	// Hide sign-in buttons, show copy URL button
+	sign_in_button->set_visible(false);
+	create_account_button->set_visible(false);
+	toggle_auth_mode_button->set_visible(false);
+	copy_url_button->set_visible(true);
+	copy_url_button->set_text("Copy Login URL to Clipboard");
+	
+	print_line("ORCA AUTH: User should now see 'Copy Login URL' button");
+	set_process(true); // Keep polling for auth callback
+}
+
+void AuthDialog::_reset_copy_button_text() {
+	if (copy_url_button) {
+		copy_url_button->set_text("Copy Login URL to Clipboard");
+	}
 }
 
 void AuthDialog::_check_auth_status() {
@@ -157,8 +213,11 @@ void AuthDialog::_check_auth_status() {
 }
 
 void AuthDialog::show_login() {
+	print_line("ORCA AUTH: AuthDialog::show_login() called - displaying login dialog to user");
+	
 	waiting_for_callback = false;
 	auth_successful = false;
+	pending_login_url = "";
 	
 	title_label->set_text("Welcome to Orca");
 	description_label->set_visible(true);
@@ -168,11 +227,17 @@ void AuthDialog::show_login() {
 	_show_auth_mode(false);
 	show_signup_mode = false;
 	
+	// Hide copy URL button
+	if (copy_url_button) {
+		copy_url_button->set_visible(false);
+	}
+	
 	// Clear email/password fields
 	if (email_input) email_input->set_text("");
 	if (password_input) password_input->set_text("");
 	if (name_input) name_input->set_text("");
 	
+	print_line("ORCA AUTH: Login dialog ready, showing popup");
 	// Defer the popup until next frame when dialog is fully in the tree
 	call_deferred("popup_centered");
 }
@@ -202,6 +267,7 @@ void AuthDialog::show_waiting() {
 void AuthDialog::show_success() {
 	waiting_for_callback = false;
 	auth_successful = true;
+	pending_login_url = "";
 	
 	AuthManager *auth = AuthManager::get_singleton();
 	String user_name = auth ? auth->get_user_name() : "";
@@ -217,6 +283,7 @@ void AuthDialog::show_success() {
 	// Hide all buttons and input fields
 	sign_in_button->set_visible(false);
 	create_account_button->set_visible(false);
+	copy_url_button->set_visible(false);
 	email_sign_in_button->set_visible(false);
 	email_sign_up_button->set_visible(false);
 	toggle_auth_mode_button->set_visible(false);
@@ -247,11 +314,15 @@ void AuthDialog::show_success() {
 
 void AuthDialog::show_error(const String &p_message) {
 	waiting_for_callback = false;
+	pending_login_url = "";
 	
 	title_label->set_text("Sign in Failed");
 	description_label->set_visible(false);
 	status_label->set_text(p_message);
 	status_label->set_visible(true);
+	
+	// Hide copy URL button
+	copy_url_button->set_visible(false);
 	
 	// Show appropriate buttons based on current mode
 	if (show_email_mode) {
@@ -335,6 +406,22 @@ void AuthDialog::_setup_google_oauth_ui() {
 	toggle_center->set_alignment(BoxContainer::ALIGNMENT_CENTER);
 	toggle_center->add_child(toggle_auth_mode_button);
 	main_container->add_child(toggle_center);
+	
+	// Copy URL button (hidden by default, shown when browser fails to open)
+	Control *copy_spacer = memnew(Control);
+	copy_spacer->set_custom_minimum_size(Size2(0, 10) * EDSCALE);
+	main_container->add_child(copy_spacer);
+	
+	copy_url_button = memnew(Button);
+	copy_url_button->set_text("Copy Login URL to Clipboard");
+	copy_url_button->set_custom_minimum_size(Size2(300, 40) * EDSCALE);
+	copy_url_button->connect("pressed", callable_mp(this, &AuthDialog::_on_copy_url_pressed));
+	copy_url_button->set_visible(false);
+	
+	HBoxContainer *copy_center = memnew(HBoxContainer);
+	copy_center->set_alignment(BoxContainer::ALIGNMENT_CENTER);
+	copy_center->add_child(copy_url_button);
+	main_container->add_child(copy_center);
 }
 
 void AuthDialog::_setup_email_auth_ui() {

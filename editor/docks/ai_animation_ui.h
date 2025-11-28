@@ -42,6 +42,14 @@ public:
 		AIChatDock *p_dock
 	);
 	
+	// Create failure panel when animation generation fails
+	static void create_animation_failure_panel(
+		VBoxContainer *p_parent_container,
+		const String &p_job_id,
+		const String &p_error,
+		AIChatDock *p_dock
+	);
+	
 	// Create numbered animation list display
 	static void create_numbered_animation_list(
 		VBoxContainer *p_parent_container,

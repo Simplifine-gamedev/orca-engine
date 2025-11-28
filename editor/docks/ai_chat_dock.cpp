@@ -20630,6 +20630,9 @@ void AIChatDock::_on_animation_job_completed(const String &p_job_id, const Strin
 	
 	// Extract completion data
 	String supabase_project_id = p_result.get("supabase_project_id", p_result.get("project_id", ""));
+	String user_ref = p_result.get("user_ref", "");  // Project reference like "P1", "P89" - CRITICAL for AI to know which project
+	String job_type = p_result.get("type", "create");  // "create" or "add_branch"
+	String new_animation_id = p_result.get("new_animation_id", "");  // For add_branch, the ID of the newly added animation
 	Dictionary progress = p_result.get("progress", Dictionary());
 	
 	// New format: completed_animations is an array of dicts with {id, name, thumbnail_url, ...}
@@ -20669,23 +20672,43 @@ void AIChatDock::_on_animation_job_completed(const String &p_job_id, const Strin
 	}
 	
 	// Create CLEAN AI result (no URLs - AI doesn't need them)
+	// CRITICAL: Include project_id and user_ref so AI knows which project to reference for add_branch!
+	bool is_add_branch = (job_type == "add_branch");
+	
 	Dictionary ai_result;
 	ai_result["success"] = true;
-	ai_result["op"] = "create";
+	ai_result["op"] = is_add_branch ? "add_branch" : "create";
 	ai_result["status"] = "completed";
-	ai_result["message"] = "Animation generation completed! " + itos(completed_anims.size()) + " animations are now available.";
-	ai_result["animations_created"] = completed_anims;  // Just names, no URLs
-	ai_result["next_steps"] = "Use list_my_animations to see numbered references. Use download operation to save files.";
+	ai_result["project_id"] = supabase_project_id;  // UUID for API calls
+	if (!user_ref.is_empty()) {
+		ai_result["project_ref"] = user_ref;  // User-friendly ref like "P89" - USE THIS for add_branch!
+	}
+	
+	if (is_add_branch) {
+		ai_result["message"] = "New animation '" + new_animation_id + "' added to project " + user_ref + "! Project now has " + itos(completed_anims.size()) + " animations.";
+		ai_result["new_animation_id"] = new_animation_id;
+		ai_result["animations_in_project"] = completed_anims;
+		ai_result["next_steps"] = "Animation added. Use add_branch again with project_id='" + supabase_project_id + "' to add more, or use list_my_animations to see all.";
+	} else {
+		ai_result["message"] = "Animation generation completed! " + itos(completed_anims.size()) + " animations are now available in project " + user_ref + ".";
+		ai_result["animations_created"] = completed_anims;  // Just names, no URLs
+		ai_result["next_steps"] = "To add more animations to this project, use add_branch with project_id='" + supabase_project_id + "' or project_ref='" + user_ref + "'.";
+	}
 	
 	// Create UI-specific result (includes URLs for thumbnails)
 	Dictionary completion_result;
 	completion_result["success"] = true;
-	completion_result["op"] = "create";
+	completion_result["op"] = is_add_branch ? "add_branch" : "create";
 	completion_result["status"] = "completed";
 	completion_result["job_id"] = p_job_id;
-	completion_result["supabase_project_id"] = supabase_project_id;
+	completion_result["project_id"] = supabase_project_id;
+	completion_result["supabase_project_id"] = supabase_project_id;  // Legacy field
+	completion_result["project_ref"] = user_ref;
 	completion_result["completed_animations"] = completed_anims;
 	completion_result["thumbnail_urls"] = thumbnail_urls;  // For UI to load and display
+	if (is_add_branch && !new_animation_id.is_empty()) {
+		completion_result["new_animation_id"] = new_animation_id;
+	}
 	
 	// Update conversation history
 	// - msg.content = CLEAN result for AI (no URLs)
@@ -20797,7 +20820,7 @@ void AIChatDock::_on_animation_job_completed(const String &p_job_id, const Strin
 void AIChatDock::_on_animation_job_failed(const String &p_job_id, const String &p_tool_call_id, const String &p_error) {
 	print_line("ANIM_FAILED: Job " + p_job_id + " failed: " + p_error);
 	
-	// Create a failure tool result
+	// Create a failure tool result for AI context
 	Dictionary failure_result;
 	failure_result["success"] = false;
 	failure_result["status"] = "failed";
@@ -20805,42 +20828,51 @@ void AIChatDock::_on_animation_job_failed(const String &p_job_id, const String &
 	failure_result["error"] = p_error;
 	failure_result["message"] = "Animation generation failed: " + p_error;
 	
-	// Update conversation history
+	// Create AI-friendly result (same content but explicitly for the AI to understand)
+	Dictionary ai_result;
+	ai_result["success"] = false;
+	ai_result["status"] = "failed";
+	ai_result["error"] = p_error;
+	ai_result["message"] = "Animation generation failed. The video generation was rejected or encountered an error. Error details: " + p_error;
+	ai_result["suggestion"] = "Try rephrasing the animation request to avoid content that might trigger safety filters, or try a simpler animation.";
+	
+	// Update conversation history so AI knows about the failure
 	Vector<ChatMessage> &chat_history = _get_current_chat_history();
 	for (int i = chat_history.size() - 1; i >= 0; i--) {
 		ChatMessage &msg = chat_history.write[i];
 		if (msg.role == "tool" && msg.tool_call_id == p_tool_call_id) {
 			Ref<JSON> json;
 			json.instantiate();
-			msg.content = json->stringify(failure_result);
+			msg.content = json->stringify(ai_result);  // AI sees the failure
 			
 			if (!msg.tool_results.is_empty()) {
-				msg.tool_results[0] = failure_result;
+				msg.tool_results[0] = failure_result;  // UI sees the failure
 			}
+			
+			print_line("ANIM_FAILED: Updated conversation history with failure info");
 			break;
 		}
 	}
 	
-	// Update UI
+	// Replace tracking UI with beautiful failure panel (matching success pattern)
 	if (chat_container) {
 		PanelContainer *placeholder = Object::cast_to<PanelContainer>(
 			chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false)
 		);
 		
-		if (placeholder) {
-			for (int i = 0; i < placeholder->get_child_count(); i++) {
-				VBoxContainer *vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(i));
-				if (vbox) {
-					for (int j = 0; j < vbox->get_child_count(); j++) {
-						Label *label = Object::cast_to<Label>(vbox->get_child(j));
-						if (label && String(label->get_name()).begins_with("anim_status_")) {
-							label->set_text("❌ Animation generation failed: " + p_error);
-							label->add_theme_color_override("font_color", Color(0.9, 0.3, 0.3));
-							break;
-						}
-					}
-					break;
+		if (placeholder && placeholder->get_child_count() > 0) {
+			VBoxContainer *vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+			if (vbox) {
+				// Clear tracking UI (progress bar, status, etc.)
+				for (int i = vbox->get_child_count() - 1; i >= 0; i--) {
+					Node *child = vbox->get_child(i);
+					child->queue_free();
 				}
+				
+				// Create beautiful failure panel
+				AIAnimationUI::create_animation_failure_panel(vbox, p_job_id, p_error, this);
+				
+				print_line("ANIM_FAILED: Created failure panel in UI");
 			}
 		}
 	}

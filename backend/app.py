@@ -6300,6 +6300,67 @@ def capture_screenshot_internal(arguments: dict) -> dict:
         "arguments_to_forward": arguments
     }
 
+
+def _check_animation_image_quality(image_base64: str, description: str = "") -> tuple:
+    """
+    Check if an image is suitable for animation (isolated on white background).
+    
+    Returns:
+        Tuple of (is_suitable: bool, reason: str)
+    """
+    import google.generativeai as genai
+    from PIL import Image
+    import io
+    import base64
+    
+    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("⚠️ No Gemini API key found, skipping quality check")
+        return True, "No API key - skipping check"
+    
+    genai.configure(api_key=api_key)
+    
+    try:
+        # Decode base64 to PIL Image
+        img_bytes = base64.b64decode(image_base64)
+        pil_image = Image.open(io.BytesIO(img_bytes))
+        
+        # Use Gemini for quality check
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        
+        prompt = f"""Analyze this image for 2D game sprite animation suitability.
+
+REQUIREMENTS for a SUITABLE image:
+1. Single isolated object/character on a WHITE or very light background
+2. NO shadows on the background
+3. NO environment elements (ground, sky, buildings, etc.)
+4. NO other objects besides the main subject
+5. Clean edges, clearly visible subject
+
+The subject should be: {description or 'a character or object'}
+
+Answer with ONLY "YES" or "NO" followed by a brief reason.
+- YES if: isolated subject on white/light background, no shadows, no environment
+- NO if: complex background, shadows, multiple objects, or environment visible
+
+Example good answers:
+- YES. Isolated character on white background, clean edges, no shadows.
+- NO. Complex background with environment elements visible.
+- NO. Subject has shadows on the background."""
+
+        response = model.generate_content([prompt, pil_image])
+        result_text = response.text.strip()
+        
+        print(f"🔍 Image quality check: {result_text[:100]}")
+        
+        is_suitable = result_text.upper().startswith("YES")
+        return is_suitable, result_text
+        
+    except Exception as e:
+        print(f"⚠️ Quality check error: {e}")
+        return True, f"Check failed - assuming OK: {str(e)}"
+
+
 def animation_2d_manager_internal(arguments: dict, conversation_messages: list = None, current_user: dict = None) -> dict:
     """
     Manage 2D sprite animations using the AI animation server.
@@ -6486,51 +6547,56 @@ def animation_2d_manager_internal(arguments: dict, conversation_messages: list =
                         selected_images.append(match)
                         print(f"2D_ANIM: Selected reference image '{img_id}'")
                 
-                # Generate isolated object from reference image(s)
+                # Process reference image: quality check + isolation if needed
                 if selected_images:
-                    print(f"2D_ANIM: Creating isolated character from {len(selected_images)} reference image(s)")
+                    print(f"2D_ANIM: Processing {len(selected_images)} reference image(s)")
                     
-                    # Prepare description for isolation
-                    isolation_prompt = reference_description or "the main character or object in the center"
-                    isolation_full_desc = f"Extract and isolate: {isolation_prompt}. Pure white background, no shadows, no effects, perfectly centered."
-                    
-                    # Use isolated object creation to extract character
-                    isolated_args = {
-                        'object_description': isolation_full_desc,
-                        'input_image_path': selected_images[0]['base64_data'] if len(selected_images) == 1 else None,
-                        'size': '1024x1024',
-                        'white_threshold': 250,  # Very strict white background
-                        'target_resolution': -1,  # Keep original size for animation server
-                        'object_type': 'sprite'
-                    }
-                    
-                    # If multiple images, compose them first
-                    if len(selected_images) > 1:
-                        print(f"2D_ANIM: Composing {len(selected_images)} reference images into single character")
-                        # Use image_operation to compose multiple images
+                    # Get the base64 data
+                    if len(selected_images) == 1:
+                        raw_image_base64 = selected_images[0]['base64_data']
+                    else:
+                        # For multiple images, compose them first
+                        print(f"2D_ANIM: Composing {len(selected_images)} reference images into single image")
+                        isolation_prompt = reference_description or "the main character or object"
                         compose_args = {
                             'description': f"Combine these images into a single unified character on pure white background: {isolation_prompt}",
                             'images': [img['name'] for img in selected_images],
-                            'style': 'clean pixel art',
-                            'image_type': 'sprite',
+                            'image_type': 'general',
                             'size': '1024x1024'
                         }
                         compose_result = image_operation_internal(compose_args, conversation_messages)
                         
                         if compose_result.get('success'):
-                            isolated_args['input_image_path'] = compose_result['image_data']
-                            print(f"2D_ANIM: Composed images successfully, now isolating...")
+                            raw_image_base64 = compose_result['image_data']
                         else:
                             return {"success": False, "error": f"Failed to compose reference images: {compose_result.get('error')}"}
                     
-                    isolated_result = create_isolated_object_internal(isolated_args, conversation_messages)
+                    # Quality check: Is the image isolated on white background?
+                    print(f"2D_ANIM: Checking image quality (isolated on white background)...")
+                    is_suitable, reason = _check_animation_image_quality(raw_image_base64, reference_description or "the character/object")
+                    print(f"2D_ANIM: Quality check result: {'✅ PASS' if is_suitable else '❌ FAIL'} - {reason[:100]}")
                     
-                    if not isolated_result.get('success'):
-                        return {"success": False, "error": f"Failed to create isolated character: {isolated_result.get('error')}"}
-                    
-                    # Store isolated image base64 for cloud-safe transmission
-                    reference_image_base64 = isolated_result['image_data']
-                    print(f"2D_ANIM: Created isolated character ({len(reference_image_base64)} chars base64)")
+                    if is_suitable:
+                        # Image is good, use it directly
+                        reference_image_base64 = raw_image_base64
+                        print(f"2D_ANIM: Using original image directly ({len(reference_image_base64)} chars base64)")
+                    else:
+                        # Image needs processing - isolate on white background using Gemini 3 Pro
+                        print(f"2D_ANIM: Image not suitable, isolating with Gemini Pro (preserving original)...")
+                        try:
+                            from nano_banana import isolate_for_animation
+                            
+                            isolated_base64, width, height = isolate_for_animation(
+                                image_base64=raw_image_base64,
+                                subject_description=reference_description or "the main character or object",
+                                aspect_ratio="1:1",
+                                resolution="1K"
+                            )
+                            reference_image_base64 = isolated_base64
+                            print(f"2D_ANIM: ✅ Isolated image created with Gemini Pro ({len(reference_image_base64)} chars base64)")
+                        except Exception as iso_err:
+                            print(f"2D_ANIM: ⚠️ Gemini Pro isolation failed ({iso_err}), using original image")
+                            reference_image_base64 = raw_image_base64
                 else:
                     reference_image_base64 = None
             
@@ -7501,12 +7567,21 @@ def chat():
     # Check Autumn quota BEFORE processing request (don't track yet - track after success)
     allowed, pricing_info = pricing_service.check_quota(user['id'], "ai-requests", 1)
     if not allowed:
-        return jsonify({
-            "error": "Monthly request limit exceeded",
-            "pricing_info": pricing_info,
-            "upgrade_url": f"{request.host_url}pricing",
-            "success": False
-        }), 429
+        # Return a friendly assistant message instead of an error
+        def quota_exceeded_stream():
+            import json
+            # Send as an assistant text message so it appears in chat
+            yield json.dumps({
+                "type": "text",
+                "text": "You have hit your free quota limit. Please upgrade on the website to keep using chat! 🚀"
+            }) + '\n'
+            yield json.dumps({"status": "completed"}) + '\n'
+        
+        return Response(
+            stream_with_context(quota_exceeded_stream()),
+            mimetype='application/x-ndjson',
+            headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-cache'}
+        )
     
     # Robust JSON parse: tolerate stray control chars or accidental non-JSON bytes
     # Do this BEFORE authentication check so we can check for user_id in JSON
@@ -14373,13 +14448,35 @@ def export_animation_proxy():
             "error": "Cannot connect to animation server"
         }), 503
         
+    except requests.exceptions.HTTPError as e:
+        # Handle HTTP errors from animation server without exposing internal URLs
+        print(f"ANIMATION_EXPORT_PROXY_HTTP_ERROR: {e}")
+        status_code = e.response.status_code if e.response else 500
+        if status_code == 404:
+            return jsonify({
+                "success": False,
+                "error": "Animation not found - it may not have been uploaded to storage yet"
+            }), 404
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"Animation server error (HTTP {status_code})"
+            }), status_code
+            
     except Exception as e:
+        # SECURITY: Never expose internal URLs in error messages
         print(f"ANIMATION_EXPORT_PROXY_ERROR: {e}")
         import traceback
         traceback.print_exc()
+        # Sanitize error message to remove any internal URLs/IPs
+        error_msg = str(e)
+        import re
+        error_msg = re.sub(r'http://\d+\.\d+\.\d+\.\d+:\d+[^\s]*', '[internal-server]', error_msg)
+        error_msg = re.sub(r'http://localhost:\d+[^\s]*', '[internal-server]', error_msg)
+        error_msg = re.sub(r'http://127\.0\.0\.1:\d+[^\s]*', '[internal-server]', error_msg)
         return jsonify({
             "success": False,
-            "error": f"Export failed: {str(e)}"
+            "error": f"Export failed: {error_msg}"
         }), 500
 
 @app.route('/pricing/tiers', methods=['GET'])

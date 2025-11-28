@@ -72,14 +72,34 @@ void AuthManager::open_web_login() {
 	}
 	return;
 #else
+	print_line("ORCA AUTH: open_web_login() called");
+	print_line("ORCA AUTH: Base login URL: " + LOGIN_URL);
+	
 	String login_url = LOGIN_URL;
 
+	print_line("ORCA AUTH: Attempting to start loopback server...");
 	if (_start_loopback_server()) {
+		print_line("ORCA AUTH: Loopback server started successfully on port " + itos(loopback_port));
 		String redirect = vformat("http://127.0.0.1:%d/auth/callback", loopback_port);
 		String redirect_param = "redirect=" + redirect.uri_encode();
 		login_url += login_url.contains("?") ? "&" + redirect_param : "?" + redirect_param;
+		print_line("ORCA AUTH: Final login URL with redirect: " + login_url);
+	} else {
+		print_line("ORCA AUTH: WARNING - Loopback server failed to start, using URL without redirect");
 	}
-	OS::get_singleton()->shell_open(login_url);
+	
+	print_line("ORCA AUTH: Calling OS::shell_open() to open browser...");
+	Error err = OS::get_singleton()->shell_open(login_url);
+	print_line("ORCA AUTH: shell_open() returned: " + itos(err) + " (0=OK, 1=FAILED)");
+	
+	if (err != OK) {
+		// Browser failed to open - show URL for manual copy
+		print_error("ORCA AUTH: ERROR - Failed to open browser for login!");
+		print_line("ORCA AUTH: Showing URL fallback dialog so user can copy URL manually");
+		_notify_url_fallback(login_url);
+	} else {
+		print_line("ORCA AUTH: Browser should have opened. Waiting for auth callback...");
+	}
 #endif
 }
 
@@ -144,7 +164,9 @@ bool AuthManager::handle_deep_link(const String &p_url) {
 }
 
 bool AuthManager::try_auto_login() {
+	print_line("ORCA AUTH: try_auto_login() called");
 #ifdef WEB_ENABLED
+	print_line("ORCA AUTH: Web platform - checking for existing Supabase session");
 	// On web platform, check if there's a session from Supabase
 	JavaScriptBridge *js = JavaScriptBridge::get_singleton();
 	if (js) {
@@ -168,11 +190,20 @@ bool AuthManager::try_auto_login() {
 			}
 		}
 	}
+	print_line("ORCA AUTH: No web session found");
 	return false;
 #else
+	print_line("ORCA AUTH: Desktop platform - attempting to load stored tokens");
+	print_line("ORCA AUTH: Auth storage directory: " + _get_auth_storage_dir());
+	
 	// Try to load stored tokens, but fail silently if keychain access is denied
 	// This prevents keychain prompts from blocking app startup
 	if (load_stored_tokens()) {
+		print_line("ORCA AUTH: Successfully loaded stored tokens");
+		print_line("ORCA AUTH: User ID: " + user_id);
+		print_line("ORCA AUTH: User email: " + user_email);
+		print_line("ORCA AUTH: Access token present: " + String(access_token.is_empty() ? "NO" : "YES"));
+		print_line("ORCA AUTH: Refresh token present: " + String(refresh_token.is_empty() ? "NO" : "YES"));
 		// TODO: Verify tokens are still valid by making a test API call
 		is_authenticated = true;
 		
@@ -181,6 +212,7 @@ bool AuthManager::try_auto_login() {
 		
 		return true;
 	}
+	print_line("ORCA AUTH: No stored tokens found (user not logged in yet or tokens cleared)");
 	// Don't print error - this is expected if user hasn't logged in yet or denied keychain access
 	return false;
 #endif
@@ -572,6 +604,14 @@ void AuthManager::_notify_auth_info(const String &p_message) {
 		auth_dialog->show_info(p_message);
 	} else {
 		print_line("Auth info (no dialog): " + p_message);
+	}
+}
+
+void AuthManager::_notify_url_fallback(const String &p_url) {
+	if (auth_dialog) {
+		auth_dialog->show_url_fallback(p_url);
+	} else {
+		print_line("Auth URL fallback (no dialog): " + p_url);
 	}
 }
 
@@ -1059,21 +1099,27 @@ void AuthManager::initialize_autumn_account() {
 bool AuthManager::_start_loopback_server() {
 #ifdef WEB_ENABLED
 	// TCP servers are not available on web platform
+	print_line("ORCA AUTH: _start_loopback_server() - Web platform, TCP not available");
 	return false;
 #else
+	print_line("ORCA AUTH: _start_loopback_server() - Starting loopback server setup");
 	_stop_loopback_server();
 
 	loopback_server.instantiate();
 	IPAddress bind_addr("127.0.0.1");
+	print_line("ORCA AUTH: Trying to bind to 127.0.0.1 on ports 42100-42200");
 
 	for (int port = 42100; port <= 42200; port++) {
-		if (loopback_server->listen(port, bind_addr) == OK) {
+		Error err = loopback_server->listen(port, bind_addr);
+		if (err == OK) {
 			loopback_port = port;
 			loopback_deadline_msec = OS::get_singleton()->get_ticks_msec() + 120000; // 2 minutes
+			print_line("ORCA AUTH: Loopback server listening on port " + itos(port));
 			return true;
 		}
 	}
 
+	print_line("ORCA AUTH: ERROR - Could not bind loopback server to any port in range 42100-42200");
 	// Loopback server unavailable - will use custom scheme only
 	loopback_server.unref();
 	loopback_port = 0;

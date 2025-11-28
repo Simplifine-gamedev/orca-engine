@@ -539,17 +539,36 @@ Error OS_MacOS::shell_show_in_file_manager(String p_path, bool p_open_folder) {
 }
 
 Error OS_MacOS::shell_open(const String &p_uri) {
+	print_line("ORCA AUTH: macOS shell_open() called with URI: " + p_uri);
+	
 	NSString *string = [NSString stringWithUTF8String:p_uri.utf8().get_data()];
 	NSURL *uri = [[NSURL alloc] initWithString:string];
+	
+	print_line("ORCA AUTH: Initial URI object created: " + String(uri ? "YES" : "NO"));
+	if (uri) {
+		print_line("ORCA AUTH: URI scheme: " + String(uri.scheme ? [uri.scheme UTF8String] : "NULL"));
+	}
+	
 	if (!uri || !uri.scheme || [uri.scheme isEqual:@"file"]) {
+		print_line("ORCA AUTH: No scheme or file scheme - escaping characters");
 		// No scheme set, assume "file://" and escape special characters.
 		if (!p_uri.begins_with("file://")) {
 			string = [NSString stringWithUTF8String:("file://" + p_uri).utf8().get_data()];
 		}
 		uri = [[NSURL alloc] initWithString:[string stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLFragmentAllowedCharacterSet]]];
+		print_line("ORCA AUTH: URI after escaping: " + String(uri ? "valid" : "NULL"));
 	}
-	[[NSWorkspace sharedWorkspace] openURL:uri];
-	return OK;
+	
+	if (!uri) {
+		print_line("ORCA AUTH: ERROR - URI is NULL, returning ERR_INVALID_PARAMETER");
+		return ERR_INVALID_PARAMETER;
+	}
+	
+	print_line("ORCA AUTH: Calling NSWorkspace openURL...");
+	BOOL success = [[NSWorkspace sharedWorkspace] openURL:uri];
+	print_line("ORCA AUTH: NSWorkspace openURL returned: " + String(success ? "YES (success)" : "NO (failed)"));
+	
+	return success ? OK : FAILED;
 }
 
 String OS_MacOS::get_locale() const {

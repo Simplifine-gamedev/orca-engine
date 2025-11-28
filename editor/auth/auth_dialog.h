@@ -27,6 +27,8 @@ private:
 	// Google OAuth buttons (existing)
 	Button *sign_in_button = nullptr;
 	Button *create_account_button = nullptr;
+	Button *copy_url_button = nullptr;
+	String pending_login_url;
 	
 	// Email/Password UI (new)
 	LineEdit *email_input = nullptr;
@@ -48,6 +50,8 @@ private:
 	// Existing handlers
 	void _on_sign_in_pressed();
 	void _on_create_account_pressed();
+	void _on_copy_url_pressed();
+	void _reset_copy_button_text();
 	void _check_auth_status();
 	
 	// New email/password handlers
@@ -72,6 +76,7 @@ public:
 	void show_success();
 	void show_error(const String &p_message);
 	void show_info(const String &p_message); // For informational messages (not errors)
+	void show_url_fallback(const String &p_url); // For when browser can't open
 	
 	bool is_waiting_for_callback() const { return waiting_for_callback; }
 	bool is_auth_successful() const { return auth_successful; }

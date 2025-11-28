@@ -497,3 +497,102 @@ this image generation is intended to create a stand alone object, this could be 
     except Exception as e:
         raise Exception(f"Transparent background image generation failed: {str(e)}")
 
+
+def isolate_for_animation(
+    image_base64: str,
+    subject_description: str = "",
+    aspect_ratio: str = "1:1",
+    resolution: str = "1K"
+) -> Tuple[str, Optional[int], Optional[int]]:
+    """
+    Isolate a subject from an image onto a pure white background using Gemini 3 Pro.
+    Maintains the original style (realistic stays realistic, cartoon stays cartoon).
+    
+    Args:
+        image_base64: Base64 encoded input image
+        subject_description: Description of what to isolate (e.g., "the dog", "the character")
+        aspect_ratio: Output aspect ratio ("1:1", "16:9", etc.)
+        resolution: Output resolution ("1K", "2K", "4K")
+    
+    Returns:
+        Tuple of (base64_image_data, width, height)
+    """
+    client = get_gemini_client()
+    
+    # Decode base64 to PIL Image
+    image_bytes = base64.b64decode(image_base64)
+    pil_image = Image.open(io.BytesIO(image_bytes))
+    print(f"ISOLATE_FOR_ANIMATION: Input image: {pil_image.size}")
+    
+    # Style-preserving prompt
+    prompt = f"""Isolate {subject_description or 'the main subject'} from this image onto a pure white background.
+
+CRITICAL - MAINTAIN THE EXACT SAME STYLE:
+- If the image is PHOTOREALISTIC, keep it photorealistic
+- If the image is CARTOONISH/ILLUSTRATED, keep it cartoonish/illustrated  
+- If the image is PIXEL ART, keep it pixel art
+- NEVER change the art style - match it exactly
+
+REQUIREMENTS:
+- Same exact colors, proportions, details as the original
+- Pure white background (#FFFFFF) - no shadows, no environment
+- Subject centered and fully visible
+- Same pose and expression
+- NO style changes whatsoever
+
+Output should look like the original subject cut out and placed on white."""
+
+    config = types.GenerateContentConfig(
+        response_modalities=['IMAGE'],
+        image_config=types.ImageConfig(
+            aspect_ratio=aspect_ratio,
+            image_size=resolution
+        )
+    )
+    
+    # Use Gemini 3 Pro
+    model_name = "gemini-3-pro-image-preview"
+    print(f"ISOLATE_FOR_ANIMATION: Using {model_name}...")
+    
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[prompt, pil_image],
+            config=config
+        )
+        
+        if response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+            if candidate.content and candidate.content.parts:
+                for part in candidate.content.parts:
+                    # Try as_image() method
+                    if hasattr(part, 'as_image'):
+                        try:
+                            img = part.as_image()
+                            if img:
+                                width, height = img.size
+                                buffer = io.BytesIO()
+                                img.save(buffer, format='PNG')
+                                buffer.seek(0)
+                                result_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                print(f"ISOLATE_FOR_ANIMATION: ✅ Success: {width}x{height}")
+                                return result_base64, width, height
+                        except Exception:
+                            pass
+                    
+                    # Try inline_data
+                    if part.inline_data is not None and part.inline_data.data:
+                        pil_result, _ = _try_open_image_from_bytes(part.inline_data.data)
+                        width, height = pil_result.size
+                        buffer = io.BytesIO()
+                        pil_result.save(buffer, format='PNG')
+                        buffer.seek(0)
+                        result_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                        print(f"ISOLATE_FOR_ANIMATION: ✅ Success: {width}x{height}")
+                        return result_base64, width, height
+        
+        raise ValueError("No image in response")
+        
+    except Exception as e:
+        raise Exception(f"Isolation failed: {str(e)}")
+

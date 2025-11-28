@@ -536,6 +536,83 @@ String AIAnimationUI::format_progress_message(const Dictionary &p_progress) {
 	return "Generating...";
 }
 
+void AIAnimationUI::create_animation_failure_panel(
+	VBoxContainer *p_parent_container,
+	const String &p_job_id,
+	const String &p_error,
+	AIChatDock *p_dock
+) {
+	// Create failure panel with clear error display
+	PanelContainer *failure_panel = memnew(PanelContainer);
+	
+	Ref<StyleBoxFlat> failure_style = memnew(StyleBoxFlat);
+	failure_style->set_bg_color(Color(0.25, 0.1, 0.1, 0.95)); // Red-tinted error
+	failure_style->set_border_width_all(2);
+	failure_style->set_border_color(Color(0.9, 0.3, 0.3, 0.9)); // Red border
+	failure_style->set_corner_radius_all(8);
+	failure_style->set_content_margin_all(16);
+	failure_panel->add_theme_style_override("panel", failure_style);
+	
+	VBoxContainer *content = memnew(VBoxContainer);
+	content->add_theme_constant_override("separation", 12);
+	failure_panel->add_child(content);
+	
+	// Error header
+	HBoxContainer *header = memnew(HBoxContainer);
+	content->add_child(header);
+	
+	Label *error_icon = memnew(Label);
+	error_icon->set_text("❌");
+	error_icon->add_theme_font_size_override("font_size", 18);
+	header->add_child(error_icon);
+	
+	Label *error_title = memnew(Label);
+	error_title->set_text("Animation Generation Failed");
+	if (p_dock) {
+		error_title->add_theme_font_override("font", p_dock->get_theme_font("bold", "EditorFonts"));
+	}
+	error_title->add_theme_color_override("font_color", Color(0.95, 0.4, 0.4));
+	error_title->add_theme_font_size_override("font_size", 16);
+	header->add_child(error_title);
+	
+	// Error message
+	Label *error_label = memnew(Label);
+	error_label->set_text(p_error);
+	error_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	error_label->add_theme_color_override("font_color", Color(0.95, 0.85, 0.85));
+	content->add_child(error_label);
+	
+	// Helpful hint based on error type
+	String hint_text = "";
+	if (p_error.contains("content safety") || p_error.contains("safety filter")) {
+		hint_text = "💡 Tip: Try rephrasing your request. Avoid explicit violence, weapons, or harmful content.";
+	} else if (p_error.contains("timeout")) {
+		hint_text = "💡 Tip: The generation took too long. Try a simpler animation or retry.";
+	} else if (p_error.contains("connection") || p_error.contains("network")) {
+		hint_text = "💡 Tip: Check your internet connection and try again.";
+	} else {
+		hint_text = "💡 Tip: Try again or describe your animation differently.";
+	}
+	
+	Label *hint_label = memnew(Label);
+	hint_label->set_text(hint_text);
+	hint_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	hint_label->add_theme_font_size_override("font_size", 12);
+	hint_label->add_theme_color_override("font_color", Color(0.8, 0.8, 0.6, 0.9));
+	content->add_child(hint_label);
+	
+	// Job ID (small, subtle)
+	Label *job_id_label = memnew(Label);
+	job_id_label->set_text("Job ID: " + p_job_id);
+	job_id_label->add_theme_font_size_override("font_size", 10);
+	job_id_label->add_theme_color_override("font_color", Color(0.6, 0.5, 0.5, 0.6));
+	content->add_child(job_id_label);
+	
+	p_parent_container->add_child(failure_panel);
+	
+	print_line("AIAnimationUI: Created failure panel for " + p_job_id.substr(0, 8) + ": " + p_error);
+}
+
 void AIAnimationUI::_on_thumbnail_loaded(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, TextureRect *p_rect, HTTPRequest *p_http) {
 	// Clean up HTTP request
 	if (p_http && p_http->get_parent()) {

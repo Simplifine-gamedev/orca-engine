@@ -80,6 +80,7 @@ public:
 	void _notify_auth_success();
 	void _notify_auth_error(const String &p_message);
 	void _notify_auth_info(const String &p_message);
+	void _notify_url_fallback(const String &p_url);
 
 	// Token management
 	void store_tokens(const String &p_access_token, const String &p_refresh_token, const String &p_user_id, const String &p_email, const String &p_name);

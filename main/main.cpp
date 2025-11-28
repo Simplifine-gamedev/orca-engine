@@ -222,6 +222,7 @@ static bool auto_build_solutions = false;
 static String debug_server_uri;
 static bool wait_for_import = false;
 static bool restore_editor_window_layout = true;
+static AuthManager *auth_manager = nullptr;
 #ifndef DISABLE_DEPRECATED
 static int converter_max_kb_file = 4 * 1024; // 4MB
 static int converter_max_line_length = 100000;
@@ -4496,7 +4497,6 @@ int Main::start() {
 		}
 #endif // MODULE_GDSCRIPT_ENABLED
 
-	AuthManager *auth_manager = nullptr;
 	if (editor || project_manager) {
 		print_line("ORCA AUTH: Initializing authentication system");
 		auth_manager = memnew(AuthManager);
@@ -5180,6 +5180,10 @@ void Main::cleanup(bool p_force) {
 #endif // XR_DISABLED
 
 #ifdef TOOLS_ENABLED
+	if (auth_manager) {
+		memdelete(auth_manager);
+		auth_manager = nullptr;
+	}
 	GDExtensionManager::get_singleton()->deinitialize_extensions(GDExtension::INITIALIZATION_LEVEL_EDITOR);
 	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_EDITOR);
 	unregister_editor_types();

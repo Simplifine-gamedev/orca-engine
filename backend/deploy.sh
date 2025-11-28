@@ -202,7 +202,7 @@ else
         --max-instances 50 \
         --timeout 900 \
         --execution-environment gen2 \
-        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION},DETAILED_LOGGING=auto"
+        --set-env-vars "FLASK_ENV=production,BACKEND_VERSION=${BACKEND_VERSION},API_VERSION=${API_VERSION},FRONTEND_VERSION=${FRONTEND_VERSION},ORCA_VERSION=${ORCA_VERSION},DETAILED_LOGGING=auto,ANIMATION_SERVER_URL=http://34.28.49.48:8001"
 fi
 
 # Get the service URL
