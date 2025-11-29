@@ -16,6 +16,7 @@
 #include "ai_auto_snapshots.h"
 #include "ai_animation_tracker.h"
 #include "ai_animation_ui.h"
+#include "ai_animation_export.h"
 #include "ai_conversation_persistence.h"
 #include "ai_chat_save_coordinator.h"
 #include "editor/auth/auth_manager.h"
@@ -7283,13 +7284,41 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
         } else if (p_tool_name == "2d_animation_manager") {
             String op = p_args.get("op", "");
             if (op == "create") {
+                // Check if auto-export was specified
+                String export_dest = p_args.get("export_destination", "");
+                if (!export_dest.is_empty()) {
+                    String resource_name = p_args.get("export_resource_name", "sprite");
+                    String template_type = p_args.get("export_template_type", "character");
+                    
+                    // Build clear file list
+                    String files_msg = "Animation project created! Will auto-export to:\n";
+                    files_msg += "  📁 " + export_dest + "\n";
+                    files_msg += "  📄 " + resource_name + "_sheet.png\n";
+                    files_msg += "  📄 " + resource_name + "_frames.tres\n";
+                    files_msg += "  📄 " + resource_name + ".tscn\n";
+                    files_msg += "  📄 " + resource_name + ".gd\n";
+                    files_msg += "  🎭 Scene type: " + template_type;
+                    return files_msg;
+                }
                 return "Animation project created successfully";
-            } else             if (op == "status") {
+            } else if (op == "status") {
                 String status = p_result.get("status", "unknown");
                 if (status == "completed") {
                     Array completed_anims = p_result.get("completed_animations", Array());
                     int completed_count = completed_anims.size();
-                    return "Animation generation completed: " + String::num_int64(completed_count) + " animations ready";
+                    
+                    // Check for saved files info
+                    String saved_summary = p_result.get("saved_files_summary", "");
+                    String scene_type = p_result.get("scene_type", "");
+                    
+                    String msg = "Animation generation completed: " + String::num_int64(completed_count) + " animations ready";
+                    if (!saved_summary.is_empty()) {
+                        msg += "\n" + saved_summary;
+                    }
+                    if (!scene_type.is_empty()) {
+                        msg += "\n🎭 Scene type: " + scene_type;
+                    }
+                    return msg;
                 } else if (status == "processing") {
                     return "Animation generation in progress...";
                 } else {
@@ -7303,6 +7332,26 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
             } else if (op == "list_jobs") {
                 int total = p_result.get("total_returned", 0);
                 return "Listed " + String::num_int64(total) + " animation project(s)";
+            } else if (op == "download") {
+                int total_files = p_result.get("total_files", 0);
+                String ref = p_result.get("reference", "");
+                Array downloads = p_result.get("downloads", Array());
+                
+                // Build clear file path list
+                String msg = "Download ready: " + String::num_int64(total_files) + " file(s)\n";
+                msg += "Reference: " + ref + "\n";
+                msg += "Files to save:\n";
+                for (int i = 0; i < MIN(downloads.size(), 5); i++) {
+                    Dictionary dl = downloads[i];
+                    String dest = dl.get("destination", "");
+                    if (!dest.is_empty()) {
+                        msg += "  📄 " + dest + "\n";
+                    }
+                }
+                if (downloads.size() > 5) {
+                    msg += "  ... and " + String::num_int64(downloads.size() - 5) + " more";
+                }
+                return msg;
             }
         }
         
@@ -14660,6 +14709,10 @@ AIChatDock::AIChatDock() {
 	animation_tracker->initialize(anim_api_base, this);
 	animation_tracker->set_on_job_completed(callable_mp(this, &AIChatDock::_on_animation_job_completed));
 	animation_tracker->set_on_job_failed(callable_mp(this, &AIChatDock::_on_animation_job_failed));
+	
+	// Initialize animation exporter for Godot template exports
+	animation_exporter.instantiate();
+	animation_exporter->initialize(this);
 	print_line("🎬 ANIMATION_TRACKER: Initialized with API base: " + anim_api_base);
 	
 	// Initialize enhanced graph parser for world-class context
@@ -15598,6 +15651,13 @@ void AIChatDock::_on_export_animation_pressed(Button *p_button) {
 	
 	print_line("Export animation: " + animation_id + " from project " + project_id);
 	
+	// Use the new AIAnimationExport dialog (supports both simple and Godot template exports)
+	if (animation_exporter.is_valid()) {
+		animation_exporter->show_export_dialog(project_id, animation_id);
+		return;
+	}
+	
+	// Fallback to old dialog if exporter not initialized
 	// Store for later use
 	pending_export_animation_id = animation_id;
 	pending_export_project_id = project_id;
@@ -15776,9 +15836,9 @@ void AIChatDock::_on_anim_export_file_selected(const String &p_path) {
 	pending_export_project_id = "";
 }
 
-void AIChatDock::_trigger_auto_export(const String &p_anim_id, const String &p_project_id, const String &p_save_path, int p_resolution, const String &p_format) {
+void AIChatDock::_trigger_auto_export(const String &p_anim_id, const String &p_project_id, const String &p_save_path, int p_resolution, const String &p_format, const String &p_template_type, const String &p_resource_name, int p_fps) {
 	// Delegate to AIAnimationUI
-	AIAnimationUI::trigger_auto_export(p_anim_id, p_project_id, p_save_path, p_resolution, p_format, this);
+	AIAnimationUI::trigger_auto_export(p_anim_id, p_project_id, p_save_path, p_resolution, p_format, this, p_template_type, p_resource_name, p_fps);
 }
 
 void AIChatDock::_on_anim_export_request_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
@@ -20756,40 +20816,79 @@ void AIChatDock::_on_animation_job_completed(const String &p_job_id, const Strin
 		String export_dest = p_result.get("export_destination", "");
 		int export_res = p_result.get("export_resolution", 128);
 		String export_fmt = p_result.get("export_format", "sprite_sheet");
+		String template_type = p_result.get("export_template_type", "character");
+		String resource_name = p_result.get("export_resource_name", "sprite");
+		int export_fps = p_result.get("export_fps", 10);
 		
-		print_line("AUTO_EXPORT: Triggering export to " + export_dest + " at " + itos(export_res) + "px");
+		print_line("AUTO_EXPORT: Triggering export to " + export_dest + " at " + itos(export_res) + "px (format: " + export_fmt + ")");
 		
-		// Export each animation
-		for (int i = 0; i < completed_animations_data.size(); i++) {
-			Dictionary anim_data = completed_animations_data[i];
-			String anim_id = anim_data.get("id", anim_data.get("name", ""));
-			if (anim_id.is_empty()) continue;
-			
-			// Determine save path
-			String save_path = export_dest;
-			if (save_path.ends_with("/")) {
-				// Directory - create file per animation
-				save_path += anim_id + (export_fmt == "gif" ? ".gif" : ".png");
-			} else if (completed_animations_data.size() > 1) {
-				// Multiple anims but single file path - append animation name
-				String base = save_path.get_basename();
-				String ext = save_path.get_extension();
-				save_path = base + "_" + anim_id + "." + ext;
+		if (export_fmt == "godot_template") {
+			// For Godot template: export ALL animations to a folder at once
+			// The first animation ID is used as reference; server will export all
+			String first_anim_id = "";
+			if (completed_animations_data.size() > 0) {
+				Dictionary anim_data = completed_animations_data[0];
+				first_anim_id = anim_data.get("id", anim_data.get("name", ""));
 			}
 			
-			// Store info and trigger export request
-			pending_export_animation_id = anim_id + "|" + export_fmt + "|" + itos(export_res);
-			pending_export_project_id = supabase_project_id;
+			// Ensure destination ends with /
+			String folder_path = export_dest;
+			if (!folder_path.ends_with("/")) {
+				folder_path += "/";
+			}
 			
-			// Make the export request (similar to manual export)
-			_trigger_auto_export(anim_id, supabase_project_id, save_path, export_res, export_fmt);
+			// If resource_name is empty, derive from folder name
+			if (resource_name.is_empty()) {
+				resource_name = export_dest.get_file();
+				if (resource_name.is_empty()) {
+					resource_name = "sprite";
+				}
+			}
+			
+			_trigger_auto_export(first_anim_id, supabase_project_id, folder_path, export_res, export_fmt, template_type, resource_name, export_fps);
+			
+			ai_result["saved_to"] = folder_path;
+			Array files_created;
+			// Standard naming: <name>_sheet.png, <name>_frames.tres, <name>.tscn, <name>.gd
+			files_created.push_back(resource_name + "_sheet.png");
+			files_created.push_back(resource_name + "_frames.tres");
+			files_created.push_back(resource_name + ".tscn");
+			files_created.push_back(resource_name + ".gd");
+			ai_result["files_created"] = files_created;
+			ai_result["message"] = String(ai_result["message"]) + " Godot resources saved to: " + folder_path;
+		} else {
+			// Simple format: export each animation individually
+			for (int i = 0; i < completed_animations_data.size(); i++) {
+				Dictionary anim_data = completed_animations_data[i];
+				String anim_id = anim_data.get("id", anim_data.get("name", ""));
+				if (anim_id.is_empty()) continue;
+				
+				// Determine save path
+				String save_path = export_dest;
+				if (save_path.ends_with("/")) {
+					// Directory - create file per animation
+					save_path += anim_id + (export_fmt == "gif" ? ".gif" : ".png");
+				} else if (completed_animations_data.size() > 1) {
+					// Multiple anims but single file path - append animation name
+					String base = save_path.get_basename();
+					String ext = save_path.get_extension();
+					save_path = base + "_" + anim_id + "." + ext;
+				}
+				
+				// Store info and trigger export request
+				pending_export_animation_id = anim_id + "|" + export_fmt + "|" + itos(export_res);
+				pending_export_project_id = supabase_project_id;
+				
+				// Make the export request
+				_trigger_auto_export(anim_id, supabase_project_id, save_path, export_res, export_fmt);
+			}
+			ai_result["saved_to"] = export_dest;
+			ai_result["message"] = String(ai_result["message"]) + " Sprite sheets saved to: " + export_dest;
 		}
 		
 		// Add export info to AI result
-		ai_result["saved_to"] = export_dest;
 		ai_result["resolution"] = export_res;
 		ai_result["format"] = export_fmt;
-		ai_result["message"] = String(ai_result["message"]) + " Sprite sheets saved to: " + export_dest;
 		
 		// Update conversation history with export info (re-update msg.content)
 		for (int i = chat_history.size() - 1; i >= 0; i--) {
@@ -21001,10 +21100,13 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 		String export_dest = p_result.get("export_destination", "");
 		int export_res = p_result.get("export_resolution", 128);
 		String export_fmt = p_result.get("export_format", "sprite_sheet");
+		String export_template_type = p_result.get("export_template_type", "character");
+		String export_resource_name = p_result.get("export_resource_name", "sprite");
+		int export_fps = p_result.get("export_fps", 10);
 		
-		// Start tracking with export params
+		// Start tracking with export params (including template type for correct scene generation)
 		print_line("   Starting job tracking...");
-		animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest, export_res, export_fmt);
+		animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest, export_res, export_fmt, export_template_type, export_resource_name, export_fps);
 		print_line("✅ ANIM_TRACKER: Started polling for job " + job_id);
 	} else {
 		print_line("   ❌ Cannot track: ui_panel=" + String(ui_panel ? "valid" : "null") + 
@@ -21031,11 +21133,14 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 				ui_panel->add_child(vbox);
 				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
 				
-				// Extract export params
+				// Extract export params (including new template type fields)
 				String export_dest2 = p_result.get("export_destination", "");
 				int export_res2 = p_result.get("export_resolution", 128);
 				String export_fmt2 = p_result.get("export_format", "sprite_sheet");
-				animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest2, export_res2, export_fmt2);
+				String export_template_type2 = p_result.get("export_template_type", "character");
+				String export_resource_name2 = p_result.get("export_resource_name", "sprite");
+				int export_fps2 = p_result.get("export_fps", 10);
+				animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest2, export_res2, export_fmt2, export_template_type2, export_resource_name2, export_fps2);
 				print_line("✅ ANIM_TRACKER: Started polling for job " + job_id + " (fallback path)");
 			}
 		}

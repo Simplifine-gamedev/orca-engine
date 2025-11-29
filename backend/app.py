@@ -103,13 +103,67 @@ else:
     print("🔇 DETAILED_LOGGING: DISABLED (default - set DETAILED_LOGGING=true to enable)")
 # --- End LiteLLM Setup ---
 
-# Vertex AI configuration for Claude models (ENABLED)
+# AWS Bedrock configuration for Claude models (DEFAULT - takes precedence over Vertex AI)
+# Use AWS_ACCESS_KEY as the AWS access key ID (AWS_BEDROCK_API_KEY is a different key, not the AWS access key)
+AWS_ACCESS_KEY_ID_RAW = (
+    os.getenv('AWS_ACCESS_KEY') or 
+    os.getenv('AWS_ACCESS_KEY_ID')
+)
+AWS_SECRET_ACCESS_KEY_RAW = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION') or os.getenv('AWS_REGION') or 'us-east-1'
+
+# Clean credentials (remove quotes, whitespace)
+AWS_ACCESS_KEY_ID = None
+if AWS_ACCESS_KEY_ID_RAW:
+    AWS_ACCESS_KEY_ID = AWS_ACCESS_KEY_ID_RAW.strip().strip('"\'')
+    # Validate format
+    if not AWS_ACCESS_KEY_ID.startswith(('AKIA', 'ASIA')) or len(AWS_ACCESS_KEY_ID) != 20:
+        print(f"⚠️  AWS_BEDROCK: Invalid access key format (expected AKIA/ASIA + 20 chars, got {len(AWS_ACCESS_KEY_ID)} chars)")
+        AWS_ACCESS_KEY_ID = None
+
+AWS_SECRET_ACCESS_KEY = None
+if AWS_SECRET_ACCESS_KEY_RAW:
+    AWS_SECRET_ACCESS_KEY = AWS_SECRET_ACCESS_KEY_RAW.strip().strip('"\'')
+    if len(AWS_SECRET_ACCESS_KEY) != 40:
+        print(f"⚠️  AWS_BEDROCK: Invalid secret key format (expected 40 chars, got {len(AWS_SECRET_ACCESS_KEY)} chars)")
+        AWS_SECRET_ACCESS_KEY = None
+
+# Set up AWS Bedrock authentication for Claude models
+# Check for bearer token (API key) authentication first
+AWS_BEDROCK_API_KEY = os.getenv('AWS_BEDROCK_API_KEY')
+if AWS_BEDROCK_API_KEY:
+    # Option 1: Use bearer token authentication (preferred for API key)
+    os.environ['AWS_BEARER_TOKEN_BEDROCK'] = AWS_BEDROCK_API_KEY.strip().strip('"\'')
+    os.environ['AWS_DEFAULT_REGION'] = AWS_DEFAULT_REGION
+    os.environ['AWS_REGION_NAME'] = AWS_DEFAULT_REGION
+    print(f"AWS_BEDROCK: Configured for Claude models (using bearer token authentication)")
+    print(f"   Region: {AWS_DEFAULT_REGION}")
+    bearer_token_clean = AWS_BEDROCK_API_KEY.strip().strip('"\'')
+    print(f"   Bearer Token: set (length: {len(bearer_token_clean)})")
+    print("AWS_BEDROCK: Claude models will use AWS Bedrock by default")
+elif AWS_ACCESS_KEY_ID:
+    # Option 2: Use standard AWS credentials (boto3 method)
+    os.environ['AWS_ACCESS_KEY_ID'] = AWS_ACCESS_KEY_ID
+    if AWS_SECRET_ACCESS_KEY:
+        os.environ['AWS_SECRET_ACCESS_KEY'] = AWS_SECRET_ACCESS_KEY
+    os.environ['AWS_DEFAULT_REGION'] = AWS_DEFAULT_REGION
+    os.environ['AWS_REGION_NAME'] = AWS_DEFAULT_REGION
+    print(f"AWS_BEDROCK: Configured for Claude models (using AWS credentials)")
+    print(f"   Region: {AWS_DEFAULT_REGION}")
+    print(f"   Access Key: {'set' if AWS_ACCESS_KEY_ID else 'not set'}")
+    print(f"   Secret Key: {'set' if AWS_SECRET_ACCESS_KEY else 'using default AWS credentials'}")
+    print("AWS_BEDROCK: Claude models will use AWS Bedrock by default")
+else:
+    print("AWS_BEDROCK: No AWS credentials found - will check Vertex AI or Anthropic")
+    print("   (Set AWS_BEDROCK_API_KEY for bearer token auth, or AWS_ACCESS_KEY for boto3 auth)")
+
+# Vertex AI configuration for Claude models (fallback if Bedrock not configured)
 VERTEX_AI_PROJECT = os.getenv('VERTEXAI_PROJECT')
 VERTEX_AI_LOCATION = os.getenv('VERTEXAI_LOCATION', 'us-east5')  # Claude 4 works in us-east5
 VERTEX_AI_CREDENTIALS_PATH = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 
-# Set up Vertex AI authentication for Claude models
-if VERTEX_AI_PROJECT:
+# Set up Vertex AI authentication for Claude models (only if Bedrock not configured)
+if VERTEX_AI_PROJECT and not AWS_ACCESS_KEY_ID:
     os.environ['VERTEXAI_PROJECT'] = VERTEX_AI_PROJECT
     os.environ['VERTEXAI_LOCATION'] = VERTEX_AI_LOCATION
     
@@ -128,9 +182,11 @@ if VERTEX_AI_PROJECT:
             print("VERTEX_AI: Using default GCP authentication (gcloud CLI credentials)")
     
     print(f"VERTEX_AI: Configured for project {VERTEX_AI_PROJECT} in location {VERTEX_AI_LOCATION}")
-    print("VERTEX_AI: Claude models will use Vertex AI by default")
+    print("VERTEX_AI: Claude models will use Vertex AI (Bedrock not configured)")
+elif VERTEX_AI_PROJECT and AWS_ACCESS_KEY_ID:
+    print("VERTEX_AI: Vertex AI configured but Bedrock takes precedence (AWS access key is set)")
 else:
-    print("WARNING: VERTEXAI_PROJECT not set - Claude models will use direct Anthropic API")
+    print("VERTEX_AI: VERTEXAI_PROJECT not set - Claude models will use direct Anthropic API if Bedrock not configured")
 
 # --- Global State & Configuration ---
 
@@ -260,6 +316,13 @@ def _get_model_token_limit(model: str) -> int:
         "anthropic/claude-3-5-sonnet-20241022": 180000,
         "anthropic/claude-3-5-sonnet": 180000,
         "anthropic/claude-3-opus": 180000,
+        
+        # AWS Bedrock Claude models - same limits as direct Anthropic
+        "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 180000,  # Claude Sonnet 4 (correct format with us. prefix)
+        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0": 180000,  # Alternative format (may require inference profile)
+        "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0": 180000,
+        "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0": 180000,
+        "bedrock/anthropic.claude-3-sonnet-20240229-v1:0": 180000,
         
         # Vertex AI Claude models - same limits as direct Anthropic
         "vertex_ai/claude-sonnet-4@20250514": 180000,
@@ -1071,33 +1134,68 @@ else:
     raise ValueError("FLASK_SECRET_KEY must be set in production")
 
 # Multi-provider model configuration using LiteLLM
-# Claude automatically uses Vertex AI (leverages your GCP credits)
+# Claude automatically uses AWS Bedrock by default (if AWS_BEDROCK_API_KEY is set)
 def _get_claude_model():
     """
-    Get Claude model - Vertex AI by default (uses your GCP credits).
+    Get Claude model - AWS Bedrock by default (if AWS_BEDROCK_API_KEY is set).
+    
+    Priority order:
+    1. AWS Bedrock (if AWS_BEDROCK_API_KEY is set)
+    2. Vertex AI (if VERTEXAI_PROJECT is set and Bedrock not configured)
+    3. Direct Anthropic API (fallback)
     
     The frontend will only see 'claude-4' as an option, but the backend
-    automatically uses Vertex AI for Claude to leverage your GCP credits.
+    automatically selects the appropriate provider based on configuration.
     
-    To switch to direct Anthropic API later, set: CLAUDE_PROVIDER=anthropic
+    To force a specific provider, set: CLAUDE_PROVIDER=bedrock|vertex_ai|anthropic
     """
-    # Check if user explicitly wants direct Anthropic
-    if os.getenv("CLAUDE_PROVIDER", "").lower() == "anthropic":
+    # Check if user explicitly wants a specific provider
+    claude_provider = os.getenv("CLAUDE_PROVIDER", "").lower()
+    
+    if claude_provider == "anthropic":
         print("CLAUDE_CONFIG: Using direct Anthropic API (CLAUDE_PROVIDER=anthropic)")
         return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
+    elif claude_provider == "vertex_ai":
+        if os.getenv('VERTEXAI_PROJECT'):
+            print(f"CLAUDE_CONFIG: Using Vertex AI for Claude (CLAUDE_PROVIDER=vertex_ai)")
+            return os.getenv("CLAUDE_MODEL", "vertex_ai/claude-sonnet-4@20250514")
+        else:
+            print("CLAUDE_CONFIG: CLAUDE_PROVIDER=vertex_ai but VERTEXAI_PROJECT not set, falling back to Bedrock/Anthropic")
+    elif claude_provider == "bedrock":
+        aws_bedrock_api_key = os.getenv('AWS_BEDROCK_API_KEY')
+        aws_access_key = (
+            os.getenv('AWS_ACCESS_KEY') or 
+            os.getenv('AWS_ACCESS_KEY_ID')
+        )
+        if aws_bedrock_api_key or aws_access_key:
+            print("CLAUDE_CONFIG: Using AWS Bedrock for Claude (CLAUDE_PROVIDER=bedrock)")
+            return os.getenv("CLAUDE_MODEL", "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0")
+        else:
+            print("CLAUDE_CONFIG: CLAUDE_PROVIDER=bedrock but AWS credentials not set, falling back to Vertex AI/Anthropic")
     
-    # Default to Vertex AI if project is configured (uses GCP credits)
+    # Default priority: Bedrock > Vertex AI > Anthropic
+    # Check for Bedrock API key (bearer token) or AWS credentials
+    aws_bedrock_api_key = os.getenv('AWS_BEDROCK_API_KEY')
+    aws_access_key = (
+        os.getenv('AWS_ACCESS_KEY') or 
+        os.getenv('AWS_ACCESS_KEY_ID')
+    )
+    if aws_bedrock_api_key or aws_access_key:
+        print(f"CLAUDE_CONFIG: Using AWS Bedrock for Claude")
+        return os.getenv("CLAUDE_MODEL", "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0")
+    
+    # Fallback to Vertex AI if project is configured (uses GCP credits)
     if os.getenv('VERTEXAI_PROJECT'):
         print(f"CLAUDE_CONFIG: Using Vertex AI for Claude (Project: {os.getenv('VERTEXAI_PROJECT')})")
         return os.getenv("CLAUDE_MODEL", "vertex_ai/claude-sonnet-4@20250514")
     
-    # Fallback to direct Anthropic if no Vertex project
-    print("CLAUDE_CONFIG: No VERTEXAI_PROJECT found, falling back to direct Anthropic API")
+    # Final fallback to direct Anthropic if no other provider configured
+    print("CLAUDE_CONFIG: No Bedrock or Vertex AI configured, falling back to direct Anthropic API")
     return os.getenv("CLAUDE_MODEL", "anthropic/claude-sonnet-4-20250514")
 
 BASE_MODEL_MAP = {
     "gemini-2.5": os.getenv("GEMINI_MODEL", "gemini/gemini-2.5-pro"),
-    "claude-4": _get_claude_model(),  # Dynamic Claude selection (Vertex AI by default)
+    "claude-4": _get_claude_model(),  # Dynamic Claude selection (Bedrock by default if AWS_BEDROCK_API_KEY is set)
     "gpt-5.1": os.getenv("GPT51_MODEL", "openai/gpt-5.1"),
     "gpt-5": os.getenv("OPENAI_MODEL", "openai/gpt-5"),
     "gpt-4o": os.getenv("GPT4O_MODEL", "openai/gpt-4o"),
@@ -6633,6 +6731,9 @@ def animation_2d_manager_internal(arguments: dict, conversation_messages: list =
                 export_destination = arguments.get('export_destination', '')
                 export_resolution = arguments.get('export_resolution', 128)
                 export_format = arguments.get('export_format', 'sprite_sheet')
+                export_template_type = arguments.get('export_template_type', 'character')  # player/character/object/effect/simple
+                export_resource_name = arguments.get('export_resource_name', 'sprite')
+                export_fps = arguments.get('export_fps', 10)
                 
                 response_data = {
                     "success": True,
@@ -6651,6 +6752,9 @@ def animation_2d_manager_internal(arguments: dict, conversation_messages: list =
                     response_data["export_destination"] = export_destination
                     response_data["export_resolution"] = export_resolution
                     response_data["export_format"] = export_format
+                    response_data["export_template_type"] = export_template_type
+                    response_data["export_resource_name"] = export_resource_name
+                    response_data["export_fps"] = export_fps
                     response_data["message"] += f" Will auto-export to {export_destination} when complete."
                 
                 return response_data
@@ -8733,6 +8837,14 @@ def chat():
                             "request_timeout": 300  # CRITICAL: Explicit request timeout for GCP Cloud Run
                         }
                         
+                        # CRITICAL: Bedrock message formatting fixes
+                        # Note: modify_params is NOT a valid Bedrock API parameter - it's a LiteLLM internal param
+                        # LiteLLM should handle message formatting automatically, but we filter empty messages ourselves
+                        if "bedrock" in model_try.lower():
+                            # Don't set modify_params - it causes "Extra inputs are not permitted" error
+                            # LiteLLM will handle message formatting internally
+                            pass
+                        
                         user_context_payload = {}
                         try:
                             if hasattr(g, 'user_id') and g.user_id:
@@ -8769,6 +8881,46 @@ def chat():
                         
                         # Execute request; if provider rejects thinking params, retry without them
                         try:
+                            # CRITICAL: Bedrock-specific message validation and fixes
+                            if "bedrock" in model_try.lower():
+                                original_messages = completion_params.get("messages", [])
+                                filtered_messages = []
+                                tool_call_ids_seen = set()
+                                
+                                for msg in original_messages:
+                                    role = msg.get("role")
+                                    content = msg.get("content", "")
+                                    tool_calls = msg.get("tool_calls", [])
+                                    
+                                    # Skip assistant messages with empty content ONLY if they have NO tool_calls
+                                    # Bedrock requires assistant messages with tool_use before tool_result
+                                    if role == "assistant" and (not content or content.strip() == "" or content == "<null>"):
+                                        if not tool_calls:
+                                            # No tool calls and no content - safe to skip
+                                            continue
+                                        else:
+                                            # Has tool calls - MUST KEEP this message, but fix the content
+                                            # Bedrock doesn't accept empty content, so set a placeholder
+                                            msg = msg.copy()  # Don't mutate original
+                                            msg["content"] = ""  # Empty string is accepted by LiteLLM for tool_use messages
+                                            print(f"BEDROCK_FIX: Preserving assistant message with {len(tool_calls)} tool_calls (fixed empty content)")
+                                    
+                                    # For tool messages, validate they have a corresponding tool call
+                                    if role == "tool":
+                                        tool_call_id = msg.get("tool_call_id")
+                                        if tool_call_id:
+                                            # Check if we've already seen this tool_call_id (duplicate)
+                                            if tool_call_id in tool_call_ids_seen:
+                                                print(f"BEDROCK_FIX: Skipping duplicate tool result for tool_call_id: {tool_call_id}")
+                                                continue
+                                            tool_call_ids_seen.add(tool_call_id)
+                                    
+                                    filtered_messages.append(msg)
+                                
+                                completion_params["messages"] = filtered_messages
+                                if len(filtered_messages) < len(original_messages):
+                                    print(f"BEDROCK_FIX: Filtered out {len(original_messages) - len(filtered_messages)} problematic messages")
+                            
                             # CRITICAL: Filter out internal Godot parameters before calling LiteLLM
                             litellm_params = {k: v for k, v in completion_params.items() 
                                             if not k.startswith('_godot')}
@@ -8976,9 +9128,12 @@ def chat():
                         break
                         
                     except Exception as e:
-                        print(f"STREAM_ERROR: {e}")
+                        import traceback
                         err_name = e.__class__.__name__
                         error_str = str(e)
+                        error_traceback = traceback.format_exc()
+                        print(f"STREAM_ERROR: {err_name}: {error_str}")
+                        print(f"STREAM_ERROR_TRACEBACK: {error_traceback}")
                         overloaded = "Overloaded" in error_str
                         transient = err_name in ("InternalServerError", "RateLimitError", "ServiceUnavailableError") or overloaded
                         
@@ -11088,6 +11243,12 @@ def generate_script():
                 }
                 completion_params.update(reasoning_params)
                 
+                # CRITICAL: Bedrock message formatting - modify_params is NOT a valid Bedrock API parameter
+                # LiteLLM handles message formatting internally
+                if "bedrock" in model_id.lower():
+                    # Don't set modify_params - it causes "Extra inputs are not permitted" error
+                    pass
+                
                 try:
                     response = completion(**completion_params)
                 except Exception as e_comp:
@@ -11595,6 +11756,12 @@ def predict_code_edit():
                 
                 # Apply reasoning params first, then set temperature if not in thinking mode
                 completion_params.update(reasoning_params)
+                
+                # CRITICAL: Bedrock message formatting - modify_params is NOT a valid Bedrock API parameter
+                # LiteLLM handles message formatting internally
+                if "bedrock" in model_id.lower():
+                    # Don't set modify_params - it causes "Extra inputs are not permitted" error
+                    pass
                 if not reasoning_params:  # Only set lower temp if NOT in thinking mode
                     completion_params["temperature"] = 0.2  # Lower temperature for precise indentation (GPT-5.x min is 0.1)
                 
@@ -14479,6 +14646,72 @@ def export_animation_proxy():
             "error": f"Export failed: {error_msg}"
         }), 500
 
+
+@app.route('/animation/export/godot_template', methods=['POST'])
+def export_godot_template_proxy():
+    """Proxy endpoint for Godot template export requests"""
+    try:
+        animation_server_url = ANIMATION_SERVER_URL
+        
+        data = request.get_json() or {}
+        project_id = data.get('project_id', '')
+        animation_ids = data.get('animation_ids', [])
+        template_type = data.get('template_type', 'character')
+        resource_name = data.get('resource_name', 'sprite')
+        resolution = data.get('resolution', 128)
+        fps = data.get('fps', 10)
+        
+        print(f"GODOT_TEMPLATE_PROXY: project={project_id}, anims={animation_ids}, template={template_type}, name={resource_name}")
+        
+        response = requests.post(
+            f"{animation_server_url}/export/godot_template",
+            json=data,
+            timeout=120  # Longer timeout for template generation
+        )
+        response.raise_for_status()
+        result = response.json()
+        
+        print(f"GODOT_TEMPLATE_PROXY: Template export completed - {len(result.get('files', {}))} files")
+        
+        return jsonify(result)
+        
+    except requests.exceptions.Timeout:
+        print(f"GODOT_TEMPLATE_PROXY_TIMEOUT: Export took too long")
+        return jsonify({
+            "success": False,
+            "error": "Template export timeout - animation server took too long"
+        }), 504
+        
+    except requests.exceptions.ConnectionError as e:
+        print(f"GODOT_TEMPLATE_PROXY_CONN_ERROR: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Cannot connect to animation server"
+        }), 503
+        
+    except requests.exceptions.HTTPError as e:
+        print(f"GODOT_TEMPLATE_PROXY_HTTP_ERROR: {e}")
+        status_code = e.response.status_code if e.response else 500
+        error_detail = ""
+        try:
+            error_detail = e.response.json().get("detail", "")
+        except:
+            pass
+        return jsonify({
+            "success": False,
+            "error": f"Animation server error: {error_detail}" if error_detail else f"Animation server error (HTTP {status_code})"
+        }), status_code
+            
+    except Exception as e:
+        print(f"GODOT_TEMPLATE_PROXY_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": f"Template export failed: {str(e)}"
+        }), 500
+
+
 @app.route('/pricing/tiers', methods=['GET'])
 def get_pricing_tiers():
     """Get available pricing tiers"""
@@ -14521,7 +14754,12 @@ print(f"AUTO_UPDATE: Orca Engine v{auto_update_manager.current_version} - Update
 
 # Print Claude configuration on startup
 claude_model_id = BASE_MODEL_MAP.get("claude-4", "unknown")
-if "vertex_ai" in claude_model_id:
+if "bedrock" in claude_model_id:
+    print(f"✅ CLAUDE_CONFIG: Using AWS Bedrock for Claude")
+    print(f"   Model ID: {claude_model_id}")
+    print(f"   Region: {os.getenv('AWS_DEFAULT_REGION', 'us-east-1')}")
+    print(f"   Frontend shows: 'claude-4' (simplified)")
+elif "vertex_ai" in claude_model_id:
     print(f"✅ CLAUDE_CONFIG: Using Vertex AI for Claude (leveraging your GCP credits)")
     print(f"   Model ID: {claude_model_id}")
     print(f"   Frontend shows: 'claude-4' (simplified)")

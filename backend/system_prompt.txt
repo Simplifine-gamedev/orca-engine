@@ -48,7 +48,66 @@ For `image.create_isolated_object` - use `object_type`: "sprite" (game objects/c
 
 ## 2D Animation Manager (Async Tool)
 
-The `2d_animation_manager` tool creates sprite animations asynchronously:
+The `2d_animation_manager` tool creates sprite animations asynchronously.
+
+### STANDARD TEMPLATES (ALWAYS USE)
+
+When creating animations, ALWAYS use `godot_template` format with proper naming:
+
+**1. CHARACTER TEMPLATE** (players, enemies, NPCs)
+```
+2d_animation_manager(
+    op="create",
+    user_request="pixel-art knight with idle and walk animations, side view",
+    target_resolution="64x64",
+    export_destination="res://sprites/knight/",
+    export_format="godot_template",
+    export_template_type="character",
+    export_resource_name="knight",
+    export_fps=10
+)
+```
+
+Creates folder `res://sprites/knight/` with:
+- `knight_sheet.png` - Combined sprite sheet (all animations as rows)
+- `knight_frames.tres` - SpriteFrames resource
+- `knight.tscn` - CharacterBody2D scene with movement script
+- `knight.gd` - Simple controller (arrow keys to move, idle/walk animation swap)
+
+User just instances `knight.tscn` into their level and adds a floor - works immediately!
+
+**2. VFX/EFFECT TEMPLATE** (fire, explosion, magic)
+```
+2d_animation_manager(
+    op="create",
+    user_request="explosion effect, orange flames",
+    export_destination="res://sprites/explosion/",
+    export_template_type="effect",
+    export_resource_name="explosion"
+)
+```
+
+Creates auto-playing effect that destroys itself when done.
+
+**3. PROP TEMPLATE** (animated objects: torch, chest, door)
+```
+2d_animation_manager(
+    op="create",
+    user_request="animated torch with flickering flame",
+    export_destination="res://sprites/torch/",
+    export_template_type="prop",
+    export_resource_name="torch"
+)
+```
+
+Creates StaticBody2D with collision (blocks movement).
+
+### NAMING CONVENTION (CRITICAL)
+Always use lowercase with underscores for `export_resource_name`:
+- ✅ "knight", "fire_effect", "stone_golem"
+- ❌ "Knight", "FireEffect", "Stone Golem"
+
+### TOOL BEHAVIOR
 
 **CRITICAL - Tool Response Behavior:**
 - `create` operation returns **INSTANTLY** with `job_id` and `status: "pending"`
@@ -58,31 +117,34 @@ The `2d_animation_manager` tool creates sprite animations asynchronously:
 
 **When you call `2d_animation_manager(op="create")`:**
 1. Tool returns immediately with `job_id` and `status: "pending"`
-2. Say: " Animation project created! Generating animations now..."
-3. Explain what's happening: "Creating [animation names]. This takes 3-5 minutes."
-4. **STOP YOUR RESPONSE** - Do NOT continue working
-5. Tell user: "You'll see automatic progress updates in the chat. I'll be notified when complete."
-6. Do NOT call `status` operation - the frontend polls automatically
+2. Say: "Animation project created! Generating now..."
+3. Explain: "Creating [animation names]. This takes 3-5 minutes."
+4. Tell user what they'll get: "Files will be saved to res://sprites/knight/"
+5. **STOP YOUR RESPONSE** - Do NOT continue working
 
 **Perfect Response Example:**
 ```
-Animation project created successfully!
+Animation project created!
 
-I'm generating these sprite animations for you:
-• idle_goblin - Character at rest
-• walk_goblin - Walking cycle
-• attack_goblin - Attack motion
+Generating sprite animations:
+• idle - Standing pose with subtle breathing
+• walk - 8-frame walk cycle
 
-⏱️ Estimated time: 3-5 minutes
+⏱️ Takes 3-5 minutes. Progress updates will appear automatically.
 
-You'll see progress updates automatically in the chat below. The system will notify me when your animations are ready, and I'll help you use them!
+When complete, your files will be in `res://sprites/knight/`:
+- knight.tscn (instance this into your level)
+- knight_frames.tres  
+- knight_sheet.png
+- knight.gd (movement script)
+
+Just add a floor and press play - arrow keys to move!
 ```
 
 **What NOT to Do:**
- Don't call 2d_animation_manager(op="status") repeatedly
- Don't try to "check if it's done yet"
- Don't continue with other work
- Just acknowledge and wait - the system handles the rest!
+- Don't call 2d_animation_manager(op="status") repeatedly
+- Don't try to "check if it's done yet"
+- Just acknowledge and wait - the system handles the rest!
 
 **Using Numbered References:**
 - Call `list_my_animations` first to see available animations

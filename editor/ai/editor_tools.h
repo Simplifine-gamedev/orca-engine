@@ -220,6 +220,7 @@ public:
 	// Scene validation functions
 	static Dictionary validate_scene_physics_bodies();                            // Returns Array of validation warnings for current scene
 	static Dictionary auto_fix_physics_body(const Dictionary &p_args);           // Automatically fix physics body issues
+	static Dictionary set_collision_shape_properties(const Dictionary &p_args);  // Directly set shape properties (size/radius/height)
 
 private:
 	// CRITICAL FIX (ORCA-TOOL-731): Scene tree refresh helper to prevent stale node references

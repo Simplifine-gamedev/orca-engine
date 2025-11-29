@@ -32,7 +32,10 @@ public:
 		// Auto-export settings (set when job is created)
 		String export_destination;  // e.g., "res://sprites/hero/"
 		int export_resolution = 128;
-		String export_format = "sprite_sheet";  // sprite_sheet, frames, gif, all
+		String export_format = "sprite_sheet";  // sprite_sheet, frames, gif, godot_template
+		String export_template_type = "character";  // player, character, object, effect, simple
+		String export_resource_name = "sprite";  // Base name for files
+		int export_fps = 10;  // Animation playback FPS
 	};
 
 private:
@@ -57,7 +60,8 @@ public:
 	
 	// Start tracking a new animation job
 	void track_job(const String &p_job_id, const String &p_tool_call_id, const String &p_user_request, PanelContainer *p_ui_panel,
-		const String &p_export_destination = "", int p_export_resolution = 128, const String &p_export_format = "sprite_sheet");
+		const String &p_export_destination = "", int p_export_resolution = 128, const String &p_export_format = "sprite_sheet",
+		const String &p_export_template_type = "character", const String &p_export_resource_name = "sprite", int p_export_fps = 10);
 	
 	// Stop tracking a job
 	void stop_tracking(const String &p_job_id);

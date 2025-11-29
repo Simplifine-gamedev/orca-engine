@@ -216,6 +216,7 @@ private:
 	String pending_export_animation_id;
 	String pending_export_project_id;
 	HTTPRequest *anim_export_request = nullptr;
+	Ref<class AIAnimationExport> animation_exporter;  // Godot template export handler
 	ConfirmationDialog *restore_checkpoint_dialog = nullptr;
 
 	// Embedding system state
@@ -814,7 +815,7 @@ public:
 	
 	// Animation export (public for AIAnimationUI access)
 	void _on_export_animation_pressed(Button *p_button);
-	void _trigger_auto_export(const String &p_anim_id, const String &p_project_id, const String &p_save_path, int p_resolution, const String &p_format);
+	void _trigger_auto_export(const String &p_anim_id, const String &p_project_id, const String &p_save_path, int p_resolution, const String &p_format, const String &p_template_type = "character", const String &p_resource_name = "", int p_fps = 10);
 	
 private:
 	

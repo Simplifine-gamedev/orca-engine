@@ -5,6 +5,7 @@ Import("env")
 env_dock = env.Clone()
 
 dock_sources = [
+    "ai_animation_export.cpp",
     "ai_animation_tracker.cpp",
     "ai_animation_ui.cpp",
     "ai_chat_actions.cpp",

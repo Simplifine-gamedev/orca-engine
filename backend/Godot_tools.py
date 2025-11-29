@@ -118,7 +118,7 @@ _godot_tools_template = [
         "type": "function",
         "function": {
             "name": "scene_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Manages scenes, nodes, properties, resources, collisions, signals, groups. Common operations: 'scene.open' (open scene), 'node.create' (create node), 'node.props.get' (get properties), 'scene.analyze' (analyze scene).",
+            "description": "REQUIRED: Always specify 'op' parameter. Manages scenes, nodes, properties, resources, collisions, signals, groups. Common operations: 'scene.open' (open scene), 'node.create' (create node), 'node.props.get' (get properties), 'scene.analyze' (analyze scene). IMPORTANT: Use 'node.fix_physics_body' to match CollisionShape2D size with Sprite2D texture size! Use 'node.shape.set' to directly set shape properties (size/radius/height).",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -143,7 +143,7 @@ _godot_tools_template = [
                             # Props & methods  
                             "node.props.get", "node.props.set_batch", "node.mesh.set_properties", "node.method.call",
                             # Resources & collisions
-                            "node.assign_resource", "node.add_collision", "node.fix_physics_body",
+                            "node.assign_resource", "node.add_collision", "node.fix_physics_body", "node.shape.set",
                             # Signals & connections
                             "signals.list_node_signals", "signals.list_connections",
                             "signals.list_incoming_connections", "signals.connect",
@@ -252,9 +252,13 @@ _godot_tools_template = [
                     "node_path": {"type": "string"},
                     "shape_type": {"type": "string", "enum": ["rectangle", "circle", "capsule", "box", "box3d", "sphere", "sphere3d", "capsule3d", "convex", "convex3d", "trimesh", "trimesh3d"]},
                     
-                    # Physics body auto-fix (for node.fix_physics_body)
-                    "fix_mode": {"type": "string", "enum": ["auto", "collision_to_sprite", "sprite_to_collision", "align_only"], "default": "auto", "description": "How to fix physics body issues: 'auto' (fix all issues), 'collision_to_sprite' (resize collision to match sprite), 'sprite_to_collision' (resize/create sprite to match collision), 'align_only' (just align positions)"},
+                    # Physics body auto-fix (for node.fix_physics_body) - USE THIS when sprite and collision don't match!
+                    "fix_mode": {"type": "string", "enum": ["auto", "collision_to_sprite", "sprite_to_collision", "align_only"], "default": "auto", "description": "IMPORTANT: Use node.fix_physics_body to match CollisionShape2D with Sprite2D! 'auto' (fix all issues), 'collision_to_sprite' (resize collision to match sprite), 'sprite_to_collision' (resize/create sprite to match collision), 'align_only' (just align positions). This automatically reads sprite texture size and sets collision shape to match!"},
                     "create_missing": {"type": "boolean", "default": True, "description": "Whether to create missing components (CollisionShape2D or Sprite2D)"},
+                    
+                    # Direct shape property setting (for node.shape.set)
+                    "shape_property": {"type": "string", "enum": ["size", "radius", "height"], "description": "For node.shape.set: Which shape property to set. Use 'size' for RectangleShape2D (Vector2), 'radius' for CircleShape2D (float), 'radius'+'height' for CapsuleShape2D."},
+                    "shape_value": {"description": "For node.shape.set: The value to set. For 'size' use {x: width, y: height}. For 'radius' use a number. For 'height' use a number."},
 
                     # Bulk/copy config
                     "transformations": {"type": "object"},
@@ -836,9 +840,13 @@ _godot_tools_template = [
                     "upload_to_supabase": {"type": "boolean", "default": True, "description": "Whether to upload results to Supabase for persistent storage (recommended). Required for 'edit' operation to work later."},
                     
                     # AUTO-EXPORT parameters (optional - if specified, animations are automatically saved when complete)
-                    "export_destination": {"type": "string", "description": "OPTIONAL: Project path to auto-save animations when complete. E.g., 'res://sprites/hero/' for folder or 'res://sprites/hero.png' for single sheet. If specified, animations export automatically without user interaction."},
-                    "export_resolution": {"type": "integer", "default": 128, "minimum": 32, "maximum": 512, "description": "Resolution for exported sprites. Default 128. Use 64 for pixel art, 256 for HD."},
-                    "export_format": {"type": "string", "enum": ["sprite_sheet", "frames", "gif", "all"], "default": "sprite_sheet", "description": "Export format: 'sprite_sheet' (horizontal PNG), 'frames' (individual PNGs), 'gif' (animated), 'all' (everything). After export, use Godot's SpriteFrames editor to slice the sheet."},
+                    # STANDARD FILE NAMING: <name>_sheet.png, <name>_frames.tres, <name>.tscn, <name>.gd
+                    "export_destination": {"type": "string", "description": "OPTIONAL: Folder path to auto-save animations. E.g., 'res://sprites/knight/'. Creates folder if needed. If specified, exports automatically when complete."},
+                    "export_resolution": {"type": "integer", "default": 64, "minimum": 32, "maximum": 512, "description": "Sprite resolution. 64 for pixel art (default), 128 for balanced, 256 for HD."},
+                    "export_format": {"type": "string", "enum": ["sprite_sheet", "frames", "gif", "godot_template"], "default": "godot_template", "description": "ALWAYS use 'godot_template' - creates ready-to-use Godot files. Creates: <name>_sheet.png, <name>_frames.tres, <name>.tscn, <name>.gd"},
+                    "export_template_type": {"type": "string", "enum": ["player", "character", "object", "effect", "simple"], "default": "character", "description": "Scene type: 'player' (CharacterBody2D with keyboard controls), 'character' (CharacterBody2D, no controls - for NPCs/enemies), 'object' (StaticBody2D with collision - for fire pits, chests, etc.), 'effect' (Node2D - for VFX like explosions), 'simple' (just AnimatedSprite2D, no physics)."},
+                    "export_resource_name": {"type": "string", "description": "REQUIRED for godot_template. Base name for files. E.g., 'knight' creates: knight_sheet.png, knight_frames.tres, knight.tscn, knight.gd"},
+                    "export_fps": {"type": "integer", "default": 10, "minimum": 1, "maximum": 60, "description": "Animation playback FPS. 10 for most animations, lower for pixel art."},
                     
                     # STATUS operation parameters
                     "job_id": {"type": "string", "description": "Job ID returned from 'create' operation. Used to check generation progress."},

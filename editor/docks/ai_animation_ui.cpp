@@ -832,9 +832,12 @@ void AIAnimationUI::trigger_auto_export(
 	const String &p_save_path,
 	int p_resolution,
 	const String &p_format,
-	Control *p_parent
+	Control *p_parent,
+	const String &p_template_type,
+	const String &p_resource_name,
+	int p_fps
 ) {
-	print_line("AUTO_EXPORT: Starting export for " + p_anim_id + " to " + p_save_path);
+	print_line("AUTO_EXPORT: Starting export for " + p_anim_id + " to " + p_save_path + " (format: " + p_format + ")");
 	
 	if (!p_parent) {
 		print_line("AUTO_EXPORT: No parent node for HTTP request");
@@ -847,21 +850,43 @@ void AIAnimationUI::trigger_auto_export(
 	export_req->set_use_threads(true);
 	export_req->set_meta("save_path", p_save_path);
 	export_req->set_meta("format", p_format);
-	export_req->connect("request_completed", callable_mp_static(&_on_auto_export_completed).bind(export_req));
 	
-	// Build request body
+	String url;
 	Dictionary body;
 	body["project_id"] = p_project_id;
-	body["animation_id"] = p_anim_id;
 	body["resolution"] = p_resolution;
-	body["format"] = p_format;
+	
+	// Choose endpoint based on format
+	// NOTE: URLs use /animation/ prefix because they go through Flask proxy on port 5050
+	// which forwards /animation/* requests to the animation server on port 8001
+	if (p_format == "godot_template") {
+		// Use the Godot template export endpoint
+		url = _get_api_base_url() + "/animation/export/godot_template";
+		
+		// For template export, don't filter by animation_ids - export ALL animations in the project
+		// The backend will include all animations when animation_ids is empty/not provided
+		// This creates a combined sprite sheet with all animations as rows
+		body["template_type"] = p_template_type.is_empty() ? "character" : p_template_type;
+		body["resource_name"] = p_resource_name.is_empty() ? "sprite" : p_resource_name;
+		body["fps"] = p_fps > 0 ? p_fps : 10;
+		
+		export_req->set_meta("is_template", true);
+		export_req->connect("request_completed", callable_mp_static(&_on_template_export_completed).bind(export_req));
+	} else {
+		// Use simple export endpoint
+		url = _get_api_base_url() + "/animation/export";
+		body["animation_id"] = p_anim_id;
+		body["format"] = p_format;
+		
+		export_req->set_meta("is_template", false);
+		export_req->connect("request_completed", callable_mp_static(&_on_auto_export_completed).bind(export_req));
+	}
 	
 	String json_body = JSON::stringify(body);
 	
 	PackedStringArray headers;
 	headers.push_back("Content-Type: application/json");
 	
-	String url = _get_api_base_url() + "/animation/export";
 	Error err = export_req->request(url, headers, HTTPClient::METHOD_POST, json_body);
 	if (err != OK) {
 		print_line("AUTO_EXPORT: Failed to start request: " + itos(err));
@@ -945,6 +970,94 @@ void AIAnimationUI::_on_auto_export_completed(int p_result, int p_response_code,
 		}
 		print_line("AUTO_EXPORT: Saved " + itos(frames.size()) + " frames to: " + base_path);
 	}
+	
+	// Refresh filesystem
+	if (EditorFileSystem::get_singleton()) {
+		EditorFileSystem::get_singleton()->scan();
+	}
+	
+	p_request->queue_free();
+}
+
+void AIAnimationUI::_on_template_export_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, HTTPRequest *p_request) {
+	if (!p_request) return;
+	
+	String save_path = p_request->get_meta("save_path", "");
+	
+	if (p_result != HTTPRequest::RESULT_SUCCESS || p_response_code != 200) {
+		print_line("TEMPLATE_EXPORT: Failed with HTTP " + itos(p_response_code));
+		p_request->queue_free();
+		return;
+	}
+	
+	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	Ref<JSON> json;
+	json.instantiate();
+	Error parse_err = json->parse(response_text);
+	if (parse_err != OK) {
+		print_line("TEMPLATE_EXPORT: Failed to parse response");
+		p_request->queue_free();
+		return;
+	}
+	
+	Dictionary result = json->get_data();
+	Dictionary files = result.get("files", Dictionary());
+	
+	if (files.is_empty()) {
+		print_line("TEMPLATE_EXPORT: No files in response");
+		p_request->queue_free();
+		return;
+	}
+	
+	// Ensure directory exists (save_path should be a folder for templates)
+	String folder_path = save_path.ends_with("/") ? save_path : save_path.get_base_dir();
+	DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path(folder_path));
+	
+	// Save all files
+	Array file_names = files.keys();
+	int saved_count = 0;
+	PackedStringArray saved_files;
+	
+	for (int i = 0; i < file_names.size(); i++) {
+		String filename = file_names[i];
+		String content = files[filename];
+		String filepath = folder_path.path_join(filename);
+		String global_path = ProjectSettings::get_singleton()->globalize_path(filepath);
+		
+		bool is_binary = filename.ends_with(".png");
+		
+		Ref<FileAccess> file = FileAccess::open(global_path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			if (is_binary) {
+				Vector<uint8_t> data = CoreBind::Marshalls::get_singleton()->base64_to_raw(content);
+				file->store_buffer(data);
+			} else {
+				file->store_string(content);
+			}
+			file->close();
+			saved_count++;
+			saved_files.push_back(filepath);
+		}
+	}
+	
+	// Print clear file paths for user
+	print_line("");
+	print_line("============================================================");
+	print_line("ANIMATION EXPORT COMPLETE");
+	print_line("============================================================");
+	print_line("Folder: " + folder_path);
+	print_line("Files saved (" + itos(saved_count) + "):");
+	for (int i = 0; i < saved_files.size(); i++) {
+		print_line("  📄 " + saved_files[i]);
+	}
+	
+	// Get template type and scene type from response
+	String template_type = result.get("template_type", "character");
+	String scene_type = result.get("scene_type", "");
+	if (!scene_type.is_empty()) {
+		print_line("Scene type: " + scene_type);
+	}
+	print_line("============================================================");
 	
 	// Refresh filesystem
 	if (EditorFileSystem::get_singleton()) {

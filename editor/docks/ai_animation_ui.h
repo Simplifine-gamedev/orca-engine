@@ -84,11 +84,17 @@ public:
 		const String &p_save_path,
 		int p_resolution,
 		const String &p_format,
-		Control *p_parent  // Node to attach HTTP request to
+		Control *p_parent,  // Node to attach HTTP request to
+		const String &p_template_type = "character",  // For godot_template: character, effect, prop, simple
+		const String &p_resource_name = "",  // Base name for resources (defaults to anim_id)
+		int p_fps = 10  // Animation FPS for templates
 	);
 	
-	// Callback for auto-export completion
+	// Callback for auto-export completion (simple formats)
 	static void _on_auto_export_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, HTTPRequest *p_request);
+	
+	// Callback for template export completion
+	static void _on_template_export_completed(int p_result, int p_response_code, const PackedStringArray &p_headers, const PackedByteArray &p_body, HTTPRequest *p_request);
 
 private:
 	// Helper to format time remaining

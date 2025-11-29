@@ -51,7 +51,8 @@ void AIAnimationTracker::initialize(const String &p_api_base, Control *p_chat_co
 }
 
 void AIAnimationTracker::track_job(const String &p_job_id, const String &p_tool_call_id, const String &p_user_request, PanelContainer *p_ui_panel,
-		const String &p_export_destination, int p_export_resolution, const String &p_export_format) {
+		const String &p_export_destination, int p_export_resolution, const String &p_export_format,
+		const String &p_export_template_type, const String &p_export_resource_name, int p_export_fps) {
 	AnimationJob job;
 	job.job_id = p_job_id;
 	job.tool_call_id = p_tool_call_id;
@@ -63,9 +64,12 @@ void AIAnimationTracker::track_job(const String &p_job_id, const String &p_tool_
 	job.export_destination = p_export_destination;
 	job.export_resolution = p_export_resolution;
 	job.export_format = p_export_format;
+	job.export_template_type = p_export_template_type;
+	job.export_resource_name = p_export_resource_name;
+	job.export_fps = p_export_fps;
 	
 	if (!p_export_destination.is_empty()) {
-		print_line("TRACKER: Job " + p_job_id + " will auto-export to: " + p_export_destination + " at " + itos(p_export_resolution) + "px (" + p_export_format + ")");
+		print_line("TRACKER: Job " + p_job_id + " will auto-export to: " + p_export_destination + " at " + itos(p_export_resolution) + "px (" + p_export_format + ", type=" + p_export_template_type + ", name=" + p_export_resource_name + ")");
 	}
 	
 	// Find status label and progress bar in the UI panel
@@ -351,7 +355,10 @@ void AIAnimationTracker::_handle_job_completed(const String &p_job_id, const Dic
 		result_with_export["export_destination"] = job.export_destination;
 		result_with_export["export_resolution"] = job.export_resolution;
 		result_with_export["export_format"] = job.export_format;
-		print_line("ANIM_TRACKER: Including auto-export settings: " + job.export_destination);
+		result_with_export["export_template_type"] = job.export_template_type;
+		result_with_export["export_resource_name"] = job.export_resource_name;
+		result_with_export["export_fps"] = job.export_fps;
+		print_line("ANIM_TRACKER: Including auto-export settings: " + job.export_destination + " (type=" + job.export_template_type + ", name=" + job.export_resource_name + ")");
 	}
 	
 	// Call completion callback if set

@@ -28,13 +28,18 @@
 #include "editor/editor_data.h"
 #include "editor/editor_interface.h"
 #include "editor/editor_node.h"
-// Scene validation includes
+// Scene validation includes - 2D
 #include "scene/2d/sprite_2d.h"
 #include "scene/2d/physics/collision_shape_2d.h"
 #include "scene/2d/physics/collision_object_2d.h"
 #include "scene/resources/2d/rectangle_shape_2d.h"
 #include "scene/resources/2d/circle_shape_2d.h"
 #include "scene/resources/2d/capsule_shape_2d.h"
+// Scene validation includes - 3D
+#include "scene/3d/physics/collision_shape_3d.h"
+#include "scene/resources/3d/box_shape_3d.h"
+#include "scene/resources/3d/sphere_shape_3d.h"
+#include "scene/resources/3d/capsule_shape_3d.h"
 #include "scene/resources/image_texture.h"
 #include "core/io/image.h"
 #include "editor/file_system/editor_file_system.h"
@@ -946,6 +951,18 @@ Dictionary EditorTools::_get_node_info(Node *p_node) {
 	return node_info;
 }
 Node *EditorTools::_get_node_from_path(const String &p_path, Dictionary &r_error_result) {
+	// CRITICAL FIX: Detect res:// paths which are scene file paths, NOT node paths
+	if (p_path.begins_with("res://")) {
+		r_error_result["success"] = false;
+		r_error_result["error_code"] = "INVALID_PATH_TYPE";
+		r_error_result["message"] = String("The 'path' parameter '") + p_path + "' is a scene file path (res://...), not a node path. " +
+			"For node.props.get, use 'path' for the node path within the currently open scene (e.g., 'Floor', 'Main/Floor', 'Player/Weapon'). " +
+			"The scene_manager tools operate on the currently opened scene in the editor.";
+		r_error_result["hint"] = "Use just the node name like 'Floor' or a relative path like 'Main/Floor' for the 'path' parameter.";
+		r_error_result["provided_path"] = p_path;
+		return nullptr;
+	}
+	
 	// CRITICAL FIX (ORCA-TOOL-731): Add scene tree refresh and better state validation
 	Node *root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
 	if (!root) {
@@ -1592,13 +1609,41 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
 	Dictionary normalized_args = _normalize_parameters(p_args);
 	
 	Dictionary result;
-	if (!normalized_args.has("path")) {
+	
+	// CRITICAL FIX: Handle case where 'path' is a scene file (res://) and 'node_path' is the actual node
+	// This is a common API confusion - AI may provide path=res://scene.tscn and node_path=Floor
+	String actual_node_path;
+	if (normalized_args.has("path")) {
+		String provided_path = normalized_args["path"];
+		if (provided_path.begins_with("res://")) {
+			// 'path' is a scene file - check if 'node_path' contains the actual node path
+			if (p_args.has("node_path")) {
+				actual_node_path = p_args["node_path"];
+				print_line("GET_NODE_PROPS: path was scene file, using node_path instead: " + actual_node_path);
+			} else {
+				// No node_path provided - give helpful error
+				result["success"] = false;
+				result["error_code"] = "INVALID_PATH_TYPE";
+				result["message"] = String("The 'path' parameter '") + provided_path + "' is a scene file path (res://...), not a node path. " +
+					"For node.props.get, provide the node name/path within the currently open scene (e.g., 'Floor', 'Player/Weapon'). " +
+					"Either use 'path' for the node path, or provide both 'path' (scene file) and 'node_path' (node within scene).";
+				result["hint"] = "If the scene is already open, just use path='Floor' to get Floor node properties.";
+				return result;
+			}
+		} else {
+			actual_node_path = provided_path;
+		}
+	} else if (p_args.has("node_path")) {
+		// Fall back to node_path if path not provided
+		actual_node_path = p_args["node_path"];
+	} else {
 		Dictionary context;
 		_validate_scene_context(normalized_args, context);
 		return _create_enhanced_error("MISSING_PARAMETERS", 
 			"Missing required parameter for getting node properties: 'path' (node path) is required.", context);
 	}
-	Node *node = _get_node_from_path(normalized_args["path"], result);
+	
+	Node *node = _get_node_from_path(actual_node_path, result);
 	if (!node) {
 		return result;
 	}
@@ -1842,6 +1887,99 @@ Dictionary EditorTools::get_node_properties(const Dictionary &p_args) {
     if (!expanded_resources.is_empty()) {
         result["expanded_mesh_resources"] = expanded_resources;
     }
+    
+    // ENHANCED: Auto-expand Texture2D resource properties (path, width, height)
+    // This allows the AI to see actual texture dimensions for sprites
+    Array expanded_textures;
+    for (int i = 0; i < prop_keys.size(); i++) {
+        String prop_name = prop_keys[i];
+        Variant prop_value = props_dict[prop_keys[i]];
+        
+        if (prop_value.get_type() == Variant::OBJECT) {
+            Ref<Texture2D> tex = prop_value;
+            if (tex.is_valid()) {
+                Dictionary expanded_tex;
+                expanded_tex["property_name"] = prop_name;
+                expanded_tex["resource_type"] = tex->get_class();
+                expanded_tex["width"] = tex->get_width();
+                expanded_tex["height"] = tex->get_height();
+                
+                // Get the actual resource path (res://...) if available
+                String tex_path = tex->get_path();
+                if (!tex_path.is_empty()) {
+                    expanded_tex["resource_path"] = tex_path;
+                    // Update the property value in props_dict to show the path instead of handle
+                    props_dict[prop_name] = tex_path + " (" + String::num_int64(tex->get_width()) + "x" + String::num_int64(tex->get_height()) + ")";
+                }
+                
+                print_line("TEXTURE_EXPAND: " + tex->get_class() + " on " + String(node->get_name()) + "." + prop_name + 
+                    " - size=" + String::num_int64(tex->get_width()) + "x" + String::num_int64(tex->get_height()) + 
+                    " path=" + tex_path);
+                
+                expanded_textures.push_back(expanded_tex);
+            }
+        }
+    }
+    
+    if (!expanded_textures.is_empty()) {
+        result["expanded_texture_resources"] = expanded_textures;
+        // Update property_values with the enhanced texture info
+        result["property_values"] = props_dict;
+    }
+	
+	// ENHANCED: Auto-expand collision shape properties for CollisionShape2D/3D nodes
+	// This makes it easy for AI to see the actual shape size/radius
+	CollisionShape2D *collision_2d = Object::cast_to<CollisionShape2D>(node);
+	CollisionShape3D *collision_3d = Object::cast_to<CollisionShape3D>(node);
+	
+	if (collision_2d && collision_2d->get_shape().is_valid()) {
+		Ref<Shape2D> shape = collision_2d->get_shape();
+		Dictionary shape_info;
+		shape_info["shape_class"] = shape->get_class();
+		
+		Ref<RectangleShape2D> rect_shape = shape;
+		if (rect_shape.is_valid()) {
+			shape_info["size"] = rect_shape->get_size();
+			shape_info["editable_via"] = "node.shape.set with shape_property='size' and shape_value={x:width, y:height}";
+		}
+		
+		Ref<CircleShape2D> circle_shape = shape;
+		if (circle_shape.is_valid()) {
+			shape_info["radius"] = circle_shape->get_radius();
+			shape_info["editable_via"] = "node.shape.set with shape_property='radius' and shape_value=number";
+		}
+		
+		Ref<CapsuleShape2D> capsule_shape = shape;
+		if (capsule_shape.is_valid()) {
+			shape_info["radius"] = capsule_shape->get_radius();
+			shape_info["height"] = capsule_shape->get_height();
+			shape_info["editable_via"] = "node.shape.set with shape_property='radius' or 'height'";
+		}
+		
+		result["shape_properties"] = shape_info;
+		result["hint"] = "Use scene_manager op='node.fix_physics_body' with path='parent_physics_body' to auto-match collision with sprite. Or use op='node.shape.set' to set shape properties directly.";
+	}
+	
+	if (collision_3d && collision_3d->get_shape().is_valid()) {
+		Ref<Shape3D> shape = collision_3d->get_shape();
+		Dictionary shape_info;
+		shape_info["shape_class"] = shape->get_class();
+		
+		Ref<BoxShape3D> box_shape = shape;
+		if (box_shape.is_valid()) {
+			shape_info["size"] = box_shape->get_size();
+			shape_info["editable_via"] = "node.shape.set with shape_property='size' and shape_value={x:w, y:h, z:d}";
+		}
+		
+		Ref<SphereShape3D> sphere_shape = shape;
+		if (sphere_shape.is_valid()) {
+			shape_info["radius"] = sphere_shape->get_radius();
+			shape_info["editable_via"] = "node.shape.set with shape_property='radius' and shape_value=number";
+		}
+		
+		result["shape_properties"] = shape_info;
+		result["hint"] = "Use op='node.shape.set' to set shape properties directly.";
+	}
 	
 	// Add truncation information
 	if (hit_properties_limit) {
@@ -8822,6 +8960,8 @@ Dictionary EditorTools::scene_manager(const Dictionary &p_args) {
 		return add_collision_shape(collision_args);
 	} else if (operation == "node.fix_physics_body") {
 		return auto_fix_physics_body(p_args);
+	} else if (operation == "node.shape.set") {
+		return set_collision_shape_properties(p_args);
 	} else if (operation == "node.create_and_configure_batch") {
 		return create_and_configure_nodes_batch(p_args);
 	} else if (operation == "node.assign_resources_batch") {
@@ -13786,8 +13926,11 @@ Dictionary EditorTools::auto_fix_physics_body(const Dictionary &p_args) {
 	
 	if (fixes_applied.size() > 0) {
 		result["message"] = "Applied " + String::num_int64(fixes_applied.size()) + " fixes to physics body '" + physics_body->get_name() + "'";
-		// Mark scene as modified
-		EditorNode::get_singleton()->get_edited_scene()->set_edited(true);
+		// Mark scene as modified by re-setting the edited scene
+		Node *scene_root = EditorNode::get_singleton()->get_tree()->get_edited_scene_root();
+		if (scene_root) {
+			EditorNode::get_singleton()->set_edited_scene(scene_root);
+		}
 		_refresh_scene_tree();
 	} else {
 		result["message"] = "No fixes needed for physics body '" + physics_body->get_name() + "'";
@@ -13966,5 +14109,206 @@ Dictionary EditorTools::_align_sprite_and_collision(Sprite2D *p_sprite, Collisio
 	result["new_sprite_position"] = target_pos;
 	result["alignment_offset"] = target_pos - sprite_pos;
 	
+	return result;
+}
+
+Dictionary EditorTools::set_collision_shape_properties(const Dictionary &p_args) {
+	Dictionary result;
+	
+	// Get the node path
+	String node_path = p_args.get("path", p_args.get("node_path", ""));
+	if (node_path.is_empty()) {
+		result["success"] = false;
+		result["message"] = "Missing required parameter: 'path' (path to CollisionShape2D node)";
+		return result;
+	}
+	
+	// Get the node
+	Node *node = _get_node_from_path(node_path, result);
+	if (!node) {
+		return result;
+	}
+	
+	// Check if it's a CollisionShape2D
+	CollisionShape2D *collision_2d = Object::cast_to<CollisionShape2D>(node);
+	CollisionShape3D *collision_3d = Object::cast_to<CollisionShape3D>(node);
+	
+	if (!collision_2d && !collision_3d) {
+		result["success"] = false;
+		result["message"] = "Node is not a CollisionShape2D or CollisionShape3D: " + node_path;
+		return result;
+	}
+	
+	// Get shape property and value
+	String shape_property = p_args.get("shape_property", "");
+	if (shape_property.is_empty()) {
+		result["success"] = false;
+		result["message"] = "Missing required parameter: 'shape_property' (size, radius, or height)";
+		return result;
+	}
+	
+	Variant shape_value = p_args.get("shape_value", Variant());
+	if (shape_value.get_type() == Variant::NIL) {
+		result["success"] = false;
+		result["message"] = "Missing required parameter: 'shape_value'";
+		return result;
+	}
+	
+	// Handle 2D shapes
+	if (collision_2d) {
+		Ref<Shape2D> shape = collision_2d->get_shape();
+		if (!shape.is_valid()) {
+			result["success"] = false;
+			result["message"] = "CollisionShape2D has no shape resource assigned";
+			return result;
+		}
+		
+		// RectangleShape2D - size
+		Ref<RectangleShape2D> rect_shape = shape;
+		if (rect_shape.is_valid()) {
+			if (shape_property == "size") {
+				Vector2 new_size;
+				if (shape_value.get_type() == Variant::DICTIONARY) {
+					Dictionary size_dict = shape_value;
+					new_size.x = size_dict.get("x", 32.0);
+					new_size.y = size_dict.get("y", 32.0);
+				} else if (shape_value.get_type() == Variant::VECTOR2) {
+					new_size = shape_value;
+				} else {
+					// Treat as uniform size
+					float uniform = shape_value;
+					new_size = Vector2(uniform, uniform);
+				}
+				
+				Vector2 old_size = rect_shape->get_size();
+				rect_shape->set_size(new_size);
+				
+				result["success"] = true;
+				result["shape_type"] = "RectangleShape2D";
+				result["old_size"] = old_size;
+				result["new_size"] = new_size;
+				result["message"] = "Set RectangleShape2D size to " + String(new_size);
+				
+				// Mark scene modified
+				_refresh_scene_tree();
+				return result;
+			}
+		}
+		
+		// CircleShape2D - radius
+		Ref<CircleShape2D> circle_shape = shape;
+		if (circle_shape.is_valid()) {
+			if (shape_property == "radius") {
+				float new_radius = shape_value;
+				float old_radius = circle_shape->get_radius();
+				circle_shape->set_radius(new_radius);
+				
+				result["success"] = true;
+				result["shape_type"] = "CircleShape2D";
+				result["old_radius"] = old_radius;
+				result["new_radius"] = new_radius;
+				result["message"] = "Set CircleShape2D radius to " + String::num(new_radius);
+				
+				_refresh_scene_tree();
+				return result;
+			}
+		}
+		
+		// CapsuleShape2D - radius and height
+		Ref<CapsuleShape2D> capsule_shape = shape;
+		if (capsule_shape.is_valid()) {
+			if (shape_property == "radius") {
+				float new_radius = shape_value;
+				float old_radius = capsule_shape->get_radius();
+				capsule_shape->set_radius(new_radius);
+				
+				result["success"] = true;
+				result["shape_type"] = "CapsuleShape2D";
+				result["old_radius"] = old_radius;
+				result["new_radius"] = new_radius;
+				result["message"] = "Set CapsuleShape2D radius to " + String::num(new_radius);
+				
+				_refresh_scene_tree();
+				return result;
+			} else if (shape_property == "height") {
+				float new_height = shape_value;
+				float old_height = capsule_shape->get_height();
+				capsule_shape->set_height(new_height);
+				
+				result["success"] = true;
+				result["shape_type"] = "CapsuleShape2D";
+				result["old_height"] = old_height;
+				result["new_height"] = new_height;
+				result["message"] = "Set CapsuleShape2D height to " + String::num(new_height);
+				
+				_refresh_scene_tree();
+				return result;
+			}
+		}
+		
+		result["success"] = false;
+		result["message"] = "Unsupported property '" + shape_property + "' for shape type: " + shape->get_class();
+		return result;
+	}
+	
+	// Handle 3D shapes (similar pattern)
+	if (collision_3d) {
+		Ref<Shape3D> shape = collision_3d->get_shape();
+		if (!shape.is_valid()) {
+			result["success"] = false;
+			result["message"] = "CollisionShape3D has no shape resource assigned";
+			return result;
+		}
+		
+		// BoxShape3D - size
+		Ref<BoxShape3D> box_shape = shape;
+		if (box_shape.is_valid() && shape_property == "size") {
+			Vector3 new_size;
+			if (shape_value.get_type() == Variant::DICTIONARY) {
+				Dictionary size_dict = shape_value;
+				new_size.x = size_dict.get("x", 1.0);
+				new_size.y = size_dict.get("y", 1.0);
+				new_size.z = size_dict.get("z", 1.0);
+			} else if (shape_value.get_type() == Variant::VECTOR3) {
+				new_size = shape_value;
+			}
+			
+			Vector3 old_size = box_shape->get_size();
+			box_shape->set_size(new_size);
+			
+			result["success"] = true;
+			result["shape_type"] = "BoxShape3D";
+			result["old_size"] = old_size;
+			result["new_size"] = new_size;
+			result["message"] = "Set BoxShape3D size to " + String(new_size);
+			
+			_refresh_scene_tree();
+			return result;
+		}
+		
+		// SphereShape3D - radius
+		Ref<SphereShape3D> sphere_shape = shape;
+		if (sphere_shape.is_valid() && shape_property == "radius") {
+			float new_radius = shape_value;
+			float old_radius = sphere_shape->get_radius();
+			sphere_shape->set_radius(new_radius);
+			
+			result["success"] = true;
+			result["shape_type"] = "SphereShape3D";
+			result["old_radius"] = old_radius;
+			result["new_radius"] = new_radius;
+			result["message"] = "Set SphereShape3D radius to " + String::num(new_radius);
+			
+			_refresh_scene_tree();
+			return result;
+		}
+		
+		result["success"] = false;
+		result["message"] = "Unsupported property '" + shape_property + "' for shape type: " + shape->get_class();
+		return result;
+	}
+	
+	result["success"] = false;
+	result["message"] = "Unknown error setting shape property";
 	return result;
 }
