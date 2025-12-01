@@ -196,9 +196,9 @@ void AIAnimationTracker::_poll_next_job() {
 		return;
 	}
 	
-	// Constants for timeout
-	const uint64_t MAX_POLL_TIME_MS = 10 * 60 * 1000; // 10 minutes
-	const int MAX_POLL_COUNT = 50; // Safety limit (~12.5 minutes at 15s intervals)
+	// Constants for timeout - ONLY time-based, no poll count limit
+	// Timeout is renewed on each successful response, so this is "time since last response"
+	const uint64_t MAX_POLL_TIME_MS = 10 * 60 * 1000; // 10 minutes since last successful poll
 	
 	uint64_t current_time = Time::get_singleton()->get_ticks_msec();
 	
@@ -212,10 +212,10 @@ void AIAnimationTracker::_poll_next_job() {
 		// Continue polling for any non-terminal status
 		if (job.status == "pending" || job.status == "processing" || job.status == "starting" || 
 		    job.status == "creating_graph" || job.status == "uploading_to_supabase" || job.status.is_empty()) {
-			// Check for timeout
+			// Check for timeout - ONLY time-based (start_time_ms is renewed on each successful poll)
 			uint64_t elapsed = current_time - job.start_time_ms;
-			if (elapsed > MAX_POLL_TIME_MS || job.poll_count >= MAX_POLL_COUNT) {
-				print_line("ANIM_TRACKER: Job " + job.job_id + " timed out after " + itos(elapsed / 1000) + "s (" + itos(job.poll_count) + " polls)");
+			if (elapsed > MAX_POLL_TIME_MS) {
+				print_line("ANIM_TRACKER: Job " + job.job_id + " timed out - no response for " + itos(elapsed / 1000) + "s");
 				jobs_to_remove.push_back(job.job_id);
 				continue;
 			}
@@ -324,8 +324,34 @@ void AIAnimationTracker::_on_poll_request_completed(int p_result, int p_code, co
 	
 	print_line("ANIM_TRACKER: Job " + job_id + " status: " + status);
 	
+	// TIMEOUT RENEWAL: Reset start time on every successful poll
+	// This extends the timeout when server is actively responding
+	if (active_jobs.has(job_id)) {
+		active_jobs[job_id].start_time_ms = Time::get_singleton()->get_ticks_msec();
+		print_line("ANIM_TRACKER: Renewed timeout for job " + job_id.substr(0, 8));
+	}
+	
 	// Update UI
 	update_job_ui(job_id, status, progress);
+	
+	// PROGRESSIVE UI: Check for partial completed_animations to show in real-time
+	Array completed_anims = result.get("completed_animations", Array());
+	Array planned_anims = result.get("planned_animations", Array());
+	
+	if (!completed_anims.is_empty() && status != "completed") {
+		// Some animations are done while others still generating
+		print_line("ANIM_TRACKER: Progressive update - " + itos(completed_anims.size()) + "/" + itos(planned_anims.size()) + " completed");
+		
+		// Store in job for UI access
+		if (active_jobs.has(job_id)) {
+			active_jobs[job_id].partial_result = result;
+		}
+		
+		// Call progressive callback if set
+		if (on_job_progress_callback.is_valid()) {
+			on_job_progress_callback.call(job_id, active_jobs[job_id].tool_call_id, result);
+		}
+	}
 	
 	// Handle completion
 	if (status == "completed") {

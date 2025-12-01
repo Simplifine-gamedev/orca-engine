@@ -176,5 +176,15 @@ private:
 	static void _refresh_phase_3_scripts(const Vector<String> &p_script_paths);
 	static void _refresh_phase_4_ui();
 	static void _refresh_phase_5_docks();
+
+	// Maximum number of checkpoints to keep
+	static const int MAX_CHECKPOINTS = 15;
+
+	/**
+	 * Cleanup old checkpoints beyond MAX_CHECKPOINTS limit
+	 * Removes old git tags and runs gc to reclaim disk space
+	 * @param p_checkpoint_dir Path to checkpoint directory
+	 */
+	static void _cleanup_old_checkpoints(const String &p_checkpoint_dir);
 };
 

@@ -1637,6 +1637,18 @@ void AIChatDock::_notification(int p_notification) {
 				
 			} break;
 			case NOTIFICATION_EXIT_TREE: {
+				// CRITICAL: Clean up chat container children FIRST to prevent RID leaks
+				// RichTextLabels hold font/text shaping data, TextureRects hold texture references
+				// Must be freed while scene tree is still active (queue_free works here)
+				if (chat_container) {
+					for (int i = chat_container->get_child_count() - 1; i >= 0; i--) {
+						Node *child = chat_container->get_child(i);
+						if (child) {
+							child->queue_free();
+						}
+					}
+				}
+				
 				// NEW: Handle orphaned pending save
 				// If save was queued but thread never started, save now
 				if (save_pending && !save_thread_busy) {
@@ -13866,7 +13878,9 @@ void AIChatDock::_load_conversations() {
         }
     }
     
-    conversations.clear();
+    // CRITICAL FIX: Build new conversations list FIRST, only replace if valid
+    // This prevents data loss if parsing fails partway through
+    Vector<AIChatDock::Conversation> new_conversations;
 
     for (int i = 0; i < conversations_array.size(); i++) {
         Dictionary conv_dict = conversations_array[i];
@@ -13944,7 +13958,20 @@ void AIChatDock::_load_conversations() {
             }
         }
         
-        conversations.push_back(conv);
+        new_conversations.push_back(conv);
+    }
+    
+    // CRITICAL FIX: Only replace conversations if we loaded valid data
+    // This prevents wiping existing conversations on parse errors
+    if (new_conversations.size() > 0 || conversations_array.size() == 0) {
+        // Either we have new data, or the file was legitimately empty
+        conversations = new_conversations;
+    } else {
+        // Parsed 0 conversations from non-empty file - something went wrong
+        // Keep existing conversations and try recovery
+        if (conversation_persistence) {
+            conversation_persistence->create_emergency_backup();
+        }
     }
 }
 
@@ -14049,6 +14076,28 @@ void AIChatDock::_save_conversations() {
     {
         Ref<FileAccess> tmp = FileAccess::open(temp_path, FileAccess::WRITE, &err);
         if (err != OK) {
+            // CRITICAL: If temp file fails, try direct write to final file as fallback
+            Ref<FileAccess> direct = FileAccess::open(final_path, FileAccess::WRITE, &err);
+            if (err != OK) {
+                // Both failed - try emergency backup location as last resort
+                if (conversation_persistence) {
+                    String emergency_path = base_dir.path_join("ai_chat_backups").path_join(
+                        "FAILSAFE_" + String::num_int64(Time::get_singleton()->get_unix_time_from_system()) + ".simplifine"
+                    );
+                    Ref<DirAccess> da_bk = DirAccess::create_for_path(base_dir.path_join("ai_chat_backups"));
+                    if (da_bk.is_valid()) {
+                        da_bk->make_dir_recursive(base_dir.path_join("ai_chat_backups"));
+                    }
+                    Ref<FileAccess> emergency = FileAccess::open(emergency_path, FileAccess::WRITE);
+                    if (emergency.is_valid()) {
+                        emergency->store_string(json_string);
+                        emergency->close();
+                    }
+                }
+                return;
+            }
+            direct->store_string(json_string);
+            direct->close();
             return;
         }
         tmp->store_string(json_string);
@@ -14060,7 +14109,18 @@ void AIChatDock::_save_conversations() {
         if (da->file_exists(final_name)) {
             da->remove(final_name);
         }
-        da->rename(temp_name, final_name);
+        Error rename_err = da->rename(temp_name, final_name);
+        if (rename_err != OK) {
+            // Rename failed - the temp file has our data, try to copy it
+            String temp_content = FileAccess::get_file_as_string(temp_path);
+            if (!temp_content.is_empty()) {
+                Ref<FileAccess> final_file = FileAccess::open(final_path, FileAccess::WRITE);
+                if (final_file.is_valid()) {
+                    final_file->store_string(temp_content);
+                    final_file->close();
+                }
+            }
+        }
     } else {
         // SAFE fallback: Use safe coordinator instead of dangerous direct write
         if (save_coordinator && save_coordinator->is_ready()) {
@@ -14709,6 +14769,7 @@ AIChatDock::AIChatDock() {
 	animation_tracker->initialize(anim_api_base, this);
 	animation_tracker->set_on_job_completed(callable_mp(this, &AIChatDock::_on_animation_job_completed));
 	animation_tracker->set_on_job_failed(callable_mp(this, &AIChatDock::_on_animation_job_failed));
+	animation_tracker->set_on_job_progress(callable_mp(this, &AIChatDock::_on_animation_job_progress));
 	
 	// Initialize animation exporter for Godot template exports
 	animation_exporter.instantiate();
@@ -20627,12 +20688,33 @@ void AIChatDock::_on_snapshot_delete_requested(const String &p_snapshot_tag) {
 }
 
 AIChatDock::~AIChatDock() {
+	// CRITICAL: Wait for any background save to complete FIRST
+	// This must happen before deleting persistence objects that the save thread uses
+	if (save_thread_busy && save_thread) {
+		save_thread->wait_to_finish();
+		memdelete(save_thread);
+		save_thread = nullptr;
+		save_thread_busy = false;
+	}
+	
+	// If there's a pending save that never started, do it now synchronously
+	if (save_pending && conversation_persistence) {
+		save_pending = false;
+		_save_conversations();
+	}
+	
+	// Note: Chat container children should already be freed by NOTIFICATION_EXIT_TREE
+	// The destructor runs after the scene tree is gone, so queue_free won't work here
+	// Just null out references to prevent dangling pointers
+	chat_container = nullptr;
+	scene_tree_popup = nullptr;
+	
 	// Clean up user message handler
 	if (user_message_handler) {
 		memdelete(user_message_handler);
 	}
 	
-	// Clean up conversation persistence and save coordinator
+	// Now safe to clean up conversation persistence and save coordinator
 	if (save_coordinator) {
 		memdelete(save_coordinator);
 		save_coordinator = nullptr;
@@ -20645,12 +20727,6 @@ AIChatDock::~AIChatDock() {
 	// Clear singleton instance
 	if (singleton == this) {
 		singleton = nullptr;
-	}
-	
-	// Wait for any background save to complete
-	if (save_thread_busy && save_thread) {
-		save_thread->wait_to_finish();
-		memdelete(save_thread);
 	}
 	
 	// Clean up mutex
@@ -20984,6 +21060,201 @@ void AIChatDock::_on_animation_job_failed(const String &p_job_id, const String &
 	
 	// Show error notification
 	_show_status_notification("connection_error", "Animation generation failed: " + p_error, "[ERROR]", 8.0);
+}
+
+void AIChatDock::_on_animation_job_progress(const String &p_job_id, const String &p_tool_call_id, const Dictionary &p_result) {
+	// PROGRESSIVE UI UPDATE: Show ALL animations immediately, update as they complete
+	Array completed_animations = p_result.get("completed_animations", Array());
+	Array planned_animations = p_result.get("planned_animations", Array());
+	
+	int completed_count = completed_animations.size();
+	int total_count = planned_animations.size();
+	
+	// Use planned_animations if available, fall back to completed_animations
+	Array all_animations = planned_animations.size() > 0 ? planned_animations : completed_animations;
+	
+	if (all_animations.size() == 0) {
+		return; // Nothing to show yet
+	}
+	
+	print_line("ANIM_PROGRESS: Job " + p_job_id.substr(0, 8) + " - " + itos(completed_count) + "/" + itos(total_count) + " animations ready");
+	
+	// Find the tool placeholder panel
+	if (!chat_container) {
+		return;
+	}
+	
+	PanelContainer *placeholder = Object::cast_to<PanelContainer>(
+		chat_container->find_child("tool_placeholder_" + p_tool_call_id, true, false)
+	);
+	
+	if (!placeholder || placeholder->get_child_count() == 0) {
+		return;
+	}
+	
+	VBoxContainer *vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
+	if (!vbox) {
+		return;
+	}
+	
+	// Find or create the progress preview container
+	VBoxContainer *preview_container = Object::cast_to<VBoxContainer>(
+		vbox->find_child("progressive_preview", true, false)
+	);
+	
+	bool is_new_container = false;
+	if (!preview_container) {
+		is_new_container = true;
+		preview_container = memnew(VBoxContainer);
+		preview_container->set_name("progressive_preview");
+		preview_container->add_theme_constant_override("separation", 4);
+		
+		// Add a separator before previews
+		HSeparator *sep = memnew(HSeparator);
+		vbox->add_child(sep);
+		vbox->add_child(preview_container);
+		
+		// Add header label
+		Label *preview_label = memnew(Label);
+		preview_label->set_name("progress_header");
+		preview_label->set_text("Animations: " + itos(completed_count) + "/" + itos(total_count));
+		preview_label->add_theme_color_override("font_color", Color(0.7, 0.8, 0.9));
+		preview_label->add_theme_font_size_override("font_size", 12);
+		preview_container->add_child(preview_label);
+	} else {
+		// Update header label
+		Label *header = Object::cast_to<Label>(preview_container->find_child("progress_header", false, false));
+		if (header) {
+			header->set_text("Animations: " + itos(completed_count) + "/" + itos(total_count));
+		}
+	}
+	
+	// Build set of completed animation IDs for quick lookup
+	HashSet<String> completed_ids;
+	for (int i = 0; i < completed_animations.size(); i++) {
+		Dictionary anim = completed_animations[i];
+		String id = anim.get("id", anim.get("name", ""));
+		if (!id.is_empty()) {
+			completed_ids.insert(id);
+		}
+	}
+	
+	// Show ALL animations - completed ones with thumbnails, pending ones with placeholders
+	for (int i = 0; i < all_animations.size(); i++) {
+		Dictionary anim_data = all_animations[i];
+		String anim_id = anim_data.get("id", anim_data.get("name", ""));
+		String anim_name = anim_data.get("name", anim_id);
+		String status = anim_data.get("status", "pending");
+		
+		if (anim_id.is_empty()) {
+			continue;
+		}
+		
+		// Check if this animation is completed (has URLs)
+		bool is_completed = completed_ids.has(anim_id) || status == "completed";
+		
+		// Find existing row or create new one
+		HBoxContainer *anim_row = Object::cast_to<HBoxContainer>(
+			preview_container->find_child("anim_row_" + anim_id, false, false)
+		);
+		
+		if (!anim_row) {
+			// Create new row
+			anim_row = memnew(HBoxContainer);
+			anim_row->set_name("anim_row_" + anim_id);
+			anim_row->add_theme_constant_override("separation", 8);
+			preview_container->add_child(anim_row);
+			
+			// Status icon (TextureRect for Godot icons)
+			TextureRect *status_icon = memnew(TextureRect);
+			status_icon->set_name("status_icon");
+			status_icon->set_custom_minimum_size(Size2(16, 16));
+			status_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+			anim_row->add_child(status_icon);
+			
+			// Thumbnail placeholder
+			TextureRect *thumb = memnew(TextureRect);
+			thumb->set_name("thumbnail");
+			thumb->set_custom_minimum_size(Size2(48, 48));
+			thumb->set_stretch_mode(TextureRect::STRETCH_KEEP_ASPECT_CENTERED);
+			thumb->set_expand_mode(TextureRect::EXPAND_IGNORE_SIZE);
+			anim_row->add_child(thumb);
+			
+			// Animation name label
+			Label *name_label = memnew(Label);
+			name_label->set_name("name_label");
+			name_label->set_text(anim_name);
+			name_label->set_h_size_flags(Control::SIZE_EXPAND_FILL);
+			anim_row->add_child(name_label);
+			
+			// Status text label
+			Label *status_label = memnew(Label);
+			status_label->set_name("status_label");
+			status_label->add_theme_font_size_override("font_size", 11);
+			anim_row->add_child(status_label);
+		}
+		
+		// Update status icon and label
+		TextureRect *status_icon = Object::cast_to<TextureRect>(anim_row->find_child("status_icon", false, false));
+		Label *status_label = Object::cast_to<Label>(anim_row->find_child("status_label", false, false));
+		Label *name_label = Object::cast_to<Label>(anim_row->find_child("name_label", false, false));
+		TextureRect *thumb = Object::cast_to<TextureRect>(anim_row->find_child("thumbnail", false, false));
+		
+		if (is_completed) {
+			// Completed - green checkmark
+			if (status_icon) {
+				status_icon->set_texture(get_editor_theme_icon("StatusSuccess"));
+			}
+			if (status_label) {
+				status_label->set_text("Done");
+				status_label->add_theme_color_override("font_color", Color(0.3, 0.9, 0.4));
+			}
+			if (name_label) {
+				name_label->add_theme_color_override("font_color", Color(0.9, 0.9, 0.9));
+			}
+			
+			// Load thumbnail if not already loaded
+			if (thumb && !thumb->has_meta("loaded")) {
+				// Get URLs from completed_animations array (has the actual URLs)
+				for (int j = 0; j < completed_animations.size(); j++) {
+					Dictionary completed_anim = completed_animations[j];
+					String completed_id = completed_anim.get("id", completed_anim.get("name", ""));
+					if (completed_id == anim_id) {
+						Array frame_urls = completed_anim.get("frame_urls", Array());
+						if (!frame_urls.is_empty()) {
+							AIAnimationUI::_start_animated_thumbnail_load(thumb, frame_urls, this);
+							thumb->set_meta("loaded", true);
+						}
+						break;
+					}
+				}
+			}
+		} else if (status == "processing" || status == "generating") {
+			// Processing - spinning/progress indicator
+			if (status_icon) {
+				status_icon->set_texture(get_editor_theme_icon("Progress1"));
+			}
+			if (status_label) {
+				status_label->set_text("Generating...");
+				status_label->add_theme_color_override("font_color", Color(0.4, 0.7, 1.0));
+			}
+			if (name_label) {
+				name_label->add_theme_color_override("font_color", Color(0.7, 0.8, 0.9));
+			}
+		} else {
+			// Pending - gray waiting
+			if (status_icon) {
+				status_icon->set_texture(get_editor_theme_icon("Time"));
+			}
+			if (status_label) {
+				status_label->set_text("Pending");
+				status_label->add_theme_color_override("font_color", Color(0.5, 0.5, 0.5));
+			}
+			if (name_label) {
+				name_label->add_theme_color_override("font_color", Color(0.6, 0.6, 0.6));
+			}
+		}
+	}
 }
 
 void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, const Dictionary &p_result) {

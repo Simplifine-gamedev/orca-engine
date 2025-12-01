@@ -186,23 +186,66 @@ void AIConversationPersistence::_cleanup_old_backups() {
     
     // Get all backup files with timestamps
     PackedStringArray files = da->get_files();
-    Vector<String> backup_files;
+    
+    // Collect ALL types of backup files
+    Vector<String> conversations_backups;
+    Vector<String> emergency_backups;
+    Vector<String> large_file_backups;
     
     for (int i = 0; i < files.size(); i++) {
         String file = files[i];
         if (file.begins_with("conversations_backup_") && file.ends_with(".simplifine")) {
-            backup_files.push_back(file);
+            conversations_backups.push_back(file);
+        } else if (file.begins_with("EMERGENCY_backup_") && file.ends_with(".simplifine")) {
+            emergency_backups.push_back(file);
+        } else if (file.begins_with("LARGE_FILE_backup_") && file.ends_with(".simplifine")) {
+            large_file_backups.push_back(file);
         }
     }
     
-    // Sort by timestamp (newest first)
-    backup_files.sort();
-    backup_files.reverse();
+    // Sort each type by name (which includes timestamp) - newest first
+    conversations_backups.sort();
+    conversations_backups.reverse();
+    emergency_backups.sort();
+    emergency_backups.reverse();
+    large_file_backups.sort();
+    large_file_backups.reverse();
     
-    // Remove old backups beyond limit
-    for (int i = MAX_BACKUP_FILES; i < backup_files.size(); i++) {
-        String old_backup = backup_directory.path_join(backup_files[i]);
-        da->remove(backup_files[i]);
+    // Remove old backups beyond limit for EACH type
+    for (int i = MAX_BACKUP_FILES; i < conversations_backups.size(); i++) {
+        da->remove(conversations_backups[i]);
+    }
+    
+    for (int i = MAX_BACKUP_FILES; i < emergency_backups.size(); i++) {
+        da->remove(emergency_backups[i]);
+    }
+    
+    // Keep fewer large file backups (they're big) - max 5
+    for (int i = 5; i < large_file_backups.size(); i++) {
+        da->remove(large_file_backups[i]);
+    }
+    
+    // Also clean up .large_backup_* files in the parent (editor) directory
+    String parent_dir = backup_directory.get_base_dir();
+    Ref<DirAccess> parent_da = DirAccess::open(parent_dir);
+    if (parent_da.is_valid()) {
+        PackedStringArray parent_files = parent_da->get_files();
+        Vector<String> parent_large_backups;
+        
+        for (int i = 0; i < parent_files.size(); i++) {
+            String file = parent_files[i];
+            if (file.find(".large_backup_") != -1) {
+                parent_large_backups.push_back(file);
+            }
+        }
+        
+        parent_large_backups.sort();
+        parent_large_backups.reverse();
+        
+        // Keep max 5 large backup files in parent directory
+        for (int i = 5; i < parent_large_backups.size(); i++) {
+            parent_da->remove(parent_large_backups[i]);
+        }
     }
 }
 

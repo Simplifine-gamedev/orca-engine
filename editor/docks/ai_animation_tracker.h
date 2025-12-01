@@ -23,6 +23,7 @@ public:
 		String user_request;
 		String status; // pending, processing, completed, failed
 		Dictionary progress;
+		Dictionary partial_result; // For progressive UI updates (has completed_animations)
 		String supabase_project_id;
 		PanelContainer *ui_panel = nullptr;
 		Label *status_label = nullptr;
@@ -45,9 +46,10 @@ private:
 	String api_base_url;
 	Control *chat_container = nullptr;
 	
-	// Callbacks for when jobs complete
+	// Callbacks for when jobs complete or update
 	Callable on_job_completed_callback;
 	Callable on_job_failed_callback;
+	Callable on_job_progress_callback; // Called when partial results available
 
 protected:
 	static void _bind_methods();
@@ -72,6 +74,7 @@ public:
 	// Set callbacks
 	void set_on_job_completed(const Callable &p_callback) { on_job_completed_callback = p_callback; }
 	void set_on_job_failed(const Callable &p_callback) { on_job_failed_callback = p_callback; }
+	void set_on_job_progress(const Callable &p_callback) { on_job_progress_callback = p_callback; }
 	
 	// Get job info
 	bool has_job(const String &p_job_id) const { return active_jobs.has(p_job_id); }

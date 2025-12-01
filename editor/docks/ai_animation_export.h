@@ -28,10 +28,11 @@ public:
 	};
 
 	enum TemplateType {
-		TEMPLATE_CHARACTER,  // CharacterBody2D with movement
-		TEMPLATE_EFFECT,     // One-shot effect
-		TEMPLATE_PROP,       // Animated prop
-		TEMPLATE_SIMPLE      // Minimal setup
+		TEMPLATE_CHARACTER,      // CharacterBody2D with movement
+		TEMPLATE_RPG_CHARACTER,  // Top-down RPG with 8-dir movement (auto-mirrors LEFT from RIGHT)
+		TEMPLATE_EFFECT,         // One-shot effect
+		TEMPLATE_PROP,           // Animated prop
+		TEMPLATE_SIMPLE          // Minimal setup
 	};
 
 private:

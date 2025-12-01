@@ -663,6 +663,7 @@ private:
 	// Animation tracker callbacks
 	void _on_animation_job_completed(const String &p_job_id, const String &p_tool_call_id, const Dictionary &p_result);
 	void _on_animation_job_failed(const String &p_job_id, const String &p_tool_call_id, const String &p_error);
+	void _on_animation_job_progress(const String &p_job_id, const String &p_tool_call_id, const Dictionary &p_result);
 	void _track_animation_job_from_result(const String &p_tool_call_id, const Dictionary &p_result);
 	
 	void _on_auth_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body);

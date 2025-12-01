@@ -111,6 +111,8 @@ AICheckpointManager::CheckpointResult AICheckpointManager::create_comprehensive_
 	result.checkpoint_tag = _generate_checkpoint_name(p_message_index);
 	result.message = "Isolated checkpoint created successfully";
 	
+	// Cleanup old checkpoints to prevent disk bloat (keep only last MAX_CHECKPOINTS)
+	_cleanup_old_checkpoints(checkpoint_dir);
 	
 	return result;
 }
@@ -863,6 +865,66 @@ void AICheckpointManager::_refresh_phase_5_docks() {
 		FileSystemDock::get_singleton()->navigate_to_path("res://");
 	}
 	
+}
+
+void AICheckpointManager::_cleanup_old_checkpoints(const String &p_checkpoint_dir) {
+	// List all checkpoint tags sorted by creation date (newest first)
+	List<String> list_tags_args;
+	list_tags_args.push_back("tag");
+	list_tags_args.push_back("--list");
+	list_tags_args.push_back("msg_*");
+	list_tags_args.push_back("--sort=-creatordate"); // Newest first
+	
+	String output;
+	int exitcode;
+	if (!_git_exec(p_checkpoint_dir, list_tags_args, output, exitcode)) {
+		return;
+	}
+	
+	// Parse tags - each line is a tag name
+	PackedStringArray all_tags = output.strip_edges().split("\n");
+	
+	// Remove empty entries
+	Vector<String> valid_tags;
+	for (int i = 0; i < all_tags.size(); i++) {
+		String tag = all_tags[i].strip_edges();
+		if (!tag.is_empty()) {
+			valid_tags.push_back(tag);
+		}
+	}
+	
+	// If we have more than MAX_CHECKPOINTS, delete the oldest ones
+	if (valid_tags.size() > MAX_CHECKPOINTS) {
+		int tags_deleted = 0;
+		
+		// Delete oldest tags (they're at the end since we sorted newest first)
+		for (int i = MAX_CHECKPOINTS; i < valid_tags.size(); i++) {
+			String old_tag = valid_tags[i];
+			
+			List<String> delete_tag_args;
+			delete_tag_args.push_back("tag");
+			delete_tag_args.push_back("-d");
+			delete_tag_args.push_back(old_tag);
+			
+			String delete_output;
+			_git_exec(p_checkpoint_dir, delete_tag_args, delete_output, exitcode);
+			tags_deleted++;
+		}
+		
+		// Only run expensive git gc every 5 deletions to avoid UI freezing
+		// Git gc is SLOW and blocks the main thread
+		// Tags are deleted immediately, gc just reclaims disk space later
+		if (tags_deleted >= 5) {
+			// Use a lightweight prune instead of full gc to minimize UI freeze
+			// Full gc will happen naturally over time or can be run manually
+			List<String> prune_args;
+			prune_args.push_back("prune");
+			prune_args.push_back("--expire=now");
+			
+			String prune_output;
+			_git_exec(p_checkpoint_dir, prune_args, prune_output, exitcode);
+		}
+	}
 }
 
 

@@ -71,3 +71,4 @@ echo "Note: The response is NDJSON (newline-delimited JSON) stream."
 echo "Look for lines containing 'tool_result' to see the image generation result."
 
 
+

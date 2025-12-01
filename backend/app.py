@@ -6700,10 +6700,15 @@ def animation_2d_manager_internal(arguments: dict, conversation_messages: list =
             
             # Call animation server /create endpoint
             try:
+                # Get animation preset (auto, rpg_topdown, platformer, custom)
+                animation_preset = arguments.get('animation_preset', 'auto')
+                print(f"2D_ANIM: Animation preset: {animation_preset}")
+                
                 create_payload = {
                     "user_request": user_request,
                     "user_id": user_id,
                     "target_resolution": target_resolution,
+                    "animation_preset": animation_preset,  # Pass preset to server
                     "execute": execute_immediately,
                     "upload_to_supabase": upload_to_supabase
                 }
@@ -7858,37 +7863,11 @@ def chat():
             print(f"CONVERSATION_INIT: Starting conversation with {len(conversation_messages)} messages")
             print(f"CONVERSATION_BREAKDOWN: {total_user_messages} user, {total_assistant_messages} assistant, {total_tool_messages} tool messages")
             
-            # Add simple scene validation warnings to the last user message
-            scene_warnings = _get_scene_validation_warnings(data)
-            if scene_warnings and conversation_messages:
-                # Find the last user message and append warnings
-                for i in range(len(conversation_messages) - 1, -1, -1):
-                    if conversation_messages[i].get('role') == 'user':
-                        original_content = conversation_messages[i].get('content', '')
-                        
-                        # Ensure original_content is a string (handle list/object cases)
-                        if isinstance(original_content, list):
-                            original_content = ' '.join(str(block) for block in original_content)
-                        elif not isinstance(original_content, str):
-                            original_content = str(original_content)
-                        
-                        # Keep warnings very simple and clean
-                        clean_warnings = []
-                        for warning in scene_warnings:
-                            warning_str = str(warning).strip()
-                            if len(warning_str) > 200:  # Safety limit - truncate if too long
-                                warning_str = warning_str[:200] + "..."
-                            clean_warnings.append(warning_str)
-                        
-                        if clean_warnings:
-                            warnings_text = "\n\n--- SCENE ISSUES ---\n"
-                            for warning in clean_warnings:
-                                warnings_text += f"⚠️ {warning}\n"
-                            warnings_text += "\nNOTE: Address these issues if relevant to your request."
-                            
-                            conversation_messages[i]['content'] = original_content + warnings_text
-                            print(f"SCENE_VALIDATION: Added {len(clean_warnings)} clean warnings to user message")
-                        break
+            # DISABLED: Scene validation warnings appended to user messages
+            # This was causing clutter in user messages - warnings are now handled differently
+            # scene_warnings = _get_scene_validation_warnings(data)
+            # if scene_warnings and conversation_messages:
+            #     ... (disabled)
             
             # Validate conversation structure for tool call consistency
             unmatched_tool_calls = []

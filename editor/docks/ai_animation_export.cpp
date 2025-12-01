@@ -145,6 +145,7 @@ void AIAnimationExport::_create_dialog() {
 	
 	template_type_option = memnew(OptionButton);
 	template_type_option->add_item("Character (with movement)", TEMPLATE_CHARACTER);
+	template_type_option->add_item("RPG Character (8-dir top-down)", TEMPLATE_RPG_CHARACTER);
 	template_type_option->add_item("Effect (one-shot)", TEMPLATE_EFFECT);
 	template_type_option->add_item("Prop (animated object)", TEMPLATE_PROP);
 	template_type_option->add_item("Simple (minimal)", TEMPLATE_SIMPLE);
@@ -381,7 +382,8 @@ void AIAnimationExport::_on_folder_selected(const String &p_path) {
 	
 	int template_idx = template_type_option ? template_type_option->get_selected() : 0;
 	String template_type = "character";
-	if (template_idx == TEMPLATE_EFFECT) template_type = "effect";
+	if (template_idx == TEMPLATE_RPG_CHARACTER) template_type = "rpg_character";
+	else if (template_idx == TEMPLATE_EFFECT) template_type = "effect";
 	else if (template_idx == TEMPLATE_PROP) template_type = "prop";
 	else if (template_idx == TEMPLATE_SIMPLE) template_type = "simple";
 	body["template_type"] = template_type;
