@@ -46,6 +46,10 @@ private:
 	String api_base_url;
 	Control *chat_container = nullptr;
 	
+	// Single-flight guard for HTTPRequest
+	bool request_in_flight = false;
+	String in_flight_job_id;
+	
 	// Callbacks for when jobs complete or update
 	Callable on_job_completed_callback;
 	Callable on_job_failed_callback;

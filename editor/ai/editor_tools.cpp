@@ -92,6 +92,108 @@ void EditorTools::clear_all_preview_overlays() {
 	s_preview_overlays.clear();
 }
 
+void EditorTools::_sync_scene_with_disk(const String &p_path) {
+	// Update scene modification time in EditorData to prevent "Files modified outside" popup
+	// and reload the scene content
+	if (!EditorNode::get_singleton()) {
+		return;
+	}
+	
+	String ext = p_path.get_extension().to_lower();
+	if (ext != "tscn" && ext != "scn") {
+		return;
+	}
+	
+	// Use the editor's canonical save/reload pipeline to ensure cache consistency.
+	// 1) Reload the scene so RAM matches disk
+	EditorNode::get_singleton()->reload_scene(p_path);
+	// 2) Save via EditorNode to update editor caches, folding, timestamps, etc.
+	EditorNode::get_singleton()->save_scene_if_open(p_path);
+	// 3) Finally, update the stored modified time to the current disk value
+	uint64_t new_mod_time = FileAccess::get_modified_time(p_path);
+	EditorData &ed = EditorNode::get_singleton()->get_editor_data();
+	for (int i = 0; i < ed.get_edited_scene_count(); i++) {
+		if (ed.get_scene_path(i) == p_path) {
+			ed.set_scene_modified_time(i, new_mod_time);
+			print_line("SYNC_SCENE: Reloaded + saved. Updated mod time for " + p_path + " -> " + itos(new_mod_time));
+			break;
+		}
+	}
+}
+
+String EditorTools::_find_tscn_parse_error(const String &p_path, const String &p_content) {
+	// Parse the .tscn content to find syntax errors and return helpful context
+	PackedStringArray lines = p_content.split("\n");
+	
+	int bracket_depth = 0;
+	int last_section_line = -1;
+	String last_section_name = "";
+	bool in_multiline_string = false;
+	
+	for (int i = 0; i < lines.size(); i++) {
+		String line = lines[i];
+		String trimmed = line.strip_edges();
+		
+		// Track section headers
+		if (trimmed.begins_with("[") && trimmed.ends_with("]")) {
+			last_section_line = i + 1;
+			last_section_name = trimmed;
+		}
+		
+		// Check for unbalanced brackets
+		for (int j = 0; j < line.length(); j++) {
+			char32_t c = line[j];
+			if (c == '[' && !in_multiline_string) {
+				bracket_depth++;
+			} else if (c == ']' && !in_multiline_string) {
+				bracket_depth--;
+				if (bracket_depth < 0) {
+					return "ERROR at line " + itos(i + 1) + ": Unexpected closing bracket ']'\n" +
+					       "Line content: " + line + "\n" +
+					       "Last section: " + last_section_name + " (line " + itos(last_section_line) + ")";
+				}
+			} else if (c == '"') {
+				// Simple quote tracking (doesn't handle escaped quotes perfectly)
+				in_multiline_string = !in_multiline_string;
+			}
+		}
+		
+		// Check for common .tscn errors
+		if (trimmed.begins_with("script/source") && trimmed.contains("=")) {
+			// Check if script/source has proper quoting
+			int eq_pos = trimmed.find("=");
+			if (eq_pos >= 0) {
+				String value = trimmed.substr(eq_pos + 1).strip_edges();
+				if (!value.begins_with("\"")) {
+					return "ERROR at line " + itos(i + 1) + ": script/source value must start with \"\n" +
+					       "Line content: " + line;
+				}
+			}
+		}
+		
+		// Check for property lines missing = 
+		if (!trimmed.is_empty() && !trimmed.begins_with("[") && !trimmed.begins_with(";") && 
+		    !trimmed.begins_with("//") && trimmed.contains(" ") && !trimmed.contains("=")) {
+			// Might be a malformed property line
+			if (last_section_name.contains("node") || last_section_name.contains("sub_resource")) {
+				return "WARNING at line " + itos(i + 1) + ": Possible malformed property (missing '='?)\n" +
+				       "Line content: " + line + "\n" +
+				       "In section: " + last_section_name;
+			}
+		}
+	}
+	
+	if (bracket_depth != 0) {
+		return String("ERROR: Unbalanced brackets - ") + itos(bracket_depth) + " unclosed '[' bracket(s)\nLast section: " + last_section_name + " (line " + itos(last_section_line) + ")";
+	}
+	
+	if (in_multiline_string) {
+		return String("ERROR: Unterminated string - missing closing quote somewhere\nLast section: ") + last_section_name + " (line " + itos(last_section_line) + ")";
+	}
+	
+	return String("Parse error detected but exact location unclear. Check the file structure around recent edits.");
+}
+
 void EditorTools::_sync_script_editor_with_disk(const String &p_path, const String &p_content) {
 	// Update script editor's in-memory content to match what's on disk
 	// This prevents "reload from disk" popup when AI writes files
@@ -3384,31 +3486,24 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
                 
                 print_line("🚨 FS_WRITE_WHOLE: SCENE FILE CORRUPTION DETECTED - " + error_msg);
                 
-                // Return error result immediately - don't continue processing
+                // Try to find the exact line with the error by parsing the file ourselves
+                String error_context = _find_tscn_parse_error(path, final_content);
+                
+                // Return error with details so AI can fix it
                 result["success"] = false;
                 result["corruption_detected"] = true;
                 result["parsing_error"] = error_msg;
-                result["error"] = "⚠️ SCENE FILE CORRUPTION DETECTED: " + error_msg + "\n\n" +
-                                "TASK COMPLETED - CORRUPTION ANALYSIS COMPLETE\n\n" +
-                                "Your edit to this .tscn file has caused parsing errors. Godot cannot load the scene. " +
-                                "The corruption has been detected and reported to the user. " +
-                                "This typically happens due to:\n" +
-                                "• Unbalanced brackets [ ]\n" +
-                                "• Unterminated strings (missing quotes)\n" +
-                                "• Malformed section headers\n" +
-                                "• Invalid escape sequences in embedded scripts\n\n" +
-                                "DO NOT attempt to fix this - report the findings to the user.";
-                result["task_completed"] = true;
-                result["user_intervention_required"] = true;
+                result["error_location"] = error_context;
+                result["error"] = "SCENE PARSE ERROR in " + path + "\n\n" + error_context + "\n\n" +
+                                "FIX THIS: Read the file content, find the syntax error, and correct it. " +
+                                "Common issues:\n" +
+                                "• Missing closing ] bracket\n" +
+                                "• Unterminated string (missing \")\n" +
+                                "• Malformed [node] or [sub_resource] section\n" +
+                                "• Bad escape sequences in script/source";
                 result["file_type"] = "scene";
                 result["path"] = path;
-                
-                Array suggestions;
-                suggestions.push_back("Check for unbalanced [ ] brackets in the .tscn file");
-                suggestions.push_back("Ensure all strings are properly quoted");
-                suggestions.push_back("Verify section headers like [gd_scene], [node], [sub_resource]");
-                suggestions.push_back("For embedded scripts, escape quotes as \\\" inside script/source");
-                result["repair_suggestions"] = suggestions;
+                result["written_content"] = final_content; // Include what was written so AI can see it
                 
                 return result; // Return immediately with error
             }
@@ -3429,6 +3524,22 @@ Dictionary EditorTools::fs_write_whole_file(const Dictionary &p_args) {
         // Now scan for changes (script editor is already synced)
         if (EditorFileSystem::get_singleton()) {
             EditorFileSystem::get_singleton()->scan_changes();
+        }
+        
+        // CRITICAL FIX: Sync scene files to prevent "Files modified outside" popup
+        if (is_tscn_file) {
+            _sync_scene_with_disk(path);
+        }
+        
+        // Also handle .tres resource files
+        if (ext == "tres") {
+            if (ResourceCache::has(path)) {
+                Ref<Resource> res = ResourceCache::get_ref(path);
+                if (res.is_valid()) {
+                    res->reload_from_file();
+                    print_line("FS_WRITE_WHOLE: Reloaded resource from disk: " + path);
+                }
+            }
         }
         
         // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
@@ -3656,33 +3767,20 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
                 
                 print_line("🚨 FS_WRITE_LINES: SCENE FILE CORRUPTION DETECTED - " + error_msg);
                 
-                // Return error result immediately - don't continue processing
+                // Try to find the exact line with the error
+                String file_content = FileAccess::get_file_as_string(path);
+                String error_context = _find_tscn_parse_error(path, file_content);
+                
                 result["success"] = false;
                 result["corruption_detected"] = true;
                 result["parsing_error"] = error_msg;
-                result["error"] = "⚠️ SCENE FILE CORRUPTION DETECTED: " + error_msg + "\n\n" +
-                                "TASK COMPLETED - CORRUPTION ANALYSIS COMPLETE\n\n" +
-                                "Your line edit to this .tscn file has caused parsing errors. Godot cannot load the scene. " +
-                                "The corruption has been detected and reported to the user. " +
-                                "This typically happens due to:\n" +
-                                "• Unbalanced brackets [ ]\n" +
-                                "• Unterminated strings (missing quotes)\n" +
-                                "• Malformed section headers\n" +
-                                "• Invalid escape sequences in embedded scripts\n\n" +
-                                "DO NOT attempt to fix this - report the findings to the user.";
-                result["task_completed"] = true;
-                result["user_intervention_required"] = true;
+                result["error_location"] = error_context;
+                result["error"] = "SCENE PARSE ERROR in " + path + "\n\n" + error_context + "\n\n" +
+                                "FIX THIS: Read the file, find the syntax error at the indicated location, and correct it.";
                 result["file_type"] = "scene";
                 result["path"] = path;
                 
-                Array suggestions;
-                suggestions.push_back("Check for unbalanced [ ] brackets in the .tscn file");
-                suggestions.push_back("Ensure all strings are properly quoted");
-                suggestions.push_back("Verify section headers like [gd_scene], [node], [sub_resource]");
-                suggestions.push_back("For embedded scripts, escape quotes as \\\" inside script/source");
-                result["repair_suggestions"] = suggestions;
-                
-                return result; // Return immediately with error
+                return result;
             }
             
             print_line("✅ FS_WRITE_LINES: .tscn file validation passed for: " + path);
@@ -3700,6 +3798,11 @@ Dictionary EditorTools::fs_write_lines_range(const Dictionary &p_args) {
         // Now scan for changes (script editor is already synced)
         if (EditorFileSystem::get_singleton()) {
             EditorFileSystem::get_singleton()->scan_changes();
+        }
+        
+        // CRITICAL: Sync scene files to prevent popup
+        if (is_tscn_file) {
+            _sync_scene_with_disk(path);
         }
         
         // CRITICAL: Force shader cache clear for shader files to prevent compilation
@@ -4145,35 +4248,22 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
                 
                 print_line("🚨 FS_REPLACE_STRING: SCENE FILE CORRUPTION DETECTED - " + error_msg);
                 
-                // Return error result immediately - don't continue processing
+                // Try to find the exact line with the error
+                String file_content = FileAccess::get_file_as_string(path);
+                String error_context = _find_tscn_parse_error(path, file_content);
+                
                 result["success"] = false;
                 result["corruption_detected"] = true;
                 result["parsing_error"] = error_msg;
-                result["error"] = "⚠️ SCENE FILE CORRUPTION DETECTED: " + error_msg + "\n\n" +
-                                "TASK COMPLETED - CORRUPTION ANALYSIS COMPLETE\n\n" +
-                                "Your string replacement in this .tscn file has caused parsing errors. Godot cannot load the scene. " +
-                                "The corruption has been detected and reported to the user. " +
-                                "This typically happens due to:\n" +
-                                "• Unbalanced brackets [ ]\n" +
-                                "• Unterminated strings (missing quotes)\n" +
-                                "• Malformed section headers\n" +
-                                "• Invalid escape sequences in embedded scripts\n\n" +
-                                "DO NOT attempt to fix this - report the findings to the user.";
-                result["task_completed"] = true;
-                result["user_intervention_required"] = true;
+                result["error_location"] = error_context;
+                result["error"] = "SCENE PARSE ERROR in " + path + "\n\n" + error_context + "\n\n" +
+                                "FIX THIS: Your replacement caused this error. Read the file, find the issue, fix it.";
                 result["file_type"] = "scene";
                 result["path"] = path;
                 result["find_string"] = find_string;
                 result["replace_string"] = replace_string;
                 
-                Array suggestions;
-                suggestions.push_back("Check for unbalanced [ ] brackets in the .tscn file");
-                suggestions.push_back("Ensure all strings are properly quoted");
-                suggestions.push_back("Verify section headers like [gd_scene], [node], [sub_resource]");
-                suggestions.push_back("For embedded scripts, escape quotes as \\\" inside script/source");
-                result["repair_suggestions"] = suggestions;
-                
-                return result; // Return immediately with error
+                return result;
             }
             
             print_line("✅ FS_REPLACE_STRING: .tscn file validation passed for: " + path);
@@ -4191,6 +4281,11 @@ Dictionary EditorTools::fs_replace_string_exact(const Dictionary &p_args) {
         // Now scan for changes (script editor is already synced)
         if (EditorFileSystem::get_singleton()) {
             EditorFileSystem::get_singleton()->scan_changes();
+        }
+        
+        // CRITICAL: Sync scene files to prevent popup
+        if (is_tscn_file) {
+            _sync_scene_with_disk(path);
         }
         
         // CRITICAL: Force shader cache clear for shader files to prevent compilation errors
@@ -7696,33 +7791,20 @@ Dictionary EditorTools::apply_edit(const Dictionary &p_args) {
                     
                     print_line("🚨 APPLY_EDIT: SCENE FILE CORRUPTION DETECTED - " + error_msg);
                     
-                    // Return error result immediately - don't continue processing
+                    // Try to find the exact line with the error
+                    String file_content = FileAccess::get_file_as_string(path);
+                    String error_context = _find_tscn_parse_error(path, file_content);
+                    
                     local_result["success"] = false;
                     local_result["corruption_detected"] = true;
                     local_result["parsing_error"] = error_msg;
-                    local_result["error"] = "⚠️ SCENE FILE CORRUPTION DETECTED: " + error_msg + "\n\n" +
-                                          "TASK COMPLETED - CORRUPTION ANALYSIS COMPLETE\n\n" +
-                                          "Your edit to this .tscn file has caused parsing errors. Godot cannot load the scene. " +
-                                          "The corruption has been detected and reported to the user. " +
-                                          "This typically happens due to:\n" +
-                                          "• Unbalanced brackets [ ]\n" +
-                                          "• Unterminated strings (missing quotes)\n" +
-                                          "• Malformed section headers\n" +
-                                          "• Invalid escape sequences in embedded scripts\n\n" +
-                                          "DO NOT attempt to fix this - report the findings to the user.";
-                    local_result["task_completed"] = true;
-                    local_result["user_intervention_required"] = true;
+                    local_result["error_location"] = error_context;
+                    local_result["error"] = "SCENE PARSE ERROR in " + path + "\n\n" + error_context + "\n\n" +
+                                          "FIX THIS: Read the file, find the syntax error at the indicated location, and correct it.";
                     local_result["file_type"] = "scene";
                     local_result["path"] = path;
                     
-                    Array suggestions;
-                    suggestions.push_back("Check for unbalanced [ ] brackets in the .tscn file");
-                    suggestions.push_back("Ensure all strings are properly quoted");
-                    suggestions.push_back("Verify section headers like [gd_scene], [node], [sub_resource]");
-                    suggestions.push_back("For embedded scripts, escape quotes as \\\" inside script/source");
-                    local_result["repair_suggestions"] = suggestions;
-                    
-                    return local_result; // Return immediately with error
+                    return local_result;
                 }
                 
                 print_line("✅ APPLY_EDIT: .tscn file validation passed for: " + path);

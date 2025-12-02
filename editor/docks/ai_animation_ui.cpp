@@ -107,7 +107,7 @@ PanelContainer *AIAnimationUI::create_animation_job_panel(
 	polling_row->add_child(polling_icon);
 	
 	Label *polling_label = memnew(Label);
-	polling_label->set_text("Auto-checking progress every 15 seconds...");
+	polling_label->set_text("Auto-checking progress...");
 	polling_label->set_name("polling_indicator");
 	polling_label->add_theme_font_size_override("font_size", 11);
 	if (p_dock) {

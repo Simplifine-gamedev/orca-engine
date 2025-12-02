@@ -18,6 +18,7 @@
 #include "ai_animation_ui.h"
 #include "ai_animation_export.h"
 #include "ai_conversation_persistence.h"
+#include "editor/ai/explorer_panel.h"
 #include "ai_chat_save_coordinator.h"
 #include "editor/auth/auth_manager.h"
 #include "core/io/config_file.h"
@@ -45,6 +46,7 @@
 #include "editor/script/script_text_editor.h"
 #include "editor/shader/shader_editor_plugin.h"
 #include "editor/shader/text_shader_editor.h"
+#include "editor/ai/editor_tools.h"
 #include "modules/gdscript/gdscript.h"
 #include "modules/gdscript/gdscript_cache.h"
 #include "editor/gui/editor_file_dialog.h"
@@ -4816,6 +4818,67 @@ void AIChatDock::_process_ndjson_line(const String &p_line) {
 		
 		return; // Stop further processing for this line
 	}
+	
+	// Handle explorer progress events (streaming from explore_codebase)
+	if (response_data.has("status")) {
+		String status = response_data["status"];
+		
+		if (status == "explorer_progress") {
+			String tool_id = response_data.get("tool_id", "");
+			int turn = response_data.get("turn", 0);
+			int max_turns = response_data.get("max_turns", 10);
+			String message = response_data.get("message", "Exploring...");
+			
+			print_line("🔍 EXPLORER_PROGRESS: Turn " + itos(turn) + "/" + itos(max_turns) + " - " + message);
+			
+			// Update the explorer placeholder with progress
+			if (chat_container && !tool_id.is_empty()) {
+				PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tool_id, true, false));
+				if (placeholder) {
+					HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(placeholder->get_child(0));
+					if (tool_hbox) {
+						Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+						if (tool_label) {
+							tool_label->set_text("🔍 Exploring... (turn " + String::num_int64(turn) + "/" + String::num_int64(max_turns) + ")");
+						}
+					}
+				}
+			}
+			return;
+		}
+		
+		if (status == "explorer_tool_call") {
+			String tool_id = response_data.get("tool_id", "");
+			String explorer_tool = response_data.get("explorer_tool", "");
+			String message = response_data.get("message", "");
+			
+			print_line("🔍 EXPLORER_TOOL: " + explorer_tool + " - " + message);
+			
+			// Update placeholder to show which sub-tool is being called
+			if (chat_container && !tool_id.is_empty()) {
+				PanelContainer *placeholder = Object::cast_to<PanelContainer>(chat_container->find_child("tool_placeholder_" + tool_id, true, false));
+				if (placeholder) {
+					HBoxContainer *tool_hbox = Object::cast_to<HBoxContainer>(placeholder->get_child(0));
+					if (tool_hbox) {
+						Label *tool_label = Object::cast_to<Label>(tool_hbox->get_child(0));
+						if (tool_label) {
+							tool_label->set_text("🔍 " + message);
+						}
+					}
+				}
+			}
+			return;
+		}
+		
+		if (status == "explorer_tool_result") {
+			String tool_id = response_data.get("tool_id", "");
+			String explorer_tool = response_data.get("explorer_tool", "");
+			bool success = response_data.get("success", true);
+			
+			print_line("🔍 EXPLORER_RESULT: " + explorer_tool + " - " + (success ? "success" : "failed"));
+			return;
+		}
+	}
 
 	// Handle tool progress updates (e.g. installing assets, long-running backend work)
 	if (response_data.has("status") && response_data["status"] == "tool_progress") {
@@ -5454,6 +5517,16 @@ void AIChatDock::_execute_tool_calls(const Array &p_tool_calls) {
 			backend_only_tools.insert("todo_manager");
 			backend_only_tools.insert("search_manager"); // Default backend-only unless explicitly allowed
 			backend_only_tools.insert("2d_animation_manager"); // 2D animation generation and management
+			backend_only_tools.insert("2d_animation_batch_manager"); // Batch animation generation and management
+			backend_only_tools.insert("explore_codebase"); // Explorer agent - backend streaming
+		}
+		
+		// explore_codebase is handled entirely by the backend via streaming
+		// Skip it here - the backend executes the ExplorerAgent and streams progress
+		if (function_name == "explore_codebase") {
+			print_line("🔍 EXPLORER: explore_codebase is backend-only, skipping frontend execution");
+			// Don't add to pending_tool_tasks - backend will handle and stream results
+			continue;
 		}
 		
 		// SPECIAL HANDLING: search_manager needs mode-aware backend routing
@@ -6942,8 +7015,8 @@ void AIChatDock::_add_tool_response_to_chat(const String &p_tool_call_id, const 
 	if (add_response_start > 0) {
 	}
 	
-	// ASYNC TRACKING: Start polling for 2d_animation_manager jobs IMMEDIATELY
-	if (p_name == "2d_animation_manager" && p_result.get("success", false)) {
+	// ASYNC TRACKING: Start polling for animation jobs IMMEDIATELY
+	if ((p_name == "2d_animation_manager" || p_name == "2d_animation_batch_manager") && p_result.get("success", false)) {
 		print_line("🎬 ANIM_UI: Detected animation job, starting tracker...");
 		_track_animation_job_from_result(p_tool_call_id, p_result);
 	}
@@ -7365,6 +7438,24 @@ String AIChatDock::_generate_descriptive_tool_status(const String &p_tool_name, 
                 }
                 return msg;
             }
+        } else if (p_tool_name == "2d_animation_batch_manager") {
+            String op = p_args.get("op", "");
+            if (op == "create_batch") {
+                // Show concise batch summary (use p_args; p_arguments_str is not available here)
+                Array reqs = p_args.get("requests", Array());
+                int count = reqs.size();
+                return "Batch animation started for " + String::num_int64(count) + " item(s)";
+            } else if (op == "status") {
+                Dictionary summary = p_result.get("summary", Dictionary());
+                int total = p_result.get("total_jobs", 0);
+                int completed = summary.get("completed", 0);
+                int processing = summary.get("processing", 0);
+                int pending = summary.get("pending", 0);
+                int failed = summary.get("failed", 0);
+                return "Batch status: " + String::num_int64(completed) + "/" + String::num_int64(total) + " completed, " + String::num_int64(processing) + " processing, " + String::num_int64(pending) + " pending, " + String::num_int64(failed) + " failed";
+            } else if (op == "download") {
+                return "Preparing batch download...";
+            }
         }
         
         // Fallback to generic friendly message
@@ -7414,6 +7505,22 @@ String AIChatDock::_generate_executing_tool_message(const String &p_tool_name, c
             }
         }
         return "Managing sprite animations...";
+    } else if (p_tool_name == "2d_animation_batch_manager") {
+        // Parse arguments to show specific operation
+        Ref<JSON> json;
+        json.instantiate();
+        Error err = json->parse(p_arguments_str);
+        if (err == OK) {
+            Dictionary args = json->get_data();
+            String op = args.get("op", "");
+            if (op == "create_batch") {
+                Array reqs = args.get("requests", Array());
+                return "Creating batch sprite animations (" + String::num_int64(reqs.size()) + " item(s))...";
+            } else if (op == "status") {
+                return "Checking batch animation status...";
+            }
+        }
+        return "Managing batch sprite animations...";
     } else if (p_tool_name == "slice_spritesheet") {
         return "Slicing spritesheet...";
     } else if (p_tool_name == "check_for_app_updates") {
@@ -14882,21 +14989,16 @@ void AIChatDock::_apply_file_edit_immediate(const String &p_path, const String &
         }
         
         if (res.is_valid()) {
-            // For resources like .tres/.tscn, reload from disk and save to ensure proper import metadata
-            ResourceSaver::save(res, p_path);
+            // IMPORTANT: Do NOT resave here.
+            // Resaving a cached Resource can overwrite the freshly written on-disk text with stale data.
+            // We already wrote p_content to disk above. For scenes, just sync editor state.
+            if (ext == "tscn") {
+                EditorTools::_sync_scene_with_disk(p_path);
+            }
         }
         
     } else {
-        // Non-scene files - original logic
-        Ref<Resource> res = ResourceLoader::load(p_path);
-        if (res.is_valid()) {
-            ResourceSaver::save(res, p_path);
-        } else {
-            res = ResourceLoader::load(p_path);
-            if (res.is_valid()) {
-                ResourceSaver::save(res, p_path);
-            }
-        }
+        // Non-scene files: avoid blind resave that could use stale cache; rely on disk write above.
     }
     
 
@@ -16613,6 +16715,15 @@ String AIChatDock::_get_immediate_tool_status(const String &p_tool_name, const S
 			return "Listing recent animation projects...";
 		}
 		return "Managing sprite animations...";
+	} else if (p_tool_name == "2d_animation_batch_manager") {
+		String op = args.get("op", "");
+		if (op == "create_batch") {
+			Array reqs = args.get("requests", Array());
+			return "Creating batch sprite animations (" + String::num_int64(reqs.size()) + " item(s))...";
+		} else if (op == "status") {
+			return "Checking batch animation generation progress...";
+		}
+		return "Managing batch sprite animations...";
 	} else if (p_tool_name == "search_manager") {
 		if (op == "project.search") {
 			String query = args.get("query", "");
@@ -20875,14 +20986,55 @@ void AIChatDock::_on_animation_job_completed(const String &p_job_id, const Strin
 		if (placeholder && placeholder->get_child_count() > 0) {
 			VBoxContainer *vbox = Object::cast_to<VBoxContainer>(placeholder->get_child(0));
 			if (vbox) {
-				// Clear tracking UI
-				for (int i = vbox->get_child_count() - 1; i >= 0; i--) {
+				// Batch-friendly behavior: replace ONLY the matching job panel if multiple exist
+				String target_panel_name = "anim_job_" + p_job_id;
+				PanelContainer *job_panel = Object::cast_to<PanelContainer>(vbox->find_child(target_panel_name, false, false));
+				
+				// Count how many job panels (not result panels) are still in the vbox
+				int job_panel_count = 0;
+				for (int i = 0; i < vbox->get_child_count(); i++) {
 					Node *child = vbox->get_child(i);
-					child->queue_free();
+					if (String(child->get_name()).begins_with("anim_job_")) {
+						job_panel_count++;
+					}
 				}
 				
-				// Create beautiful completion panel
-				AIAnimationUI::create_animation_result_panel(vbox, completion_result, this);
+				print_line("ANIM_COMPLETE: Found " + itos(job_panel_count) + " job panels in vbox, looking for: " + target_panel_name);
+				
+				if (job_panel != nullptr) {
+					// Get the index of the job panel so we can insert the result at the same position
+					int panel_index = job_panel->get_index();
+					
+					// Remove the job panel immediately (not deferred) to avoid race conditions
+					vbox->remove_child(job_panel);
+					job_panel->queue_free();
+					
+					// Create result panel and insert at the same position
+					PanelContainer *result_panel = memnew(PanelContainer);
+					result_panel->set_name("anim_result_" + p_job_id);
+					vbox->add_child(result_panel);
+					vbox->move_child(result_panel, panel_index);
+					
+					// Now populate the result panel
+					VBoxContainer *result_content = memnew(VBoxContainer);
+					result_panel->add_child(result_content);
+					AIAnimationUI::create_animation_result_panel(result_content, completion_result, this);
+					
+					print_line("ANIM_COMPLETE: Replaced job panel with result at index " + itos(panel_index));
+				} else if (job_panel_count == 0) {
+					// No job panels left (single job case or all completed) - clear and show result
+					print_line("ANIM_COMPLETE: No job panels found, showing single result");
+					for (int i = vbox->get_child_count() - 1; i >= 0; i--) {
+						Node *child = vbox->get_child(i);
+						vbox->remove_child(child);
+						child->queue_free();
+					}
+					AIAnimationUI::create_animation_result_panel(vbox, completion_result, this);
+				} else {
+					// Panel not found but others exist - just append result
+					print_line("ANIM_COMPLETE: Job panel not found, appending result");
+					AIAnimationUI::create_animation_result_panel(vbox, completion_result, this);
+				}
 			}
 		}
 	}
@@ -21277,18 +21429,21 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 	}
 	print_line("   op=" + op);
 	
-	// Check for async flag or job_id
+	// Check for async flag or job_id(s)
 	bool is_async = p_result.get("async", false);
 	String job_id = p_result.get("job_id", "");
+	Array job_ids = p_result.get("job_ids", Array()); // For batch operations
 	print_line("   job_id=" + job_id + ", async=" + String(is_async ? "true" : "false"));
 	
-	if (job_id.is_empty()) {
-		print_line("   No job_id found, skipping tracker");
+	// If neither a single job_id nor a list of job_ids is present, skip
+	if (job_id.is_empty() && job_ids.is_empty()) {
+		print_line("   No job_id(s) found, skipping tracker");
 		return;
 	}
 	
 	// Track "create", "add_branch", and "edit" ops (or unset ops with job_id, or async ops)
-	if (!op.is_empty() && op != "create" && op != "add_branch" && op != "edit") {
+	// For batch: accept "create_batch"
+	if (!op.is_empty() && op != "create" && op != "add_branch" && op != "edit" && op != "create_batch") {
 		print_line("   op is not trackable, skipping (op=" + op + ")");
 		return;
 	}
@@ -21347,27 +21502,56 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 					child->queue_free();
 				}
 				
-				// Create beautiful job tracking panel inside the tool placeholder
-				print_line("   Creating AIAnimationUI panel...");
-				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
-				print_line("   ✅ Panel created!");
+				// Create one or multiple job panels
+				if (!job_ids.is_empty()) {
+					print_line("   Creating " + String::num_int64(job_ids.size()) + " batch job panel(s)...");
+					for (int i = 0; i < job_ids.size(); i++) {
+						String jid = job_ids[i];
+						String label = "Batch item " + String::num_int64(i + 1) + " / " + String::num_int64(job_ids.size());
+						AIAnimationUI::create_animation_job_panel(jid, label, p_result, vbox, this);
+					}
+					print_line("   ✅ Batch panels created!");
+				} else {
+					// Single job
+					print_line("   Creating AIAnimationUI panel...");
+					AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+					print_line("   ✅ Panel created!");
+				}
 			} else {
 				print_line("   ❌ First child is not VBoxContainer or HBoxContainer: " + first_child->get_class());
 				// Create a new VBox anyway
 				vbox = memnew(VBoxContainer);
 				ui_panel->add_child(vbox);
-				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
-				print_line("   ✅ Created new VBox and panel!");
+				if (!job_ids.is_empty()) {
+					for (int i = 0; i < job_ids.size(); i++) {
+						String jid = job_ids[i];
+						String label = "Batch item " + String::num_int64(i + 1) + " / " + String::num_int64(job_ids.size());
+						AIAnimationUI::create_animation_job_panel(jid, label, p_result, vbox, this);
+					}
+					print_line("   ✅ Created new VBox and batch panels!");
+				} else {
+					AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+					print_line("   ✅ Created new VBox and panel!");
+				}
 			}
 		} else {
 			print_line("   ❌ UI panel has no children, creating VBox...");
 			VBoxContainer *vbox = memnew(VBoxContainer);
 			ui_panel->add_child(vbox);
-			AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
-			print_line("   ✅ Created VBox and panel!");
+			if (!job_ids.is_empty()) {
+				for (int i = 0; i < job_ids.size(); i++) {
+					String jid = job_ids[i];
+					String label = "Batch item " + String::num_int64(i + 1) + " / " + String::num_int64(job_ids.size());
+					AIAnimationUI::create_animation_job_panel(jid, label, p_result, vbox, this);
+				}
+				print_line("   ✅ Created VBox and batch panels!");
+			} else {
+				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+				print_line("   ✅ Created VBox and panel!");
+			}
 		}
 		
-		// Extract export params if present
+		// Extract export params if present (for single job or batch-level defaults)
 		String export_dest = p_result.get("export_destination", "");
 		int export_res = p_result.get("export_resolution", 128);
 		String export_fmt = p_result.get("export_format", "sprite_sheet");
@@ -21375,10 +21559,42 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 		String export_resource_name = p_result.get("export_resource_name", "sprite");
 		int export_fps = p_result.get("export_fps", 10);
 		
+		// For batch jobs, get per-job export params
+		Dictionary batch_export_params = p_result.get("export_params", Dictionary());
+		
 		// Start tracking with export params (including template type for correct scene generation)
 		print_line("   Starting job tracking...");
-		animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest, export_res, export_fmt, export_template_type, export_resource_name, export_fps);
-		print_line("✅ ANIM_TRACKER: Started polling for job " + job_id);
+		if (!job_ids.is_empty()) {
+			for (int i = 0; i < job_ids.size(); i++) {
+				String jid = job_ids[i];
+				String label = "Batch item " + String::num_int64(i + 1) + " / " + String::num_int64(job_ids.size());
+				
+				// Use per-job export params if available, otherwise fall back to defaults
+				String job_export_dest = export_dest;
+				int job_export_res = export_res;
+				String job_export_fmt = export_fmt;
+				String job_export_template = export_template_type;
+				String job_export_name = export_resource_name;
+				int job_export_fps = export_fps;
+				
+				if (batch_export_params.has(jid)) {
+					Dictionary job_params = batch_export_params[jid];
+					job_export_dest = job_params.get("export_destination", job_export_dest);
+					job_export_res = job_params.get("export_resolution", job_export_res);
+					job_export_fmt = job_params.get("export_format", job_export_fmt);
+					job_export_template = job_params.get("export_template_type", job_export_template);
+					job_export_name = job_params.get("export_resource_name", job_export_name);
+					job_export_fps = job_params.get("export_fps", job_export_fps);
+					print_line("   Using per-job export params for " + jid.substr(0, 8) + ": " + job_export_dest);
+				}
+				
+				animation_tracker->track_job(jid, p_tool_call_id, label, ui_panel, job_export_dest, job_export_res, job_export_fmt, job_export_template, job_export_name, job_export_fps);
+				print_line("✅ ANIM_TRACKER: Started polling for job " + jid);
+			}
+		} else {
+			animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest, export_res, export_fmt, export_template_type, export_resource_name, export_fps);
+			print_line("✅ ANIM_TRACKER: Started polling for job " + job_id);
+		}
 	} else {
 		print_line("   ❌ Cannot track: ui_panel=" + String(ui_panel ? "valid" : "null") + 
 			", tracker=" + String(tracker_valid ? "valid" : "invalid"));
@@ -21402,7 +21618,15 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 				}
 				
 				ui_panel->add_child(vbox);
-				AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+				if (!job_ids.is_empty()) {
+					for (int i = 0; i < job_ids.size(); i++) {
+						String jid = job_ids[i];
+						String label = "Batch item " + String::num_int64(i + 1) + " / " + String::num_int64(job_ids.size());
+						AIAnimationUI::create_animation_job_panel(jid, label, p_result, vbox, this);
+					}
+				} else {
+					AIAnimationUI::create_animation_job_panel(job_id, user_request, p_result, vbox, this);
+				}
 				
 				// Extract export params (including new template type fields)
 				String export_dest2 = p_result.get("export_destination", "");
@@ -21411,8 +21635,17 @@ void AIChatDock::_track_animation_job_from_result(const String &p_tool_call_id, 
 				String export_template_type2 = p_result.get("export_template_type", "character");
 				String export_resource_name2 = p_result.get("export_resource_name", "sprite");
 				int export_fps2 = p_result.get("export_fps", 10);
-				animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest2, export_res2, export_fmt2, export_template_type2, export_resource_name2, export_fps2);
-				print_line("✅ ANIM_TRACKER: Started polling for job " + job_id + " (fallback path)");
+				if (!job_ids.is_empty()) {
+					for (int i = 0; i < job_ids.size(); i++) {
+						String jid = job_ids[i];
+						String label = "Batch item " + String::num_int64(i + 1) + " / " + String::num_int64(job_ids.size());
+						animation_tracker->track_job(jid, p_tool_call_id, label, ui_panel, export_dest2, export_res2, export_fmt2, export_template_type2, export_resource_name2, export_fps2);
+						print_line("✅ ANIM_TRACKER: Started polling for job " + jid + " (fallback path)");
+					}
+				} else {
+					animation_tracker->track_job(job_id, p_tool_call_id, user_request, ui_panel, export_dest2, export_res2, export_fmt2, export_template_type2, export_resource_name2, export_fps2);
+					print_line("✅ ANIM_TRACKER: Started polling for job " + job_id + " (fallback path)");
+				}
 			}
 		}
 	}
@@ -21496,6 +21729,83 @@ void AIChatDock::_validate_scene_after_operation() {
 		
 		if (new_warnings.size() > 0) {
 			print_line("AI Chat Dock: Found " + String::num_int64(new_warnings.size()) + " new scene validation issues after operation");
+		}
+	}
+}
+
+// ============================================================================
+// EXPLORER AGENT METHODS
+// ============================================================================
+
+void AIChatDock::_launch_explorer(const String &p_tool_call_id, const String &p_question, const String &p_depth, const Array &p_focus_areas) {
+	// NOTE: explore_codebase is now handled inline in _execute_tool_calls
+	// This function is kept for future Explorer Panel UI implementation
+	print_line("🔍 EXPLORER: _launch_explorer called (reserved for future Explorer Panel UI)");
+}
+
+void AIChatDock::_on_explorer_started(const String &p_exploration_id) {
+	print_line("🔍 EXPLORER_STARTED: " + p_exploration_id);
+}
+
+void AIChatDock::_on_explorer_completed(const String &p_exploration_id, const Dictionary &p_report) {
+	print_line("🔍 EXPLORER_COMPLETED: " + p_exploration_id);
+	
+	if (!explorer_panel) {
+		return;
+	}
+	
+	// Get the pending tool call ID
+	String tool_call_id = explorer_panel->get_meta("pending_tool_call_id", "");
+	
+	if (!tool_call_id.is_empty()) {
+		// Build tool result from report
+		Dictionary result;
+		result["success"] = true;
+		result["exploration_id"] = p_exploration_id;
+		result["report"] = p_report.get("report", "");
+		result["confidence"] = p_report.get("confidence", "medium");
+		result["files_explored"] = p_report.get("files_explored", Array());
+		result["search_queries_used"] = p_report.get("search_queries_used", Array());
+		result["total_turns"] = p_report.get("total_turns", 0);
+		
+		// Add tool response to chat
+		Dictionary args;
+		args["question"] = explorer_panel->get_current_question();
+		_add_tool_response_to_chat(tool_call_id, "explore_codebase", args, result);
+		
+		// Continue the conversation with the exploration results
+		pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
+		if (pending_tool_tasks == 0) {
+			_send_chat_request();
+		}
+	}
+}
+
+void AIChatDock::_on_explorer_error(const String &p_error) {
+	print_line("🔍 EXPLORER_ERROR: " + p_error);
+	
+	if (!explorer_panel) {
+		return;
+	}
+	
+	// Get the pending tool call ID
+	String tool_call_id = explorer_panel->get_meta("pending_tool_call_id", "");
+	
+	if (!tool_call_id.is_empty()) {
+		// Build error result
+		Dictionary result;
+		result["success"] = false;
+		result["error"] = p_error;
+		
+		// Add tool response to chat
+		Dictionary args;
+		args["question"] = explorer_panel->get_current_question();
+		_add_tool_response_to_chat(tool_call_id, "explore_codebase", args, result);
+		
+		// Continue the conversation
+		pending_tool_tasks = MAX(0, pending_tool_tasks - 1);
+		if (pending_tool_tasks == 0) {
+			_send_chat_request();
 		}
 	}
 }

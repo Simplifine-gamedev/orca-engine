@@ -43,7 +43,8 @@ void AIAnimationTracker::initialize(const String &p_api_base, Control *p_chat_co
 	// Create and add timer to chat container
 	if (!poll_timer) {
 		poll_timer = memnew(Timer);
-		poll_timer->set_wait_time(15.0);
+		// Moderate cadence; one job polled per tick; with N jobs each is polled ~every N*2s
+		poll_timer->set_wait_time(2.0);
 		poll_timer->set_one_shot(false);
 		poll_timer->connect("timeout", callable_mp(this, &AIAnimationTracker::_on_poll_timer_timeout));
 		chat_container->add_child(poll_timer);
@@ -107,8 +108,10 @@ void AIAnimationTracker::track_job(const String &p_job_id, const String &p_tool_
 		poll_timer->start();
 	}
 	
-	// Immediate first poll
-	_poll_next_job();
+	// Immediate first poll if no request is in flight
+	if (!request_in_flight) {
+		_poll_next_job();
+	}
 }
 
 void AIAnimationTracker::stop_tracking(const String &p_job_id) {
@@ -196,6 +199,11 @@ void AIAnimationTracker::_poll_next_job() {
 		return;
 	}
 	
+	// Don't start a new request while one is still in flight
+	if (request_in_flight) {
+		return;
+	}
+	
 	// Constants for timeout - ONLY time-based, no poll count limit
 	// Timeout is renewed on each successful response, so this is "time since last response"
 	const uint64_t MAX_POLL_TIME_MS = 10 * 60 * 1000; // 10 minutes since last successful poll
@@ -249,6 +257,8 @@ void AIAnimationTracker::_poll_next_job() {
 	
 	Error err = poll_request->request(poll_url, headers, HTTPClient::METHOD_GET);
 	if (err == OK) {
+		request_in_flight = true;
+		in_flight_job_id = job_to_poll;
 		active_jobs[job_to_poll].poll_count++;
 		print_line("ANIM_TRACKER: Polling job " + job_to_poll + " (poll #" + itos(active_jobs[job_to_poll].poll_count) + ") - URL: " + poll_url);
 	} else {
@@ -258,6 +268,10 @@ void AIAnimationTracker::_poll_next_job() {
 
 void AIAnimationTracker::_on_poll_request_completed(int p_result, int p_code, const PackedStringArray &p_headers, const PackedByteArray &p_body) {
 	String response_text = String::utf8((const char *)p_body.ptr(), p_body.size());
+	
+	// Mark flight ended
+	request_in_flight = false;
+	in_flight_job_id = "";
 	
 	// Handle connection failures
 	if (p_result != HTTPRequest::RESULT_SUCCESS) {
@@ -363,6 +377,7 @@ void AIAnimationTracker::_on_poll_request_completed(int p_result, int p_code, co
 		String error = result.get("error", "Unknown error");
 		_handle_job_failed(job_id, error);
 	}
+	
 }
 
 void AIAnimationTracker::_handle_job_completed(const String &p_job_id, const Dictionary &p_result) {

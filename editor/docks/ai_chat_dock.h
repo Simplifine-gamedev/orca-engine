@@ -83,6 +83,7 @@ class Label;
 class PanelContainer;
 class AIConversationPersistence;
 class AIChatSaveCoordinator;
+class ExplorerPanel;
 // Use engine's Mutex alias definition instead of forward-decl to avoid conflict
 #include "core/os/mutex.h"
 
@@ -258,6 +259,9 @@ private:
 	String pending_login_provider;
 	String provider_pending_login;
 	AIChatTodoPanel *todo_panel = nullptr;
+	
+	// Explorer Agent panel for deep codebase investigation
+	ExplorerPanel *explorer_panel = nullptr;
 
 	// Guard to avoid rebuilding UI on re-dock (NOTIFICATION_POST_ENTER_TREE fired again)
 	bool ui_initialized = false;
@@ -439,6 +443,13 @@ private:
   void _on_apply_edit_thread_done();
   // Deferred frontend tool execution (for slow tools only)
   void _execute_frontend_tool_deferred(const String &p_tool_call_id, const String &p_function_name, const String &p_arguments_str);
+  
+  // Explorer Agent methods
+  void _launch_explorer(const String &p_tool_call_id, const String &p_question, const String &p_depth, const Array &p_focus_areas);
+  void _on_explorer_started(const String &p_exploration_id);
+  void _on_explorer_completed(const String &p_exploration_id, const Dictionary &p_report);
+  void _on_explorer_error(const String &p_error);
+  
 	RichTextLabel *_get_or_create_current_assistant_message_label();
 	void _create_tool_call_bubbles(const Array &p_tool_calls);
 	void _update_tool_placeholder_with_result(const ChatMessage &p_tool_message);

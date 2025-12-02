@@ -25,7 +25,9 @@ import logging
 import copy
 import jwt
 from jwt import PyJWKClient, InvalidTokenError, PyJWKClientError
-from Godot_tools import godot_tools
+# from Godot_tools import godot_tools
+from Godot_tools_core import godot_tools
+from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
     from weaviate_vector_manager import WeaviateVectorManager
 except Exception:
@@ -7298,6 +7300,190 @@ def animation_2d_manager_internal(arguments: dict, conversation_messages: list =
         traceback.print_exc()
         return {"success": False, "error": f"2D animation manager operation failed: {str(e)}"}
 
+# ================================
+# 2D ANIMATION BATCH MANAGER
+# ================================
+BATCH_ANIMATION_JOBS = {}
+
+def animation_2d_batch_manager_internal(arguments: dict, conversation_messages: list = None, current_user: dict = None) -> dict:
+    """
+    Manage BATCH 2D sprite animation jobs in parallel.
+    Mirrors 2d_animation_manager 'create' per item, but for multiple items concurrently.
+    """
+    try:
+        op = arguments.get('op', '')
+        if not op:
+            return {"success": False, "error": "Operation 'op' parameter is required"}
+        
+        user_id = (current_user or {}).get('id') if current_user else 'anonymous'
+        
+        if op == "create_batch":
+            requests_list = arguments.get('requests', [])
+            if not isinstance(requests_list, list) or len(requests_list) == 0:
+                return {"success": False, "error": "requests array is required and must contain at least one item"}
+            
+            max_parallel = max(1, min(int(arguments.get('max_parallel', 4)), 8))
+            timeout_per_job = max(30, min(int(arguments.get('timeout_per_job', 120)), 600))
+            
+            print(f"2D_ANIM_BATCH_CREATE: {len(requests_list)} item(s), parallel={max_parallel}, timeout/job={timeout_per_job}s")
+            
+            # Each request creates its own independent project (different seeds)
+            # This is intentional - batch is for creating MULTIPLE DIFFERENT sprites in parallel
+            # For animations that share the same seed (e.g., idle + walk for same character),
+            # use a single 'create' request which creates all animations in one project
+            
+            results = []
+            job_ids = []
+            export_params_per_job = {}  # Track export params per job for auto-export
+            
+            def _create_one(idx, req):
+                # Build arguments for single create
+                export_dest = req.get('export_destination', '')
+                export_res = req.get('export_resolution', 128)
+                export_fmt = req.get('export_format', 'godot_template')
+                export_template = req.get('export_template_type', 'character')
+                export_name = req.get('export_resource_name', f"sprite_{idx+1}")
+                export_fps = req.get('export_fps', 10)
+                
+                single_args = {
+                    'op': 'create',
+                    'user_request': req.get('user_request', ''),
+                    'animation_preset': req.get('animation_preset', 'auto'),
+                    'reference_image_ids': req.get('reference_image_ids', []),
+                    'reference_description': req.get('reference_description', ''),
+                    'target_resolution': req.get('target_resolution', '128x128'),
+                    'execute_immediately': True,
+                    'upload_to_supabase': True,
+                    # Export params - will be included in result for auto-export
+                    'export_destination': export_dest,
+                    'export_resolution': export_res,
+                    'export_format': export_fmt,
+                    'export_template_type': export_template,
+                    'export_resource_name': export_name,
+                    'export_fps': export_fps,
+                }
+                print(f"2D_ANIM_BATCH_CREATE_ITEM[{idx}]: {single_args['user_request'][:80]}...")
+                res = animation_2d_manager_internal(single_args, conversation_messages, current_user)
+                
+                # Store export params keyed by job_id for later
+                job_id = res.get('job_id')
+                if job_id and export_dest:
+                    return idx, res, {
+                        'export_destination': export_dest,
+                        'export_resolution': export_res,
+                        'export_format': export_fmt,
+                        'export_template_type': export_template,
+                        'export_resource_name': export_name,
+                        'export_fps': export_fps,
+                    }
+                return idx, res, None
+            
+            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                futures = []
+                for idx, req in enumerate(requests_list):
+                    futures.append(executor.submit(_create_one, idx, req))
+                for f in as_completed(futures, timeout=timeout_per_job * max(1, len(futures))):
+                    try:
+                        result_tuple = f.result(timeout=timeout_per_job)
+                        idx, res = result_tuple[0], result_tuple[1]
+                        export_info = result_tuple[2] if len(result_tuple) > 2 else None
+                    except Exception as e:
+                        print(f"2D_ANIM_BATCH_ITEM_ERROR: {e}")
+                        idx, res, export_info = -1, {"success": False, "error": str(e)}, None
+                    results.append((idx, res))
+                    job_id = res.get('job_id')
+                    if job_id:
+                        job_ids.append(job_id)
+                        if export_info:
+                            export_params_per_job[job_id] = export_info
+            
+            # Sort results by original index
+            results.sort(key=lambda t: t[0] if isinstance(t[0], int) else 1_000_000)
+            
+            # Create batch record for aggregated status queries
+            import uuid as _uuid
+            batch_job_id = str(_uuid.uuid4())
+            BATCH_ANIMATION_JOBS[batch_job_id] = {
+                "user_id": user_id,
+                "job_ids": job_ids,
+                "total_requested": len(requests_list),
+                "created_at": time.time(),
+                "export_params": export_params_per_job,  # Store for auto-export
+            }
+            
+            started = len(job_ids)
+            failed = len(results) - started
+            
+            return {
+                "success": True,
+                "async": True,
+                "op": "create_batch",
+                "batch_job_id": batch_job_id,
+                "job_ids": job_ids,
+                "total_requested": len(requests_list),
+                "total_started": started,
+                "failed_to_start": failed,
+                "export_params": export_params_per_job,  # Include export params in response
+                "message": f"Batch started: {started}/{len(requests_list)} job(s) launched. Each creates a separate project.",
+            }
+        
+        elif op == "status":
+            batch_job_id = arguments.get('batch_job_id', '')
+            job_ids = arguments.get('job_ids', [])
+            
+            if batch_job_id:
+                mapping = BATCH_ANIMATION_JOBS.get(batch_job_id, {})
+                if mapping:
+                    job_ids = mapping.get('job_ids', [])
+            if not job_ids:
+                return {"success": False, "error": "Provide batch_job_id or job_ids for status"}
+            
+            # Aggregate statuses
+            aggregated = []
+            counts = {"completed": 0, "failed": 0, "processing": 0, "pending": 0, "unknown": 0}
+            for jid in job_ids:
+                try:
+                    res = animation_2d_manager_internal({"op": "status", "job_id": jid}, None, current_user)
+                    status = res.get("status", "unknown") or "unknown"
+                except Exception as e:
+                    res = {"success": False, "status": "failed", "error": str(e)}
+                    status = "failed"
+                aggregated.append({"job_id": jid, "status": status, "result": res})
+                if status in counts:
+                    counts[status] += 1
+                else:
+                    counts["unknown"] += 1
+            
+            return {
+                "success": True,
+                "op": "status",
+                "batch_job_id": batch_job_id or None,
+                "total_jobs": len(job_ids),
+                "summary": counts,
+                "jobs": aggregated
+            }
+        
+        elif op == "list_jobs":
+            # Reuse single manager list (stateless)
+            res = animation_2d_manager_internal({"op": "list_jobs", "limit": arguments.get("limit", 20)}, None, current_user)
+            return res
+        
+        elif op == "download":
+            return {
+                "success": False,
+                "op": "download",
+                "error": "Batch download is not implemented yet. Download animations per project or animation using 2d_animation_manager(op='download')."
+            }
+        
+        else:
+            return {"success": False, "error": f"Unknown 2d_animation_batch_manager operation: {op}"}
+    
+    except Exception as e:
+        print(f"2D_ANIMATION_BATCH_MANAGER_ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": f"2D animation batch manager operation failed: {str(e)}"}
+
 def execute_godot_tool(function_name: str, arguments: dict) -> dict:
     """Execute backend-specific tools"""
     
@@ -7340,6 +7526,8 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
         return todo_manager_internal(arguments, None)
     elif function_name == "2d_animation_manager":
         return animation_2d_manager_internal(arguments, None, None)
+    elif function_name == "2d_animation_batch_manager":
+        return animation_2d_batch_manager_internal(arguments, None, None)
     # Legacy individual tools (maintain backward compatibility)
     elif function_name == "image_operation":
         return image_operation_internal(arguments)
@@ -7365,6 +7553,204 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
 
     return {"success": False, "error": f"Unknown backend tool called: {function_name}"}
 
+
+# ============================================================================
+# EXPLORER ENDPOINT - Deep Codebase Investigation
+# ============================================================================
+
+@app.route('/explore', methods=['POST'])
+def explore():
+    """
+    Explorer Agent endpoint for deep codebase investigation.
+    
+    This launches a specialized sub-agent that uses search tools to thoroughly
+    investigate a question about the codebase, streaming its progress and
+    concluding with a cited report.
+    """
+    from explorer_agent import ExplorerAgent, stream_exploration
+    
+    # Verify authentication
+    user, error_response, status_code = verify_authentication()
+    if error_response:
+        return error_response, status_code
+    
+    # Parse request
+    try:
+        data = request.get_json()
+    except Exception:
+        raw = request.get_data(cache=False, as_text=True)
+        filtered = ''.join(ch for ch in raw if ord(ch) >= 32 or ch in '\n\r\t')
+        try:
+            data = json.loads(filtered)
+        except Exception:
+            data = {}
+    
+    if not isinstance(data, dict):
+        data = {}
+    
+    question = data.get('question', '')
+    if not question:
+        return jsonify({"error": "No question provided"}), 400
+    
+    # Get optional parameters
+    focus_areas = data.get('focus_areas', [])
+    depth = data.get('depth', 'normal')
+    model = data.get('model', 'openai/gpt-5.1')
+    
+    # Extract project context
+    project_context = {
+        "project_root": data.get('project_root') or request.headers.get('X-Project-Root'),
+        "project_name": data.get('project_name'),
+        "scenes_count": data.get('scenes_count'),
+        "scripts_count": data.get('scripts_count')
+    }
+    
+    # Determine max turns based on depth
+    max_turns_map = {"quick": 5, "normal": 10, "thorough": 15}
+    max_turns = max_turns_map.get(depth, 10)
+    
+    # Generate exploration ID for tracking
+    exploration_id = str(uuid.uuid4())
+    
+    print(f"🔍 EXPLORER_START: {exploration_id} - Question: '{question[:100]}...'")
+    print(f"🔍 EXPLORER_CONFIG: depth={depth}, max_turns={max_turns}, model={model}")
+    
+    def generate_exploration_stream():
+        """Generator that yields NDJSON lines for the exploration."""
+        try:
+            # Send initial status
+            yield json.dumps({
+                "type": "started",
+                "exploration_id": exploration_id,
+                "question": question,
+                "depth": depth,
+                "timestamp": time.time()
+            }) + '\n'
+            
+            # Use OpenAI GPT-5.1 for explorer to avoid Bedrock rate limits
+            explorer_model = "openai/gpt-5.1"
+            print(f"🔍 EXPLORER: Using model {explorer_model} (avoiding Bedrock rate limits)")
+            explorer = ExplorerAgent(model=explorer_model)
+            
+            # Add focus areas to the question if provided
+            enhanced_question = question
+            if focus_areas:
+                enhanced_question += f"\n\nFocus your search on these areas: {', '.join(focus_areas)}"
+            
+            # Run exploration and stream events
+            for event in explorer.explore(
+                question=enhanced_question,
+                project_context=project_context,
+                max_turns=max_turns
+            ):
+                # Convert event to NDJSON format compatible with frontend
+                event_type = event.get("type", "unknown")
+                event_data = event.get("data", {})
+                
+                if event_type == "thinking":
+                    yield json.dumps({
+                        "status": "exploring",
+                        "turn": event_data.get("turn"),
+                        "max_turns": event_data.get("max_turns"),
+                        "message": f"Exploring... (turn {event_data.get('turn', '?')}/{event_data.get('max_turns', '?')})"
+                    }) + '\n'
+                
+                elif event_type == "text":
+                    # Stream thinking text to frontend
+                    yield json.dumps({
+                        "type": "explorer_text",
+                        "content_delta": event_data.get("delta", "")
+                    }) + '\n'
+                
+                elif event_type == "tool_call":
+                    # Stream tool calls so frontend can display them
+                    yield json.dumps({
+                        "status": "explorer_tool_call",
+                        "tool_id": event_data.get("tool_id"),
+                        "tool_name": event_data.get("tool_name"),
+                        "arguments": event_data.get("arguments"),
+                        "message": f"Explorer calling: {event_data.get('tool_name')}"
+                    }) + '\n'
+                
+                elif event_type == "tool_result":
+                    # Stream tool results
+                    result = event_data.get("result", {})
+                    # Truncate large results for streaming
+                    result_str = json.dumps(result)
+                    if len(result_str) > 2000:
+                        result_preview = {
+                            "success": result.get("success", True),
+                            "preview": result_str[:500] + "... [truncated for streaming]",
+                            "full_size": len(result_str)
+                        }
+                    else:
+                        result_preview = result
+                    
+                    yield json.dumps({
+                        "status": "explorer_tool_result",
+                        "tool_id": event_data.get("tool_id"),
+                        "tool_name": event_data.get("tool_name"),
+                        "result": result_preview
+                    }) + '\n'
+                
+                elif event_type == "report":
+                    # The final exploration report
+                    yield json.dumps({
+                        "status": "exploration_complete",
+                        "type": "exploration_report",
+                        "report": event_data.get("report"),
+                        "confidence": event_data.get("confidence"),
+                        "files_explored": event_data.get("files_explored", []),
+                        "search_queries_used": event_data.get("search_queries_used", []),
+                        "incomplete": event_data.get("incomplete", False)
+                    }) + '\n'
+                
+                elif event_type == "completed":
+                    yield json.dumps({
+                        "status": "completed",
+                        "exploration_id": event_data.get("exploration_id"),
+                        "total_turns": event_data.get("total_turns"),
+                        "files_explored_count": event_data.get("files_explored_count"),
+                        "queries_used_count": event_data.get("queries_used_count")
+                    }) + '\n'
+                
+                elif event_type == "error":
+                    yield json.dumps({
+                        "status": "error",
+                        "error": event_data.get("error"),
+                        "turn": event_data.get("turn")
+                    }) + '\n'
+                
+                else:
+                    # Pass through any other events
+                    yield json.dumps(event) + '\n'
+            
+            print(f"🔍 EXPLORER_COMPLETE: {exploration_id}")
+            
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            print(f"🔍 EXPLORER_ERROR: {exploration_id} - {error_msg}")
+            print(f"🔍 EXPLORER_TRACEBACK: {error_trace}")
+            
+            yield json.dumps({
+                "status": "error",
+                "error": error_msg,
+                "exploration_id": exploration_id
+            }) + '\n'
+    
+    return Response(
+        stream_with_context(generate_exploration_stream()),
+        mimetype='application/x-ndjson',
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
 
 
 @app.route('/stop', methods=['POST'])
@@ -9323,8 +9709,12 @@ def chat():
                                    "slice_spritesheet", "search_godot_assets", "install_godot_asset", "generate_3d_model"]:
                         return True
                     
+                    # Explorer agent - runs on backend with streaming
+                    if func_name == "explore_codebase":
+                        return True
+                    
                     # 2D animation manager - always backend (calls animation server)
-                    if func_name == "2d_animation_manager":
+                    if func_name == "2d_animation_manager" or func_name == "2d_animation_batch_manager":
                         return True
                     
                     # Parse arguments to check operation
@@ -10573,6 +10963,161 @@ def chat():
                                 "content": json.dumps(todo_result)
                             })
                         
+                        elif func["name"] == "explore_codebase":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before explore_codebase")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before exploration"}) + '\n'
+                                return
+                            
+                            print("=" * 80)
+                            print(f"🔍 BACKEND TOOL CALLED: explore_codebase")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            try:
+                                arguments = json.loads(func["arguments"])
+                                question = arguments.get("question", "")
+                                depth = arguments.get("depth", "normal")
+                                focus_areas = arguments.get("focus_areas", [])
+                                print(f"   Question: {question}")
+                                print(f"   Depth: {depth}")
+                                print(f"   Focus areas: {focus_areas}")
+                            except json.JSONDecodeError:
+                                arguments = {}
+                                question = ""
+                                depth = "normal"
+                                focus_areas = []
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            
+                            yield json.dumps({
+                                "tool_starting": "explore_codebase",
+                                "tool_id": tool_id,
+                                "status": "tool_starting",
+                                "message": f"Starting exploration: {question[:100]}..."
+                            }) + '\n'
+                            
+                            # Import and run the explorer agent
+                            from explorer_agent import ExplorerAgent
+                            
+                            # Get project context from headers or g
+                            project_context = {
+                                "project_root": getattr(g, 'project_root', None) or request.headers.get('X-Project-Root'),
+                                "project_name": None
+                            }
+                            
+                            # Use OpenAI GPT-5.1 for explorer to avoid Bedrock rate limits
+                            explorer_model = "openai/gpt-5.1"
+                            print(f"🔍 EXPLORER: Using model {explorer_model} (avoiding Bedrock rate limits)")
+                            explorer = ExplorerAgent(model=explorer_model)
+                            exploration_result = {
+                                "success": True,
+                                "question": question,
+                                "depth": depth,
+                                "findings": [],
+                                "files_explored": [],
+                                "queries_used": [],
+                                "report": "",
+                                "confidence": "medium"
+                            }
+                            
+                            try:
+                                # Stream exploration events to frontend
+                                for event in explorer.explore(
+                                    question=question,
+                                    project_context=project_context,
+                                    max_turns={"quick": 5, "normal": 10, "thorough": 15}.get(depth, 10)
+                                ):
+                                    if check_stop():
+                                        print(f"STOP_DETECTED: Request {request_id} stopped during exploration")
+                                        yield json.dumps({"status": "stopped", "message": "Exploration stopped"}) + '\n'
+                                        return
+                                    
+                                    event_type = event.get("type", "")
+                                    event_data = event.get("data", {})
+                                    
+                                    # Stream exploration progress to frontend
+                                    if event_type == "thinking":
+                                        yield json.dumps({
+                                            "status": "explorer_progress",
+                                            "tool_id": tool_id,
+                                            "turn": event_data.get("turn"),
+                                            "max_turns": event_data.get("max_turns"),
+                                            "message": f"Exploring (turn {event_data.get('turn')}/{event_data.get('max_turns')})..."
+                                        }) + '\n'
+                                    
+                                    elif event_type == "tool_call":
+                                        tool_name = event_data.get("tool_name", "")
+                                        yield json.dumps({
+                                            "status": "explorer_tool_call",
+                                            "tool_id": tool_id,
+                                            "explorer_tool": tool_name,
+                                            "explorer_args": event_data.get("arguments", {}),
+                                            "message": f"Explorer calling: {tool_name}"
+                                        }) + '\n'
+                                        
+                                        # Track queries used
+                                        if tool_name == "search_manager":
+                                            query = event_data.get("arguments", {}).get("query", "")
+                                            if query:
+                                                exploration_result["queries_used"].append(query)
+                                    
+                                    elif event_type == "tool_result":
+                                        yield json.dumps({
+                                            "status": "explorer_tool_result",
+                                            "tool_id": tool_id,
+                                            "explorer_tool": event_data.get("tool_name"),
+                                            "success": event_data.get("result", {}).get("success", True)
+                                        }) + '\n'
+                                        
+                                        # Track files explored
+                                        if event_data.get("tool_name") == "project_manager":
+                                            path = event_data.get("arguments", {}).get("path", "")
+                                            if path:
+                                                exploration_result["files_explored"].append(path)
+                                    
+                                    elif event_type == "report":
+                                        exploration_result["report"] = event_data.get("report", "")
+                                        exploration_result["confidence"] = event_data.get("confidence", "medium")
+                                        exploration_result["files_explored"] = event_data.get("files_explored", [])
+                                        exploration_result["queries_used"] = event_data.get("search_queries_used", [])
+                                    
+                                    elif event_type == "error":
+                                        exploration_result["success"] = False
+                                        exploration_result["error"] = event_data.get("error", "Unknown error")
+                                
+                            except Exception as explore_error:
+                                import traceback
+                                print(f"EXPLORE_ERROR: {explore_error}")
+                                traceback.print_exc()
+                                exploration_result["success"] = False
+                                exploration_result["error"] = str(explore_error)
+                            
+                            # Send completion
+                            yield json.dumps({
+                                "tool_executed": "explore_codebase",
+                                "tool_result": exploration_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Add to history (compact version)
+                            exploration_for_history = {
+                                "success": exploration_result.get("success"),
+                                "question": question,
+                                "report": exploration_result.get("report", "")[:5000],  # Truncate for history
+                                "confidence": exploration_result.get("confidence"),
+                                "files_explored_count": len(exploration_result.get("files_explored", [])),
+                                "queries_used_count": len(exploration_result.get("queries_used", []))
+                            }
+                            if exploration_result.get("error"):
+                                exploration_for_history["error"] = exploration_result["error"]
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "explore_codebase",
+                                "content": json.dumps(exploration_for_history)
+                            })
+                        
                         elif func["name"] == "2d_animation_manager":
                             if check_stop():
                                 print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
@@ -10657,6 +11202,86 @@ def chat():
                                 "role": "tool",
                                 "name": "2d_animation_manager",
                                 "content": json.dumps(anim_result_for_history)
+                            })
+                        
+                        elif func["name"] == "2d_animation_batch_manager":
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped before tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped before tool execution"}) + '\n'
+                                return
+                            
+                            print("=" * 80)
+                            print(f"🎬 BACKEND TOOL CALLED: 2d_animation_batch_manager")
+                            print(f"🆔 TOOL ID: {tool_id}")
+                            try:
+                                arguments = json.loads(func["arguments"])
+                                for key, value in arguments.items():
+                                    if isinstance(value, str) and len(value) > 200:
+                                        display_value = value[:200] + "... (truncated)"
+                                    else:
+                                        display_value = value
+                                    print(f"   {key}: {display_value}")
+                            except json.JSONDecodeError:
+                                arguments = {}
+                                print("   (Failed to parse arguments)")
+                            print("=" * 80)
+                            
+                            yield json.dumps({"tool_starting": "2d_animation_batch_manager", "tool_id": tool_id, "status": "tool_starting"}) + '\n'
+                            
+                            from threading import Thread
+                            _tool_result_holder = {"done": False, "result": None}
+                            def _run_animation_batch_mgr():
+                                try:
+                                    _tool_result_holder["result"] = animation_2d_batch_manager_internal(arguments, conversation_messages, user)
+                                finally:
+                                    _tool_result_holder["done"] = True
+                            t = Thread(target=_run_animation_batch_mgr, daemon=True)
+                            t.start()
+                            timeout_start = time.time()
+                            max_timeout = 300
+                            while not _tool_result_holder["done"]:
+                                if check_stop():
+                                    print(f"STOP_DETECTED: Request {request_id} stopping during 2d_animation_batch_manager")
+                                    yield json.dumps({"status": "stopped", "message": "Request stopped during tool execution"}) + '\n'
+                                    return
+                                if time.time() - timeout_start > max_timeout:
+                                    print(f"TIMEOUT_PROTECTION: 2d_animation_batch_manager exceeded {max_timeout}s, aborting to prevent hang")
+                                    yield json.dumps({"status": "error", "message": f"Animation batch operation timed out after {max_timeout} seconds"}) + '\n'
+                                    return
+                                time.sleep(0.1)
+                            batch_result = _tool_result_holder["result"] or {"success": False, "error": "2d_animation_batch_manager returned no result"}
+                            
+                            if check_stop():
+                                print(f"STOP_DETECTED: Request {request_id} stopped after tool execution")
+                                yield json.dumps({"status": "stopped", "message": "Request stopped after tool execution"}) + '\n'
+                                return
+                            
+                            yield json.dumps({
+                                "tool_executed": "2d_animation_batch_manager",
+                                "tool_result": batch_result,
+                                "tool_call_id": tool_id,
+                                "status": "tool_completed"
+                            }) + '\n'
+                            
+                            # Compact result for conversation history
+                            batch_result_for_history = {
+                                "success": batch_result.get("success"),
+                                "op": batch_result.get("op"),
+                                "batch_job_id": batch_result.get("batch_job_id"),
+                                "job_ids": batch_result.get("job_ids"),
+                                "total_requested": batch_result.get("total_requested"),
+                                "total_started": batch_result.get("total_started"),
+                                "failed_to_start": batch_result.get("failed_to_start"),
+                                "message": batch_result.get("message"),
+                                "error": batch_result.get("error")
+                            }
+                            batch_result_for_history = {k: v for k, v in batch_result_for_history.items() if v is not None}
+                            
+                            tool_results_for_history.append({
+                                "tool_call_id": tool_id,
+                                "role": "tool",
+                                "name": "2d_animation_batch_manager",
+                                "content": json.dumps(batch_result_for_history)
                             })
                         
                         elif func["name"] == "resource_manager":
@@ -12881,7 +13506,7 @@ def count_tokens():
             return jsonify({'error': 'No JSON data provided'}), 400
             
         messages = data.get('messages', [])
-        model = data.get('model', 'openai/gpt-4o')
+        model = data.get('model', 'openai/gpt-5.1')
         
         if not messages:
             return jsonify({

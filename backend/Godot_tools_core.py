@@ -1,7 +1,4 @@
-
-
-
-# NEW set of tools :)
+# NEW minimal tools set: Search, Read/Write, CLI, Images, Animations
 # CRITICAL: This array is used by long-running Cloud Run instances
 # Any in-place mutations will corrupt it over time, causing "Missing required parameter: 'tools[0].type'" errors
 # Always deep copy before passing to LiteLLM to prevent provider adapters from mutating the global
@@ -69,14 +66,14 @@ _godot_tools_template = [
                     "replace_string": {"type": "string", "description": "String to replace with for fs.replace_string"},
                     "replace_all": {"type": "boolean", "default": False, "description": "Replace all occurrences (default: false, replace first only)"},
                     "case_sensitive": {"type": "boolean", "default": True, "description": "Case sensitive search (default: true)"},
-
+                    
                     # fs.copy / fs.move / fs.delete / fs.mkdir / fs.symlink
                     "source": {"type": "string"},
                     "destination": {"type": "string"},
                     "overwrite": {"type": "boolean", "default": False},
                     "target": {"type": "string"},
                     "link_path": {"type": "string"},
-
+                    
                     # project.* ops
                     "target_path": {"type": "string"},
                     "source_addon": {"type": "string"},
@@ -84,7 +81,7 @@ _godot_tools_template = [
                     "old_path": {"type": "string"},
                     "new_path": {"type": "string"},
                     "file_patterns": {"type": "array", "items": {"type": "string"}},
-
+                    
                     # assets.search
                     "asset_query": {"type": "string"},
                     "category": {
@@ -98,13 +95,13 @@ _godot_tools_template = [
                     "sort_reverse": {"type": "boolean", "default": False},
                     "asset_type": {"type": "string", "enum": ["any", "addon", "project"], "default": "any"},
                     "cost_filter": {"type": "string", "enum": ["all", "free", "paid"], "default": "all"},
-
+                    
                     # assets.install
                     "asset_id": {"type": "string"},
                     "project_path": {"type": "string"},
                     "install_location": {"type": "string", "default": "addons/"},
                     "create_backup": {"type": "boolean", "default": True},
-
+                    
                     # updates.check
                     "force_check": {"type": "boolean", "default": False},
                     "show_notification": {"type": "boolean", "default": True}
@@ -113,12 +110,11 @@ _godot_tools_template = [
             }
         }
     },
-
     {
         "type": "function",
         "function": {
-            "name": "scene_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Manages scenes, nodes, properties, resources, collisions, signals, groups. Common operations: 'scene.open' (open scene), 'node.create' (create node), 'node.props.get' (get properties), 'scene.analyze' (analyze scene). IMPORTANT: Use 'node.fix_physics_body' to match CollisionShape2D size with Sprite2D texture size! Use 'node.shape.set' to directly set shape properties (size/radius/height).",
+            "name": "2d_animation_batch_manager",
+            "description": "REQUIRED: Always specify 'op' parameter. Create and manage BATCH 2D sprite animation jobs in PARALLEL. Mirrors 2d_animation_manager 'create' semantics per item, but processes multiple characters/objects at once. Returns a batch job with child job IDs for tracking.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -126,244 +122,53 @@ _godot_tools_template = [
                     "op": {
                         "type": "string",
                         "enum": [
-                            # Scene ops
-                            "scene.open", "scene.create", "scene.save_as", "scene.instantiate", "scene.instantiate_batch",
-                            "scene.analyze", "scene.info", "scene.nodes.get_all",
-                            "scene.nodes.find_by_type", "editor.selection.get",
-                            "scene.bulk_configure", "scene.copy_configuration", "scene.validate_physics_bodies",
-                            # Node CRUD & type
-                            "node.create", "node.create_batch", "node.delete", "node.delete_batch", "node.move",
-                            "node.type.change", "node.type.set", "node.rename",
-                            # Advanced batch operations
-                            "node.create_and_configure_batch", "node.assign_resources_batch", "node.set_transforms_batch",
-                            # Pattern-based operations
-                            "node.props.set_pattern", "node.delete_pattern", "node.assign_resource_pattern",
-                            # Groups
-                            "groups.add", "groups.remove", "groups.list",
-                            # Props & methods  
-                            "node.props.get", "node.props.set_batch", "node.mesh.set_properties", "node.method.call",
-                            # Resources & collisions
-                            "node.assign_resource", "node.add_collision", "node.fix_physics_body", "node.shape.set",
-                            # Signals & connections
-                            "signals.list_node_signals", "signals.list_connections",
-                            "signals.list_incoming_connections", "signals.connect",
-                            "signals.disconnect", "signals.validate", "signals.open_dialog"
-                        ],
-                        "description": "Operation selector"
-                    },
-                    "dry_run": {"type": "boolean", "default": False},
-
-                    # Scene ops
-                    "path": {"type": "string"},
-                    "root_type": {"type": "string"},
-                    "include_current_as_child": {"type": "boolean", "default": False},
-                    "scene_path": {"type": "string"},
-                    "parent_node": {"type": "string", "description": "Parent node path (required for instantiate/create operations)"},
-                    "instance_name": {"type": "string"},
-                    "await_import": {"type": "boolean", "default": True, "description": "Whether to wait for import before loading (recommended for GLB/GLTF files)"},
-                    "timeout_ms": {"type": "integer", "default": 30000, "description": "Timeout in milliseconds for import waiting (30 seconds default)"},
-                    "skip_import_wait": {"type": "boolean", "default": False, "description": "Skip import waiting entirely - use for problematic files that cause import loops"},
-                    "scope": {"type": "string"},
-                    "targets": {"type": "array", "items": {"type": "string"}},
-                    
-                    # Batch scene instantiation
-                    "instantiate_batch": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "scene_path": {"type": "string", "description": "Path to scene/GLB file to instantiate"},
-                                "parent_node": {"type": "string", "description": "Parent node path"},
-                                "instance_name": {"type": "string", "description": "Optional name for the instance"}
-                            },
-                            "required": ["scene_path", "parent_node"]
-                        }
-                    },
-                    
-                    # Pattern-based operations
-                    "node_pattern": {"type": "string", "description": "Node path pattern with wildcards (e.g., 'Hallway//Column*_Left')"},
-                    "property_pattern": {"type": "string", "description": "Property to set on pattern-matched nodes"},
-                    "value_pattern": {"description": "Value to set on pattern-matched nodes"},
-                    "resource_path_pattern": {"type": "string", "description": "Resource path for pattern-based assignment"},
-
-                    # Node create/find
-                    "type": {"type": "string"},
-                    "name": {"type": "string"},
-                    
-                    # Node batch operations
-                    "node_paths": {"type": "array", "items": {"type": "string"}, "description": "Array of node paths to delete (e.g., ['Floor/Cube', 'UI/Button1', 'Player/Weapon'])"},
-                    "ignore_missing": {"type": "boolean", "default": True, "description": "If true, continue deleting other nodes even if some don't exist"},
-                    "skip_scene_root": {"type": "boolean", "default": True, "description": "If true, automatically skip scene root nodes for safety"},
-                    "nodes_to_create": {"type": "array", "items": {"type": "object"}, "description": "Array of node specs to create: [{type: 'MeshInstance3D', name: 'Floor', parent: 'World'}, {type: 'Camera3D', name: 'MainCamera'}]"},
-                    "stop_on_error": {"type": "boolean", "default": True, "description": "If true, stop batch operation on first error"},
-
-                    # Node move/type/rename
-                    "new_parent": {"type": "string"},
-                    "new_type": {"type": "string"},
-                    "preserve_children": {"type": "boolean", "default": True},
-                    "strategy": {"type": "string", "enum": ["wrap_root", "swap"], "default": "wrap_root"},
-                    "type_name": {"type": "string"},
-                    "script_path": {"type": "string"},
-                    "new_name": {"type": "string"},
-
-                    # Groups
-                    "group": {"type": "string"},
-                    "groups": {"type": "array", "items": {"type": "string"}},
-
-                    # Properties & batch ops
-                    "operations": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string"},
-                                "property": {"type": "string"},
-                                "value": {}
-                            },
-                            "required": ["path", "property", "value"]
-                        }
-                    },
-                    "property": {"type": "string"},
-                    
-                    # Mesh property updates
-                    "mesh_property": {"type": "string", "enum": ["radius", "size", "height", "top_radius", "bottom_radius", "radial_segments", "rings"], "description": "Mesh property to update (e.g., 'radius' for SphereMesh)"},
-                    "mesh_value": {"description": "New value for the mesh property (e.g., 0.038 for radius, or {x: 1, y: 2, z: 3} for size)"},
-
-                    # Node property inspection (node.props.get) - filtering/pagination
-                    "include": {"type": "array", "items": {"type": "string"}, "description": "Exact property names to include"},
-                    "ensure": {"type": "array", "items": {"type": "string"}, "description": "Always-include property names (bypass limits)"},
-                    "prefix": {"type": "string", "description": "Include properties beginning with this prefix"},
-                    "offset": {"type": "integer", "default": 0, "description": "Skip first N matching properties"},
-                    "editor_only": {"type": "boolean", "default": True, "description": "When false, include non-editor properties"},
-                    "max_properties": {"type": "integer", "default": -1, "description": "Set -1 for no limit (default: unlimited for AI debugging)"},
-
-                    # Scene listing controls (scene.nodes.get_all)
-                    "owned_only": {"type": "boolean", "default": True, "description": "Only include nodes owned by the edited scene"},
-                    "max_nodes": {"type": "integer", "default": 500, "description": "Limit traversal size"},
-
-                    # Methods
-                    "method": {"type": "string"},
-                    "args": {"type": "array", "items": {}},
-
-                    # Resource assignment
-                    "resource": {},
-
-                    # Collision
-                    "node_path": {"type": "string"},
-                    "shape_type": {"type": "string", "enum": ["rectangle", "circle", "capsule", "box", "box3d", "sphere", "sphere3d", "capsule3d", "convex", "convex3d", "trimesh", "trimesh3d"]},
-                    
-                    # Physics body auto-fix (for node.fix_physics_body) - USE THIS when sprite and collision don't match!
-                    "fix_mode": {"type": "string", "enum": ["auto", "collision_to_sprite", "sprite_to_collision", "align_only"], "default": "auto", "description": "IMPORTANT: Use node.fix_physics_body to match CollisionShape2D with Sprite2D! 'auto' (fix all issues), 'collision_to_sprite' (resize collision to match sprite), 'sprite_to_collision' (resize/create sprite to match collision), 'align_only' (just align positions). This automatically reads sprite texture size and sets collision shape to match!"},
-                    "create_missing": {"type": "boolean", "default": True, "description": "Whether to create missing components (CollisionShape2D or Sprite2D)"},
-                    
-                    # Direct shape property setting (for node.shape.set)
-                    "shape_property": {"type": "string", "enum": ["size", "radius", "height"], "description": "For node.shape.set: Which shape property to set. Use 'size' for RectangleShape2D (Vector2), 'radius' for CircleShape2D (float), 'radius'+'height' for CapsuleShape2D."},
-                    "shape_value": {"description": "For node.shape.set: The value to set. For 'size' use {x: width, y: height}. For 'radius' use a number. For 'height' use a number."},
-
-                    # Bulk/copy config
-                    "transformations": {"type": "object"},
-                    "validation": {"type": "boolean", "default": True},
-                    "source_config_scene": {"type": "string", "description": "Source node path for copy_configuration (will be mapped to 'source')"},
-                    "source": {"type": "string", "description": "Source node path (alternative to source_config_scene)"},
-
-                    # Advanced batch operations
-                    "templates": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "type": {"type": "string", "description": "Node type (e.g., 'MeshInstance3D')"},
-                                "name": {"type": "string", "description": "Name pattern with {i} placeholder (e.g., 'Column{i}_Left')"},
-                                "parent": {"type": "string", "description": "Parent node path"},
-                                "count": {"type": "integer", "description": "Number of nodes to create"},
-                                "mesh": {"type": "string", "description": "Mesh resource path"},
-                                "material": {"type": "string", "description": "Material resource path"},
-                                "properties": {"type": "object", "description": "Properties to set on each node"},
-                                "positions": {
-                                    "type": "object",
-                                    "properties": {
-                                        "pattern": {"type": "string", "enum": ["linear", "grid", "circle", "custom"]},
-                                        "start": {"type": "object", "description": "Starting position {x, y, z}"},
-                                        "spacing": {"type": "object", "description": "Spacing between nodes {x, y, z}"},
-                                        "grid_size": {"type": "object", "description": "Grid dimensions {x, y, z} for grid pattern"},
-                                        "radius": {"type": "number", "description": "Radius for circle pattern"},
-                                        "custom_positions": {"type": "array", "items": {"type": "object"}, "description": "Custom position list"}
-                                    }
-                                }
-                            },
-                            "required": ["type", "name", "parent", "count"]
-                        }
-                    },
-                    "batch_resources": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "node_paths": {"type": "array", "items": {"type": "string"}},
-                                "property": {"type": "string"},
-                                "resource_path": {"type": "string"}
-                            }
-                        }
-                    },
-                    "batch_transforms": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "node_paths": {"type": "array", "items": {"type": "string"}},
-                                "positions": {"type": "array", "items": {"type": "object"}},
-                                "rotations": {"type": "array", "items": {"type": "object"}},
-                                "scales": {"type": "array", "items": {"type": "object"}}
-                            }
-                        }
-                    },
-
-                    # Signals
-                    "signal_name": {"type": "string"},
-                    "source_path": {"type": "string"},
-                    "target_path": {"type": "string"},
-                    "binds": {"type": "array", "items": {}},
-                    "flags": {"type": "integer"},
-                    "node_paths": {"type": "array", "items": {"type": "string"}},
-                    "signals": {"type": "array", "items": {"type": "string"}},
-                    "include_args": {"type": "boolean", "default": False}
-                },
-                "required": ["op"]
-            }
-        }
-    },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "script_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Scripts and classes: attach/detach/reload, class registry, and compilation checks. Common operations: 'script.attach' (attach script), 'script.detach' (detach script), 'classes.refresh' (refresh classes).",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": [
-                            "script.get_for_node", "script.attach", "script.detach", "script.reload",
-                            "classes.refresh", "classes.custom_list", "classes.available",
-                            "compile.check"
+                            "create_batch",      # Create multiple animation jobs in parallel
+                            "status",            # Aggregate status for a batch or explicit job_ids
+                            "list_jobs",         # List recent batch jobs (alias of single jobs)
+                            "download"           # Download results for all jobs in a batch (optional)
                         ]
                     },
                     "dry_run": {"type": "boolean", "default": False},
-
-                    "path": {"type": "string", "description": "Node path (for get/attach/detach)"},
-                    "script_path": {"type": "string", "description": "Script file path (attach/reload)"},
-                    "pattern": {"type": "string", "description": "Filter for custom classes"},
-                    "check_path": {"type": "string", "description": "Script file path to check (only used when op='compile.check' and check_all=false)"},
-                    "check_all": {"type": "boolean", "default": False},
-                    "check_mode": {"type": "string", "enum": ["scripts", "output"], "default": "scripts"}
+                    
+                    # CREATE_BATCH parameters
+                    "requests": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "user_request": {"type": "string", "maxLength": 2000, "description": "Natural language description per item, e.g., 'pixel-art clownfish with idle and swim'"},
+                                "animation_preset": {"type": "string", "enum": ["auto", "rpg_topdown", "platformer", "custom"], "default": "auto"},
+                                "reference_image_ids": {"type": "array", "items": {"type": "string"}},
+                                "reference_description": {"type": "string", "maxLength": 1000},
+                                "target_resolution": {"type": "string", "enum": ["8x8", "64x64", "128x128", "256x256", "512x512"], "default": "128x128"},
+                                
+                                # Optional auto-export for each item
+                                "export_destination": {"type": "string"},
+                                "export_resolution": {"type": "integer", "default": 128, "minimum": 32, "maximum": 512},
+                                "export_format": {"type": "string", "enum": ["sprite_sheet", "frames", "gif", "godot_template"], "default": "godot_template"},
+                                "export_template_type": {"type": "string", "enum": ["player", "character", "object", "effect", "simple", "rpg_character"], "default": "character"},
+                                "export_resource_name": {"type": "string"},
+                                "export_fps": {"type": "integer", "default": 10, "minimum": 1, "maximum": 60}
+                            },
+                            "required": ["user_request"]
+                        },
+                        "description": "Array of per-item animation creation requests. Each item mirrors 2d_animation_manager 'create' parameters."
+                    },
+                    "max_parallel": {"type": "integer", "default": 4, "minimum": 1, "maximum": 8, "description": "Maximum number of items to process in parallel (1-8, default 4)"},
+                    "timeout_per_job": {"type": "integer", "default": 120, "minimum": 30, "maximum": 600, "description": "Timeout per single job create call (seconds)"},
+                    
+                    # STATUS parameters
+                    "batch_job_id": {"type": "string", "description": "Batch ID returned from 'create_batch'. If provided, aggregates child job statuses."},
+                    "job_ids": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit list of job IDs to aggregate status for"},
+                    
+                    # DOWNLOAD parameters (optional, not required to implement fully at start)
+                    "destination_base_path": {"type": "string", "description": "Base directory to save results for all jobs when using 'download'"},
+                    "file_type": {"type": "string", "enum": ["sprite_sheet", "animated_gif", "thumbnail", "frames", "all"], "default": "sprite_sheet"}
                 },
                 "required": ["op"]
             }
         }
     },
-
     {
         "type": "function",
         "function": {
@@ -488,107 +293,6 @@ _godot_tools_template = [
             }
         }
     },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "settings_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. ProjectSettings, InputMap actions, Autoloads (singletons), and layer/mask names. Common operations: 'project_settings.get' (get setting), 'project_settings.set' (set setting), 'autoload.add' (add autoload).",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": [
-                            # ProjectSettings
-                            "project_settings.get", "project_settings.set", "project_settings.list",
-                            "project_settings.get_many", "project_settings.search",
-                            # Autoloads
-                            "autoload.add", "autoload.remove",
-                            # Layer names
-                            "layers.get_names", "layers.set_name"
-                        ]
-                    },
-                    "dry_run": {"type": "boolean", "default": False},
-
-                    # ProjectSettings
-                    "key": {"type": "string", "description": "e.g., 'application/config/name'"},
-                    "value": {},
-                    "prefix": {"type": "string", "description": "List settings whose key starts with this prefix"},
-                    "keys": {"type": "array", "items": {"type": "string"}, "description": "Array of keys for get_many operation"},
-                    "query": {"type": "string", "description": "Search term for project_settings.search"},
-                    "search_in_values": {"type": "boolean", "default": False, "description": "Search in setting values too"},
-                    "keys_only": {"type": "boolean", "default": False, "description": "Return only keys without values"},
-                    "offset": {"type": "integer", "default": 0, "description": "Pagination offset"},
-                    "limit": {"type": "integer", "default": 200, "description": "Max results per page"},
-
-                    # Autoloads
-                    "autoload_name": {"type": "string"},
-                    "autoload_path": {"type": "string"},
-                    "autoload_is_singleton": {"type": "boolean", "default": True},
-
-                    # Layer names (2D/3D physics/render layers)
-                    "layer_scope": {
-                        "type": "string",
-                        "enum": ["2d_physics", "3d_physics", "2d_render", "3d_render"]
-                    },
-                    "layer_index": {"type": "integer"},
-                    "layer_name": {"type": "string"}
-                },
-                "required": ["op"]
-            }
-        }
-    },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "animation_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Create and edit animations on AnimationPlayer: animations, tracks, and keyframes. Common operations: 'animation.create' (create animation), 'track.add' (add track), 'key.insert' (insert keyframe).",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": [
-                            "animation.create", "animation.remove",
-                            "animation.set_meta",
-                            "track.add", "track.remove",
-                            "key.insert", "key.remove"
-                        ]
-                    },
-                    "dry_run": {"type": "boolean", "default": False},
-
-                    "player_path": {"type": "string", "description": "Node path to AnimationPlayer"},
-                    "animation_name": {"type": "string"},
-                    "length": {"type": "number"},
-                    "loop": {"type": "boolean", "default": False},
-                    "speed_scale": {"type": "number", "default": 1.0},
-
-                    # Tracks
-                    "track_type": {
-                        "type": "string",
-                        "enum": ["property", "method", "bezier", "audio", "animation"],
-                        "description": "Commonly 'property' or 'method'"
-                    },
-                    "track_path": {"type": "string", "description": "Node path affected by the track (for property tracks)"},
-                    "track_property": {"type": "string", "description": "e.g., 'position', 'modulate:a'"},
-                    "track_index": {"type": "integer"},
-
-                    # Keys
-                    "time": {"type": "number"},
-                    "value": {},
-                    "transition": {"type": "number", "description": "Optional easing/transition"},
-                    "in_handle": {"type": "object"},
-                    "out_handle": {"type": "object"}
-                },
-                "required": ["op"]
-            }
-        }
-    },
-
     {
         "type": "function",
         "function": {
@@ -655,82 +359,6 @@ _godot_tools_template = [
             }
         }
     },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "runtime_manager",
-            "description": "REQUIRED: Always specify 'op' parameter. Run/stop/status, error summaries/details. TEMP: screenshots disabled.",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    # TEMP: Removed 'screenshot.capture' from enum to disable screenshot tool
-                    "op": {"type": "string", "enum": ["game.start", "game.stop", "game.status", "errors.summary", "errors.details", "errors.test", "errors.debug", "console.get_output", "input.test_action", "input.test_key"]},
-                    "scene_path": {"type": "string"},
-                    "clear_errors": {"type": "boolean", "default": True},
-
-                    "include_warnings": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "errors.* ops: include warnings alongside errors when summarizing logs."
-                    },
-                    "file_filter": {
-                        "type": "string",
-                        "description": "errors.* ops: only include entries whose file path contains this substring (e.g., 'player.gd')."
-                    },
-                    "max_count": {
-                        "type": "integer",
-                        "default": 20,
-                        "description": "errors.* ops: limit number of error instances to return after filtering."
-                    },
-                    "message_contains": {
-                        "type": "string",
-                        "description": "errors.* ops: only include messages that contain this substring."
-                    },
-                    "group_duplicates": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "errors.summary: when true, collapse identical errors into a single entry with counts."
-                    },
-
-                    # Screenshot parameters (TEMP disabled)
-                    # "filename": {"type": "string", "default": "screenshot_debug.png"},
-                    # "target": {"type": "string", "enum": ["editor", "game", "both"], "default": "game"},
-                    # "return_base64": {"type": "boolean", "default": True},
-                    
-                    # Console output parameters
-                    "lookback_seconds": {
-                        "type": "number",
-                        "minimum": 0,
-                        "description": "errors.* ops: only include runtime errors from the last N seconds (0 = all history)."
-                    },
-                    "output_type": {
-                        "type": "string",
-                        "enum": ["all", "print", "error", "warning"],
-                        "default": "all",
-                        "description": "console.get_output: which messages to return (filters by Godot log category)."
-                    },
-                    "max_lines": {
-                        "type": "integer",
-                        "default": 50,
-                        "description": "console.get_output: maximum number of filtered game log lines to return."
-                    },
-                    "since_timestamp": {
-                        "type": "integer",
-                        "description": "console.get_output: reserved for future incremental log streaming (currently ignored)."
-                    },
-                    
-                    # Input testing parameters
-                    "action_name": {"type": "string", "description": "Input action name to test"},
-                    "key_code": {"type": "integer", "description": "Key code to test (e.g., 32 for space)"},
-                    "test_duration": {"type": "number", "default": 1.0, "description": "How long to test input (seconds)"}
-                },
-                "required": ["op"]
-            }
-        }
-    },
-
     {
         "type": "function",
         "function": {
@@ -750,7 +378,7 @@ _godot_tools_template = [
                     "dry_run": {"type": "boolean", "default": False, "description": "If true, don't actually execute the command, just validate it"},
                     
                     # Command execution
-                    "command": {"type": "string", "description": "CLI command to execute (for 'execute' operation). Examples: 'ls -la' (list files), 'grep -r \"pattern\" .' (search text), 'git status' (version control), 'pwd' (current directory), 'find . -name \"*.txt\"' (find files), 'cat filename.txt' (view file)"},
+                    "command": {"type": "string", "description": "CLI command to execute (for 'execute' operation). Examples: 'ls -la' (list files), 'grep -r \"pattern\" .' (search text), 'git status' (version control), 'pwd' (current directory), 'find . -name \"*.txt\"' (find files)"},
                     "working_directory": {"type": "string", "description": "Working directory for command execution (defaults to project root)"},
                     "timeout": {"type": "integer", "default": 30, "description": "Command timeout in seconds (max 300s for safety)"},
                     "capture_output": {"type": "boolean", "default": True, "description": "Whether to capture and return command output"},
@@ -768,46 +396,6 @@ _godot_tools_template = [
             }
         }
     },
-    
-    {
-        "type": "function",
-        "function": {
-            "name": "runtime_inspector",
-            "description": "REQUIRED: Always specify 'op' parameter. Inspect and modify runtime node properties, materials, shaders, environment settings during play. Common operations: 'runtime.node.get_props' (get node properties), 'runtime.node.set_prop' (set property), 'runtime.material.get' (get material).",
-            "parameters": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "op": {
-                        "type": "string",
-                        "enum": [
-                            # Basic runtime inspection
-                            "runtime.node.get_props", "runtime.node.set_prop", 
-                            "runtime.node.get_tree", "runtime.node.find_by_type",
-                            # Help/info
-                            "runtime.debug.info", "help"
-                        ],
-                        "description": "Runtime inspection operation"
-                    },
-                    
-                    # Common parameters
-                    "node_path": {"type": "string", "description": "Path to node in remote/runtime scene tree"},
-                    "property": {"type": "string", "description": "Property name to get/set"},
-                    "value": {"description": "Value to set for property"},
-                    
-                    
-                    
-                    # Search/filter params
-                    "type_filter": {"type": "string", "description": "Node type to filter by"},
-                    "max_depth": {"type": "integer", "default": 10, "description": "Maximum tree depth to traverse"},
-                    "include_internal": {"type": "boolean", "default": False, "description": "Include internal nodes"},
-                    
-                },
-                "required": ["op"]
-            }
-        }
-    },
-    
     {
         "type": "function",
         "function": {
@@ -879,7 +467,6 @@ _godot_tools_template = [
             }
         }
     },
-    
     {
         "type": "function",
         "function": {
@@ -939,6 +526,8 @@ if not godot_tools or not isinstance(godot_tools, list) or len(godot_tools) == 0
 if "type" not in godot_tools[0] or godot_tools[0]["type"] != "function":
     raise RuntimeError(f"CRITICAL: godot_tools[0] is malformed at module load: {godot_tools[0]}")
 
-print(f"✅ Godot tools loaded successfully: {len(godot_tools)} tools registered")
+print(f"✅ Godot minimal tools loaded: {len(godot_tools)} tools registered")
 print(f"✅ Tools validation: First tool type='{godot_tools[0].get('type')}', name='{godot_tools[0].get('function', {}).get('name')}'")
 print("⚠️  WARNING: Always deepcopy godot_tools before passing to LiteLLM to prevent corruption!")
+
+
