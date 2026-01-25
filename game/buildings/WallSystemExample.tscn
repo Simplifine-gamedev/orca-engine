@@ -1,0 +1,165 @@
+[gd_scene load_steps=4 format=3 uid="uid://wall_system_example"]
+
+[ext_resource type="Script" path="res://game/buildings/WallSystem.gd" id="1_wall_system"]
+[ext_resource type="Script" path="res://game/ui/WallBuildPanel.gd" id="2_wall_panel"]
+[ext_resource type="Script" path="res://game/buildings/WallSystemExample.gd" id="3_example_script"]
+
+[node name="WallSystemExample" type="Node2D"]
+script = ExtResource("3_example_script")
+
+[node name="Background" type="ColorRect" parent="."]
+offset_right = 1920.0
+offset_bottom = 1080.0
+color = Color(0.2, 0.25, 0.3, 1)
+
+[node name="GridOverlay" type="Node2D" parent="."]
+
+[node name="WallSystem" type="Node" parent="."]
+script = ExtResource("1_wall_system")
+wall_cost = 50
+wall_health = 500
+placement_color_valid = Color(0, 1, 0, 0.5)
+placement_color_invalid = Color(1, 0, 0, 0.5)
+grid_size = 32
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="UI" type="Control" parent="CanvasLayer"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="WallBuildPanel" type="Control" parent="CanvasLayer/UI"]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -250.0
+offset_top = 20.0
+offset_right = -20.0
+offset_bottom = 300.0
+grow_horizontal = 0
+script = ExtResource("2_wall_panel")
+
+[node name="PanelContainer" type="PanelContainer" parent="CanvasLayer/UI/WallBuildPanel"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Wall Building"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 20
+
+[node name="Separator1" type="HSeparator" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="ResourcesLabel" type="Label" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Resources: 500"
+horizontal_alignment = 1
+
+[node name="CostPanel" type="PanelContainer" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+visible = false
+
+[node name="CostLabel" type="Label" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer/CostPanel"]
+layout_mode = 2
+text = "Cost: 50 resources"
+horizontal_alignment = 1
+
+[node name="StatusLabel" type="Label" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Ready to build"
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[node name="Separator2" type="HSeparator" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="ButtonContainer" type="HBoxContainer" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 10
+alignment = 1
+
+[node name="BuildButton" type="Button" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer/ButtonContainer"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Build Wall"
+
+[node name="CancelButton" type="Button" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer/ButtonContainer"]
+layout_mode = 2
+visible = false
+size_flags_horizontal = 3
+text = "Cancel"
+
+[node name="Separator3" type="HSeparator" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="HelpLabel" type="Label" parent="CanvasLayer/UI/WallBuildPanel/PanelContainer/VBoxContainer"]
+layout_mode = 2
+text = "Left-click: Place
+Right-click: Cancel"
+horizontal_alignment = 1
+autowrap_mode = 2
+theme_override_font_sizes/font_size = 12
+
+[node name="TutorialPopup" type="PopupPanel" parent="CanvasLayer/UI/WallBuildPanel"]
+title = "Wall Building Tutorial"
+initial_position = 1
+size = Vector2i(400, 250)
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/UI/WallBuildPanel/TutorialPopup"]
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 396.0
+offset_bottom = 246.0
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 20
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 20
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/UI/WallBuildPanel/TutorialPopup/MarginContainer"]
+layout_mode = 2
+
+[node name="TutorialLabel" type="RichTextLabel" parent="CanvasLayer/UI/WallBuildPanel/TutorialPopup/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+bbcode_enabled = true
+text = "[center][b]Wall Building Tutorial[/b][/center]
+
+Welcome to wall building!
+
+• Left-click to place walls
+• Right-click to cancel
+• Walls cost 50 resources
+• Green areas = valid placement
+• Red areas = invalid placement"
+fit_content = true
+
+[node name="CloseButton" type="Button" parent="CanvasLayer/UI/WallBuildPanel/TutorialPopup/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Got it!"
+
+[node name="InfoLabel" type="Label" parent="CanvasLayer/UI"]
+layout_mode = 0
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 400.0
+offset_bottom = 100.0
+text = "Wall Building System Example
+Test the improved UX features!"
+theme_override_font_sizes/font_size = 16
+
+[connection signal="pressed" from="CanvasLayer/UI/WallBuildPanel/TutorialPopup/MarginContainer/VBoxContainer/CloseButton" to="CanvasLayer/UI/WallBuildPanel" method="hide_tutorial"]

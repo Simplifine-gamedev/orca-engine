@@ -1,0 +1,11 @@
+[gd_scene load_steps=2 format=3 uid="uid://wall_system_scene"]
+
+[ext_resource type="Script" path="res://game/buildings/WallSystem.gd" id="1_wall_system"]
+
+[node name="WallSystem" type="Node"]
+script = ExtResource("1_wall_system")
+wall_cost = 50
+wall_health = 500
+placement_color_valid = Color(0, 1, 0, 0.5)
+placement_color_invalid = Color(1, 0, 0, 0.5)
+grid_size = 32
