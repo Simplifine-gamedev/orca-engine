@@ -1,0 +1,326 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-01-25",
+  "factions": {
+    "human": {
+      "id": 0,
+      "name": "Human Kingdom",
+      "color": "#3366CC",
+      "description": "The Human Kingdom excels in balanced warfare with well-trained archers and crossbowmen.",
+      "characters": {
+        "archer": {
+          "id": "human_archer",
+          "name": "Archer",
+          "title": "Human Archer",
+          "type": "ranged_infantry",
+          "tier": 1,
+          "stats": {
+            "health": 60,
+            "damage": 12,
+            "range": 15,
+            "speed": 3.5,
+            "attack_cooldown": 1.5,
+            "armor": 2,
+            "sight_range": 20
+          },
+          "cost": {
+            "wood": 50,
+            "gold": 25
+          },
+          "training": {
+            "time": 30,
+            "building": "archery_range"
+          },
+          "model_info": {
+            "model_path": "res://rts_game/units/archer.tscn",
+            "model_type": "humanoid",
+            "animations": {
+              "idle": "idle_bow",
+              "walk": "walk_bow",
+              "attack": "attack_bow",
+              "death": "death"
+            },
+            "weapon": "longbow",
+            "projectile": "arrow"
+          },
+          "abilities": [],
+          "upgrades": [
+            "fletching",
+            "bodkin_arrow",
+            "bracer"
+          ]
+        },
+        "crossbowman": {
+          "id": "human_crossbowman",
+          "name": "Crossbowman",
+          "title": "Human Crossbowman",
+          "type": "ranged_infantry",
+          "tier": 2,
+          "stats": {
+            "health": 70,
+            "damage": 18,
+            "range": 18,
+            "speed": 3.0,
+            "attack_cooldown": 2.2,
+            "armor": 3,
+            "armor_penetration": 5,
+            "sight_range": 22
+          },
+          "cost": {
+            "wood": 60,
+            "gold": 40
+          },
+          "training": {
+            "time": 45,
+            "building": "archery_range"
+          },
+          "model_info": {
+            "model_path": "res://rts_game/units/crossbowman.tscn",
+            "model_type": "humanoid",
+            "animations": {
+              "idle": "idle_crossbow",
+              "walk": "walk_crossbow",
+              "attack": "attack_crossbow",
+              "reload": "reload_crossbow",
+              "death": "death"
+            },
+            "weapon": "crossbow",
+            "projectile": "crossbow_bolt"
+          },
+          "abilities": [],
+          "upgrades": [
+            "steel_bolts",
+            "heavy_crossbow",
+            "crossbow_master"
+          ]
+        }
+      }
+    },
+    "orc": {
+      "id": 1,
+      "name": "Orc Horde",
+      "color": "#CC3333",
+      "description": "The Orc Horde fields brutal ranged units with higher damage but slightly less accuracy.",
+      "characters": {
+        "archer": {
+          "id": "orc_archer",
+          "name": "Orc Archer",
+          "title": "Orc Archer",
+          "type": "ranged_infantry",
+          "tier": 1,
+          "stats": {
+            "health": 65,
+            "damage": 13,
+            "range": 14,
+            "speed": 3.3,
+            "attack_cooldown": 1.6,
+            "armor": 3,
+            "sight_range": 18
+          },
+          "cost": {
+            "wood": 50,
+            "gold": 25
+          },
+          "training": {
+            "time": 28,
+            "building": "archery_range"
+          },
+          "model_info": {
+            "model_path": "res://rts_game/units/archer.tscn",
+            "model_type": "orc",
+            "animations": {
+              "idle": "idle_bow_orc",
+              "walk": "walk_bow_orc",
+              "attack": "attack_bow_orc",
+              "death": "death_orc"
+            },
+            "weapon": "war_bow",
+            "projectile": "heavy_arrow"
+          },
+          "abilities": [],
+          "upgrades": [
+            "barbed_arrows",
+            "war_bow",
+            "orc_fury"
+          ]
+        },
+        "crossbowman": {
+          "id": "orc_crossbowman",
+          "name": "Orc Crossbowman",
+          "title": "Orc Crossbowman",
+          "type": "ranged_infantry",
+          "tier": 2,
+          "stats": {
+            "health": 75,
+            "damage": 20,
+            "range": 17,
+            "speed": 2.8,
+            "attack_cooldown": 2.3,
+            "armor": 4,
+            "armor_penetration": 6,
+            "sight_range": 20
+          },
+          "cost": {
+            "wood": 60,
+            "gold": 40
+          },
+          "training": {
+            "time": 42,
+            "building": "archery_range"
+          },
+          "model_info": {
+            "model_path": "res://rts_game/units/crossbowman.tscn",
+            "model_type": "orc",
+            "animations": {
+              "idle": "idle_crossbow_orc",
+              "walk": "walk_crossbow_orc",
+              "attack": "attack_crossbow_orc",
+              "reload": "reload_crossbow_orc",
+              "death": "death_orc"
+            },
+            "weapon": "heavy_crossbow",
+            "projectile": "iron_bolt"
+          },
+          "abilities": [],
+          "upgrades": [
+            "iron_bolts",
+            "siege_crossbow",
+            "bloodlust"
+          ]
+        }
+      }
+    },
+    "elf": {
+      "id": 2,
+      "name": "Elven Alliance",
+      "color": "#33CC66",
+      "description": "The Elven Alliance specializes in swift, accurate ranged combat with extended ranges.",
+      "characters": {
+        "archer": {
+          "id": "elf_archer",
+          "name": "Elven Archer",
+          "title": "Elven Archer",
+          "type": "ranged_infantry",
+          "tier": 1,
+          "stats": {
+            "health": 55,
+            "damage": 14,
+            "range": 18,
+            "speed": 4.0,
+            "attack_cooldown": 1.3,
+            "armor": 1,
+            "sight_range": 24
+          },
+          "cost": {
+            "wood": 55,
+            "gold": 30
+          },
+          "training": {
+            "time": 32,
+            "building": "archery_range"
+          },
+          "model_info": {
+            "model_path": "res://rts_game/units/archer.tscn",
+            "model_type": "elf",
+            "animations": {
+              "idle": "idle_bow_elf",
+              "walk": "walk_bow_elf",
+              "attack": "attack_bow_elf",
+              "death": "death_elf"
+            },
+            "weapon": "elven_bow",
+            "projectile": "elven_arrow"
+          },
+          "abilities": [],
+          "upgrades": [
+            "elven_wood",
+            "true_shot",
+            "eagle_eye"
+          ]
+        },
+        "crossbowman": {
+          "id": "elf_marksman",
+          "name": "Elven Marksman",
+          "title": "Elven Marksman",
+          "type": "ranged_infantry",
+          "tier": 2,
+          "stats": {
+            "health": 60,
+            "damage": 16,
+            "range": 20,
+            "speed": 3.5,
+            "attack_cooldown": 2.0,
+            "armor": 2,
+            "armor_penetration": 4,
+            "sight_range": 26
+          },
+          "cost": {
+            "wood": 65,
+            "gold": 45
+          },
+          "training": {
+            "time": 40,
+            "building": "archery_range"
+          },
+          "model_info": {
+            "model_path": "res://rts_game/units/crossbowman.tscn",
+            "model_type": "elf",
+            "animations": {
+              "idle": "idle_crossbow_elf",
+              "walk": "walk_crossbow_elf",
+              "attack": "attack_crossbow_elf",
+              "reload": "reload_crossbow_elf",
+              "death": "death_elf"
+            },
+            "weapon": "elven_crossbow",
+            "projectile": "silver_bolt"
+          },
+          "abilities": [],
+          "upgrades": [
+            "silver_bolts",
+            "precision_sight",
+            "master_marksman"
+          ]
+        }
+      }
+    }
+  },
+  "projectiles": {
+    "arrow": {
+      "name": "Arrow",
+      "model": "res://rts_game/projectiles/arrow.tscn",
+      "speed": 20,
+      "visual_trail": true
+    },
+    "heavy_arrow": {
+      "name": "Heavy Arrow",
+      "model": "res://rts_game/projectiles/arrow.tscn",
+      "speed": 18,
+      "visual_trail": true
+    },
+    "elven_arrow": {
+      "name": "Elven Arrow",
+      "model": "res://rts_game/projectiles/arrow.tscn",
+      "speed": 22,
+      "visual_trail": true
+    },
+    "crossbow_bolt": {
+      "name": "Crossbow Bolt",
+      "model": "res://rts_game/projectiles/crossbow_bolt.tscn",
+      "speed": 25,
+      "visual_trail": true
+    },
+    "iron_bolt": {
+      "name": "Iron Bolt",
+      "model": "res://rts_game/projectiles/crossbow_bolt.tscn",
+      "speed": 26,
+      "visual_trail": true
+    },
+    "silver_bolt": {
+      "name": "Silver Bolt",
+      "model": "res://rts_game/projectiles/crossbow_bolt.tscn",
+      "speed": 27,
+      "visual_trail": true
+    }
+  }
+}

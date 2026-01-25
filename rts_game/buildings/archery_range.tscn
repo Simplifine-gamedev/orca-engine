@@ -1,0 +1,47 @@
+[gd_scene load_steps=4 format=3 uid="uid://archery_range_building_001"]
+
+[ext_resource type="Script" path="res://rts_game/buildings/archery_range.gd" id="1"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_1"]
+size = Vector3(4, 3, 4)
+
+[sub_resource type="BoxMesh" id="BoxMesh_1"]
+size = Vector3(4, 3, 4)
+
+[node name="ArcheryRange" type="StaticBody3D"]
+script = ExtResource("1")
+max_health = 500.0
+archer_train_time = 30.0
+crossbowman_train_time = 45.0
+archer_cost_wood = 50
+archer_cost_gold = 25
+crossbowman_cost_wood = 60
+crossbowman_cost_gold = 40
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+shape = SubResource("BoxShape3D_1")
+
+[node name="ArcheryRangeModel" type="Node3D" parent="."]
+
+[node name="Building" type="MeshInstance3D" parent="ArcheryRangeModel"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+mesh = SubResource("BoxMesh_1")
+
+[node name="SpawnPoint" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, 0)
+gizmo_extents = 0.5
+
+[node name="UI" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="TrainingProgress" type="ProgressBar" parent="UI"]
+visible = false
+layout_mode = 0
+offset_left = -50.0
+offset_top = -30.0
+offset_right = 50.0
+offset_bottom = -20.0

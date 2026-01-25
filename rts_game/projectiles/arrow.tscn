@@ -1,0 +1,23 @@
+[gd_scene load_steps=3 format=3 uid="uid://arrow_projectile_001"]
+
+[ext_resource type="Script" path="res://rts_game/projectiles/arrow.gd" id="1"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_1"]
+radius = 0.05
+height = 0.8
+
+[node name="Arrow" type="Area3D"]
+script = ExtResource("1")
+collision_layer = 4
+collision_mask = 3
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(-4.37114e-08, 0, 1, 0, 1, 0, -1, 0, -4.37114e-08, 0, 0, 0)
+shape = SubResource("CapsuleShape3D_1")
+
+[node name="ArrowMesh" type="MeshInstance3D" parent="."]
+
+[node name="Trail" type="GPUParticles3D" parent="."]
+emitting = false
+amount = 8
+lifetime = 0.3
