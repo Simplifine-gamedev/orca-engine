@@ -1,0 +1,26 @@
+<svg height="128" width="128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="#478cbf"/>
+  
+  <!-- Tower body -->
+  <rect x="44" y="50" width="40" height="50" fill="#3f3f3f"/>
+  
+  <!-- Tower top -->
+  <polygon points="40,55 88,55 88,45 40,45" fill="#5a5a5a"/>
+  
+  <!-- Battlements -->
+  <rect x="40" y="40" width="8" height="10" fill="#5a5a5a"/>
+  <rect x="60" y="40" width="8" height="10" fill="#5a5a5a"/>
+  <rect x="80" y="40" width="8" height="10" fill="#5a5a5a"/>
+  
+  <!-- Eye icon above tower -->
+  <ellipse cx="64" cy="25" rx="15" ry="10" fill="white" stroke="#3f3f3f" stroke-width="2"/>
+  <circle cx="64" cy="25" r="5" fill="#478cbf"/>
+  <circle cx="64" cy="25" r="3" fill="#3f3f3f"/>
+  
+  <!-- Vision rays -->
+  <line x1="49" y1="25" x2="35" y2="25" stroke="white" stroke-width="2" opacity="0.6"/>
+  <line x1="79" y1="25" x2="93" y2="25" stroke="white" stroke-width="2" opacity="0.6"/>
+  <line x1="54" y1="18" x2="45" y2="12" stroke="white" stroke-width="2" opacity="0.6"/>
+  <line x1="74" y1="18" x2="83" y2="12" stroke="white" stroke-width="2" opacity="0.6"/>
+</svg>

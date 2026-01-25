@@ -1,0 +1,20 @@
+[gd_scene load_steps=3 format=3 uid="uid://bvqxk8ymwpq7l"]
+
+[ext_resource type="Script" path="res://scripts/control_point.gd" id="1_j8m5o"]
+[ext_resource type="Script" path="res://scripts/watchtower_model.gd" id="2_tower"]
+
+[node name="ControlPoint" type="Node3D"]
+script = ExtResource("1_j8m5o")
+vision_radius = 20.0
+
+[node name="TowerModel" type="MeshInstance3D" parent="."]
+script = ExtResource("2_tower")
+
+[node name="Area3D" type="Area3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
+
+[connection signal="input_event" from="." to="." method="_input_event"]
+[connection signal="mouse_entered" from="Area3D" to="." method="_on_mouse_entered"]
+[connection signal="mouse_exited" from="Area3D" to="." method="_on_mouse_exited"]
