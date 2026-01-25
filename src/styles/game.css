@@ -1,0 +1,255 @@
+/* Mob Lair Styles */
+.mob-lair {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.2s, filter 0.3s;
+  user-select: none;
+}
+
+.mob-lair:hover {
+  transform: scale(1.1);
+  filter: brightness(1.2);
+}
+
+.mob-lair.destroyed {
+  filter: grayscale(100%) brightness(0.5);
+  cursor: default;
+}
+
+.lair-sprite {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* Lair-specific backgrounds */
+.mob-lair.goblin_camp {
+  background: linear-gradient(135deg, #654321, #8B4513);
+  box-shadow: 0 4px 8px rgba(101, 67, 33, 0.5);
+}
+
+.mob-lair.ogre_cave {
+  background: linear-gradient(135deg, #3a3a3a, #1a1a1a);
+  box-shadow: 0 4px 8px rgba(58, 58, 58, 0.5);
+}
+
+.mob-lair.undead_crypt {
+  background: linear-gradient(135deg, #4a0e4e, #2d1b2e);
+  box-shadow: 0 4px 8px rgba(74, 14, 78, 0.5);
+}
+
+.mob-lair.dragon_nest {
+  background: linear-gradient(135deg, #8b0000, #ff4500);
+  box-shadow: 0 4px 8px rgba(139, 0, 0, 0.5);
+}
+
+/* Health Bar */
+.health-bar {
+  position: absolute;
+  bottom: -10px;
+  left: 5px;
+  width: 70px;
+  height: 6px;
+  background-color: rgba(255, 0, 0, 0.3);
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+}
+
+.health-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00ff00, #32cd32);
+  transition: width 0.3s ease;
+}
+
+/* Mob Count Badge */
+.mob-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: bold;
+  border: 2px solid #ffd700;
+}
+
+/* Destroyed Marker */
+.destroyed-marker {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 40px;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; transform: translate(-50%, -50%) scale(1); }
+  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+}
+
+/* Mob Styles */
+.mob {
+  position: absolute;
+  transition: left 0.5s, top 0.5s;
+  filter: drop-shadow(2px 2px 4px rgba(0, 0, 0, 0.5));
+  animation: mobIdle 2s infinite;
+}
+
+@keyframes mobIdle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.mob:hover {
+  transform: scale(1.2);
+  cursor: pointer;
+}
+
+.mob-health-bar {
+  position: absolute;
+  bottom: -5px;
+  left: 0;
+  width: 40px;
+  height: 4px;
+  background-color: rgba(255, 0, 0, 0.5);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mob-health-bar > div {
+  transition: width 0.3s ease;
+}
+
+/* Loot Drop */
+.loot-drop {
+  position: absolute;
+  animation: lootDrop 0.5s ease-out, lootShine 2s infinite;
+  font-weight: bold;
+  pointer-events: all;
+  transition: transform 0.2s;
+}
+
+.loot-drop:hover {
+  transform: scale(1.1);
+  cursor: pointer;
+}
+
+@keyframes lootDrop {
+  0% { transform: translateY(-50px) scale(0); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+@keyframes lootShine {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.3); }
+}
+
+/* Game World */
+.game-world {
+  overflow: hidden;
+  background-image: 
+    repeating-linear-gradient(0deg, transparent, transparent 50px, rgba(0, 0, 0, 0.1) 50px, rgba(0, 0, 0, 0.1) 51px),
+    repeating-linear-gradient(90deg, transparent, transparent 50px, rgba(0, 0, 0, 0.1) 50px, rgba(0, 0, 0, 0.1) 51px);
+}
+
+/* Controls Panel */
+.controls {
+  backdrop-filter: blur(10px);
+}
+
+.controls h3 {
+  margin: 0 0 10px 0;
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.controls button {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-weight: bold;
+  text-transform: capitalize;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.controls button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.controls button:active {
+  transform: translateY(0);
+}
+
+/* Stats Panel */
+.stats {
+  backdrop-filter: blur(10px);
+  font-family: monospace;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.stats > div {
+  margin: 4px 0;
+  padding: 4px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .mob-lair {
+    width: 60px;
+    height: 60px;
+  }
+  
+  .lair-sprite {
+    font-size: 36px;
+  }
+  
+  .mob {
+    width: 30px !important;
+    height: 30px !important;
+    font-size: 20px !important;
+  }
+  
+  .controls, .stats {
+    font-size: 12px;
+    padding: 8px;
+  }
+}
+
+/* Loading State */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 24px;
+  color: white;
+}
+
+.loading::after {
+  content: '...';
+  animation: dots 1.5s infinite;
+}
+
+@keyframes dots {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
