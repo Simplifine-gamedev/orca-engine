@@ -1,0 +1,25 @@
+# Compiled output
+dist/
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+
+# Node modules
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary files
+*.tmp
+*.temp

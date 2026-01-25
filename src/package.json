@@ -1,0 +1,27 @@
+{
+  "name": "@orca-rts/pathfinding",
+  "version": "1.0.0",
+  "description": "Advanced pathfinding system for Orca RTS game",
+  "main": "dist/pathfinding/index.js",
+  "types": "dist/pathfinding/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "example": "ts-node pathfinding/example.ts",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "pathfinding",
+    "astar",
+    "rts",
+    "game",
+    "navigation"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  }
+}
