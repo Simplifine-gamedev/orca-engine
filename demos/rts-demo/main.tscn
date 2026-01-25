@@ -1,0 +1,73 @@
+[gd_scene load_steps=6 format=3 uid="uid://main_rts_demo"]
+
+[ext_resource type="Script" path="res://scripts/heightmap_terrain.gd" id="1_terrain"]
+[ext_resource type="Script" path="res://scripts/vegetation_system.gd" id="2_vegetation"]
+[ext_resource type="Script" path="res://scripts/decoration_spawner.gd" id="3_decoration"]
+[ext_resource type="Script" path="res://scripts/demo_controller.gd" id="4_controller"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 1
+background_color = Color(0.6, 0.8, 1, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.8, 0.8, 0.8, 1)
+ambient_light_energy = 0.8
+
+[node name="Main" type="Node3D"]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 40, 40)
+fov = 60.0
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, -0.75, 0.433013, 0, 30, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="HeightmapTerrain" type="Node3D" parent="."]
+script = ExtResource("1_terrain")
+terrain_size = Vector2(100, 100)
+height_scale = 10.0
+resolution = 100
+noise_seed = 12345
+noise_frequency = 0.05
+noise_octaves = 4
+enable_hills = true
+enable_valleys = true
+enable_plateaus = false
+
+[node name="VegetationSystem" type="Node3D" parent="."]
+script = ExtResource("2_vegetation")
+vegetation_density = 0.5
+map_size = Vector2(100, 100)
+random_seed = 12345
+enable_grass = true
+enable_bushes = true
+enable_flowers = true
+enable_mushrooms = true
+enable_tall_grass = true
+grass_density = 2.0
+bush_density = 0.3
+flower_density = 0.5
+mushroom_density = 0.2
+tall_grass_density = 1.0
+terrain = NodePath("../HeightmapTerrain")
+
+[node name="DecorationSpawner" type="Node3D" parent="."]
+script = ExtResource("3_decoration")
+map_size = Vector2(100, 100)
+random_seed = 54321
+enable_rocks = true
+enable_trees = true
+enable_boulders = true
+enable_dead_trees = true
+rock_density = 5.0
+tree_density = 3.0
+boulder_density = 1.0
+dead_tree_density = 0.5
+min_separation_distance = 3.0
+terrain = NodePath("../HeightmapTerrain")
+
+[node name="DemoController" type="Node3D" parent="."]
+script = ExtResource("4_controller")

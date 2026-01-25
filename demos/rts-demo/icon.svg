@@ -1,0 +1,11 @@
+<svg width="128" height="128" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" fill="#3a7d44"/>
+  <circle cx="64" cy="80" r="8" fill="#8b4513"/>
+  <path d="M 64 80 L 54 50 L 64 40 L 74 50 Z" fill="#2d5016"/>
+  <circle cx="30" cy="100" r="6" fill="#6b6b6b"/>
+  <circle cx="90" cy="95" r="7" fill="#7a7a7a"/>
+  <circle cx="50" cy="110" r="4" fill="#5a5a5a"/>
+  <circle cx="110" cy="105" r="5" fill="#8a8a8a"/>
+  <rect x="20" y="115" width="88" height="8" fill="#4a7d44" rx="2"/>
+  <text x="64" y="25" font-family="Arial" font-size="14" fill="white" text-anchor="middle">RTS Demo</text>
+</svg>
