@@ -1,0 +1,27 @@
+{
+  "name": "orca-rts-ui",
+  "version": "1.0.0",
+  "description": "UI components for Orca RTS game with faction-specific population tracking",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Tests not yet implemented\" && exit 0"
+  },
+  "keywords": [
+    "rts",
+    "game",
+    "ui",
+    "react",
+    "typescript"
+  ],
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}
