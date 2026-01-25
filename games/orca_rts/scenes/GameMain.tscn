@@ -1,0 +1,43 @@
+[gd_scene load_steps=3 format=3 uid="uid://wall_system_main_scene"]
+
+[ext_resource type="Script" path="res://games/orca_rts/scripts/GameMain.gd" id="1"]
+[ext_resource type="Script" path="res://games/orca_rts/scripts/buildings/WallSystem.gd" id="2"]
+[ext_resource type="Script" path="res://games/orca_rts/scenes/ui/WallLoadingIndicator.gd" id="3"]
+
+[node name="GameMain" type="Node3D"]
+script = ExtResource("1")
+
+[node name="WallSystem" type="Node" parent="."]
+script = ExtResource("2")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 10, 10)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.5, 0.866025, 0, -0.866025, 0.5, 0, 5, 0)
+
+[node name="Ground" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+size = Vector3(100, 1, 100)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="WallLoadingIndicator" type="Control" parent="UI"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("3")
+
+[node name="HelpText" type="Label" parent="UI"]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 400.0
+offset_bottom = 100.0
+text = "Controls:
+B - Enter/Exit Build Mode
+1 - Basic Wall
+2 - Reinforced Wall
+Left Click - Place Wall
+ESC - Exit Build Mode"
