@@ -4,6 +4,16 @@ Discord: https://discord.gg/bvdpdT26Tq
 
 Based on Godot Engine, with enhancements by Simplifine.
 
+### 🎮 Sample RTS Game with Multiplayer Lobby
+
+The repository includes a fully-featured multiplayer RTS game example with:
+- **Map Selection System**: 6 unique maps with different terrains and difficulties
+- **Multiplayer Lobby**: Real-time player synchronization via WebSockets
+- **Host Controls**: Map selection, team assignment, and game settings
+- **Ready System**: Players can toggle ready status before game start
+
+See [`src/README.md`](src/README.md) for detailed documentation and [`src/TESTING.md`](src/TESTING.md) for testing guide.
+
 
 ### What's the catch?
 We are integrating a chat bot, with complete access to Godot. 
