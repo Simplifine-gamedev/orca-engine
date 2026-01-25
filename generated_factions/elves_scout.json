@@ -1,0 +1,48 @@
+{
+  "id": "elf_scout",
+  "name": "Elf Ranger",
+  "type": "scout",
+  "faction": "elves",
+  "cost": {
+    "food": 55,
+    "gold": 30,
+    "wood": 10
+  },
+  "stats": {
+    "health": 55,
+    "attack": 7,
+    "defense": 1,
+    "movementSpeed": 9.0,
+    "visionRange": 14
+  },
+  "buildTime": 12,
+  "availableFrom": [
+    "town_center",
+    "ranger_hall"
+  ],
+  "description": "Swift elven ranger with unmatched vision and speed. Can move through forests without speed penalty.",
+  "specialAbilities": [
+    {
+      "name": "Forest Stealth",
+      "description": "Becomes invisible when standing in forests",
+      "cooldown": 0,
+      "passive": true
+    },
+    {
+      "name": "Eagle Eye",
+      "description": "Temporarily increases vision range by 50%",
+      "cooldown": 45,
+      "duration": 10
+    }
+  ],
+  "bonuses": {
+    "forestMovement": 1.2,
+    "terrainTypes": ["forest", "woodland"]
+  },
+  "voiceLines": {
+    "onCreated": "The forest guides my path.",
+    "onSelected": "I am ready.",
+    "onMove": "Swift as the wind.",
+    "onAttack": "For the forest!"
+  }
+}

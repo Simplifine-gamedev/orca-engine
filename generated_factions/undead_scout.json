@@ -1,0 +1,53 @@
+{
+  "id": "undead_scout",
+  "name": "Shade",
+  "type": "scout",
+  "faction": "undead",
+  "cost": {
+    "food": 45,
+    "gold": 35
+  },
+  "stats": {
+    "health": 50,
+    "attack": 3,
+    "defense": 0,
+    "movementSpeed": 8.8,
+    "visionRange": 13
+  },
+  "buildTime": 10,
+  "availableFrom": [
+    "necropolis",
+    "crypt"
+  ],
+  "description": "Ethereal undead scout that can phase through obstacles. Very fragile but extremely hard to catch.",
+  "specialAbilities": [
+    {
+      "name": "Phase Walk",
+      "description": "Can move through units and terrain obstacles",
+      "cooldown": 0,
+      "passive": true
+    },
+    {
+      "name": "Death Vision",
+      "description": "Reveals all enemy units that died in the last 30 seconds on the map",
+      "cooldown": 90,
+      "duration": 15
+    },
+    {
+      "name": "Shadowmeld",
+      "description": "Becomes invisible for a short duration",
+      "cooldown": 50,
+      "duration": 8
+    }
+  ],
+  "bonuses": {
+    "undeadRegeneration": 0.5,
+    "description": "Regenerates 0.5 health per second on blight"
+  },
+  "voiceLines": {
+    "onCreated": "Doomed to wander...",
+    "onSelected": "Yes... master...",
+    "onMove": "I drift...",
+    "onAttack": "Death awaits..."
+  }
+}

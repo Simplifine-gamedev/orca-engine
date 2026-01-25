@@ -1,0 +1,36 @@
+{
+  "id": "human_scout",
+  "name": "Human Scout",
+  "type": "scout",
+  "faction": "humans",
+  "cost": {
+    "food": 50,
+    "gold": 25
+  },
+  "stats": {
+    "health": 60,
+    "attack": 5,
+    "defense": 2,
+    "movementSpeed": 8.5,
+    "visionRange": 12
+  },
+  "buildTime": 15,
+  "availableFrom": [
+    "town_center",
+    "stable"
+  ],
+  "description": "Fast reconnaissance unit with excellent vision range. Ideal for early game map exploration and scouting enemy positions.",
+  "specialAbilities": [
+    {
+      "name": "Keen Sight",
+      "description": "Can detect hidden enemy units within vision range",
+      "cooldown": 30
+    }
+  ],
+  "voiceLines": {
+    "onCreated": "Scout reporting for duty!",
+    "onSelected": "Ready to move out!",
+    "onMove": "Heading out!",
+    "onAttack": "I'll try my best!"
+  }
+}

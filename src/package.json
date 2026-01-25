@@ -1,0 +1,26 @@
+{
+  "name": "orca-rts",
+  "version": "0.1.0",
+  "description": "Orca RTS Game - Unit and faction management system",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --loader ts-node/esm tests/test_scout_units.ts",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "rts",
+    "game",
+    "strategy",
+    "units",
+    "factions"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  },
+  "dependencies": {}
+}

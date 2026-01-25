@@ -1,0 +1,48 @@
+{
+  "id": "orc_scout",
+  "name": "Orc Warg Rider",
+  "type": "scout",
+  "faction": "orcs",
+  "cost": {
+    "food": 60,
+    "gold": 20
+  },
+  "stats": {
+    "health": 80,
+    "attack": 8,
+    "defense": 3,
+    "movementSpeed": 8.0,
+    "visionRange": 10
+  },
+  "buildTime": 18,
+  "availableFrom": [
+    "war_camp",
+    "warg_den"
+  ],
+  "description": "Mounted orc scout on a fierce warg. More durable than other scouts with decent combat capability.",
+  "specialAbilities": [
+    {
+      "name": "Intimidate",
+      "description": "Reduces enemy unit attack by 20% in nearby radius",
+      "cooldown": 60,
+      "duration": 8,
+      "radius": 5
+    },
+    {
+      "name": "Savage Charge",
+      "description": "Charge forward dealing damage to enemies in path",
+      "cooldown": 40,
+      "damage": 15
+    }
+  ],
+  "bonuses": {
+    "nightVision": true,
+    "description": "Can see clearly at night without vision penalty"
+  },
+  "voiceLines": {
+    "onCreated": "Ready for blood!",
+    "onSelected": "What you want?",
+    "onMove": "Going!",
+    "onAttack": "Kill them all!"
+  }
+}
