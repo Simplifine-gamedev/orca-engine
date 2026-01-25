@@ -1,0 +1,38 @@
+{
+  "name": "orca-rts-wall-system",
+  "version": "2.0.0",
+  "description": "Improved wall building system with better UX for Orca RTS",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "lint": "eslint . --ext .ts,.tsx"
+  },
+  "keywords": [
+    "rts",
+    "wall",
+    "building",
+    "game",
+    "ux",
+    "react"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "typescript": "^5.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orca-rts/engine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/orca-rts/engine/issues"
+  }
+}

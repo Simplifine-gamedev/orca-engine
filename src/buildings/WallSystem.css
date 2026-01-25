@@ -1,0 +1,134 @@
+/* Wall System Styles */
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.wall-system-container {
+  position: relative;
+  user-select: none;
+}
+
+.wall-tutorial {
+  animation: slideDown 0.3s ease;
+}
+
+.wall-cost-preview {
+  transition: all 0.2s ease;
+}
+
+.wall-cost-preview.insufficient {
+  animation: pulse 1s infinite;
+}
+
+.wall-placement-hint {
+  pointer-events: none;
+  animation: pulse 2s infinite;
+}
+
+.wall-grid-tile {
+  transition: opacity 0.2s ease;
+}
+
+.wall-grid-tile:hover {
+  opacity: 0.8;
+}
+
+.wall-preview-line {
+  animation: dash 0.5s linear infinite;
+}
+
+@keyframes dash {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+/* Button styles */
+.wall-button {
+  transition: all 0.2s ease;
+}
+
+.wall-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.wall-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.wall-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Status indicators */
+.wall-status-indicator {
+  transition: all 0.3s ease;
+}
+
+.wall-valid-placement {
+  background-color: rgba(0, 255, 0, 0.3);
+  border: 2px solid #00ff00;
+}
+
+.wall-invalid-placement {
+  background-color: rgba(255, 0, 0, 0.3);
+  border: 2px solid #ff0000;
+}
+
+/* Tooltip styles */
+.wall-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Resource display */
+.resource-counter {
+  font-variant-numeric: tabular-nums;
+  font-weight: bold;
+}
+
+.resource-insufficient {
+  color: #d32f2f;
+  animation: pulse 1s infinite;
+}
+
+.resource-sufficient {
+  color: #388e3c;
+}
