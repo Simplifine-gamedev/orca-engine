@@ -93,7 +93,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (selectedUnitIds.length === 0) return
     
     const selectedUnits = units.filter((u) => selectedUnitIds.includes(u.id))
-    const currentCenter = calculateCenterPosition(selectedUnits.map((u) => u.position))
     
     // Calculate formation positions
     const formationPositions = calculateFormationPositions(

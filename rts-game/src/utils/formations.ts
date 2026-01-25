@@ -14,7 +14,6 @@ export function calculateFormationPositions(
   facing: number
 ): Position[] {
   const spreadDistance = SPREAD_DISTANCES[spread]
-  const positions: Position[] = []
 
   switch (formationType) {
     case 'line':

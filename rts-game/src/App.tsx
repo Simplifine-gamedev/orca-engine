@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useGameStore } from './store/gameStore'
 import { RTSUnit } from './units/RTSUnit'
-import { FormationType, SpreadType } from './types'
 import './App.css'
 
 const CANVAS_WIDTH = 1200
