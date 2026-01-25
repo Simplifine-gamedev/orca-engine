@@ -1,17 +1,23 @@
 {
-  "name": "orca-engine",
+  "name": "orca-rts",
   "version": "1.0.0",
-  "description": "Orca Engine - Web Editor (Godot Engine rebrand)",
+  "description": "Orca RTS Game",
+  "main": "src/index.tsx",
   "scripts": {
-    "build": "./build_web.sh",
-    "serve": "python3 platform/web/serve.py --root bin/web_export/",
-    "deploy": "./deploy_to_vercel.sh",
-    "install-emscripten": "echo 'Please install Emscripten from: https://emscripten.org/docs/getting_started/downloads.html'"
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
   },
-  "keywords": ["orca", "godot", "game-engine", "web", "editor"],
-  "author": "Orca Engine Team",
-  "license": "MIT",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.5.0"
+  },
   "devDependencies": {
-    "vercel": "^32.0.0"
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0"
   }
 }
