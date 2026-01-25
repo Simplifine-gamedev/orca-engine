@@ -1,0 +1,67 @@
+.control-point {
+  z-index: 10;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.control-point:hover {
+  transform: scale(1.05);
+}
+
+.watchtower-base {
+  transition: all 0.3s ease;
+}
+
+.control-point:hover .watchtower-base {
+  filter: brightness(1.2);
+}
+
+/* Eye icon floating animation */
+@keyframes float {
+  0%, 100% {
+    transform: translateX(-50%) translateY(0px);
+  }
+  50% {
+    transform: translateX(-50%) translateY(-8px);
+  }
+}
+
+/* Vision radius pulse animation */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+}
+
+/* Tooltip fade-in animation */
+.tooltip {
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .control-point {
+    transform: scale(0.9);
+  }
+  
+  .tooltip {
+    width: 200px;
+    font-size: 12px;
+  }
+}

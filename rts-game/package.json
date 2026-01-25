@@ -1,0 +1,36 @@
+{
+  "name": "orca-rts-game",
+  "version": "1.0.0",
+  "description": "Orca RTS Game - Real-time strategy game with watchtower vision mechanics",
+  "main": "src/index.tsx",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext ts,tsx"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "eslint": "^8.45.0",
+    "typescript": "^5.0.0",
+    "vite": "^4.4.0"
+  },
+  "keywords": [
+    "rts",
+    "game",
+    "orca",
+    "strategy",
+    "watchtower",
+    "vision"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT"
+}
