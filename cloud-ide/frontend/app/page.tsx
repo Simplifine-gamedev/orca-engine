@@ -103,11 +103,17 @@ export default function OrcaCloudIDE() {
         <div className="mb-4">
           <h2 className="text-lg font-semibold mb-2">Project Files</h2>
           <button 
-            className="w-full bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm"
+            className="w-full bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm mb-2"
             onClick={() => {/* TODO: Add new file */}}
           >
             + New File
           </button>
+          <a 
+            href="/rts-demo"
+            className="block w-full bg-purple-600 hover:bg-purple-700 px-3 py-1 rounded text-sm text-center"
+          >
+            🎮 RTS Demo
+          </a>
         </div>
         <div className="space-y-1">
           {files.map((file, idx) => (
