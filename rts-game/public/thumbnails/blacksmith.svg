@@ -1,0 +1,9 @@
+<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100" height="100" fill="#4a4a4a"/>
+  <rect x="10" y="20" width="80" height="60" fill="#6b4423"/>
+  <polygon points="50,10 90,20 10,20" fill="#8b5a3c"/>
+  <rect x="35" y="50" width="30" height="30" fill="#ff6b35"/>
+  <rect x="25" y="55" width="10" height="10" fill="#333"/>
+  <rect x="65" y="55" width="10" height="10" fill="#333"/>
+  <text x="50" y="95" font-family="Arial" font-size="10" fill="white" text-anchor="middle">BLACKSMITH</text>
+</svg>
