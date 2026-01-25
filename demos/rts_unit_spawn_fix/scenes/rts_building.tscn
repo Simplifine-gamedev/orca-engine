@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3 uid="uid://rts_building_scene_001"]
+
+[ext_resource type="Script" path="res://demos/rts_unit_spawn_fix/scripts/rts_building.gd" id="1"]
+[ext_resource type="PackedScene" uid="uid://rts_unit_scene_001" path="res://demos/rts_unit_spawn_fix/scenes/rts_unit.tscn" id="2"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_1"]
+size = Vector3(4, 3, 4)
+
+[node name="RTSBuilding" type="StaticBody3D"]
+script = ExtResource("1")
+unit_scene = ExtResource("2")
+spawn_offset = Vector3(0, 0, 5)
+spawn_interval = 3.0
+max_queue = 5
+auto_spawn = false
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+shape = SubResource("BoxShape3D_1")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+
+[node name="SpawnPoint" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 5)

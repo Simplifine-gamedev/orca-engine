@@ -1,0 +1,19 @@
+[gd_scene load_steps=2 format=3 uid="uid://test_scene_spawn_001"]
+
+[ext_resource type="PackedScene" uid="uid://rts_building_scene_001" path="res://demos/rts_unit_spawn_fix/scenes/rts_building.tscn" id="1"]
+
+[node name="TestScene" type="Node3D"]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 10, 15)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 10, 0)
+shadow_enabled = true
+
+[node name="Ground" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+size = Vector3(50, 1, 50)
+
+[node name="RTSBuilding" parent="." instance=ExtResource("1")]
+auto_spawn = true

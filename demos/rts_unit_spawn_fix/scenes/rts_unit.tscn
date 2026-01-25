@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3 uid="uid://rts_unit_scene_001"]
+
+[ext_resource type="Script" path="res://demos/rts_unit_spawn_fix/scripts/rts_unit.gd" id="1"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_1"]
+radius = 0.4
+height = 1.8
+
+[node name="RTSUnit" type="CharacterBody3D"]
+script = ExtResource("1")
+move_speed = 5.0
+max_health = 100.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_1")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+root_node = NodePath("..")
+
+[node name="AnimationTree" type="AnimationTree" parent="."]
+root_node = NodePath("..")
