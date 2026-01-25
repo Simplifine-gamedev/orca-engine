@@ -63,6 +63,11 @@ class GameStore {
     return this.state;
   }
 
+  /**
+   * Select a unit by ID. Can add to existing selection or replace it.
+   * @param unitId - The ID of the unit to select
+   * @param addToSelection - If true, adds to current selection; if false, replaces selection
+   */
   selectUnit(unitId: string, addToSelection: boolean = false) {
     if (!addToSelection) {
       this.state.selectedUnits = [unitId];
@@ -82,6 +87,11 @@ class GameStore {
     this.notify();
   }
 
+  /**
+   * Select all units within a rectangular area (box selection).
+   * @param start - One corner of the selection box
+   * @param end - Opposite corner of the selection box
+   */
   selectUnitsInArea(start: Vector2, end: Vector2) {
     const minX = Math.min(start.x, end.x);
     const maxX = Math.max(start.x, end.x);
@@ -126,6 +136,10 @@ class GameStore {
     this.notify();
   }
 
+  /**
+   * Start dragging to set formation facing direction (Total War style).
+   * @param position - The starting position (target location)
+   */
   startFormationDrag(position: Vector2) {
     if (this.state.selectedUnits.length > 0) {
       this.state.isDraggingFormation = true;
@@ -135,6 +149,10 @@ class GameStore {
     }
   }
 
+  /**
+   * Update formation drag to show direction preview.
+   * @param position - Current mouse position during drag
+   */
   updateFormationDrag(position: Vector2) {
     if (this.state.isDraggingFormation) {
       this.state.formationDragEnd = position;
@@ -142,6 +160,10 @@ class GameStore {
     }
   }
 
+  /**
+   * Complete formation drag and move units with the set facing direction.
+   * Calculates facing angle from drag vector and executes move command.
+   */
   endFormationDrag() {
     if (this.state.isDraggingFormation && this.state.formationDragStart && this.state.formationDragEnd) {
       const dx = this.state.formationDragEnd.x - this.state.formationDragStart.x;
@@ -156,6 +178,11 @@ class GameStore {
     this.notify();
   }
 
+  /**
+   * Move selected units to target position with current formation settings.
+   * Calculates formation positions and sets unit targets.
+   * @param targetCenter - The center point of the target formation
+   */
   moveSelectedUnits(targetCenter: Vector2) {
     const selectedUnits = this.state.units.filter(u => u.selected);
     if (selectedUnits.length === 0) return;
@@ -190,6 +217,14 @@ class GameStore {
     }
   }
 
+  /**
+   * Calculate positions for line formation.
+   * Units are arranged in a single line perpendicular to facing direction.
+   * @param center - Center point of the formation
+   * @param count - Number of units
+   * @param spacing - Distance between units
+   * @param angle - Facing direction in radians
+   */
   private calculateLineFormation(center: Vector2, count: number, spacing: number, angle: number): Vector2[] {
     const positions: Vector2[] = [];
     const perpAngle = angle + Math.PI / 2; // Perpendicular to facing direction
@@ -204,6 +239,14 @@ class GameStore {
     return positions;
   }
 
+  /**
+   * Calculate positions for box formation.
+   * Units are arranged in a rectangular grid, rotated by facing angle.
+   * @param center - Center point of the formation
+   * @param count - Number of units
+   * @param spacing - Distance between units
+   * @param angle - Facing direction in radians
+   */
   private calculateBoxFormation(center: Vector2, count: number, spacing: number, angle: number): Vector2[] {
     const positions: Vector2[] = [];
     const cols = Math.ceil(Math.sqrt(count));
@@ -227,6 +270,15 @@ class GameStore {
     return positions;
   }
 
+  /**
+   * Calculate positions for wedge formation.
+   * Units are arranged in a triangular wedge pointing in facing direction.
+   * Row width increases: 1, 2, 3, 4, ...
+   * @param center - Center point of the formation
+   * @param count - Number of units
+   * @param spacing - Distance between units
+   * @param angle - Facing direction in radians
+   */
   private calculateWedgeFormation(center: Vector2, count: number, spacing: number, angle: number): Vector2[] {
     const positions: Vector2[] = [];
     let row = 0;
