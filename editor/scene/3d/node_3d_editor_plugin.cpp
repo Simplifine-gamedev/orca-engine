@@ -5802,6 +5802,32 @@ Node3DEditorViewport::Node3DEditorViewport(Node3DEditor *p_spatial_editor, int p
 	register_shortcut_action("spatial_editor/freelook_speed_modifier", TTRC("Freelook Speed Modifier"), Key::SHIFT);
 	register_shortcut_action("spatial_editor/freelook_slow_modifier", TTRC("Freelook Slow Modifier"), Key::ALT);
 
+	// Add arrow key support for camera movement
+	InputMap *im = InputMap::get_singleton();
+	Ref<InputEventKey> key_left;
+	key_left.instantiate();
+	key_left->set_keycode(Key::LEFT);
+	key_left->set_physical_keycode(Key::LEFT);
+	im->action_add_event("spatial_editor/freelook_left", key_left);
+
+	Ref<InputEventKey> key_right;
+	key_right.instantiate();
+	key_right->set_keycode(Key::RIGHT);
+	key_right->set_physical_keycode(Key::RIGHT);
+	im->action_add_event("spatial_editor/freelook_right", key_right);
+
+	Ref<InputEventKey> key_up;
+	key_up.instantiate();
+	key_up->set_keycode(Key::UP);
+	key_up->set_physical_keycode(Key::UP);
+	im->action_add_event("spatial_editor/freelook_forward", key_up);
+
+	Ref<InputEventKey> key_down;
+	key_down.instantiate();
+	key_down->set_keycode(Key::DOWN);
+	key_down->set_physical_keycode(Key::DOWN);
+	im->action_add_event("spatial_editor/freelook_backwards", key_down);
+
 	ED_SHORTCUT("spatial_editor/lock_transform_x", TTRC("Lock Transformation to X axis"), Key::X);
 	ED_SHORTCUT("spatial_editor/lock_transform_y", TTRC("Lock Transformation to Y axis"), Key::Y);
 	ED_SHORTCUT("spatial_editor/lock_transform_z", TTRC("Lock Transformation to Z axis"), Key::Z);
