@@ -1,0 +1,314 @@
+{
+  "version": "1.0.0",
+  "generated_date": "2026-01-25",
+  "characters": {
+    "archer": {
+      "id": "archer",
+      "name": "Archer",
+      "faction": "human",
+      "category": "ranged_infantry",
+      "description": "A skilled bowman capable of raining arrows on enemies from a distance",
+      "stats": {
+        "health": 50,
+        "attack": 8,
+        "defense": 2,
+        "attackRange": 7,
+        "moveSpeed": 3.5,
+        "attackSpeed": 0.8,
+        "lineOfSight": 9
+      },
+      "cost": {
+        "gold": 40,
+        "wood": 25,
+        "food": 1
+      },
+      "trainingTime": 20,
+      "model": {
+        "path": "res://models/units/archer.glb",
+        "scale": 1.0,
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "generationPrompt": "A medieval archer with a wooden longbow, wearing leather armor and a quiver of arrows on the back. Low poly game model style, suitable for RTS game.",
+        "textures": {
+          "diffuse": "res://textures/units/archer_diffuse.png",
+          "normal": "res://textures/units/archer_normal.png"
+        }
+      },
+      "animations": {
+        "idle": {
+          "name": "idle",
+          "duration": 2.0,
+          "loop": true
+        },
+        "walk": {
+          "name": "walk",
+          "duration": 1.0,
+          "loop": true,
+          "speed": 3.5
+        },
+        "attack": {
+          "name": "shoot_bow",
+          "duration": 1.25,
+          "loop": false,
+          "projectileReleaseTime": 0.6,
+          "soundEffect": "res://audio/sfx/bow_shoot.ogg"
+        },
+        "death": {
+          "name": "death",
+          "duration": 2.0,
+          "loop": false
+        }
+      },
+      "projectile": {
+        "type": "arrow",
+        "modelPath": "res://models/projectiles/arrow.glb",
+        "speed": 15,
+        "arc": 0.3,
+        "damage": 8,
+        "trailEffect": "res://effects/arrow_trail.tres",
+        "impactEffect": "res://effects/arrow_impact.tres",
+        "soundEffect": "res://audio/sfx/arrow_fly.ogg"
+      },
+      "abilities": [],
+      "upgrades": [
+        "fletching",
+        "bodkin_arrows",
+        "bracer"
+      ]
+    },
+    "crossbowman": {
+      "id": "crossbowman",
+      "name": "Crossbowman",
+      "faction": "human",
+      "category": "ranged_infantry",
+      "description": "A heavily armored ranged unit with a powerful crossbow that deals high damage but shoots slowly",
+      "stats": {
+        "health": 60,
+        "attack": 12,
+        "defense": 4,
+        "attackRange": 8,
+        "moveSpeed": 3.0,
+        "attackSpeed": 0.5,
+        "lineOfSight": 10
+      },
+      "cost": {
+        "gold": 60,
+        "wood": 40,
+        "food": 1
+      },
+      "trainingTime": 30,
+      "model": {
+        "path": "res://models/units/crossbowman.glb",
+        "scale": 1.0,
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "generationPrompt": "A medieval crossbowman with a heavy crossbow, wearing chainmail armor and a helmet. Low poly game model style, suitable for RTS game. More armored than a regular archer.",
+        "textures": {
+          "diffuse": "res://textures/units/crossbowman_diffuse.png",
+          "normal": "res://textures/units/crossbowman_normal.png"
+        }
+      },
+      "animations": {
+        "idle": {
+          "name": "idle",
+          "duration": 2.0,
+          "loop": true
+        },
+        "walk": {
+          "name": "walk",
+          "duration": 1.0,
+          "loop": true,
+          "speed": 3.0
+        },
+        "attack": {
+          "name": "shoot_crossbow",
+          "duration": 2.0,
+          "loop": false,
+          "projectileReleaseTime": 0.8,
+          "soundEffect": "res://audio/sfx/crossbow_shoot.ogg"
+        },
+        "death": {
+          "name": "death",
+          "duration": 2.0,
+          "loop": false
+        }
+      },
+      "projectile": {
+        "type": "bolt",
+        "modelPath": "res://models/projectiles/bolt.glb",
+        "speed": 20,
+        "arc": 0.15,
+        "damage": 12,
+        "piercing": true,
+        "trailEffect": "res://effects/bolt_trail.tres",
+        "impactEffect": "res://effects/bolt_impact.tres",
+        "soundEffect": "res://audio/sfx/bolt_fly.ogg"
+      },
+      "abilities": [],
+      "upgrades": [
+        "steel_bolts",
+        "pavise",
+        "siege_engineering"
+      ]
+    }
+  },
+  "buildings": {
+    "archery_range": {
+      "id": "archery_range",
+      "name": "Archery Range",
+      "faction": "human",
+      "category": "military",
+      "description": "A training facility for ranged units. Produces archers and crossbowmen.",
+      "stats": {
+        "health": 800,
+        "defense": 5,
+        "lineOfSight": 6
+      },
+      "cost": {
+        "gold": 150,
+        "wood": 100,
+        "stone": 50
+      },
+      "buildTime": 45,
+      "model": {
+        "path": "res://models/buildings/archery_range.glb",
+        "scale": 1.0,
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "generationPrompt": "A medieval archery range building with training targets, weapon racks with bows and crossbows visible. Low poly game model style for RTS game. Building footprint approximately 3x3 units.",
+        "textures": {
+          "diffuse": "res://textures/buildings/archery_range_diffuse.png",
+          "normal": "res://textures/buildings/archery_range_normal.png"
+        }
+      },
+      "producesUnits": [
+        "archer",
+        "crossbowman"
+      ],
+      "upgrades": [
+        "fletching",
+        "bodkin_arrows",
+        "bracer",
+        "steel_bolts",
+        "pavise"
+      ]
+    }
+  },
+  "projectiles": {
+    "arrow": {
+      "id": "arrow",
+      "name": "Arrow",
+      "type": "projectile",
+      "model": {
+        "path": "res://models/projectiles/arrow.glb",
+        "scale": 1.0,
+        "generationPrompt": "A simple medieval arrow projectile with wooden shaft and metal tip. Low poly style for RTS game."
+      },
+      "physics": {
+        "speed": 15,
+        "arc": 0.3,
+        "rotateWithDirection": true
+      },
+      "effects": {
+        "trail": "res://effects/arrow_trail.tres",
+        "impact": "res://effects/arrow_impact.tres"
+      }
+    },
+    "bolt": {
+      "id": "bolt",
+      "name": "Crossbow Bolt",
+      "type": "projectile",
+      "model": {
+        "path": "res://models/projectiles/bolt.glb",
+        "scale": 1.0,
+        "generationPrompt": "A crossbow bolt projectile, thicker and shorter than an arrow with a heavier metal tip. Low poly style for RTS game."
+      },
+      "physics": {
+        "speed": 20,
+        "arc": 0.15,
+        "rotateWithDirection": true
+      },
+      "effects": {
+        "trail": "res://effects/bolt_trail.tres",
+        "impact": "res://effects/bolt_impact.tres"
+      }
+    }
+  },
+  "upgrades": {
+    "fletching": {
+      "id": "fletching",
+      "name": "Fletching",
+      "description": "Improves arrow accuracy and range",
+      "effects": {
+        "attackRange": 1
+      },
+      "cost": {
+        "gold": 100,
+        "wood": 50
+      },
+      "researchTime": 30
+    },
+    "bodkin_arrows": {
+      "id": "bodkin_arrows",
+      "name": "Bodkin Arrows",
+      "description": "Armor-piercing arrows that deal bonus damage to armored units",
+      "effects": {
+        "attack": 2,
+        "armorPiercing": 2
+      },
+      "cost": {
+        "gold": 200,
+        "wood": 100
+      },
+      "researchTime": 40
+    },
+    "bracer": {
+      "id": "bracer",
+      "name": "Bracer",
+      "description": "Increases archer attack speed",
+      "effects": {
+        "attackSpeed": 0.2
+      },
+      "cost": {
+        "gold": 150,
+        "wood": 100
+      },
+      "researchTime": 35
+    },
+    "steel_bolts": {
+      "id": "steel_bolts",
+      "name": "Steel Bolts",
+      "description": "Powerful steel bolts that deal increased damage",
+      "effects": {
+        "attack": 3
+      },
+      "cost": {
+        "gold": 250,
+        "wood": 150
+      },
+      "researchTime": 45
+    },
+    "pavise": {
+      "id": "pavise",
+      "name": "Pavise",
+      "description": "Large shield that increases crossbowman defense",
+      "effects": {
+        "defense": 3
+      },
+      "cost": {
+        "gold": 200,
+        "wood": 100
+      },
+      "researchTime": 40
+    }
+  }
+}
