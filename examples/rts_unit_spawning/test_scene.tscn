@@ -1,0 +1,29 @@
+[gd_scene load_steps=3 format=3 uid="uid://example_rts_spawning"]
+
+[ext_resource type="Script" path="res://examples/rts_unit_spawning/Building.gd" id="1"]
+[ext_resource type="Script" path="res://examples/rts_unit_spawning/Unit.gd" id="2"]
+
+[node name="TestScene" type="Node2D"]
+
+[node name="Building" type="Node2D" parent="."]
+position = Vector2(300, 200)
+script = ExtResource("1")
+default_spawn_offset = Vector2(100, 0)
+spawn_interval = 3.0
+
+[node name="UnitTemplate" type="CharacterBody2D" parent="."]
+visible = false
+script = ExtResource("2")
+
+[node name="Instructions" type="Label" parent="."]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 500.0
+offset_bottom = 120.0
+text = "RTS Unit Spawning Test
+
+Click on the building to start production.
+Right-click to set a rally point.
+Press SPACE to toggle rally point.
+
+Watch units spawn OUTSIDE the building (not inside)."
