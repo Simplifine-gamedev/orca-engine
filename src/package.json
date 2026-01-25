@@ -1,0 +1,30 @@
+{
+  "name": "orca-rts-game",
+  "version": "1.0.0",
+  "description": "RTS game implementation with auto-opening gates for Orca Engine",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "rts",
+    "game",
+    "orca",
+    "pathfinding",
+    "gates"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
