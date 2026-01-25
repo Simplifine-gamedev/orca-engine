@@ -51,7 +51,7 @@ export const RTSUnit: React.FC<RTSUnitProps> = ({
     clonedScene.scale.set(scale, scale, scale);
 
     // Apply team color tint to materials
-    clonedScene.traverse((child) => {
+    clonedScene.traverse((child: THREE.Object3D) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         if (mesh.material) {
@@ -95,7 +95,7 @@ export const RTSUnit: React.FC<RTSUnitProps> = ({
   });
 
   // Handle click for selection
-  const handleClick = (event: THREE.Event) => {
+  const handleClick = (event: any) => {
     event.stopPropagation();
     setIsSelected(!isSelected);
     if (onSelect) {

@@ -1,7 +1,7 @@
 import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { assetPreloader, gltfCache } from '../systems/AssetPreloader';
+import { assetPreloader } from '../systems/AssetPreloader';
 
 interface NeutralMobProps {
   position: [number, number, number];

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
-import { GLTF } from 'three/examples/jsm/loaders/GLTFLoader';
+import { GLTFLoader, GLTF } from 'three/addons/loaders/GLTFLoader.js';
 
 export type AssetType = 'model' | 'texture' | 'audio';
 
@@ -162,17 +161,17 @@ export class AssetPreloader {
       return;
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       this.gltfLoader.load(
         asset.url,
-        (gltf) => {
+        (gltf: GLTF) => {
           // Cache the loaded model
           gltfCache.set(asset.url, gltf);
           this.loadedAssets.models.set(asset.name, gltf);
           resolve();
         },
         undefined,
-        (error) => {
+        (error: unknown) => {
           reject(error);
         }
       );
