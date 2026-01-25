@@ -1,0 +1,143 @@
+{
+  "version": "1.0.0",
+  "pacingImprovements": {
+    "issue": "ORC-145",
+    "description": "Early game pacing improvements based on user feedback",
+    "changes": [
+      "Increased starting resources by 50-100%",
+      "Doubled resource gathering rates for villagers",
+      "Increased food gathering rate by 140%",
+      "Reduced build times for early buildings by 40-50%",
+      "Added scout unit for early exploration",
+      "Increased starting units from 3 to 5 (4 villagers + 1 scout)"
+    ]
+  },
+  "startingResources": {
+    "gold": 200,
+    "wood": 200,
+    "food": 150,
+    "stone": 100
+  },
+  "startingUnits": {
+    "villagers": 4,
+    "scouts": 1
+  },
+  "gatheringRates": {
+    "villager": {
+      "gold": 1.0,
+      "wood": 1.0,
+      "food": 1.2,
+      "stone": 0.8
+    },
+    "scout": {
+      "gold": 0.5,
+      "wood": 0.5,
+      "food": 0.8,
+      "stone": 0.5
+    }
+  },
+  "buildTimes": {
+    "town_center": 60,
+    "barracks": 15,
+    "farm": 10,
+    "lumber_mill": 12,
+    "mining_camp": 12,
+    "house": 8
+  },
+  "unitCosts": {
+    "villager": {
+      "gold": 50,
+      "food": 25
+    },
+    "scout": {
+      "gold": 40,
+      "food": 15
+    },
+    "warrior": {
+      "gold": 60,
+      "food": 40
+    },
+    "archer": {
+      "gold": 45,
+      "food": 35,
+      "wood": 20
+    }
+  },
+  "unitStats": {
+    "villager": {
+      "health": 50,
+      "speed": 1.2,
+      "buildTime": 20
+    },
+    "scout": {
+      "health": 60,
+      "speed": 2.5,
+      "buildTime": 15,
+      "visionRadius": 150
+    },
+    "warrior": {
+      "health": 100,
+      "speed": 1.5,
+      "buildTime": 30
+    },
+    "archer": {
+      "health": 70,
+      "speed": 1.3,
+      "buildTime": 25
+    }
+  },
+  "buildingCosts": {
+    "town_center": {
+      "wood": 500,
+      "stone": 300
+    },
+    "barracks": {
+      "wood": 150,
+      "gold": 50
+    },
+    "farm": {
+      "wood": 60
+    },
+    "lumber_mill": {
+      "wood": 100,
+      "gold": 50
+    },
+    "mining_camp": {
+      "wood": 100,
+      "gold": 50
+    },
+    "house": {
+      "wood": 50
+    }
+  },
+  "buildingStats": {
+    "town_center": {
+      "health": 1000
+    },
+    "barracks": {
+      "health": 500
+    },
+    "farm": {
+      "health": 200
+    },
+    "lumber_mill": {
+      "health": 300
+    },
+    "mining_camp": {
+      "health": 300
+    },
+    "house": {
+      "health": 250
+    }
+  },
+  "population": {
+    "starting": 5,
+    "startingCap": 10,
+    "houseCapacityIncrease": 5
+  },
+  "gameSettings": {
+    "tickRate": 50,
+    "autoSave": true,
+    "autoSaveInterval": 60000
+  }
+}

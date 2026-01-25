@@ -1,0 +1,20 @@
+{
+  "name": "orca-rts-game",
+  "version": "1.0.0",
+  "description": "Orca RTS Game - Real-time strategy game built on Orca Engine",
+  "main": "server/GameServer.js",
+  "scripts": {
+    "start": "node server/GameServer.js",
+    "test": "echo \"Tests coming soon\" && exit 0"
+  },
+  "keywords": ["rts", "game", "strategy", "orca", "multiplayer"],
+  "author": "Orca Engine Team",
+  "license": "MIT",
+  "dependencies": {
+    "events": "^3.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
