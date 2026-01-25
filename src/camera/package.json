@@ -1,0 +1,22 @@
+{
+  "name": "@orca-rts/camera",
+  "version": "1.0.0",
+  "description": "RTS camera component with zoom and pan controls",
+  "main": "RTSCamera.tsx",
+  "types": "RTSCamera.tsx",
+  "keywords": [
+    "rts",
+    "camera",
+    "three.js",
+    "react",
+    "game",
+    "zoom",
+    "pan"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "three": "^0.160.0"
+  }
+}
