@@ -1,0 +1,25 @@
+{
+  "name": "orca-rts-game",
+  "version": "1.0.0",
+  "description": "Orca RTS Game - Late Game Resource Sinks",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Tests coming soon\""
+  },
+  "keywords": [
+    "rts",
+    "game",
+    "research",
+    "upgrades"
+  ],
+  "author": "Orca RTS Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  }
+}
