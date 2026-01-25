@@ -1,0 +1,293 @@
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a1a;
+  color: #ffffff;
+}
+
+.header {
+  padding: 1rem 2rem;
+  background: #2a2a2a;
+  border-bottom: 2px solid #3a3a3a;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.legend {
+  display: flex;
+  gap: 2rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.color-box {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 2px solid #fff;
+}
+
+.color-box.friendly {
+  background: #4CAF50;
+}
+
+.color-box.enemy {
+  background: #f44336;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.canvas-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: #252525;
+}
+
+canvas {
+  border: 2px solid #3a3a3a;
+  border-radius: 8px;
+  cursor: crosshair;
+  background: #ffffff;
+}
+
+.instructions {
+  margin-top: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: #2a2a2a;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: #aaa;
+}
+
+.side-panel {
+  width: 350px;
+  background: #2a2a2a;
+  border-left: 2px solid #3a3a3a;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.info-panel {
+  flex: 1;
+  padding: 1.5rem;
+  overflow-y: auto;
+  border-bottom: 2px solid #3a3a3a;
+}
+
+.info-panel h2 {
+  font-size: 1.25rem;
+  margin: 0 0 1rem 0;
+  color: #2196F3;
+}
+
+.no-selection {
+  color: #888;
+  font-style: italic;
+  text-align: center;
+  padding: 2rem 0;
+}
+
+.unit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.unit-card {
+  background: #333;
+  border-radius: 8px;
+  padding: 1rem;
+  border-left: 4px solid;
+}
+
+.unit-card.friendly {
+  border-left-color: #2196F3;
+}
+
+.unit-card.enemy {
+  border-left-color: #FF9800;
+}
+
+.unit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.unit-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.unit-type {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.unit-type.friendly {
+  background: #2196F3;
+  color: #fff;
+}
+
+.unit-type.enemy {
+  background: #FF9800;
+  color: #fff;
+}
+
+.unit-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  color: #ccc;
+}
+
+.stat-value {
+  font-weight: 600;
+  color: #fff;
+}
+
+.health-bar-container {
+  width: 100%;
+  height: 8px;
+  background: #555;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.health-bar-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.command-panel {
+  padding: 1.5rem;
+  background: #252525;
+}
+
+.command-panel h3 {
+  font-size: 1.1rem;
+  margin: 0 0 1rem 0;
+  color: #4CAF50;
+}
+
+.warning-message {
+  background: rgba(255, 152, 0, 0.2);
+  border: 1px solid #FF9800;
+  color: #FFB74D;
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.success-message {
+  background: rgba(76, 175, 80, 0.2);
+  border: 1px solid #4CAF50;
+  color: #81C784;
+  padding: 0.75rem;
+  border-radius: 6px;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.command-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.command-btn {
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #4CAF50;
+  color: white;
+}
+
+.command-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.command-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.command-btn:disabled {
+  background: #444;
+  color: #888;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.command-btn.move {
+  background: #2196F3;
+}
+
+.command-btn.attack {
+  background: #f44336;
+}
+
+.command-btn.patrol {
+  background: #FF9800;
+}
+
+.command-btn.stop {
+  background: #757575;
+}
+
+/* Scrollbar styling */
+.info-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.info-panel::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+.info-panel::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+
+.info-panel::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}
