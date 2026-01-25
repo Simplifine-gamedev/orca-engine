@@ -1,0 +1,50 @@
+{
+  "id": "scout",
+  "name": "Scout",
+  "cost": {
+    "gold": 50,
+    "food": 25
+  },
+  "stats": {
+    "health": 60,
+    "attack": 5,
+    "defense": 2,
+    "movementSpeed": 8.0,
+    "visionRange": 15
+  },
+  "buildTime": 15,
+  "availableFrom": [
+    "town_center",
+    "stable"
+  ],
+  "description": "A fast, lightly armored unit ideal for early game exploration. High vision range and speed but minimal combat ability.",
+  "notes": {
+    "designGoals": [
+      "Enable early game map exploration",
+      "Provide intel gathering capabilities",
+      "Low cost for easy accessibility",
+      "High mobility for hit-and-run tactics",
+      "Large vision range for scouting enemy positions"
+    ],
+    "balancing": {
+      "strengths": [
+        "8.0 movement speed (fastest unit in early game)",
+        "15 vision range (highest for early units)",
+        "Low cost (50 gold, 25 food)",
+        "Quick build time (15 seconds)"
+      ],
+      "weaknesses": [
+        "Low health (60 HP)",
+        "Minimal attack (5 damage)",
+        "Poor defense (2 armor)",
+        "Not effective in combat"
+      ]
+    },
+    "gameplay": {
+      "primaryRole": "Exploration and reconnaissance",
+      "secondaryRole": "Early game harassment",
+      "counters": "Effective scouts can kite slower units but will lose to any combat-focused unit",
+      "synergy": "Works well with ranged units for vision and archer units for protection"
+    }
+  }
+}

@@ -1,17 +1,25 @@
 {
-  "name": "orca-engine",
-  "version": "1.0.0",
-  "description": "Orca Engine - Web Editor (Godot Engine rebrand)",
+  "name": "orca-rts",
+  "version": "0.1.0",
+  "description": "Orca RTS Game - Real-time strategy game with scout units",
+  "main": "index.js",
   "scripts": {
-    "build": "./build_web.sh",
-    "serve": "python3 platform/web/serve.py --root bin/web_export/",
-    "deploy": "./deploy_to_vercel.sh",
-    "install-emscripten": "echo 'Please install Emscripten from: https://emscripten.org/docs/getting_started/downloads.html'"
+    "test": "ts-node src/test_scout.ts",
+    "build": "tsc",
+    "dev": "ts-node-dev src/test_scout.ts"
   },
-  "keywords": ["orca", "godot", "game-engine", "web", "editor"],
-  "author": "Orca Engine Team",
+  "keywords": [
+    "rts",
+    "game",
+    "strategy",
+    "scout"
+  ],
+  "author": "Orca Team",
   "license": "MIT",
   "devDependencies": {
-    "vercel": "^32.0.0"
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.0"
   }
 }

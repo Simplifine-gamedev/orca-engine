@@ -1,0 +1,79 @@
+{
+  "id": "default",
+  "name": "Default Faction",
+  "description": "A balanced faction with access to all basic unit types including scouts for exploration",
+  "units": [
+    {
+      "id": "scout",
+      "name": "Scout",
+      "cost": {
+        "gold": 50,
+        "food": 25
+      },
+      "stats": {
+        "health": 60,
+        "attack": 5,
+        "defense": 2,
+        "movementSpeed": 8.0,
+        "visionRange": 15
+      },
+      "buildTime": 15,
+      "availableFrom": [
+        "town_center",
+        "stable"
+      ],
+      "description": "A fast, lightly armored unit ideal for early game exploration."
+    },
+    {
+      "id": "warrior",
+      "name": "Warrior",
+      "cost": {
+        "gold": 100,
+        "food": 50
+      },
+      "stats": {
+        "health": 150,
+        "attack": 15,
+        "defense": 10,
+        "movementSpeed": 3.5,
+        "visionRange": 8
+      },
+      "buildTime": 30,
+      "availableFrom": [
+        "barracks"
+      ],
+      "description": "Basic melee combat unit with balanced stats."
+    },
+    {
+      "id": "archer",
+      "name": "Archer",
+      "cost": {
+        "gold": 80,
+        "wood": 40
+      },
+      "stats": {
+        "health": 80,
+        "attack": 12,
+        "defense": 5,
+        "movementSpeed": 4.0,
+        "visionRange": 10
+      },
+      "buildTime": 25,
+      "availableFrom": [
+        "archery_range"
+      ],
+      "description": "Ranged combat unit effective against light armor."
+    }
+  ],
+  "buildings": [
+    "town_center",
+    "barracks",
+    "archery_range",
+    "stable"
+  ],
+  "startingResources": {
+    "gold": 500,
+    "wood": 300,
+    "food": 200
+  }
+}
