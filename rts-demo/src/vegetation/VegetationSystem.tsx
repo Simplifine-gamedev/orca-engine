@@ -1,5 +1,4 @@
-import { useRef, useMemo } from 'react'
-import * as THREE from 'three'
+import { useMemo } from 'react'
 
 // Rock component
 function Rock({ position, scale = 1 }: { position: [number, number, number], scale?: number }) {
