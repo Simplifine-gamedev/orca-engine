@@ -426,3 +426,7 @@ releases/
 backend/vertex-ai-key.json
 bin/
 *.wasm
+
+# RTS Demo specific
+src/.vite/
+package-rts.json
