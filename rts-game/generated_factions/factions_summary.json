@@ -1,0 +1,277 @@
+{
+  "factions": {
+    "human": {
+      "id": "human",
+      "name": "Humans",
+      "description": "Noble and versatile warriors who excel in balanced combat",
+      "units": {
+        "footman": {
+          "id": "footman",
+          "name": "Footman",
+          "model_url": "https://example.com/models/human/footman.glb",
+          "thumbnail_url": "/assets/units/human/footman_preview.png",
+          "cost": 100,
+          "buildTime": 5,
+          "stats": {
+            "health": 150,
+            "attack": 15,
+            "defense": 10,
+            "speed": 5
+          }
+        },
+        "archer": {
+          "id": "archer",
+          "name": "Archer",
+          "model_url": "https://example.com/models/human/archer.glb",
+          "thumbnail_url": "/assets/units/human/archer_preview.png",
+          "cost": 150,
+          "buildTime": 6,
+          "stats": {
+            "health": 100,
+            "attack": 20,
+            "defense": 5,
+            "speed": 6,
+            "range": 8
+          }
+        },
+        "knight": {
+          "id": "knight",
+          "name": "Knight",
+          "model_url": "https://example.com/models/human/knight.glb",
+          "thumbnail_url": "/assets/units/human/knight_preview.png",
+          "cost": 300,
+          "buildTime": 10,
+          "stats": {
+            "health": 250,
+            "attack": 30,
+            "defense": 20,
+            "speed": 7
+          }
+        }
+      },
+      "buildings": {
+        "barracks": {
+          "id": "barracks",
+          "name": "Barracks",
+          "model_url": "https://example.com/models/human/barracks.glb",
+          "thumbnail_url": "/assets/buildings/human/barracks_thumbnail.png",
+          "availableUnits": ["footman", "archer", "knight"],
+          "cost": 500,
+          "buildTime": 20
+        }
+      }
+    },
+    "dwarf": {
+      "id": "dwarf",
+      "name": "Dwarves",
+      "description": "Sturdy mountain folk with advanced technology and strong defenses",
+      "units": {
+        "warrior": {
+          "id": "warrior",
+          "name": "Dwarf Warrior",
+          "model_url": "https://example.com/models/dwarf/warrior.glb",
+          "thumbnail_url": "/assets/units/dwarf/warrior_preview.png",
+          "cost": 120,
+          "buildTime": 5,
+          "stats": {
+            "health": 180,
+            "attack": 18,
+            "defense": 15,
+            "speed": 4
+          }
+        },
+        "rifleman": {
+          "id": "rifleman",
+          "name": "Rifleman",
+          "model_url": "https://example.com/models/dwarf/rifleman.glb",
+          "thumbnail_url": "/assets/units/dwarf/rifleman_preview.png",
+          "cost": 180,
+          "buildTime": 7,
+          "stats": {
+            "health": 120,
+            "attack": 25,
+            "defense": 8,
+            "speed": 5,
+            "range": 10
+          }
+        },
+        "hammerer": {
+          "id": "hammerer",
+          "name": "Hammerer",
+          "model_url": "https://example.com/models/dwarf/hammerer.glb",
+          "thumbnail_url": "/assets/units/dwarf/hammerer_preview.png",
+          "cost": 350,
+          "buildTime": 12,
+          "stats": {
+            "health": 300,
+            "attack": 40,
+            "defense": 25,
+            "speed": 3
+          }
+        }
+      },
+      "buildings": {
+        "barracks": {
+          "id": "barracks",
+          "name": "Barracks",
+          "model_url": "https://example.com/models/dwarf/barracks.glb",
+          "thumbnail_url": "/assets/buildings/dwarf/barracks_thumbnail.png",
+          "availableUnits": ["warrior", "rifleman", "hammerer"],
+          "cost": 600,
+          "buildTime": 25
+        }
+      }
+    },
+    "undead": {
+      "id": "undead",
+      "name": "Undead",
+      "description": "Unholy legions of the damned, raising armies from death itself",
+      "units": {
+        "worker": {
+          "id": "worker",
+          "name": "Undead Worker",
+          "model_url": "https://example.com/models/undead/worker.glb",
+          "thumbnail_url": "/assets/units/undead/worker_thumbnail.png",
+          "cost": 50,
+          "buildTime": 3,
+          "stats": {
+            "health": 80,
+            "attack": 5,
+            "defense": 3,
+            "speed": 5
+          }
+        },
+        "soldier_light": {
+          "id": "soldier_light",
+          "name": "Skeleton Warrior",
+          "model_url": "https://example.com/models/undead/soldier_light.glb",
+          "thumbnail_url": "/assets/units/undead/soldier_light_thumbnail.png",
+          "cost": 100,
+          "buildTime": 5,
+          "stats": {
+            "health": 120,
+            "attack": 12,
+            "defense": 5,
+            "speed": 6
+          }
+        },
+        "soldier_medium": {
+          "id": "soldier_medium",
+          "name": "Zombie Soldier",
+          "model_url": "https://example.com/models/undead/soldier_medium.glb",
+          "thumbnail_url": "/assets/units/undead/soldier_medium_thumbnail.png",
+          "cost": 150,
+          "buildTime": 7,
+          "stats": {
+            "health": 200,
+            "attack": 18,
+            "defense": 8,
+            "speed": 4
+          }
+        },
+        "soldier_heavy": {
+          "id": "soldier_heavy",
+          "name": "Death Knight",
+          "model_url": "https://example.com/models/undead/soldier_heavy.glb",
+          "thumbnail_url": "/assets/units/undead/soldier_heavy_thumbnail.png",
+          "cost": 300,
+          "buildTime": 10,
+          "stats": {
+            "health": 280,
+            "attack": 35,
+            "defense": 15,
+            "speed": 5
+          }
+        }
+      },
+      "buildings": {
+        "city_center": {
+          "id": "city_center",
+          "name": "Necropolis",
+          "model_url": "https://example.com/models/undead/city_center.glb",
+          "thumbnail_url": "/assets/buildings/undead/city_center_thumbnail.png",
+          "availableUnits": ["worker"],
+          "cost": 0,
+          "buildTime": 0
+        },
+        "barracks": {
+          "id": "barracks",
+          "name": "Crypt",
+          "model_url": "https://example.com/models/undead/barracks.glb",
+          "thumbnail_url": "/assets/buildings/undead/barracks_thumbnail.png",
+          "availableUnits": ["soldier_light", "soldier_medium", "soldier_heavy"],
+          "cost": 500,
+          "buildTime": 20
+        },
+        "farm": {
+          "id": "farm",
+          "name": "Graveyard",
+          "model_url": "https://example.com/models/undead/farm.glb",
+          "thumbnail_url": "/assets/buildings/undead/farm_thumbnail.png",
+          "availableUnits": [],
+          "cost": 200,
+          "buildTime": 10,
+          "resourceProduction": {
+            "food": 10
+          }
+        },
+        "bank": {
+          "id": "bank",
+          "name": "Haunted Treasury",
+          "model_url": "https://example.com/models/undead/bank.glb",
+          "thumbnail_url": "/assets/buildings/undead/bank_thumbnail.png",
+          "availableUnits": [],
+          "cost": 300,
+          "buildTime": 15,
+          "resourceProduction": {
+            "gold": 5
+          }
+        },
+        "mill": {
+          "id": "mill",
+          "name": "Bone Mill",
+          "model_url": "https://example.com/models/undead/mill.glb",
+          "thumbnail_url": "/assets/buildings/undead/mill_thumbnail.png",
+          "availableUnits": [],
+          "cost": 250,
+          "buildTime": 12,
+          "resourceProduction": {
+            "wood": 8
+          }
+        },
+        "warehouse": {
+          "id": "warehouse",
+          "name": "Tomb Storage",
+          "model_url": "https://example.com/models/undead/warehouse.glb",
+          "thumbnail_url": "/assets/buildings/undead/warehouse_thumbnail.png",
+          "availableUnits": [],
+          "cost": 150,
+          "buildTime": 8,
+          "storageCapacity": {
+            "all": 500
+          }
+        },
+        "tower": {
+          "id": "tower",
+          "name": "Spirit Tower",
+          "model_url": "https://example.com/models/undead/tower.glb",
+          "thumbnail_url": "/assets/buildings/undead/tower_thumbnail.png",
+          "availableUnits": [],
+          "cost": 400,
+          "buildTime": 18,
+          "stats": {
+            "health": 500,
+            "attack": 25,
+            "defense": 30,
+            "range": 12
+          }
+        }
+      }
+    }
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "generated_at": "2026-01-26T19:30:00Z",
+    "description": "Faction configuration with 2D thumbnail URLs for all buildings and units"
+  }
+}

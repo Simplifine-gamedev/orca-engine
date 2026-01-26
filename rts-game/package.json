@@ -1,0 +1,22 @@
+{
+  "name": "orca-rts",
+  "version": "1.0.0",
+  "description": "Orca RTS Game - Bug fix for human barracks showing dwarf previews",
+  "main": "index.js",
+  "scripts": {
+    "dev": "echo 'Development server would start here'",
+    "build": "echo 'Build would run here'",
+    "test": "echo 'Tests would run here'"
+  },
+  "keywords": ["rts", "game", "orca", "godot"],
+  "author": "Orca Engine Team",
+  "license": "MIT",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "typescript": "^5.0.0"
+  }
+}
