@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from 'react'
 import MonacoEditor from '@monaco-editor/react'
 import io from 'socket.io-client'
 import axios from 'axios'
+import AIModeSwitcher from './components/AIModeSwitcher'
+import AIChatPanel from './components/AIChatPanel'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -15,6 +17,8 @@ export default function OrcaCloudIDE() {
   const [currentFile, setCurrentFile] = useState('')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
+  const [aiMode, setAiMode] = useState<'ask' | 'agent'>('agent')
+  const [showAIChat, setShowAIChat] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   // Create or load project on mount
@@ -139,6 +143,24 @@ export default function OrcaCloudIDE() {
           >
             Build
           </button>
+          
+          {/* AI Mode Switcher */}
+          <div className="ml-4">
+            <AIModeSwitcher mode={aiMode} onChange={setAiMode} />
+          </div>
+          
+          {/* AI Chat Toggle */}
+          <button
+            onClick={() => setShowAIChat(!showAIChat)}
+            className={`px-4 py-1 rounded text-sm transition-colors ${
+              showAIChat 
+                ? 'bg-purple-600 hover:bg-purple-700' 
+                : 'bg-gray-700 hover:bg-gray-600'
+            }`}
+          >
+            {showAIChat ? '✕ Close AI' : '🤖 AI Assistant'}
+          </button>
+          
           <div className="ml-auto text-sm text-gray-400">
             {currentFile || 'No file selected'}
           </div>
@@ -146,7 +168,7 @@ export default function OrcaCloudIDE() {
 
         <div className="flex-1 flex">
           {/* Code Editor */}
-          <div className="w-1/2 border-r border-gray-700">
+          <div className={showAIChat ? 'w-1/3 border-r border-gray-700' : 'w-1/2 border-r border-gray-700'}>
             <MonacoEditor
               height="100%"
               language="gdscript"
@@ -161,7 +183,7 @@ export default function OrcaCloudIDE() {
           </div>
 
           {/* 3D Viewport (VNC) */}
-          <div className="w-1/2 bg-black relative">
+          <div className={showAIChat ? 'w-1/3 bg-black relative' : 'w-1/2 bg-black relative'}>
             {vncUrl ? (
               <iframe
                 ref={iframeRef}
@@ -178,6 +200,13 @@ export default function OrcaCloudIDE() {
               </div>
             )}
           </div>
+          
+          {/* AI Chat Panel */}
+          {showAIChat && (
+            <div className="w-1/3">
+              <AIChatPanel mode={aiMode} projectId={projectId} />
+            </div>
+          )}
         </div>
 
         {/* Properties Panel */}
