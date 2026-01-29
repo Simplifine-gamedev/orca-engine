@@ -1647,6 +1647,35 @@ def execute_godot_tool(function_name: str, arguments: dict) -> dict:
 
     return {"success": False, "error": f"Unknown backend tool called: {function_name}"}
 
+def filter_tools_by_mode(mode: str) -> list:
+    """
+    Filter tools based on the agent mode.
+    - 'agent' mode: All tools available (default)
+    - 'ask' mode: Only read-only tools, no write/edit operations
+    """
+    # Tools that modify project files/settings - disabled in ask mode
+    WRITE_TOOLS = {
+        "create_node",
+        "delete_node", 
+        "batch_set_node_properties",
+        "move_node",
+        "attach_script",
+        "manage_scene",
+        "load_and_assign_resource",
+        "add_collision_shape",
+        "apply_edit",
+        "save_image_to_path",
+        "install_godot_asset",
+    }
+    
+    if mode == "ask":
+        # Filter out write tools in ask mode
+        return [tool for tool in godot_tools 
+                if tool.get("function", {}).get("name") not in WRITE_TOOLS]
+    else:
+        # Agent mode: return all tools
+        return godot_tools
+
 # --- Individual Tool Definitions (Original 22 Tools) ---
 godot_tools = [
     {
@@ -2755,6 +2784,11 @@ def chat():
     messages = data.get('messages', [])
     requested_model = data.get('model')
     model = get_validated_chat_model(requested_model)  # Restrict to allowed models
+    
+    # Get agent mode: "agent" (default) or "ask" (read-only)
+    mode = data.get('mode', 'agent')
+    if mode not in ['agent', 'ask']:
+        mode = 'agent'  # Default to agent mode if invalid value
 
     if not messages:
         # Return a minimal NDJSON-friendly error envelope so the frontend doesn't try to parse HTML.
@@ -2929,9 +2963,21 @@ def chat():
                     # Keep only standard OpenAI message format
                     openai_messages.append(clean_msg)
 
-                # Prepend system prompt if available
+                # Prepend system prompt if available, with mode-specific instructions
                 if SYSTEM_PROMPT:
-                    system_msg = {"role": "system", "content": SYSTEM_PROMPT}
+                    system_content = SYSTEM_PROMPT
+                    if mode == "ask":
+                        system_content += "\n\n**IMPORTANT: You are currently in ASK MODE (read-only).**\n"
+                        system_content += "- You can ONLY use read-only tools to inspect and analyze the project.\n"
+                        system_content += "- You CANNOT modify any files, scenes, nodes, or project settings.\n"
+                        system_content += "- You should provide helpful information, suggestions, and explanations.\n"
+                        system_content += "- If the user asks you to make changes, politely explain that you're in Ask Mode and cannot modify the project.\n"
+                    else:
+                        system_content += "\n\n**You are currently in AGENT MODE (full access).**\n"
+                        system_content += "- You can use all available tools including write/edit operations.\n"
+                        system_content += "- You should proactively fix issues and make changes as requested.\n"
+                    
+                    system_msg = {"role": "system", "content": system_content}
                     openai_messages = [system_msg] + openai_messages
                 
                 # Debug: Check total token usage
@@ -2947,13 +2993,17 @@ def chat():
                 providers_tried = set()
                 model_try = model
                 
+                # Filter tools based on mode
+                filtered_tools = filter_tools_by_mode(mode)
+                print(f"TOOLS_FILTER: Mode={mode}, Available tools: {len(filtered_tools)}/{len(godot_tools)}")
+                
                 # We need to retry the ENTIRE streaming process, not just the initial call
                 while True:
                     try:
                         response = completion(
                             model=model_try,
                             messages=openai_messages,
-                            tools=godot_tools,
+                            tools=filtered_tools,
                             tool_choice="auto",
                             stream=True
                         )
