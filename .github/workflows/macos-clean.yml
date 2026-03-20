@@ -118,6 +118,10 @@ jobs:
           	<true/>
           	<key>NSSupportsAutomaticGraphicsSwitching</key>
           	<true/>
+          	<key>SUFeedURL</key>
+          	<string>https://simplifine-gamedev.github.io/orca-engine/appcast.xml</string>
+          	<key>SUPublicEDKey</key>
+          	<string>Mtk/S4RmPW1j1q6pLbmFrHoxBL67TkcgjFZtiBtr1WA=</string>
           	<key>CFBundleURLTypes</key>
           	<array>
           		<dict>
