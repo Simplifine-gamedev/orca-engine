@@ -1,3 +1,35 @@
+
+<div align="right">
+  <details>
+    <summary >🌐 Language</summary>
+    <div>
+      <div align="center">
+        <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=en">English</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=zh-CN">简体中文</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=zh-TW">繁體中文</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=ja">日本語</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=ko">한국어</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=hi">हिन्दी</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=th">ไทย</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=fr">Français</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=de">Deutsch</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=es">Español</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=it">Italiano</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=ru">Русский</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=pt">Português</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=nl">Nederlands</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=pl">Polski</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=ar">العربية</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=fa">فارسی</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=tr">Türkçe</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=vi">Tiếng Việt</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=id">Bahasa Indonesia</a>
+        | <a href="https://openaitx.github.io/view.html?user=Simplifine-gamedev&project=orca-engine&lang=as">অসমীয়া</
+      </div>
+    </div>
+  </details>
+</div>
+
 ## Orca Engine
 
 Discord: https://discord.gg/bvdpdT26Tq
